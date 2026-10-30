@@ -1,18 +1,40 @@
 # SetPlay
 
-SetPlay is an Android IPTV player for phones. It supports Xtream Codes accounts,
-multiple saved accounts, Live TV, movies, series, favorites, EPG listings, search,
-parental controls, and Media3 playback.
+![Build APK](https://github.com/MPadberg-svg/SetPlay/actions/workflows/release-apk.yml/badge.svg)
+[![Latest release](https://img.shields.io/github/v/release/MPadberg-svg/SetPlay?display_name=tag)](https://github.com/MPadberg-svg/SetPlay/releases/latest)
 
-## Download the APK
+SetPlay is an Android IPTV player for phones with Xtream Codes account support,
+Live TV, movies, series, favorites, EPG listings, search, parental controls,
+and Media3 playback.
 
-The latest APK is published automatically with each version tag:
+## Download
 
-[**Download the latest SetPlay APK**](https://github.com/MPadberg-svg/SetPlay/releases/latest/download/setplay-debug.apk)
+### One-click download
 
-This is a debug-signed APK intended for direct installation and testing. Android
-may require enabling installation from unknown sources for the browser or file
-manager used to open it.
+**[Download SetPlay.apk](https://github.com/MPadberg-svg/SetPlay/releases/latest/download/SetPlay.apk)**
+
+The link always points to the newest published APK. You can also browse all
+versions on the [Releases page](https://github.com/MPadberg-svg/SetPlay/releases).
+
+### Install on Android
+
+1. Download `SetPlay.apk` to your phone.
+2. Open the file from your Downloads folder.
+3. If prompted, allow your browser or file manager to install unknown apps.
+4. Confirm **Install**, then open SetPlay.
+
+The downloadable APK is debug-signed and intended for direct installation and
+testing. It supports Android 7.0 (API 24) and newer. SetPlay does not provide
+IPTV channels or subscriptions; only use services and content you are
+authorized to access.
+
+### Verify the download (optional)
+
+Download the matching checksum file and compare it with the APK:
+
+```bash
+sha256sum -c SetPlay.apk.sha256
+```
 
 ## Requirements
 
@@ -20,15 +42,12 @@ manager used to open it.
 - An Xtream Codes-compatible IPTV account and server
 - Internet access
 
-SetPlay does not provide IPTV channels or subscriptions. Only use services and
-content you are authorized to access.
-
 ## Build locally
 
 The project includes the Gradle wrapper and can be built from the repository root:
 
 ```bash
-./gradlew assembleDebug
+./gradlew assembleDebug --no-daemon
 ```
 
 The resulting APK is located at:
@@ -45,6 +64,11 @@ adb install -r app/build/outputs/apk/debug/app-debug.apk
 
 ## Automated releases
 
-GitHub Actions builds the debug APK on every `v*` tag and attaches it to a
-GitHub Release as `setplay-debug.apk`. It can also be run manually from the
-Actions tab to verify that the project builds.
+GitHub Actions builds the APK on every `v*` tag, validates the output, generates
+a SHA-256 checksum, and attaches both files to a GitHub Release:
+
+- `SetPlay.apk`
+- `SetPlay.apk.sha256`
+
+Running the workflow manually from the **Actions** tab creates a downloadable
+workflow artifact without publishing a release.
