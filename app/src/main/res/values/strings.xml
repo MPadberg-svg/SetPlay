@@ -1,0 +1,12 @@
+<resources>
+    <string name="app_name">SetPlay</string>
+    <string name="nav_home">Home</string>
+    <string name="nav_live">Live TV</string>
+    <string name="nav_movies">Movies</string>
+    <string name="nav_series">Series</string>
+    <string name="nav_favorites">Favorites</string>
+    <string name="nav_epg">TV Guide</string>
+    <string name="nav_playlists">Accounts</string>
+    <string name="search_hint">Search channels, movies, series…</string>
+    <string name="connect">Connect &amp; Sync</string>
+</resources>
