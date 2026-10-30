@@ -1,22 +1,25 @@
 # SetPlay
 
+## Download
+
+**[Download the latest APK](https://github.com/MPadberg-svg/SetPlay/releases/latest/download/setplay-debug.apk)**
+
+Or browse all versions on the [Releases page](https://github.com/MPadberg-svg/SetPlay/releases).
+
+1. Download `setplay-debug.apk` to your Android phone.
+2. Open the downloaded file and allow your browser or file manager to install
+   apps from unknown sources if Android asks.
+3. Install and open SetPlay.
+
 SetPlay is an Android IPTV player for phones. It supports Xtream Codes accounts,
 multiple saved accounts, Live TV, movies, series, favorites, EPG listings, search,
 parental controls, and Media3 playback.
 
-## Download the APK
-
-The latest APK is published automatically with each version tag:
-
-[**Download the latest SetPlay APK**](https://github.com/MPadberg-svg/SetPlay/releases/latest/download/setplay-debug.apk)
-
-This is a debug-signed APK intended for direct installation and testing. Android
-may require enabling installation from unknown sources for the browser or file
-manager used to open it.
+The downloadable APK is debug-signed and intended for direct installation and
+testing. It supports Android 7.0 (API 24) and newer.
 
 ## Requirements
 
-- Android 7.0 (API 24) or newer
 - An Xtream Codes-compatible IPTV account and server
 - Internet access
 
@@ -45,6 +48,6 @@ adb install -r app/build/outputs/apk/debug/app-debug.apk
 
 ## Automated releases
 
-GitHub Actions builds the debug APK on every `v*` tag and attaches it to a
-GitHub Release as `setplay-debug.apk`. It can also be run manually from the
-Actions tab to verify that the project builds.
+GitHub Actions builds the APK on every `v*` tag and attaches it to a GitHub
+Release as `setplay-debug.apk`. The stable download URL above always points to
+the newest published release.
