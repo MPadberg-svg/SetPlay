@@ -51,7 +51,7 @@ jobs:
         run: |
           test -s app/build/outputs/apk/debug/SetPlay.apk
           file app/build/outputs/apk/debug/SetPlay.apk | grep -q 'Android package'
-          sha256sum app/build/outputs/apk/debug/SetPlay.apk > app/build/outputs/apk/debug/SetPlay.apk.sha256
+          (cd app/build/outputs/apk/debug && sha256sum SetPlay.apk > SetPlay.apk.sha256)
 
       - name: Upload workflow artifact
         uses: actions/upload-artifact@v4
