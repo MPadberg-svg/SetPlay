@@ -1,0 +1,6 @@
+{
+  "name": "SetPlay",
+  "description": "Luxury Royal Gold IPTV player for Android featuring multi-playlist management, Live TV categories, Movies, Series with Season & Episode selection, Favorites, and Media3 4K playback.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
