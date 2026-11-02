@@ -45,7 +45,7 @@ abstract class StreamVaultDatabase : RoomDatabase() {
                     StreamVaultDatabase::class.java,
                     "streamvault_database.db"
                 )
-                    .fallbackToDestructiveMigration()
+                    .fallbackToDestructiveMigration(dropAllTables = true)
                     .build()
                 INSTANCE = instance
                 instance

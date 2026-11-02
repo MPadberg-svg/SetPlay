@@ -263,7 +263,7 @@ fun VodScreen(
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         Column(modifier = Modifier.weight(1f)) {
-                            // Unboxed inline eyebrow indicator
+                            // Unboxed inline eyebrow indicator with active server & codec readiness
                             Row(verticalAlignment = Alignment.CenterVertically) {
                                 Icon(
                                     imageVector = if (isMovies) Icons.Default.LocalMovies else Icons.Default.Layers,
@@ -273,27 +273,32 @@ fun VodScreen(
                                 )
                                 Spacer(modifier = Modifier.width(5.dp))
                                 Text(
-                                    text = if (isMovies) "SAPPHIRE & MINT CINEMA 4K" else "CYPRESS & AQUA SERIES VAULT",
+                                    text = if (isMovies) {
+                                        "${activePlaylist.name.uppercase()} • 4K UHD & DOLBY VOD"
+                                    } else {
+                                        "${activePlaylist.name.uppercase()} • MULTI-SEASON ARCHIVE"
+                                    },
                                     color = sectionHighlight,
                                     fontSize = 9.5.sp,
                                     fontWeight = FontWeight.ExtraBold,
-                                    letterSpacing = 0.6.sp
+                                    letterSpacing = 0.6.sp,
+                                    maxLines = 1
                                 )
                             }
 
                             Spacer(modifier = Modifier.height(4.dp))
 
                             Text(
-                                text = if (isMovies) "Cinema & Box Office Movies" else "VIP Series & Multi-Season Shows",
+                                text = if (isMovies) "Box Office & Theatre Releases" else "Complete Seasons & Episode Guide",
                                 color = Color.White,
-                                fontSize = 17.sp,
+                                fontSize = 16.sp,
                                 fontWeight = FontWeight.ExtraBold
                             )
                             Text(
                                 text = if (isMovies) {
-                                    "Widescreen theatre releases • Instant 4K UHD playback"
+                                    "Widescreen cinema library • Instant 4K UHD & FHD direct playback"
                                 } else {
-                                    "Tap any show card to explore seasons & episode hierarchies"
+                                    "Tap any poster to browse seasons, episode synopses & ratings"
                                 },
                                 color = if (isMovies) MoviesAquamarine.copy(alpha = 0.85f) else SeriesIceAqua.copy(alpha = 0.8f),
                                 fontSize = 11.sp
@@ -306,7 +311,7 @@ fun VodScreen(
                                 shape = RoundedCornerShape(50)
                             ) {
                                 Text(
-                                    text = if (isMovies) "%,d MOVIES".format(totalCount) else "%,d SERIES".format(totalCount),
+                                    text = "%,d TITLES".format(totalCount),
                                     color = sectionHighlight,
                                     fontSize = 10.sp,
                                     fontWeight = FontWeight.Bold,

@@ -25,10 +25,12 @@ import androidx.compose.animation.slideInHorizontally
 import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectDragGestures
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -99,8 +101,14 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.StrokeJoin
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.pointer.pointerInput
@@ -914,7 +922,10 @@ fun TopStreamingBar(
         AppScreen.MOVIES -> Triple(MoviesSapphireNavy, MoviesCyanTeal, "MOVIES")
         AppScreen.SERIES -> Triple(SeriesPineBase, SeriesMistTeal, "SERIES")
         AppScreen.FAVORITES -> Triple(FavoritesObsidianBase, FavoritesSagePrimary, "FAVORITES")
-        else -> Triple(DarkGraphite, AmberGold, "VIP SUITE")
+        AppScreen.EPG -> Triple(TvMidnightSlate, AmberGold, "EPG GUIDE")
+        AppScreen.PLAYLISTS -> Triple(DarkGraphite, AmberGold, "XTREAM SERVERS")
+        AppScreen.GLOBAL_SEARCH -> Triple(DarkGraphite, KickoffTropicalTeal, "GLOBAL SEARCH")
+        AppScreen.PARENTAL_SETTINGS -> Triple(DarkGraphite, AmberGold, "PARENTAL LOCK")
     }
 
     val sectionUnderlineStops = when (currentScreen) {
@@ -941,7 +952,6 @@ fun TopStreamingBar(
                     .padding(horizontal = 14.dp, vertical = 8.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                // Tactile Frosted Glass Hamburger Button
                 GhostTopBarIconButton(
                     icon = Icons.Default.Menu,
                     contentDescription = "Navigation Drawer Menu",
@@ -953,106 +963,95 @@ fun TopStreamingBar(
 
                 Spacer(modifier = Modifier.width(10.dp))
 
-                // Signature Set ▶ Play Wordmark with Section-Specific Spectrum Underline + Section Capsule
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
+                Column(
+                    horizontalAlignment = Alignment.Start,
                     modifier = Modifier
-                        .weight(1f)
+                        .clip(RoundedCornerShape(8.dp))
                         .clickable { onCastOrAccountsClick() }
-                        .padding(vertical = 2.dp)
+                        .padding(horizontal = 2.dp, vertical = 1.dp)
                         .testTag("setplay_creative_wordmark")
                 ) {
-                    Column(
-                        horizontalAlignment = Alignment.Start
-                    ) {
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Text(
-                                text = "Set",
-                                color = Color.White,
-                                fontSize = 22.sp,
-                                fontWeight = FontWeight.Light,
-                                letterSpacing = 0.5.sp
-                            )
-                            // Illuminated Section-Colored Play Prism between "Set" and "Play"
-                            Box(
-                                contentAlignment = Alignment.Center,
-                                modifier = Modifier
-                                    .padding(horizontal = 3.dp)
-                                    .size(20.dp)
-                                    .background(
-                                        Brush.radialGradient(
-                                            colors = listOf(
-                                                sectionPrimaryAccent.copy(alpha = 0.32f),
-                                                Color.Transparent
-                                            )
-                                        ),
-                                        shape = CircleShape
-                                    )
-                            ) {
-                                Icon(
-                                    imageVector = Icons.Default.PlayArrow,
-                                    contentDescription = null,
-                                    tint = sectionPrimaryAccent,
-                                    modifier = Modifier.size(18.dp)
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(
+                            text = "Set",
+                            color = Color.White,
+                            fontSize = 21.sp,
+                            fontWeight = FontWeight.Light,
+                            letterSpacing = 0.5.sp
+                        )
+                        Box(
+                            contentAlignment = Alignment.Center,
+                            modifier = Modifier
+                                .padding(horizontal = 2.dp)
+                                .size(18.dp)
+                                .background(
+                                    Brush.radialGradient(
+                                        colors = listOf(
+                                            sectionPrimaryAccent.copy(alpha = 0.35f),
+                                            Color.Transparent
+                                        )
+                                    ),
+                                    shape = CircleShape
                                 )
-                            }
-                            Text(
-                                text = "Play",
-                                color = AmberGold,
-                                fontSize = 22.sp,
-                                fontWeight = FontWeight.ExtraBold,
-                                letterSpacing = 0.3.sp
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.PlayArrow,
+                                contentDescription = null,
+                                tint = sectionPrimaryAccent,
+                                modifier = Modifier.size(16.dp)
                             )
                         }
-
-                        Spacer(modifier = Modifier.height(2.dp))
-
-                        // Signature Section-Specific Spectrum Gradient Underline Bar
-                        Box(
-                            modifier = Modifier
-                                .width(110.dp)
-                                .height(2.6.dp)
-                                .clip(RoundedCornerShape(50))
-                                .background(
-                                    Brush.horizontalGradient(colors = sectionUnderlineStops)
-                                )
+                        Text(
+                            text = "Play",
+                            color = AmberGold,
+                            fontSize = 21.sp,
+                            fontWeight = FontWeight.ExtraBold,
+                            letterSpacing = 0.3.sp
                         )
                     }
 
-                    Spacer(modifier = Modifier.width(10.dp))
+                    Spacer(modifier = Modifier.height(2.dp))
 
-                    // Section-Specific Identity Capsule (as shown in reference header)
-                    Surface(
-                        color = sectionPrimaryAccent.copy(alpha = 0.14f),
-                        shape = RoundedCornerShape(50),
-                        border = BorderStroke(1.dp, sectionPrimaryAccent.copy(alpha = 0.65f))
+                    Box(
+                        modifier = Modifier
+                            .width(96.dp)
+                            .height(2.5.dp)
+                            .clip(RoundedCornerShape(50))
+                            .background(Brush.horizontalGradient(colors = sectionUnderlineStops))
+                    )
+                }
+
+                Spacer(modifier = Modifier.width(10.dp))
+
+                Surface(
+                    color = sectionPrimaryAccent.copy(alpha = 0.14f),
+                    shape = RoundedCornerShape(50),
+                    border = BorderStroke(0.8.dp, sectionPrimaryAccent.copy(alpha = 0.55f))
+                ) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp)
                     ) {
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp)
-                        ) {
-                            Box(
-                                modifier = Modifier
-                                    .size(5.dp)
-                                    .clip(CircleShape)
-                                    .background(sectionPrimaryAccent)
-                            )
-                            Spacer(modifier = Modifier.width(5.dp))
-                            Text(
-                                text = sectionBadgeTitle,
-                                color = Color.White,
-                                fontSize = 9.5.sp,
-                                fontWeight = FontWeight.ExtraBold,
-                                letterSpacing = 0.6.sp,
-                                maxLines = 1
-                            )
-                        }
+                        Box(
+                            modifier = Modifier
+                                .size(5.5.dp)
+                                .clip(CircleShape)
+                                .background(sectionPrimaryAccent)
+                        )
+                        Spacer(modifier = Modifier.width(5.dp))
+                        Text(
+                            text = sectionBadgeTitle,
+                            color = Color.White,
+                            fontSize = 9.5.sp,
+                            fontWeight = FontWeight.ExtraBold,
+                            letterSpacing = 0.5.sp,
+                            maxLines = 1
+                        )
                     }
                 }
 
-                // Tactile Frosted Glass Cast & Search Icon Buttons
+                Spacer(modifier = Modifier.weight(1f))
+
                 GhostTopBarIconButton(
                     icon = Icons.Default.Cast,
                     contentDescription = "Cast & Xtream Servers",
@@ -1076,17 +1075,16 @@ fun TopStreamingBar(
                 )
             }
 
-            // Luminous Section-Accent Bottom Gradient Beam
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .height(1.2.dp)
+                    .height(0.8.dp)
                     .background(
                         Brush.horizontalGradient(
                             listOf(
                                 Color.Transparent,
-                                sectionPrimaryAccent.copy(alpha = 0.65f),
-                                AmberGold.copy(alpha = 0.45f),
+                                sectionPrimaryAccent.copy(alpha = 0.55f),
+                                AmberGold.copy(alpha = 0.35f),
                                 Color.Transparent
                             )
                         )
@@ -1157,9 +1155,13 @@ private data class LuxuryNavItemSpec(
 )
 
 /**
- * Sculpted Obsidian Glass Island Dock with Morphing Horizontal Active Capsule:
- * - Active tab expands into an illuminated gradient capsule (`[ (⚽) KickOff ]`) with a top neon floodlight beam.
- * - Inactive tabs sit in a recessed obsidian-glass dock with frosted circular icon medallions and micro-labels.
+ * "Aether" Kinetic Spotlight & Elastic Morphing Capsule Bottom Navigation Dock:
+ * - Sleek floating obsidian-glass dock (`RoundedCornerShape(26.dp)`) with a dynamic specular border
+ *   whose glow intensity tracks the active tab in real time.
+ * - Dual-spring elastic morphing capsule (`leadSlot` + `trailSlot` physics) that stretches fluidly
+ *   across tabs like liquid light and settles around the selected destination.
+ * - Volumetric stage spotlight cone + top luminous laser beam projecting downward over a
+ *   jewel-crafted circular icon medallion and crisp section typography.
  */
 @Composable
 fun BottomStreamingNav(
@@ -1167,17 +1169,17 @@ fun BottomStreamingNav(
     onScreenSelected: (AppScreen) -> Unit
 ) {
     val targetDockSurface = when (currentScreen) {
-        AppScreen.HOME -> Color(0xFF061620)
-        AppScreen.LIVE_TV -> Color(0xFF171D28)
-        AppScreen.MOVIES -> Color(0xFF092534)
-        AppScreen.SERIES -> Color(0xFF0B2726)
-        AppScreen.FAVORITES -> Color(0xFF051A18)
+        AppScreen.HOME -> Color(0xFF081B24)
+        AppScreen.LIVE_TV -> Color(0xFF171E2B)
+        AppScreen.MOVIES -> Color(0xFF092334)
+        AppScreen.SERIES -> Color(0xFF0C2624)
+        AppScreen.FAVORITES -> Color(0xFF061E1C)
         else -> MetalCharcoal
     }
 
     val navContainerColor by animateColorAsState(
         targetValue = targetDockSurface,
-        animationSpec = tween(durationMillis = 300),
+        animationSpec = tween(durationMillis = 320),
         label = "bottom_dock_surface"
     )
 
@@ -1190,8 +1192,8 @@ fun BottomStreamingNav(
                 outlinedIcon = Icons.Outlined.SportsSoccer,
                 primaryAccent = KickoffTropicalTeal,
                 secondaryAccent = KickoffPeachCream,
-                activeLabelColor = DarkGraphite,
-                activeIconTint = KickoffTropicalTeal
+                activeLabelColor = KickoffPeachCream,
+                activeIconTint = DarkGraphite
             ),
             LuxuryNavItemSpec(
                 screen = AppScreen.LIVE_TV,
@@ -1200,8 +1202,8 @@ fun BottomStreamingNav(
                 outlinedIcon = Icons.Outlined.LiveTv,
                 primaryAccent = TvBroadcastScarlet,
                 secondaryAccent = AmberGold,
-                activeLabelColor = Color.White,
-                activeIconTint = TvBroadcastScarlet
+                activeLabelColor = PaleGold,
+                activeIconTint = Color.White
             ),
             LuxuryNavItemSpec(
                 screen = AppScreen.MOVIES,
@@ -1210,18 +1212,18 @@ fun BottomStreamingNav(
                 outlinedIcon = Icons.Outlined.Movie,
                 primaryAccent = MoviesCyanTeal,
                 secondaryAccent = MoviesMintSpring,
-                activeLabelColor = DarkGraphite,
-                activeIconTint = MoviesCyanTeal
+                activeLabelColor = MoviesMintSpring,
+                activeIconTint = DarkGraphite
             ),
             LuxuryNavItemSpec(
                 screen = AppScreen.SERIES,
                 label = "Series",
                 filledIcon = Icons.Filled.VideoLibrary,
                 outlinedIcon = Icons.Outlined.VideoLibrary,
-                primaryAccent = SeriesIceAqua,
-                secondaryAccent = SeriesMistTeal,
-                activeLabelColor = SeriesPineBase,
-                activeIconTint = SeriesIceAqua
+                primaryAccent = SeriesMistTeal,
+                secondaryAccent = SeriesIceAqua,
+                activeLabelColor = SeriesIceAqua,
+                activeIconTint = SeriesPineBase
             ),
             LuxuryNavItemSpec(
                 screen = AppScreen.FAVORITES,
@@ -1230,183 +1232,299 @@ fun BottomStreamingNav(
                 outlinedIcon = Icons.Outlined.StarOutline,
                 primaryAccent = FavoritesSagePrimary,
                 secondaryAccent = FavoritesPaleMint,
-                activeLabelColor = FavoritesObsidianBase,
-                activeIconTint = FavoritesSagePrimary
+                activeLabelColor = FavoritesPaleMint,
+                activeIconTint = FavoritesObsidianBase
             )
         )
     }
 
-    val activeItemSpec = navItems.firstOrNull { it.screen == currentScreen } ?: navItems.first()
+    val selectedIndex = remember(currentScreen, navItems) {
+        navItems.indexOfFirst { it.screen == currentScreen }.let { if (it >= 0) it else 0 }
+    }
+    val activeItemSpec = navItems[selectedIndex]
 
-    Box(
+    // Dual-spring physics for true elastic liquid-stretch morphing when switching tabs:
+    // The faster spring leads the movement while the softer spring trails slightly behind,
+    // stretching the glowing capsule during transit before snapping smoothly into place.
+    val fastSpringSlot by animateFloatAsState(
+        targetValue = selectedIndex.toFloat(),
+        animationSpec = spring(
+            dampingRatio = 0.78f,
+            stiffness = Spring.StiffnessMedium
+        ),
+        label = "fast_spring_slot"
+    )
+    val slowSpringSlot by animateFloatAsState(
+        targetValue = selectedIndex.toFloat(),
+        animationSpec = spring(
+            dampingRatio = 0.82f,
+            stiffness = Spring.StiffnessLow
+        ),
+        label = "slow_spring_slot"
+    )
+
+    val spotlightPrimary by animateColorAsState(
+        targetValue = activeItemSpec.primaryAccent,
+        animationSpec = tween(280),
+        label = "spotlight_primary"
+    )
+    val spotlightSecondary by animateColorAsState(
+        targetValue = activeItemSpec.secondaryAccent,
+        animationSpec = tween(280),
+        label = "spotlight_secondary"
+    )
+
+    val dockHeightDp = 66.dp
+
+    BoxWithConstraints(
         modifier = Modifier
             .fillMaxWidth()
             .windowInsetsPadding(WindowInsets.navigationBars)
-            .padding(horizontal = 14.dp, vertical = 7.dp)
+            .padding(horizontal = 14.dp, vertical = 6.dp)
+            .height(dockHeightDp)
+            .clip(RoundedCornerShape(26.dp))
             .testTag("bottom_nav")
     ) {
-        Surface(
-            color = navContainerColor.copy(alpha = 0.96f),
-            shape = RoundedCornerShape(30.dp),
-            tonalElevation = 14.dp,
-            shadowElevation = 18.dp,
-            border = BorderStroke(
-                width = 1.2.dp,
-                brush = Brush.horizontalGradient(
-                    listOf(
-                        activeItemSpec.primaryAccent.copy(alpha = 0.65f),
-                        Color.White.copy(alpha = 0.14f),
-                        AmberGold.copy(alpha = 0.40f)
-                    )
-                )
-            ),
-            modifier = Modifier.fillMaxWidth()
-        ) {
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 8.dp, vertical = 7.dp),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                navItems.forEach { item ->
-                    val isSelected = currentScreen == item.screen
-                    val itemWeight by animateFloatAsState(
-                        targetValue = if (isSelected) 1.42f else 0.88f,
-                        animationSpec = spring(
-                            dampingRatio = Spring.DampingRatioMediumBouncy,
-                            stiffness = Spring.StiffnessMediumLow
-                        ),
-                        label = "nav_weight_${item.label}"
-                    )
-                    val iconScale by animateFloatAsState(
-                        targetValue = if (isSelected) 1.06f else 0.96f,
-                        animationSpec = spring(
-                            dampingRatio = Spring.DampingRatioMediumBouncy,
-                            stiffness = Spring.StiffnessMedium
-                        ),
-                        label = "nav_icon_scale_${item.label}"
-                    )
+        val slotCount = navItems.size
 
+        // 1. Canvas Layer: Obsidian Glass Vessel + Volumetric Spotlight Cone + Elastic Morphing Capsule + Laser Beam
+        Canvas(
+            modifier = Modifier.fillMaxSize()
+        ) {
+            val cornerRadiusPx = 26.dp.toPx()
+            val slotWidthPx = if (slotCount > 0) size.width / slotCount else size.width
+
+            val leftSlot = minOf(fastSpringSlot, slowSpringSlot)
+            val rightSlot = maxOf(fastSpringSlot, slowSpringSlot)
+            val centerSlot = (fastSpringSlot + slowSpringSlot) * 0.5f
+
+            val spotlightCenterX = (centerSlot + 0.5f) * slotWidthPx
+            val pillHorizontalInset = 5.dp.toPx()
+            val pillVerticalInset = 5.dp.toPx()
+
+            val pillLeft = (leftSlot * slotWidthPx + pillHorizontalInset).coerceAtLeast(pillHorizontalInset)
+            val pillRight = ((rightSlot + 1f) * slotWidthPx - pillHorizontalInset).coerceAtMost(size.width - pillHorizontalInset)
+            val pillWidth = (pillRight - pillLeft).coerceAtLeast(slotWidthPx - pillHorizontalInset * 2f)
+            val pillHeight = size.height - pillVerticalInset * 2f
+            val pillCornerRadius = 21.dp.toPx()
+
+            // A. Deep Obsidian-Glass Base Fill
+            drawRoundRect(
+                brush = Brush.verticalGradient(
+                    colors = listOf(
+                        navContainerColor.copy(alpha = 0.96f),
+                        DarkGraphite.copy(alpha = 0.99f)
+                    )
+                ),
+                cornerRadius = androidx.compose.ui.geometry.CornerRadius(cornerRadiusPx, cornerRadiusPx)
+            )
+
+            // B. Subtle Top Glass Specular Sheen
+            drawRoundRect(
+                brush = Brush.verticalGradient(
+                    colors = listOf(
+                        Color.White.copy(alpha = 0.07f),
+                        Color.Transparent
+                    ),
+                    startY = 0f,
+                    endY = size.height * 0.45f
+                ),
+                cornerRadius = androidx.compose.ui.geometry.CornerRadius(cornerRadiusPx, cornerRadiusPx)
+            )
+
+            // C. Volumetric Stage Spotlight Radial Aura emanating from the top of the active tab
+            drawCircle(
+                brush = Brush.radialGradient(
+                    colors = listOf(
+                        spotlightPrimary.copy(alpha = 0.34f),
+                        spotlightSecondary.copy(alpha = 0.12f),
+                        Color.Transparent
+                    ),
+                    center = Offset(spotlightCenterX, 4.dp.toPx()),
+                    radius = slotWidthPx * 0.95f
+                ),
+                radius = slotWidthPx * 0.95f,
+                center = Offset(spotlightCenterX, 4.dp.toPx())
+            )
+
+            // D. Elastic Sliding Magnetic Capsule (Pill-within-a-Pill Glass Jewel)
+            drawRoundRect(
+                brush = Brush.linearGradient(
+                    colors = listOf(
+                        spotlightPrimary.copy(alpha = 0.28f),
+                        spotlightSecondary.copy(alpha = 0.14f),
+                        spotlightPrimary.copy(alpha = 0.22f)
+                    ),
+                    start = Offset(pillLeft, pillVerticalInset),
+                    end = Offset(pillRight, size.height - pillVerticalInset)
+                ),
+                topLeft = Offset(pillLeft, pillVerticalInset),
+                size = androidx.compose.ui.geometry.Size(pillWidth, pillHeight),
+                cornerRadius = androidx.compose.ui.geometry.CornerRadius(pillCornerRadius, pillCornerRadius)
+            )
+
+            // Inner Specular Rim around the Elastic Sliding Capsule
+            drawRoundRect(
+                brush = Brush.verticalGradient(
+                    colors = listOf(
+                        spotlightSecondary.copy(alpha = 0.72f),
+                        spotlightPrimary.copy(alpha = 0.32f),
+                        Color.White.copy(alpha = 0.10f)
+                    ),
+                    startY = pillVerticalInset,
+                    endY = size.height - pillVerticalInset
+                ),
+                topLeft = Offset(pillLeft, pillVerticalInset),
+                size = androidx.compose.ui.geometry.Size(pillWidth, pillHeight),
+                cornerRadius = androidx.compose.ui.geometry.CornerRadius(pillCornerRadius, pillCornerRadius),
+                style = Stroke(width = 1.1.dp.toPx())
+            )
+
+            // E. Top Luminous Spotlight Laser Bar tracking the active tab
+            val laserWidth = 28.dp.toPx()
+            val laserHeight = 3.dp.toPx()
+            val laserLeft = (spotlightCenterX - laserWidth / 2f).coerceIn(cornerRadiusPx, size.width - cornerRadiusPx - laserWidth)
+            drawRoundRect(
+                brush = Brush.horizontalGradient(
+                    colors = listOf(
+                        spotlightPrimary,
+                        spotlightSecondary,
+                        spotlightPrimary
+                    ),
+                    startX = laserLeft,
+                    endX = laserLeft + laserWidth
+                ),
+                topLeft = Offset(laserLeft, 1.dp.toPx()),
+                size = androidx.compose.ui.geometry.Size(laserWidth, laserHeight),
+                cornerRadius = androidx.compose.ui.geometry.CornerRadius(laserHeight, laserHeight)
+            )
+
+            // F. Outer Dock Specular Glass Border with Dynamic Spotlight Tracking
+            val borderStrokePx = 1.2.dp.toPx()
+            drawRoundRect(
+                brush = Brush.radialGradient(
+                    colors = listOf(
+                        spotlightSecondary.copy(alpha = 0.90f),
+                        spotlightPrimary.copy(alpha = 0.65f),
+                        AmberGold.copy(alpha = 0.28f),
+                        Color.White.copy(alpha = 0.12f)
+                    ),
+                    center = Offset(spotlightCenterX, 0f),
+                    radius = size.width * 0.75f
+                ),
+                topLeft = Offset(borderStrokePx / 2f, borderStrokePx / 2f),
+                size = androidx.compose.ui.geometry.Size(
+                    size.width - borderStrokePx,
+                    size.height - borderStrokePx
+                ),
+                cornerRadius = androidx.compose.ui.geometry.CornerRadius(cornerRadiusPx, cornerRadiusPx),
+                style = Stroke(width = borderStrokePx)
+            )
+        }
+
+        // 2. Interactive 5-Slot Foreground Row: Jewel Icon Medallions & Kinetic Typography
+        Row(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(horizontal = 5.dp),
+            horizontalArrangement = Arrangement.SpaceEvenly,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            navItems.forEach { item ->
+                val isSelected = currentScreen == item.screen
+
+                val iconScale by animateFloatAsState(
+                    targetValue = if (isSelected) 1.06f else 0.94f,
+                    animationSpec = spring(
+                        dampingRatio = Spring.DampingRatioMediumBouncy,
+                        stiffness = Spring.StiffnessMediumLow
+                    ),
+                    label = "icon_scale_${item.label}"
+                )
+
+                val medalBgAlpha by animateFloatAsState(
+                    targetValue = if (isSelected) 1f else 0f,
+                    animationSpec = tween(220),
+                    label = "medal_bg_alpha_${item.label}"
+                )
+
+                Box(
+                    contentAlignment = Alignment.Center,
+                    modifier = Modifier
+                        .weight(1f)
+                        .height(dockHeightDp)
+                        .clip(RoundedCornerShape(21.dp))
+                        .clickable(
+                            interactionSource = remember { MutableInteractionSource() },
+                            indication = null
+                        ) { onScreenSelected(item.screen) }
+                        .testTag("nav_item_${item.screen.name.lowercase()}")
+                ) {
                     Column(
                         horizontalAlignment = Alignment.CenterHorizontally,
                         verticalArrangement = Arrangement.Center,
-                        modifier = Modifier
-                            .weight(itemWeight)
-                            .clip(RoundedCornerShape(22.dp))
-                            .clickable { onScreenSelected(item.screen) }
-                            .padding(horizontal = 2.dp, vertical = 2.dp)
-                            .testTag("nav_item_${item.screen.name.lowercase()}")
+                        modifier = Modifier.padding(vertical = 4.dp)
                     ) {
-                        // Top Floodlight Laser Beam on Active Tab
+                        // Icon Medallion: Transforms from a minimal ghost icon into a glowing Brand-Kit Jewel Sphere
                         Box(
+                            contentAlignment = Alignment.Center,
                             modifier = Modifier
-                                .width(if (isSelected) 24.dp else 0.dp)
-                                .height(2.5.dp)
-                                .clip(RoundedCornerShape(50))
+                                .size(31.dp)
+                                .graphicsLayer {
+                                    scaleX = iconScale
+                                    scaleY = iconScale
+                                }
+                                .clip(CircleShape)
                                 .background(
+                                    brush = Brush.linearGradient(
+                                        colors = listOf(
+                                            item.secondaryAccent.copy(alpha = medalBgAlpha),
+                                            item.primaryAccent.copy(alpha = medalBgAlpha)
+                                        )
+                                    ),
+                                    shape = CircleShape
+                                )
+                                .then(
                                     if (isSelected) {
-                                        Brush.horizontalGradient(
-                                            listOf(item.secondaryAccent, item.primaryAccent)
+                                        Modifier.border(
+                                            width = 1.dp,
+                                            brush = Brush.verticalGradient(
+                                                listOf(
+                                                    Color.White.copy(alpha = 0.75f),
+                                                    AmberGold.copy(alpha = 0.55f)
+                                                )
+                                            ),
+                                            shape = CircleShape
                                         )
                                     } else {
-                                        Brush.horizontalGradient(
-                                            listOf(Color.Transparent, Color.Transparent)
-                                        )
+                                        Modifier
                                     }
                                 )
-                        )
-
-                        Spacer(modifier = Modifier.height(3.dp))
-
-                        if (isSelected) {
-                            // Expanded Illuminated Horizontal Capsule for Active Section
-                            Surface(
-                                color = Color.Transparent,
-                                shape = RoundedCornerShape(50),
-                                border = BorderStroke(0.9.dp, item.secondaryAccent.copy(alpha = 0.75f)),
-                                modifier = Modifier
-                                    .height(38.dp)
-                                    .fillMaxWidth()
-                                    .clip(RoundedCornerShape(50))
-                                    .background(
-                                        Brush.horizontalGradient(
-                                            listOf(
-                                                item.secondaryAccent,
-                                                item.primaryAccent
-                                            )
-                                        )
-                                    )
-                            ) {
-                                Row(
-                                    verticalAlignment = Alignment.CenterVertically,
-                                    horizontalArrangement = Arrangement.Center,
-                                    modifier = Modifier.padding(horizontal = 8.dp)
-                                ) {
-                                    Box(
-                                        contentAlignment = Alignment.Center,
-                                        modifier = Modifier
-                                            .size(24.dp)
-                                            .clip(CircleShape)
-                                            .background(DarkGraphite)
-                                    ) {
-                                        Icon(
-                                            imageVector = item.filledIcon,
-                                            contentDescription = item.label,
-                                            tint = item.activeIconTint,
-                                            modifier = Modifier
-                                                .size(15.dp)
-                                                .graphicsLayer {
-                                                    scaleX = iconScale
-                                                    scaleY = iconScale
-                                                }
-                                        )
-                                    }
-                                    Spacer(modifier = Modifier.width(6.dp))
-                                    Text(
-                                        text = item.label,
-                                        color = item.activeLabelColor,
-                                        fontSize = 11.5.sp,
-                                        fontWeight = FontWeight.ExtraBold,
-                                        maxLines = 1,
-                                        overflow = TextOverflow.Ellipsis
-                                    )
-                                }
-                            }
-                        } else {
-                            // Recessed Frosted Glass Icon Pod + Crisp Micro-Label for Inactive Tabs
-                            Column(
-                                horizontalAlignment = Alignment.CenterHorizontally,
-                                verticalArrangement = Arrangement.Center
-                            ) {
-                                Box(
-                                    contentAlignment = Alignment.Center,
-                                    modifier = Modifier
-                                        .size(26.dp)
-                                        .clip(CircleShape)
-                                        .background(Color.White.copy(alpha = 0.05f))
-                                ) {
-                                    Icon(
-                                        imageVector = item.outlinedIcon,
-                                        contentDescription = item.label,
-                                        tint = Champagne.copy(alpha = 0.75f),
-                                        modifier = Modifier.size(17.dp)
-                                    )
-                                }
-                                Spacer(modifier = Modifier.height(2.dp))
-                                Text(
-                                    text = item.label,
-                                    color = Champagne.copy(alpha = 0.72f),
-                                    fontSize = 10.sp,
-                                    fontWeight = FontWeight.SemiBold,
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis
-                                )
-                            }
+                        ) {
+                            Icon(
+                                imageVector = if (isSelected) item.filledIcon else item.outlinedIcon,
+                                contentDescription = item.label,
+                                tint = if (isSelected) item.activeIconTint else Champagne.copy(alpha = 0.68f),
+                                modifier = Modifier.size(if (isSelected) 18.dp else 20.dp)
+                            )
                         }
+
+                        Spacer(modifier = Modifier.height(2.5.dp))
+
+                        // Label: Illuminates with bold section highlight color when active
+                        Text(
+                            text = item.label,
+                            color = if (isSelected) item.activeLabelColor else Champagne.copy(alpha = 0.56f),
+                            fontSize = if (isSelected) 10.sp else 9.5.sp,
+                            fontWeight = if (isSelected) FontWeight.ExtraBold else FontWeight.Medium,
+                            letterSpacing = if (isSelected) 0.25.sp else 0.1.sp,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
                     }
                 }
             }
         }
     }
 }
+

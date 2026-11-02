@@ -267,10 +267,24 @@ fun HomeScreen(
             SyncBanner(syncProgress = syncProgress)
         }
 
-        // 2. KickOff Arena Stadium Hero Header (Pitch Turf & Floodlight Gold Identity)
+        // 2. Matchday Intelligence & Broadcast Telemetry Bar (No redundant section title)
         item {
+            val activeLeaguesInSlate = remember(sortedVisibleMatches) {
+                sortedVisibleMatches.map { it.tournamentId }.distinct().size
+            }
+            val enabledLeaguesCount = remember(tournamentPreferences) {
+                tournamentPreferences.count { it.isEnabled }.let { if (it > 0) it else 10 }
+            }
+            val upcomingMatchesCount = remember(sortedVisibleMatches) {
+                sortedVisibleMatches.count { it.status == MatchStatus.UPCOMING }
+            }
             KickOffArenaHeaderCard(
                 activePlaylist = activePlaylist,
+                selectedMatchDay = selectedMatchDay,
+                totalVisibleMatchesCount = sortedVisibleMatches.size,
+                activeLeaguesInSlate = activeLeaguesInSlate,
+                enabledLeaguesCount = enabledLeaguesCount,
+                upcomingMatchesCount = upcomingMatchesCount,
                 favoriteTeamsCount = favoriteTeams.size,
                 liveMatchesCount = liveMatchesCount,
                 isLoadingMatches = isLoadingMatches,
@@ -757,13 +771,18 @@ internal fun buildChronologicalTournamentSections(
 }
 
 /**
- * Compact & Consolidated KickOff Arena Status Bar.
- * Top row: Title, inline AUTO-SYNC LIVE dot indicator, live count pill, and borderless ghost refresh button.
- * Bottom row: Tier-2 Secondary Surface Controls ("Favorite Teams & Leagues", "Link IPTV") + compact brand status indicators.
+ * Matchday Intelligence & Broadcast Telemetry Bar (replaces the duplicate section title below the logo).
+ * Top row: Selected Matchday & Calendar Date, Fixture/League slate summary, live sync telemetry dot, live/upcoming pill, and refresh button.
+ * Bottom row: Tier-2 Secondary Surface Controls ("Favorite Teams & Leagues", "Link IPTV / IPTV Ready") + 4-segment brand spectrum bar.
  */
 @Composable
 private fun KickOffArenaHeaderCard(
     activePlaylist: PlaylistEntity?,
+    selectedMatchDay: MatchDayTab = MatchDayTab.TODAY,
+    totalVisibleMatchesCount: Int = 0,
+    activeLeaguesInSlate: Int = 0,
+    enabledLeaguesCount: Int = 10,
+    upcomingMatchesCount: Int = 0,
     favoriteTeamsCount: Int,
     liveMatchesCount: Int,
     isLoadingMatches: Boolean,
@@ -773,6 +792,23 @@ private fun KickOffArenaHeaderCard(
     onManagePlaylists: () -> Unit,
     onSyncPlaylist: () -> Unit
 ) {
+    val dayTitle = remember(selectedMatchDay) {
+        selectedMatchDay.getDynamicTitle().uppercase()
+    }
+    val dayDate = remember(selectedMatchDay) {
+        selectedMatchDay.getDynamicDateSubtitle().uppercase()
+    }
+    val slateSummaryText = remember(totalVisibleMatchesCount, activeLeaguesInSlate) {
+        when {
+            totalVisibleMatchesCount > 0 && activeLeaguesInSlate > 0 ->
+                "$totalVisibleMatchesCount GAMES • $activeLeaguesInSlate ${if (activeLeaguesInSlate == 1) "LEAGUE" else "LEAGUES"}"
+            totalVisibleMatchesCount > 0 ->
+                "$totalVisibleMatchesCount FIXTURES"
+            else ->
+                "MENA TV GUIDE"
+        }
+    }
+
     Card(
         colors = CardDefaults.cardColors(containerColor = KickoffOceanSurface),
         shape = RoundedCornerShape(14.dp),
@@ -804,7 +840,7 @@ private fun KickOffArenaHeaderCard(
                 )
                 .padding(horizontal = 12.dp, vertical = 9.dp)
         ) {
-            // Top Row: Title + Inline "AUTO-SYNC LIVE" Dot Indicator + Live Count + Ghost Refresh Icon
+            // Top Row: Matchday Date & Slate Telemetry + Auto-Sync Status + Live/Upcoming Pill + Refresh Icon
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
@@ -812,41 +848,62 @@ private fun KickOffArenaHeaderCard(
             ) {
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(7.dp),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
                     modifier = Modifier.weight(1f)
                 ) {
                     Icon(
-                        imageVector = Icons.Default.SportsSoccer,
-                        contentDescription = "KickOff Arena",
+                        imageVector = Icons.Default.CalendarMonth,
+                        contentDescription = "Active Matchday",
                         tint = KickoffTropicalTeal,
-                        modifier = Modifier.size(16.dp)
+                        modifier = Modifier.size(15.dp)
                     )
                     Text(
-                        text = "KICKOFF ARENA",
+                        text = "$dayTitle • $dayDate",
                         color = Color.White,
-                        fontSize = 12.sp,
+                        fontSize = 11.5.sp,
                         fontWeight = FontWeight.ExtraBold,
-                        letterSpacing = 0.6.sp,
+                        letterSpacing = 0.4.sp,
                         maxLines = 1,
                         softWrap = false
                     )
-                    // Clean non-button inline status indicator
+                    // Slate count & league breakdown pill
+                    Surface(
+                        color = KickoffTropicalTeal.copy(alpha = 0.14f),
+                        shape = RoundedCornerShape(50),
+                        border = BorderStroke(0.6.dp, KickoffTropicalTeal.copy(alpha = 0.40f))
+                    ) {
+                        Text(
+                            text = slateSummaryText,
+                            color = KickoffPeachCream,
+                            fontSize = 8.5.sp,
+                            fontWeight = FontWeight.ExtraBold,
+                            maxLines = 1,
+                            softWrap = false,
+                            modifier = Modifier.padding(horizontal = 7.dp, vertical = 2.dp)
+                        )
+                    }
+                    // Inline live sync status indicator
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(4.dp)
+                        horizontalArrangement = Arrangement.spacedBy(3.5.dp)
                     ) {
                         Box(
                             modifier = Modifier
-                                .size(6.dp)
+                                .size(5.5.dp)
                                 .clip(CircleShape)
                                 .background(
                                     if (liveScoreSyncState.isSyncingDelta) AmberGold else KickoffTropicalTeal
                                 )
                         )
                         Text(
-                            text = if (liveScoreSyncState.isSyncingDelta) "SYNCING LIVE..." else "AUTO-SYNC LIVE",
+                            text = when {
+                                liveScoreSyncState.isSyncingDelta -> "SYNCING..."
+                                liveScoreSyncState.lastSyncedTimeFormatted.isNotBlank() ->
+                                    "SYNC ${liveScoreSyncState.lastSyncedTimeFormatted}"
+                                else -> "GMT+1"
+                            },
                             color = ChampagneMuted,
-                            fontSize = 9.sp,
+                            fontSize = 8.5.sp,
                             fontWeight = FontWeight.SemiBold,
                             maxLines = 1,
                             softWrap = false
@@ -861,7 +918,8 @@ private fun KickOffArenaHeaderCard(
                     if (liveMatchesCount > 0) {
                         Surface(
                             color = LiveCrimson.copy(alpha = 0.2f),
-                            shape = RoundedCornerShape(50)
+                            shape = RoundedCornerShape(50),
+                            border = BorderStroke(0.6.dp, LiveCrimson.copy(alpha = 0.55f))
                         ) {
                             Row(
                                 verticalAlignment = Alignment.CenterVertically,
@@ -883,6 +941,22 @@ private fun KickOffArenaHeaderCard(
                                     softWrap = false
                                 )
                             }
+                        }
+                    } else if (upcomingMatchesCount > 0) {
+                        Surface(
+                            color = Color.White.copy(alpha = 0.06f),
+                            shape = RoundedCornerShape(50),
+                            border = BorderStroke(0.6.dp, Color.White.copy(alpha = 0.14f))
+                        ) {
+                            Text(
+                                text = "$upcomingMatchesCount UPCOMING",
+                                color = Champagne,
+                                fontSize = 8.5.sp,
+                                fontWeight = FontWeight.Bold,
+                                maxLines = 1,
+                                softWrap = false,
+                                modifier = Modifier.padding(horizontal = 7.dp, vertical = 2.dp)
+                            )
                         }
                     }
 
@@ -915,7 +989,7 @@ private fun KickOffArenaHeaderCard(
 
             Spacer(modifier = Modifier.height(7.dp))
 
-            // Bottom Row: Tier 2 Secondary Surface Controls (bg-white/5, no glowing borders)
+            // Bottom Row: Tier 2 Secondary Surface Controls with live team/league & IPTV telemetry
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -948,9 +1022,9 @@ private fun KickOffArenaHeaderCard(
                         Spacer(modifier = Modifier.width(6.dp))
                         Text(
                             text = if (favoriteTeamsCount > 0) {
-                                "Teams ($favoriteTeamsCount) & Leagues"
+                                "Teams ($favoriteTeamsCount) • $enabledLeaguesCount Leagues"
                             } else {
-                                "Favorite Teams & Leagues"
+                                "Favorite Teams & Leagues ($enabledLeaguesCount)"
                             },
                             color = Color.White,
                             fontSize = 11.sp,
@@ -977,6 +1051,13 @@ private fun KickOffArenaHeaderCard(
                             .height(30.dp),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
+                        Box(
+                            modifier = Modifier
+                                .size(6.dp)
+                                .clip(CircleShape)
+                                .background(if (activePlaylist != null) CatchupGreen else AmberGold)
+                        )
+                        Spacer(modifier = Modifier.width(5.dp))
                         Icon(
                             imageVector = Icons.Default.Dns,
                             contentDescription = null,
@@ -985,7 +1066,7 @@ private fun KickOffArenaHeaderCard(
                         )
                         Spacer(modifier = Modifier.width(5.dp))
                         Text(
-                            text = activePlaylist?.let { "IPTV Ready" } ?: "Link IPTV",
+                            text = activePlaylist?.name?.take(12)?.ifBlank { "IPTV Ready" } ?: "Link IPTV",
                             color = PaleGold,
                             fontSize = 11.sp,
                             fontWeight = FontWeight.SemiBold,
@@ -2242,6 +2323,10 @@ private fun SplitBroadcasterWatchCapsule(
         ),
         label = "split_watch_capsule_scale"
     )
+    val isBeinSourceChannel = remember(broadcasterName) {
+        val lower = broadcasterName.lowercase()
+        lower.contains("bein") || lower.contains("be in")
+    }
     val isUltraHdChannel = remember(broadcasterName) {
         val upper = broadcasterName.uppercase()
         upper.contains("4K") || upper.contains("MAX") || upper.contains("PREMIUM") || upper.contains("1 ")
@@ -2272,7 +2357,7 @@ private fun SplitBroadcasterWatchCapsule(
             verticalAlignment = Alignment.CenterVertically,
             modifier = Modifier.padding(start = 10.dp, end = 3.dp, top = 3.dp, bottom = 3.dp)
         ) {
-            // Stage 1: MENA Broadcaster Network Pod + Quality Micro-Tag
+            // Stage 1: MENA Broadcaster Network Pod (Exact Source Name for beIN Sports)
             Row(
                 verticalAlignment = Alignment.CenterVertically,
                 modifier = Modifier
@@ -2297,24 +2382,26 @@ private fun SplitBroadcasterWatchCapsule(
                     fontWeight = FontWeight.Bold,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
-                    modifier = Modifier.widthIn(max = 112.dp)
+                    modifier = Modifier.widthIn(max = if (isBeinSourceChannel) 148.dp else 118.dp)
                 )
-                Spacer(modifier = Modifier.width(5.dp))
-                Surface(
-                    color = Color.Black.copy(alpha = 0.35f),
-                    shape = RoundedCornerShape(4.dp),
-                    border = BorderStroke(
-                        0.6.dp,
-                        if (isUltraHdChannel) AmberGold.copy(alpha = 0.7f) else badgeText.copy(alpha = 0.35f)
-                    )
-                ) {
-                    Text(
-                        text = if (isUltraHdChannel) "4K" else "HD",
-                        color = if (isUltraHdChannel) AmberGold else badgeText,
-                        fontSize = 8.sp,
-                        fontWeight = FontWeight.ExtraBold,
-                        modifier = Modifier.padding(horizontal = 4.dp, vertical = 1.dp)
-                    )
+                if (!isBeinSourceChannel) {
+                    Spacer(modifier = Modifier.width(5.dp))
+                    Surface(
+                        color = Color.Black.copy(alpha = 0.35f),
+                        shape = RoundedCornerShape(4.dp),
+                        border = BorderStroke(
+                            0.6.dp,
+                            if (isUltraHdChannel) AmberGold.copy(alpha = 0.7f) else badgeText.copy(alpha = 0.35f)
+                        )
+                    ) {
+                        Text(
+                            text = if (isUltraHdChannel) "4K" else "HD",
+                            color = if (isUltraHdChannel) AmberGold else badgeText,
+                            fontSize = 8.sp,
+                            fontWeight = FontWeight.ExtraBold,
+                            modifier = Modifier.padding(horizontal = 4.dp, vertical = 1.dp)
+                        )
+                    }
                 }
             }
 

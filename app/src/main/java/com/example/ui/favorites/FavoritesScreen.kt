@@ -186,7 +186,7 @@ fun FavoritesScreen(
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         Column(modifier = Modifier.weight(1f)) {
-                            // Unboxed inline eyebrow indicator
+                            // Unboxed inline eyebrow indicator with active server & linker status
                             Row(verticalAlignment = Alignment.CenterVertically) {
                                 Icon(
                                     imageVector = Icons.Default.Verified,
@@ -196,22 +196,23 @@ fun FavoritesScreen(
                                 )
                                 Spacer(modifier = Modifier.width(5.dp))
                                 Text(
-                                    text = "BOTANICAL SAGE • VIP VAULT",
+                                    text = "${activePlaylist.name.uppercase()} • KICKOFF WATCH LINKER",
                                     color = FavoritesSagePrimary,
                                     fontSize = 9.5.sp,
                                     fontWeight = FontWeight.ExtraBold,
-                                    letterSpacing = 0.6.sp
+                                    letterSpacing = 0.6.sp,
+                                    maxLines = 1
                                 )
                             }
                             Spacer(modifier = Modifier.height(4.dp))
                             Text(
-                                text = "VIP Favorites & KickOff Linker",
+                                text = "Starred Channels, Cinema & Series",
                                 color = Color.White,
-                                fontSize = 17.sp,
+                                fontSize = 16.sp,
                                 fontWeight = FontWeight.ExtraBold
                             )
                             Text(
-                                text = "Starred Live TV channels power instant 1-tap playback in KickOff Arena",
+                                text = "Saved Live TV channels automatically pair with KickOff Arena 'Watch' buttons",
                                 color = FavoritesSagePrimary.copy(alpha = 0.88f),
                                 fontSize = 11.sp
                             )

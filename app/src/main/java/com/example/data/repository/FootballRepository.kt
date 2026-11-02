@@ -123,6 +123,7 @@ data class FootballMatch(
     val beinChannelNumberHint: String,
     val menaProviderName: String = "beIN Sports", // e.g., "beIN Sports", "Arryadia TNT", "SSC Sports", "AD Sports", "SNRT"
     val fallbackMenaChannels: List<String> = emptyList(), // Alternate MENA broadcasters if primary doesn't offer the game
+    val sourceTvChannels: List<String> = emptyList(), // Exact TV channel names as provided directly by the upstream source
     val stageOrRound: String = "Regular Season",
     val sportsDbEventId: String = "",
     val espnEventId: String = "",
@@ -153,7 +154,8 @@ internal data class NormalizedChannelProfile(
     val normalizedText: String,
     val canonicalProvider: String,
     val channelNumbers: List<String>,
-    val subBrandTokens: Set<String>
+    val subBrandTokens: Set<String>,
+    val canonicalKey: String = ""
 )
 
 data class LiveScoreSyncState(
@@ -791,18 +793,33 @@ class FootballRepository(
         } else {
             badgeAndTvSource.stadiumName
         }
-        val mergedFallbacks = (primaryLive.fallbackMenaChannels + badgeAndTvSource.fallbackMenaChannels)
+        val mergedFallbacks = deduplicateMenaChannelOptions(
+            primaryLive.fallbackMenaChannels + badgeAndTvSource.fallbackMenaChannels
+        )
+        val mergedSourceTv = (primaryLive.sourceTvChannels + badgeAndTvSource.sourceTvChannels)
             .map { it.trim() }
             .filter { it.isNotBlank() }
             .distinct()
 
+        // If badgeAndTvSource carried an explicit source TV channel (or primaryLive only had a generic placeholder),
+        // preserve the source TV channel on the merged record.
+        val resolvedBeinChannel = when {
+            primaryLive.sourceTvChannels.isNotEmpty() -> primaryLive.sourceTvChannels.first()
+            badgeAndTvSource.sourceTvChannels.isNotEmpty() -> badgeAndTvSource.sourceTvChannels.first()
+            isGenericPlaceholderMenaChannel(primaryLive.beinChannel) && !isGenericPlaceholderMenaChannel(badgeAndTvSource.beinChannel) ->
+                badgeAndTvSource.beinChannel
+            else -> primaryLive.beinChannel
+        }
+
         return primaryLive.copy(
+            beinChannel = resolvedBeinChannel,
             homeTeamBadge = bestHomeBadge,
             awayTeamBadge = bestAwayBadge,
             stadiumName = resolvedStadium,
             sportsDbEventId = resolvedEventId,
             espnEventId = resolvedEspnId,
             fallbackMenaChannels = mergedFallbacks,
+            sourceTvChannels = mergedSourceTv,
             halfTimeScore = primaryLive.halfTimeScore ?: badgeAndTvSource.halfTimeScore,
             fullTimeScore = primaryLive.fullTimeScore ?: badgeAndTvSource.fullTimeScore,
             goalScorersSummary = primaryLive.goalScorersSummary ?: badgeAndTvSource.goalScorersSummary,
@@ -900,7 +917,7 @@ class FootballRepository(
         val defaultChannelNum = extractChannelNumberOrDefault(defaultSlotPrimary, (slotIndex % 9) + 1)
         val defaultBeinTier = extractBeinTierOrDefault(defaultSlotPrimary, if (isMarquee && slotIndex == 0) "4K" else "Max")
 
-        // 1. Channels from TheSportsDB `eventstv.php`
+        // 1. Channels from TheSportsDB `eventstv.php` (beIN Sports names preserved EXACTLY as from source)
         val menaChannelsFromTvDb = matchingTvEntries
             .map { it.channelName.trim() }
             .filter { isMenaBroadcasterChannel(it) }
@@ -914,7 +931,18 @@ class FootballRepository(
             .distinct()
             .sortedBy { menaBroadcasterPriorityRank(it, match.tournamentId) }
 
-        // 2. Check if match already carried a specific upstream TV channel (e.g. from strTVStation / SportAPI / ESPN)
+        // 2. Channels explicitly provided by upstream match payload (`strTVStation`, `tv_channel`, `broadcast`, or explicit custom channel)
+        val upstreamSourceChannels = match.sourceTvChannels
+            .map { it.trim() }
+            .filter { it.isNotBlank() && isMenaBroadcasterChannel(it) && !isGenericPlaceholderMenaChannel(it) }
+            .map { rawCh ->
+                formatCanonicalMenaChannelName(
+                    rawChannel = rawCh,
+                    defaultChannelNum = defaultChannelNum,
+                    defaultBeinTier = defaultBeinTier
+                )
+            }
+
         val existingSpecificChannels = (listOf(match.beinChannel) + match.fallbackMenaChannels)
             .map { it.trim() }
             .filter { it.isNotBlank() && isMenaBroadcasterChannel(it) && !isGenericPlaceholderMenaChannel(it) }
@@ -926,10 +954,32 @@ class FootballRepository(
                 )
             }
 
-        val combinedChannels = (menaChannelsFromTvDb + slotFallbacks + existingSpecificChannels)
-            .map { it.trim() }
-            .filter { it.isNotBlank() }
-            .distinct()
+        // If `match.beinChannel` was explicitly set to a custom source channel (not from default fallback pools),
+        // treat it as a source channel so its exact name is preserved first.
+        val isCustomExplicitBein = match.beinChannel.isNotBlank() &&
+            !isGenericPlaceholderMenaChannel(match.beinChannel) &&
+            isMenaBroadcasterChannel(match.beinChannel) &&
+            match.beinChannel.trim() !in DEFAULT_GENERATED_POOL_CHANNELS
+
+        val prioritizedSourceChannels = buildList {
+            addAll(menaChannelsFromTvDb)
+            addAll(upstreamSourceChannels)
+            if (isCustomExplicitBein) {
+                add(
+                    formatCanonicalMenaChannelName(
+                        rawChannel = match.beinChannel,
+                        defaultChannelNum = defaultChannelNum,
+                        defaultBeinTier = defaultBeinTier
+                    )
+                )
+            }
+        }
+
+        // Deduplicate equivalent channel variations (e.g. 'beIN Sports max 5' vs 'beIN Sports 5 Max')
+        // while preserving the exact source channel name first.
+        val combinedChannels = deduplicateMenaChannelOptions(
+            prioritizedSourceChannels + slotFallbacks + existingSpecificChannels
+        )
 
         val primaryChannel = combinedChannels.firstOrNull() ?: defaultSlotPrimary
         val fallbackList = combinedChannels.drop(1)
@@ -952,6 +1002,7 @@ class FootballRepository(
             beinChannelNumberHint = extractBeinHint(primaryChannel),
             menaProviderName = providerName,
             fallbackMenaChannels = fallbackList,
+            sourceTvChannels = (menaChannelsFromTvDb + upstreamSourceChannels).distinct(),
             halfTimeScore = realHt,
             fullTimeScore = realFt
         )
@@ -1019,10 +1070,10 @@ class FootballRepository(
     }
 
     /**
-     * Formats any MENA broadcaster channel into the canonical display format requested by the user:
+     * Formats MENA broadcaster channels:
      * - **If beIN Sports provides the game**:
-     *   Returns `'beIN Sports X Y'` where `'X'` is the channel number (`1, 2, 3...`) and `'Y'` is the variant
-     *   (`4K`, `Max`, `Extra`, `Premium`, `HD`, `English`, `French`, `AFC`).
+     *   Preserves and displays the name of the channel from the source **EXACTLY as it is** (`trimmed`),
+     *   e.g. `"beIN Sports max 5"`, `"beIN Sports HD 2 Max"`, `"beIN Sports Xtra 1"`, `"beIN Sports 1 4K"`.
      * - **If beIN Sports does NOT provide the game**:
      *   Returns the authentic MENA broadcaster channel name (`AD Sports Premium 1`, `STARZPLAY`,
      *   `Arryadia HD`, `Arryadia TNT`, `Al Aoula HD`, `Tamazight HD`, `SSC 1 HD`, `SSC Extra 1`, `Alkass One HD`, `ON Time Sports 1`, etc.).
@@ -1036,11 +1087,9 @@ class FootballRepository(
         if (trimmed.isBlank()) return "beIN Sports $defaultChannelNum $defaultBeinTier"
         val lower = trimmed.lowercase(Locale.ROOT)
 
-        // 1. Check if beIN Sports is the broadcaster
+        // 1. If beIN Sports provides the game: display the channel name from the source EXACTLY as it is
         if (lower.contains("bein") || lower.contains("be in")) {
-            val tier = extractBeinTierOrDefault(trimmed, defaultBeinTier)
-            val num = extractChannelNumberOrDefault(trimmed, defaultChannelNum)
-            return "beIN Sports $num $tier"
+            return trimmed
         }
 
         // 2. Non-beIN MENA Broadcasters — preserve/normalize real channel name for the MENA Zone
@@ -1738,7 +1787,7 @@ class FootballRepository(
                     )
                 }
 
-            val combinedMenaChannels = (upstreamMenaChannels + smartFallbacks).distinct()
+            val combinedMenaChannels = deduplicateMenaChannelOptions(upstreamMenaChannels + smartFallbacks)
             val primaryChannel = combinedMenaChannels.firstOrNull() ?: matchedTournament.defaultBeinPool.first()
 
             results.add(
@@ -1768,6 +1817,7 @@ class FootballRepository(
                     beinChannelNumberHint = extractBeinHint(primaryChannel),
                     menaProviderName = detectMenaProviderFromLabel(primaryChannel),
                     fallbackMenaChannels = combinedMenaChannels.drop(1),
+                    sourceTvChannels = upstreamMenaChannels,
                     stageOrRound = "${matchedTournament.name} • SportAPI.ai Live",
                     halfTimeScore = htScoreStr,
                     fullTimeScore = if (matchStatus == MatchStatus.FINISHED && homeScore != null && awayScore != null) {
@@ -1996,7 +2046,7 @@ class FootballRepository(
                     )
                 }
 
-            val combinedMenaChannels = (eventLevelMenaChannels + smartFallbacks).distinct()
+            val combinedMenaChannels = deduplicateMenaChannelOptions(eventLevelMenaChannels + smartFallbacks)
             val primaryChannel = combinedMenaChannels.firstOrNull()
                 ?: matchedTournament.defaultBeinPool[i % matchedTournament.defaultBeinPool.size]
 
@@ -2025,6 +2075,7 @@ class FootballRepository(
                     beinChannelNumberHint = extractBeinHint(primaryChannel),
                     menaProviderName = detectMenaProviderFromLabel(primaryChannel),
                     fallbackMenaChannels = combinedMenaChannels.drop(1),
+                    sourceTvChannels = eventLevelMenaChannels,
                     stageOrRound = if (roundNum.isNotBlank()) "Matchday $roundNum" else matchedTournament.name,
                     sportsDbEventId = idEvent,
                     fullTimeScore = if (status == MatchStatus.FINISHED && homeScore != null && awayScore != null) "$homeScore - $awayScore" else null
@@ -2429,10 +2480,42 @@ class FootballRepository(
 
 
     /**
+     * Checks whether two channel names represent the exact same broadcaster & channel
+     * across naming variations (e.g., `'beIN Sports max 5'`, `'beIN Sports max 05'`,
+     * `'beIN Sports 5 max'`, `'beIN Sports 05 max'`).
+     */
+    fun areEquivalentMenaChannels(channelA: String, channelB: String): Boolean {
+        if (channelA.equals(channelB, ignoreCase = true)) return true
+        val profileA = normalizeChannelNameForFavoritesMatch(channelA)
+        val profileB = normalizeChannelNameForFavoritesMatch(channelB)
+        if (profileA.canonicalProvider.isBlank() || profileB.canonicalProvider.isBlank()) return false
+        return profileA.canonicalKey == profileB.canonicalKey
+    }
+
+    /**
+     * Deduplicates a list of channel options by canonical channel equivalence while preserving
+     * the first (source-authoritative) label for each unique channel.
+     */
+    fun deduplicateMenaChannelOptions(channels: List<String>): List<String> {
+        val result = mutableListOf<String>()
+        for (raw in channels) {
+            val trimmed = raw.trim()
+            if (trimmed.isBlank()) continue
+            if (result.none { existing -> areEquivalentMenaChannels(existing, trimmed) }) {
+                result.add(trimmed)
+            }
+        }
+        return result
+    }
+
+    /**
      * Strict Favorites-Only MENA Broadcaster Channel Matcher.
      *
      * Searches EXCLUSIVELY within the user's saved **Favorites** channels list (`isFavorite = true`).
      * Does NOT search the full Xtream catalog.
+     * Recognizes naming, word-order, and zero-padded number variations (such as `'beIN Sports max 5'`,
+     * `'beIN Sports max 05'`, `'beIN Sports 5 max'`, and `'beIN Sports 05 max'`) as the same channel,
+     * and updates `availableMenaChannelOptions` accordingly.
      */
     suspend fun findMenaChannelsWithFavoritesPriority(
         playlistId: Long,
@@ -2440,10 +2523,24 @@ class FootballRepository(
         overrideChannelLabel: String? = null
     ): MenaChannelMatchResult = withContext(Dispatchers.IO) {
         val targetChannel = (overrideChannelLabel ?: match.beinChannel).trim()
-        val allOptions = (listOf(match.beinChannel) + match.fallbackMenaChannels)
-            .map { it.trim() }
-            .filter { it.isNotBlank() }
-            .distinct()
+        val baseOptions = deduplicateMenaChannelOptions(listOf(match.beinChannel) + match.fallbackMenaChannels)
+
+        // Update the corresponding option in availableMenaChannelOptions if targetChannel is a recognized variation
+        // (e.g., 'beIN Sports 05 max' vs 'beIN Sports max 5') so the active option chip stays in sync.
+        val updatedOptions = if (targetChannel.isBlank()) {
+            baseOptions
+        } else {
+            var replacedEquivalent = false
+            val mapped = baseOptions.map { option ->
+                if (areEquivalentMenaChannels(option, targetChannel)) {
+                    replacedEquivalent = true
+                    targetChannel
+                } else {
+                    option
+                }
+            }
+            if (replacedEquivalent) mapped else (listOf(targetChannel) + baseOptions).distinct()
+        }
 
         // Search ONLY within the user's saved Favorites channels list
         val allFavoriteStreams = streamDao.getFavoriteLiveStreamsOnce(playlistId)
@@ -2456,50 +2553,79 @@ class FootballRepository(
             resolvedChannelLabel = targetChannel,
             resolvedProviderName = resolvedProvider,
             usedMenaFallbackProvider = overrideChannelLabel != null &&
-                !overrideChannelLabel.equals(match.beinChannel, ignoreCase = true),
-            availableMenaChannelOptions = allOptions
+                !areEquivalentMenaChannels(targetChannel, match.beinChannel),
+            availableMenaChannelOptions = updatedOptions
         )
     }
 
     /**
      * Normalizes both a Kickoff channel name and a Favorite channel's name before comparing:
      * 1. Converts to lowercase and strips diacritics.
-     * 2. Ignores IPTV category prefixes, brackets, and quality/language tags:
-     *    `AR:`, `MA:`, `VIP`, `|`, `┃`, `[HEVC]`, `4K`, `FHD`, `UHD`, `HD`, `SD`, `H265`, `TNT`, `English`, `French`.
-     * 3. Supports common MENA aliases:
-     *    - `"bein sports"` <-> `"bein sport"` / `"bein"`
-     *    - `"arryadia"` <-> `"riyadia"` / `"snrt"` / `"al aoula"`
-     *    - `"ssc"` <-> `"ssc sport"`
-     * 4. Extracts channel numbers for strict word-boundary (`\b1\b`, `\b4\b`) matching.
+     * 2. Ignores IPTV category prefixes, brackets, and quality/codec/language tags:
+     *    `AR:`, `MA:`, `VIP`, `|`, `┃`, `[HEVC]`, `4K`, `FHD`, `UHD`, `HD`, `SD`, `H265`, `TNT`.
+     * 3. Splits attached letter-digit tokens (e.g. `max05` -> `max 05`, `05max` -> `05 max`, `hd01` -> `hd 01`).
+     * 4. Canonicalizes zero-padded channel numbers (`05` -> `5`, `01` -> `1`) and word order so variations like:
+     *    - `'beIN Sports max 5'`
+     *    - `'beIN Sports max 05'`
+     *    - `'beIN Sports 5 max'`
+     *    - `'beIN Sports 05 max'`
+     *    produce the exact same `NormalizedChannelProfile` and `canonicalKey`.
      */
     internal fun normalizeChannelNameForFavoritesMatch(rawName: String): NormalizedChannelProfile {
         val lower = Normalizer.normalize(rawName, Normalizer.Form.NFD)
             .replace(Regex("\\p{InCombiningDiacriticalMarks}+"), "")
             .lowercase(Locale.ROOT)
 
-        // Strip IPTV category prefixes, brackets, delimiters, and quality/codec/language tags BEFORE extracting channel numbers
-        // so tags like "4K", "H265", "1080p", "720p" are never mistaken for channel numbers
-        val cleaned = lower
+        // 1. Strip IPTV category prefixes, brackets, delimiters, and codec/resolution tags BEFORE extracting channel numbers
+        val step1 = lower
             .replace("[hevc]", " ")
+            .replace(Regex("""\b([hx]\.?26[45]|5\.1|2\.0)\b"""), " ")
             .replace(Regex("""\b(ar|ma|mar|dz|tn|eg|ksa|ae|qa|fr|en|uk|us)\s*[:|┃\-]"""), " ")
-            .replace(Regex("""[|┃\[\]()/\\:_\-+]+"""), " ")
+            .replace(Regex("""[|┃\[\]()/\\:_\-+.,]+"""), " ")
             .replace(
-                Regex("""\b(hevc|4k|fhd|uhd|hd|sd|h265|h264|x265|x264|1080p|1080i|1080|720p|720|50fps|60fps|tnt|vip|raw|live|mena|english|french|ar|ma|mar)\b"""),
+                Regex("""\b(hevc|4k|fhd|uhd|hd|sd|h265|h264|x265|x264|1080p|1080i|1080|720p|720|480p|480|50fps|60fps|tnt|vip|raw|live|mena|english|french|ar|ma|mar)\b"""),
                 " "
             )
-            // Common MENA alias normalization
+
+        // 2. Separate attached letter-digit boundaries (e.g., "max05" -> "max 05", "05max" -> "05 max", "hd01" -> "hd 01")
+        val step2 = step1
+            .replace(Regex("""([a-z])(\d)"""), "$1 $2")
+            .replace(Regex("""(\d)([a-z])"""), "$1 $2")
+            .replace(
+                Regex("""\b(hevc|4k|fhd|uhd|hd|sd|tnt|vip|raw|live|mena|english|french|ar|ma|mar)\b"""),
+                " "
+            )
+
+        // 3. Common MENA provider alias & sub-brand synonym normalization + zero-padded number canonicalization
+        val cleaned = step2
             .replace(Regex("""\bbe\s*in\s*sports?\b"""), "bein")
             .replace(Regex("""\bbein\s*sports?\b"""), "bein")
+            .replace(Regex("""\bbe\s*in\b"""), "bein")
             .replace(Regex("""\b(al\s*riyadia|arriyadia|riyadia|snrt|al\s*aoula)\b"""), "arryadia")
             .replace(Regex("""\bssc\s*sports?\b"""), "ssc")
             .replace(Regex("""\b(abu\s*dhabi\s*sports?|ad\s*sports?)\b"""), "adsport")
-            .replace(Regex("""\bal\s*kass\b"""), "alkass")
+            .replace(Regex("""\bal\s*kass(\s*sports?)?\b"""), "alkass")
             .replace(Regex("""\bon\s*time(\s*sports?)?\b"""), "ontime")
             .replace(Regex("""\bstarz\s*play(\s*sports?)?\b"""), "starzplay")
             .replace(Regex("""\bthmanyah(\s*sports?)?\b"""), "thmanyah")
             .replace(Regex("""\bdubai\s*sports?\b"""), "dubaisport")
+            // Sub-brand synonym normalization
+            .replace(Regex("""\b(xtra|extra)\b"""), "extra")
+            .replace(Regex("""\b(maxx|max)\b"""), "max")
+            .replace(Regex("""\b(prem|premium)\b"""), "premium")
+            // Number word normalization
             .replace(Regex("""\bone\b"""), "1")
             .replace(Regex("""\btwo\b"""), "2")
+            .replace(Regex("""\bthree\b"""), "3")
+            .replace(Regex("""\bfour\b"""), "4")
+            .replace(Regex("""\bfive\b"""), "5")
+            .replace(Regex("""\bsix\b"""), "6")
+            .replace(Regex("""\bseven\b"""), "7")
+            .replace(Regex("""\beight\b"""), "8")
+            .replace(Regex("""\bnine\b"""), "9")
+            .replace(Regex("""\bten\b"""), "10")
+            // Strip leading zeros on channel numbers ("05" -> "5", "01" -> "1", while "10" stays "10")
+            .replace(Regex("""\b0+([1-9]\d*)\b"""), "$1")
             .replace(Regex("""\s+"""), " ")
             .trim()
 
@@ -2520,27 +2646,36 @@ class FootballRepository(
 
         val numbers = Regex("""\b(\d+)\b""")
             .findAll(cleaned)
-            .map { it.groupValues[1] }
+            .map { matchResult ->
+                val rawDigits = matchResult.groupValues[1]
+                rawDigits.trimStart('0').ifEmpty { "0" }
+            }
+            .distinct()
             .toList()
 
-        val subBrands = setOf("premium", "extra", "xtra", "max", "afc")
+        val subBrands = setOf("premium", "extra", "max", "afc")
             .filter { token -> Regex("""\b$token\b""").containsMatchIn(cleaned) }
             .toSet()
+
+        val canonicalKey = "${canonicalProvider}|nums=${numbers.sorted().joinToString(",")}|brands=${subBrands.sorted().joinToString(",")}"
 
         return NormalizedChannelProfile(
             normalizedText = cleaned,
             canonicalProvider = canonicalProvider,
             channelNumbers = numbers,
-            subBrandTokens = subBrands
+            subBrandTokens = subBrands,
+            canonicalKey = canonicalKey
         )
     }
 
     /**
      * Strictly matches the Kickoff `channelLabel` against the user's saved `favoriteStreams`:
      * - Requires matching normalized MENA provider alias (`bein`, `arryadia`, `ssc`, `adsport`, `starzplay`, etc.).
-     * - If the Kickoff channel name contains a number (e.g. `1` in `beIN Sports 1 4K` or `4` in `beIN Sports 4 Max`),
-     *   enforces strict word-boundary matching (`\b1\b`, `\b4\b`) on the normalized Favorite name AND exact number list equality
-     *   so `"beIN Sports 1 4K"` only matches channel `1` and NEVER falsely matches `"beIN Sports 10"`, `"beIN Sports 11"`, or `"beIN Sports 4"`.
+     * - Recognizes zero-padded numbers (`05` vs `5`) and word-order variations (`beIN Sports max 5`,
+     *   `beIN Sports max 05`, `beIN Sports 5 max`, `beIN Sports 05 max`) as the exact same channel.
+     * - Enforces strict word-boundary matching (`\b5\b`, `\b1\b`, `\b4\b`) on the canonicalized Favorite name
+     *   AND exact number list equality so `"beIN Sports 1 4K"` only matches channel `1` (`1` or `01`) and NEVER
+     *   falsely matches `"beIN Sports 10"`, `"beIN Sports 11"`, or `"beIN Sports 4"`.
      */
     internal fun matchFavoriteChannelsStrictly(
         favoriteStreams: List<StreamEntity>,
@@ -2550,6 +2685,12 @@ class FootballRepository(
         val targetProfile = normalizeChannelNameForFavoritesMatch(channelLabel)
         if (targetProfile.canonicalProvider.isBlank()) return emptyList()
 
+        data class RankedFavoriteMatch(
+            val stream: StreamEntity,
+            val score: Int,
+            val hasExactSubBrandMatch: Boolean
+        )
+
         val matchedWithRank = favoriteStreams.mapNotNull { favStream ->
             val favProfile = normalizeChannelNameForFavoritesMatch(favStream.name)
 
@@ -2558,7 +2699,7 @@ class FootballRepository(
                 return@mapNotNull null
             }
 
-            // 2. Strict Channel Number Check using word-boundary regex (\b1\b, \b4\b)
+            // 2. Strict Channel Number Check using word-boundary regex on zero-normalized numbers (\b1\b, \b5\b)
             if (targetProfile.channelNumbers.isNotEmpty()) {
                 val allNumbersMatchWordBoundary = targetProfile.channelNumbers.all { num ->
                     Regex("""\b${Regex.escape(num)}\b""").containsMatchIn(favProfile.normalizedText)
@@ -2571,12 +2712,8 @@ class FootballRepository(
                 // otherwise for specific numbered channels, step 2 above already enforced \bN\b.
             }
 
-            // 3. Sub-brand check (e.g. Premium / Extra / Xtra / Max / AFC)
+            // 3. Sub-brand check (e.g. Premium / Extra / Max / AFC)
             if (targetProfile.canonicalProvider == "bein") {
-                // For beIN Sports ('beIN Sports X Y'), if the Favorite stream explicitly specifies a DIFFERENT sub-brand
-                // (e.g. target is "beIN Sports 1 HD" with no sub-brand, or "beIN Sports 1 Max", while fav is "beIN Sports 1 Extra"), reject.
-                // However, if the user's Favorite stream is named "AR: beIN Sports 1 4K [HEVC]" (subBrandTokens empty),
-                // allow it to match "beIN Sports 1 Max" / "beIN Sports 1 4K" while boosting exact sub-brand matches first.
                 if (targetProfile.subBrandTokens.isEmpty() &&
                     favProfile.subBrandTokens.isNotEmpty() &&
                     targetProfile.channelNumbers.isNotEmpty()
@@ -2603,24 +2740,38 @@ class FootballRepository(
                 }
             }
 
+            val exactSubBrand = targetProfile.subBrandTokens.isNotEmpty() &&
+                favProfile.subBrandTokens.containsAll(targetProfile.subBrandTokens)
+
             // Rank matched Favorites by sub-brand exactness + video quality: 4K/UHD -> FHD/1080 -> HD -> SD
             val lowerRaw = favStream.name.lowercase(Locale.ROOT)
             var qualityScore = 100
-            if (targetProfile.subBrandTokens.isNotEmpty() &&
-                favProfile.subBrandTokens.containsAll(targetProfile.subBrandTokens)
-            ) {
+            if (exactSubBrand) {
                 qualityScore += 40
             }
             if (lowerRaw.contains("4k") || lowerRaw.contains("uhd")) qualityScore += 30
             else if (lowerRaw.contains("fhd") || lowerRaw.contains("1080")) qualityScore += 20
             else if (lowerRaw.contains("hd")) qualityScore += 10
 
-            favStream to qualityScore
+            RankedFavoriteMatch(
+                stream = favStream,
+                score = qualityScore,
+                hasExactSubBrandMatch = exactSubBrand
+            )
         }
 
-        return matchedWithRank
-            .sortedWith(compareByDescending<Pair<StreamEntity, Int>> { it.second }.thenBy { it.first.name })
-            .map { it.first }
+        // If the target specifies a sub-brand (e.g. 'max' in 'beIN Sports max 5') and the user has at least one
+        // Favorite stream with that exact sub-brand ('max 5', 'max 05', '5 max', '05 max'), return only those exact
+        // sub-brand matches so regular un-sub-branded channels (e.g. 'beIN Sports 5 HD') are not mixed in.
+        val filteredMatches = if (targetProfile.subBrandTokens.isNotEmpty() && matchedWithRank.any { it.hasExactSubBrandMatch }) {
+            matchedWithRank.filter { it.hasExactSubBrandMatch }
+        } else {
+            matchedWithRank
+        }
+
+        return filteredMatches
+            .sortedWith(compareByDescending<RankedFavoriteMatch> { it.score }.thenBy { it.stream.name })
+            .map { it.stream }
     }
 
     fun detectMenaProviderFromLabel(channelLabel: String): String {
@@ -2794,6 +2945,38 @@ class FootballRepository(
             "bahrain sport",
             "iraqia",
             "watania"
+        )
+
+        private val DEFAULT_GENERATED_POOL_CHANNELS = setOf(
+            "beIN Sports 1 4K",
+            "beIN Sports 1 Max",
+            "beIN Sports 2 Max",
+            "beIN Sports 3 Max",
+            "beIN Sports 4 Max",
+            "beIN Sports 5 Max",
+            "beIN Sports 6 Max",
+            "beIN Sports 1 Extra",
+            "beIN Sports 2 Extra",
+            "beIN Sports 3 Extra",
+            "beIN Sports 4 Extra",
+            "beIN Sports 5 Extra",
+            "beIN Sports 1 English",
+            "beIN Sports 1 French",
+            "beIN Sports 1 HD",
+            "Arryadia HD",
+            "Arryadia TNT",
+            "Al Aoula HD",
+            "Tamazight HD",
+            "SNRT Live",
+            "AD Sports Premium 1",
+            "AD Sports Premium 2",
+            "STARZPLAY",
+            "SSC 1 HD",
+            "SSC 2 HD",
+            "SSC Extra 1",
+            "SSC Extra 2",
+            "Thmanyah Sports 1",
+            "ON Time Sports 1"
         )
 
         val ALL_TOURNAMENTS = listOf(

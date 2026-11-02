@@ -441,17 +441,21 @@ class ExampleRobolectricTest {
         assertTrue(merged.homeTeamBadge.endsWith("/tiny"))
         assertTrue(merged.awayTeamBadge.endsWith("/tiny"))
 
-        // 4. Verify Smart MENA Fallback Map & Canonical 'beIN Sports X Y' / Non-beIN MENA Broadcaster Formatting
+        // 4. Verify Exact Source Channel Preservation for beIN Sports & Non-beIN MENA Broadcaster Formatting
         assertEquals(
             "beIN Sports 1 4K",
             footballRepository.formatCanonicalMenaChannelName("beIN Sports 1 4K")
         )
         assertEquals(
-            "beIN Sports 2 Max",
+            "beIN Sports max 5",
+            footballRepository.formatCanonicalMenaChannelName("beIN Sports max 5")
+        )
+        assertEquals(
+            "beIN Sports HD 2 Max",
             footballRepository.formatCanonicalMenaChannelName("beIN Sports HD 2 Max")
         )
         assertEquals(
-            "beIN Sports 1 Extra",
+            "beIN Sports Xtra 1",
             footballRepository.formatCanonicalMenaChannelName("beIN Sports Xtra 1")
         )
         assertEquals(
@@ -491,16 +495,19 @@ class ExampleRobolectricTest {
             footballRepository.getSmartMenaFallbackChannels("saudi_pro", "Roshn Saudi League", slotIndex = 0).first()
         )
 
-        // Verify slot-aware day resolution assigns distinct 'beIN Sports X Y' channels to simultaneous UCL games
+        // Verify slot-aware day resolution assigns distinct fallback channels when no source channel is present,
+        // and preserves the EXACT source channel name when beIN Sports provides the game
         val simultaneousUclGames = listOf(
             tsdbFixture.copy(matchId = "ucl_1", tournamentId = "uefa_cl", tournamentName = "UEFA Champions League", kickoffTimeFormatted = "18:45", homeTeamName = "Shakhtar Donetsk", awayTeamName = "Sporting CP", beinChannel = "beIN Sports 1 MENA"),
-            tsdbFixture.copy(matchId = "ucl_2", tournamentId = "uefa_cl", tournamentName = "UEFA Champions League", kickoffTimeFormatted = "18:45", homeTeamName = "Galatasaray", awayTeamName = "VfB Stuttgart", beinChannel = "beIN Sports 1 MENA")
+            tsdbFixture.copy(matchId = "ucl_2", tournamentId = "uefa_cl", tournamentName = "UEFA Champions League", kickoffTimeFormatted = "18:45", homeTeamName = "Galatasaray", awayTeamName = "VfB Stuttgart", beinChannel = "beIN Sports 1 MENA"),
+            tsdbFixture.copy(matchId = "ucl_3", tournamentId = "uefa_cl", tournamentName = "UEFA Champions League", kickoffTimeFormatted = "18:45", homeTeamName = "Lille", awayTeamName = "Monaco", beinChannel = "beIN Sports max 5", sourceTvChannels = listOf("beIN Sports max 5"))
         )
         val resolvedUclGames = footballRepository.resolveDayMatchesTvChannelsWithMenaPriority(simultaneousUclGames, emptyList())
         assertEquals("beIN Sports 1 4K", resolvedUclGames[0].beinChannel)
         assertEquals("beIN Sports 2 Max", resolvedUclGames[1].beinChannel)
+        assertEquals("beIN Sports max 5", resolvedUclGames[2].beinChannel)
 
-        // 5. Verify strict Favorites-only channel lookup with MENA aliases and word-boundary channel numbers
+        // 5. Verify strict Favorites-only channel lookup with variation recognition ('beIN Sports max 5' -> 'max 05', '5 max', '05 max')
         val playlistId = database.playlistDao().insertPlaylist(
             PlaylistEntity(
                 name = "MENA IPTV",
@@ -520,9 +527,30 @@ class ExampleRobolectricTest {
                 StreamEntity(playlistId = playlistId, streamId = 6L, categoryId = "1", name = "MA: Al Riyadia TNT HD", streamType = "live", isFavorite = true),
                 StreamEntity(playlistId = playlistId, streamId = 7L, categoryId = "1", name = "KSA: SSC Sport 1 UHD", streamType = "live", isFavorite = true),
                 // Non-favorite channel in full Xtream catalog — MUST NOT be matched
-                StreamEntity(playlistId = playlistId, streamId = 8L, categoryId = "1", name = "AR: beIN Sports 2 HD", streamType = "live", isFavorite = false)
+                StreamEntity(playlistId = playlistId, streamId = 8L, categoryId = "1", name = "AR: beIN Sports 2 HD", streamType = "live", isFavorite = false),
+                // Variations of 'beIN Sports max 5' in Favorites
+                StreamEntity(playlistId = playlistId, streamId = 9L, categoryId = "1", name = "beIN Sports max 05", streamType = "live", isFavorite = true),
+                StreamEntity(playlistId = playlistId, streamId = 10L, categoryId = "1", name = "beIN Sports 5 max", streamType = "live", isFavorite = true),
+                StreamEntity(playlistId = playlistId, streamId = 11L, categoryId = "1", name = "beIN Sports 05 max", streamType = "live", isFavorite = true),
+                StreamEntity(playlistId = playlistId, streamId = 12L, categoryId = "1", name = "AR: beIN Sports Max 5 FHD", streamType = "live", isFavorite = true),
+                // Different channel number with max — MUST NOT be matched for max 5
+                StreamEntity(playlistId = playlistId, streamId = 13L, categoryId = "1", name = "beIN Sports max 15", streamType = "live", isFavorite = true)
             )
         )
+
+        // Case A0: Provider channel 'beIN Sports max 5' recognizes 'beIN Sports max 05', 'beIN Sports 5 max', 'beIN Sports 05 max', and 'beIN Sports Max 5'
+        val matchBeinMax5 = footballRepository.findMenaChannelsWithFavoritesPriority(
+            playlistId = playlistId,
+            match = resolvedUclGames[2],
+            overrideChannelLabel = "beIN Sports max 5"
+        )
+        assertEquals("beIN Sports max 5", matchBeinMax5.resolvedChannelLabel)
+        assertTrue(matchBeinMax5.availableMenaChannelOptions.contains("beIN Sports max 5"))
+        // None of the duplicate equivalent variations ('beIN Sports 5 Max') should clutter options alongside 'beIN Sports max 5'
+        assertEquals(1, matchBeinMax5.availableMenaChannelOptions.count {
+            footballRepository.areEquivalentMenaChannels(it, "beIN Sports max 5")
+        })
+        assertEquals(setOf(9L, 10L, 11L, 12L), matchBeinMax5.favoriteMatches.map { it.streamId }.toSet())
 
         // Case A1: "beIN Sports 1 4K" must ONLY match channel 1 (4K and FHD), NEVER 10, 11, or 4
         val matchBein1 = footballRepository.findMenaChannelsWithFavoritesPriority(

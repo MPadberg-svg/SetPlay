@@ -209,7 +209,7 @@ fun LiveTvScreen(
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
                                 Column(modifier = Modifier.weight(1f)) {
-                                    // Unboxed inline status eyebrow
+                                    // Unboxed inline status eyebrow with active server & protocol telemetry
                                     Row(verticalAlignment = Alignment.CenterVertically) {
                                         Box(
                                             modifier = Modifier
@@ -219,22 +219,23 @@ fun LiveTvScreen(
                                         )
                                         Spacer(modifier = Modifier.width(6.dp))
                                         Text(
-                                            text = "ON AIR • BROADCAST STUDIO",
+                                            text = "${activePlaylist.name.uppercase()} • HLS / MPEG-TS READY",
                                             color = TvCrimsonRose,
                                             fontSize = 9.5.sp,
                                             fontWeight = FontWeight.ExtraBold,
-                                            letterSpacing = 0.7.sp
+                                            letterSpacing = 0.7.sp,
+                                            maxLines = 1
                                         )
                                     }
                                     Spacer(modifier = Modifier.height(4.dp))
                                     Text(
-                                        text = "Live TV Channels & Bouquets",
+                                        text = "Broadcast Bouquets & EPG Directory",
                                         color = Color.White,
-                                        fontSize = 17.sp,
+                                        fontSize = 16.sp,
                                         fontWeight = FontWeight.ExtraBold
                                     )
                                     Text(
-                                        text = "Select a broadcast bouquet to tune into instant live feeds",
+                                        text = "Select a regional or sports bouquet to launch instant low-latency feeds",
                                         color = Champagne.copy(alpha = 0.8f),
                                         fontSize = 11.sp
                                     )
