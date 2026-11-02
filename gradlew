@@ -37,7 +37,13 @@ fi
 
 # Accept Android SDK licenses if ANDROID_HOME is available
 if [ -n "$ANDROID_HOME" ] && [ -f "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" ]; then
-  yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses > /dev/null 2>&1 || true
+  yes 2>/dev/null | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses > /dev/null 2>&1 || true
+fi
+
+# Ensure android.useAndroidX=true is always present in gradle.properties for AGP 8.x
+if ! grep -q "^android.useAndroidX=true" gradle.properties 2>/dev/null; then
+  echo "" >> gradle.properties
+  echo "android.useAndroidX=true" >> gradle.properties
 fi
 
 # Normalize settings.gradle.kts, gradle/libs.versions.toml, build.gradle.kts, and app/build.gradle.kts
