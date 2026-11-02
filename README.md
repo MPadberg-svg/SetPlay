@@ -3,9 +3,9 @@
 # ⚽ Set `▶` **Play** 🎬
 ### *The Luxury MENA Sports Match Center & High-Scale Xtream IPTV Cinema Suite for Android*
 
-[![Build & Release SetPlay APK](https://img.shields.io/github/actions/workflow/status/MPadberg-svg/SetPlay/android-apk-release.yml?style=for-the-badge&logo=githubactions&logoColor=white&label=APK%20Builder)](https://github.com/MPadberg-svg/SetPlay/actions/workflows/android-apk-release.yml)
+[![Build & Release SetPlay APK](https://img.shields.io/github/actions/workflow/status/MPadberg-svg/SetPlay/android-apk-release.yml?style=for-the-badge&logo=githubactions&logoColor=white&label=APK%20Release)](https://github.com/MPadberg-svg/SetPlay/actions/workflows/android-apk-release.yml)
 [![Download SetPlay APK](https://img.shields.io/badge/📲_Download_APK-SetPlay.apk-14919B?style=for-the-badge&logo=android&logoColor=white)](https://github.com/MPadberg-svg/SetPlay/releases/latest/download/SetPlay.apk)
-[![Latest Release](https://img.shields.io/badge/Release-Latest_Build-D4A238?style=for-the-badge&logo=github&logoColor=06131C)](https://github.com/MPadberg-svg/SetPlay/releases)
+[![Direct Raw APK](https://img.shields.io/badge/⚡_Instant_APK-Direct_Download-D4A238?style=for-the-badge&logo=android&logoColor=06131C)](https://github.com/MPadberg-svg/SetPlay/raw/main/.build-outputs/app-debug.apk)
 [![Android 7.0+](https://img.shields.io/badge/Android-7.0%2B%20(API%2024%2B)-80EE98?style=for-the-badge&logo=android&logoColor=06131C)](#)
 [![Kotlin & Jetpack Compose](https://img.shields.io/badge/Kotlin_2.2-Jetpack_Compose_M3-F07167?style=for-the-badge&logo=jetpackcompose&logoColor=white)](#)
 
@@ -21,25 +21,25 @@
 
 ## 📲 Download & Install SetPlay APK
 
-You don't need Android Studio or a computer to try **Set ▶ Play**. Our automated GitHub Actions pipeline compiles a fresh, ready-to-install Android APK on every update.
+Anyone with access to this repository can download and install **Set ▶ Play** directly onto an Android phone, tablet, foldable, or Android TV box in seconds:
 
 <div align="center">
 
-| 🚀 **1-Click Direct APK Download** | 📦 **All Releases & Changelogs** | ⚙️ **CI/CD Workflow Builds** |
+| 🚀 **Option 1: GitHub Release APK** | ⚡ **Option 2: Instant Direct APK** | 📦 **Option 3: Actions Artifact** |
 | :---: | :---: | :---: |
-| [**⬇️ Download `SetPlay.apk`**](https://github.com/MPadberg-svg/SetPlay/releases/latest/download/SetPlay.apk) | [**🏷️ View GitHub Releases**](https://github.com/MPadberg-svg/SetPlay/releases) | [**⚡ GitHub Actions Artifacts**](https://github.com/MPadberg-svg/SetPlay/actions/workflows/android-apk-release.yml) |
-| *Installs directly on Android phones, tablets & TV boxes* | *Browse release notes & previous builds* | *Download `SetPlay-APK` zip from any workflow run* |
+| [**⬇️ Download `SetPlay.apk`**](https://github.com/MPadberg-svg/SetPlay/releases/latest/download/SetPlay.apk) | [**⬇️ Direct `app-debug.apk`**](https://github.com/MPadberg-svg/SetPlay/raw/main/.build-outputs/app-debug.apk) | [**⚙️ Download from Actions**](https://github.com/MPadberg-svg/SetPlay/actions/workflows/android-apk-release.yml) |
+| *Published automatically by GitHub Releases* | *Always available directly from `main` branch* | *Download `SetPlay-APK` zip from any workflow run* |
 
 </div>
 
 ### 🛠️ Quick Installation Steps on Android
-1. Tap **[⬇️ Download `SetPlay.apk`](https://github.com/MPadberg-svg/SetPlay/releases/latest/download/SetPlay.apk)** on your Android device.
-2. Open the downloaded **`SetPlay.apk`** file from your browser notification or **Files / Downloads** folder.
-3. If Android prompts *"For your security, your phone currently isn't allowed to install unknown apps from this source"*, tap **Settings** and enable **Allow from this source**.
+1. Tap **[⬇️ Download `SetPlay.apk`](https://github.com/MPadberg-svg/SetPlay/releases/latest/download/SetPlay.apk)** (or **[⬇️ Direct `app-debug.apk`](https://github.com/MPadberg-svg/SetPlay/raw/main/.build-outputs/app-debug.apk)**) on your Android device.
+2. Open the downloaded **`.apk`** file from your browser notification or **Files / Downloads** folder.
+3. If Android prompts *"For your security, your phone currently isn't allowed to install unknown apps from this source"*, tap **Settings** and toggle **Allow from this source** ON.
 4. Tap **Install** and launch **Set ▶ Play**!
 
-> 💡 **First Time Triggering the Build on GitHub?**
-> Once this code is pushed to [`MPadberg-svg/SetPlay`](https://github.com/MPadberg-svg/SetPlay), open the **[Actions tab](https://github.com/MPadberg-svg/SetPlay/actions/workflows/android-apk-release.yml)** — the **Build & Release SetPlay APK** workflow automatically builds `SetPlay.apk` and publishes it to the **[Releases page](https://github.com/MPadberg-svg/SetPlay/releases)**. You can also click **Run workflow** at any time to generate a new APK build manually.
+> 🔓 **Sharing with Friends or Public Users**:
+> Your repository `MPadberg-svg/SetPlay` is currently set to **Private** (`🔒`). If you want anyone on the internet to download the APK without signing into your GitHub account, go to **Repository Settings → General → Danger Zone → Change repository visibility → Change to Public**.
 
 ---
 
@@ -88,24 +88,6 @@ Every section in **Set ▶ Play** has its own custom-engineered color palette, s
 - **100% Kotlin & Jetpack Compose (Material 3)**: Unidirectional data flow (`StateFlow` + `collectAsStateWithLifecycle`), spring-physics micro-interactions, and zero-box typographic hierarchy.
 - **High-Scale Room Database (`~289,000+` Streams)**: Bounded batch transactions, background coroutine dispatchers, and local full-text search indexing for instant filtering across 56K+ Live channels, 182K+ VOD movies, and 49K+ Series.
 - **Media3 / ExoPlayer (`1.5.1`)**: Hardware-accelerated HLS (`M3U8`) and MPEG-TS stream playback with automatic format fallback, custom track selection, and lifecycle-aware playback.
-
----
-
-## 💻 Local Development & Building from Source
-
-```bash
-# 1. Clone the repository
-git clone https://github.com/MPadberg-svg/SetPlay.git
-cd SetPlay
-
-# 2. Create .env from template and decode the debug keystore
-cp .env.example .env
-base64 -d debug.keystore.base64 > debug.keystore
-
-# 3. Build the installable APK with Gradle
-gradle :app:assembleDebug
-```
-The compiled APK will be output to `app/build/outputs/apk/debug/app-debug.apk`.
 
 ---
 

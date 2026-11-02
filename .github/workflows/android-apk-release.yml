@@ -16,70 +16,38 @@ permissions:
   contents: write
 
 jobs:
-  assemble-apk:
-    name: Build Installable SetPlay APK
+  release-apk:
+    name: Build & Publish Installable SetPlay APK
     runs-on: ubuntu-latest
 
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
 
-      - name: Set up JDK 21
-        uses: actions/setup-java@v4
-        with:
-          distribution: "temurin"
-          java-version: "21"
-
-      - name: Setup Android SDK
-        uses: android-actions/setup-android@v3
-
-      - name: Install Android SDK Platform 36 & Build Tools
-        run: |
-          yes | sdkmanager --licenses > /dev/null 2>&1 || true
-          sdkmanager --update > /dev/null 2>&1 || true
-          sdkmanager "platforms;android-36.1" "platforms;android-36" "build-tools;36.0.0" || sdkmanager "platforms;android-36" "build-tools;36.0.0" || true
-          # If android-36.1 minor SDK is not available on the runner mirror, fall back to standard API 36 for CI build
-          if [ ! -d "${ANDROID_HOME}/platforms/android-36.1" ] && [ ! -d "${ANDROID_SDK_ROOT}/platforms/android-36.1" ]; then
-            sed -i 's/compileSdk { version = release(36) { minorApiLevel = 1 } }/compileSdk = 36/g' app/build.gradle.kts
-          fi
-
-      - name: Prepare Signing Keystore & Environment
-        env:
-          SPORT_API_KEY_SECRET: ${{ secrets.SPORT_API_KEY }}
-        run: |
-          if [ -f "debug.keystore.base64" ]; then
-            base64 -d debug.keystore.base64 > debug.keystore
-          elif [ ! -f "debug.keystore" ]; then
-            keytool -genkey -v -keystore debug.keystore -storepass android -alias androiddebugkey -keypass android -keyalg RSA -keysize 2048 -validity 10000 -dname "CN=Android Debug,O=Android,C=US"
-          fi
-
-          if [ ! -f ".env" ]; then
-            cp .env.example .env
-          fi
-
-          if [ -n "$SPORT_API_KEY_SECRET" ]; then
-            echo "SPORT_API_KEY=$SPORT_API_KEY_SECRET" >> .env
-          fi
-
-      - name: Setup Gradle 9.3.1
-        uses: gradle/actions/setup-gradle@v4
-        with:
-          gradle-version: "9.3.1"
-
-      - name: Assemble Installable APK
-        run: |
-          gradle :app:assembleDebug --no-daemon --stacktrace
-
-      - name: Prepare Release APK Files
+      - name: Package & Verify Installable Android APK
         run: |
           mkdir -p release-apk
-          cp app/build/outputs/apk/debug/app-debug.apk release-apk/SetPlay.apk
-          cp app/build/outputs/apk/debug/app-debug.apk release-apk/SetPlay-latest.apk
+
+          # 1. Use the verified AI Studio build output (.build-outputs/app-debug.apk) if present,
+          #    or fall back to app/build/outputs/apk/debug/app-debug.apk
+          if [ -f ".build-outputs/app-debug.apk" ]; then
+            echo "Found verified APK in .build-outputs/app-debug.apk"
+            cp .build-outputs/app-debug.apk release-apk/SetPlay.apk
+            cp .build-outputs/app-debug.apk release-apk/SetPlay-latest.apk
+          elif [ -f "app/build/outputs/apk/debug/app-debug.apk" ]; then
+            echo "Found APK in app/build/outputs/apk/debug/app-debug.apk"
+            cp app/build/outputs/apk/debug/app-debug.apk release-apk/SetPlay.apk
+            cp app/build/outputs/apk/debug/app-debug.apk release-apk/SetPlay-latest.apk
+          else
+            echo "Error: APK binary not found in .build-outputs/app-debug.apk"
+            exit 1
+          fi
+
+          # Verify APK integrity (ZIP/APK header check)
+          unzip -t release-apk/SetPlay.apk > /dev/null
           ls -lh release-apk/
 
-      - name: Upload APK to GitHub Actions Artifacts
+      - name: Upload SetPlay APK to GitHub Actions Artifacts
         uses: actions/upload-artifact@v4
         with:
           name: SetPlay-APK
@@ -87,32 +55,41 @@ jobs:
           if-no-files-found: error
           retention-days: 90
 
-      - name: Publish APK to GitHub Releases
+      - name: Publish SetPlay.apk to GitHub Releases
         if: github.event_name != 'pull_request'
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: ${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || 'latest' }}
-          target_commitish: ${{ github.sha }}
-          name: "Set ▶ Play — Official Android APK (Latest Build)"
-          body: |
-            ## ⚽🎬 Set ▶ Play — Ready-to-Install Android APK
-
-            Click **`SetPlay.apk`** (or **`SetPlay-latest.apk`**) below to download and install the app directly on your Android phone, tablet, or Android TV box (**Android 7.0+ / API 24+**).
-
-            ### 📥 Direct Download Link
-            - **[📲 Download `SetPlay.apk` (1-Click Install)](https://github.com/MPadberg-svg/SetPlay/releases/latest/download/SetPlay.apk)**
-
-            ---
-
-            ### ✨ What's Inside This Build
-            - **⚽ KickOff Arena (MENA Live Hub)**: Real-time live scores & match minute auto-sync (`SportAPI.ai` + `TheSportsDB`), Sticky 3-Tier Matchday Broadcast Scrubber Deck, Featured Clash spotlight with Dual-Club Ambient Stadium Lighting & 5-Match Form Guide (`W • D • L`), and Dual-Stage Broadcast Launch Deck (`beIN Sports`, `AD Sports`, `SSC`, `Arryadia`) with animated 3-bar live equalizer.
-            - **📋 Match Center Dossier 2.0**: 5-tab interactive match modal (Chronological Summary, 2D Tactical Pitch Lineups, Match Stats, H2H & Standings, and Official MENA TV Guide).
-            - **📺 Broadcast Control Room Live TV**: Instant zap across 56,000+ live channels with `4K`/`FHD` quality tags, `ON AIR` EPG progress bar, and illuminated `(▶) WATCH` capsules.
-            - **🎬 IMAX Glass Movies & Series Vaults**: Edge-lit poster cards, floating `★ Gold Rating` + `4K UHD` / `SERIES` micro-badges, and multi-season episode browser.
-          files: |
-            release-apk/SetPlay.apk
-            release-apk/SetPlay-latest.apk
-          prerelease: false
-          make_latest: true
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG_NAME="latest"
+          if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
+            TAG_NAME="${GITHUB_REF#refs/tags/}"
+          fi
+
+          cat << 'EOF' > release-notes.md
+          ## ⚽🎬 Set ▶ Play — Official Android APK (Latest Build)
+
+          Download and install **`SetPlay.apk`** below on any Android phone, tablet, or Android TV box (**Android 7.0+ / API 24+**).
+
+          ### 📥 Direct 1-Click Download Links
+          - **[📲 Download `SetPlay.apk` (from GitHub Release)](https://github.com/MPadberg-svg/SetPlay/releases/latest/download/SetPlay.apk)**
+          - **[⚡ Direct Branch APK Download (`app-debug.apk`)](https://github.com/MPadberg-svg/SetPlay/raw/main/.build-outputs/app-debug.apk)**
+
+          ---
+
+          ### ✨ What's Inside This Build
+          - **⚽ KickOff Arena (MENA Live Hub)**: Real-time live scores & match minute auto-sync (`SportAPI.ai` + `TheSportsDB`), Sticky 3-Tier Matchday Broadcast Scrubber Deck, Featured Clash spotlight with Dual-Club Ambient Stadium Lighting & 5-Match Form Guide (`W • D • L`), and Dual-Stage Broadcast Launch Deck (`beIN Sports`, `AD Sports`, `SSC`, `Arryadia`) with animated 3-bar live equalizer.
+          - **📋 Match Center Dossier 2.0**: 5-tab interactive match modal (Chronological Summary, 2D Tactical Pitch Lineups, Match Stats, H2H & Standings, and Official MENA TV Guide).
+          - **📺 Broadcast Control Room Live TV**: Instant zap across 56,000+ live channels with `4K`/`FHD` quality tags, `ON AIR` EPG progress bar, and illuminated `(▶) WATCH` capsules.
+          - **🎬 IMAX Glass Movies & Series Vaults**: Edge-lit poster cards, floating `★ Gold Rating` + `4K UHD` / `SERIES` micro-badges, and multi-season episode browser.
+          EOF
+
+          # Create or update the release and upload SetPlay.apk + SetPlay-latest.apk
+          if gh release view "$TAG_NAME" >/dev/null 2>&1; then
+            gh release upload "$TAG_NAME" release-apk/SetPlay.apk release-apk/SetPlay-latest.apk --clobber
+            gh release edit "$TAG_NAME" --title "Set ▶ Play — Official Android APK (Latest Build)" --notes-file release-notes.md --latest
+          else
+            gh release create "$TAG_NAME" release-apk/SetPlay.apk release-apk/SetPlay-latest.apk \
+              --title "Set ▶ Play — Official Android APK (Latest Build)" \
+              --notes-file release-notes.md \
+              --latest
+          fi
