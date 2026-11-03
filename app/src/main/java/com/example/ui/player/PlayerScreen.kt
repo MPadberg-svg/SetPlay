@@ -6,12 +6,7 @@ import android.view.WindowManager
 import androidx.annotation.OptIn
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.animateColorAsState
-import androidx.compose.animation.core.LinearEasing
-import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateDpAsState
-import androidx.compose.animation.core.animateFloat
-import androidx.compose.animation.core.infiniteRepeatable
-import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -23,6 +18,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectDragGestures
+import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.foundation.horizontalScroll
@@ -42,7 +38,6 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
@@ -57,7 +52,6 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.FormatListBulleted
 import androidx.compose.material.icons.automirrored.filled.VolumeOff
 import androidx.compose.material.icons.automirrored.filled.VolumeUp
-import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.AspectRatio
 import androidx.compose.material.icons.filled.Bedtime
 import androidx.compose.material.icons.filled.BrightnessMedium
@@ -67,32 +61,29 @@ import androidx.compose.material.icons.filled.ClosedCaptionDisabled
 import androidx.compose.material.icons.filled.FastForward
 import androidx.compose.material.icons.filled.FastRewind
 import androidx.compose.material.icons.filled.History
-import androidx.compose.material.icons.filled.KeyboardArrowDown
-import androidx.compose.material.icons.filled.KeyboardArrowUp
-import androidx.compose.material.icons.filled.Language
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.LockOpen
 import androidx.compose.material.icons.filled.Memory
-import androidx.compose.material.icons.filled.Movie
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PictureInPictureAlt
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Refresh
-import androidx.compose.material.icons.filled.Remove
 import androidx.compose.material.icons.filled.Replay
 import androidx.compose.material.icons.filled.ScreenRotation
 import androidx.compose.material.icons.filled.Search
+import androidx.compose.material.icons.filled.SkipNext
+import androidx.compose.material.icons.filled.SkipPrevious
 import androidx.compose.material.icons.filled.Speed
 import androidx.compose.material.icons.filled.Star
 import androidx.compose.material.icons.filled.StarBorder
 import androidx.compose.material.icons.filled.Subtitles
 import androidx.compose.material.icons.filled.Tv
-import androidx.compose.material.icons.filled.VideoLibrary
 import androidx.compose.material.icons.filled.ZoomOutMap
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
@@ -107,22 +98,24 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Shadow
-import androidx.compose.ui.graphics.StrokeCap
-import androidx.compose.ui.graphics.drawscope.Stroke
-import androidx.compose.ui.graphics.drawscope.rotate
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.platform.testTag
@@ -145,23 +138,20 @@ import com.example.data.model.PlaylistEntity
 import com.example.data.model.StreamEntity
 import com.example.data.remote.WyzieSubtitleOption
 import com.example.ui.theme.AmberGold
-import com.example.ui.theme.CatchupGreen
-import com.example.ui.theme.Champagne
 import com.example.ui.theme.DarkGraphite
 import com.example.ui.theme.LiveRed
-import com.example.ui.theme.MetalCharcoal
-import com.example.ui.theme.MetalCharcoalElevated
-import com.example.ui.theme.MoviesCyanTeal
-import com.example.ui.theme.MoviesMintSpring
 import com.example.ui.theme.PaleGold
-import com.example.ui.theme.SeriesIceAqua
-import com.example.ui.theme.SeriesSeaJade
-import com.example.ui.theme.TvBroadcastScarlet
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 import kotlin.math.abs
 import kotlin.math.roundToInt
+
+private val PlayerTextPrimary = Color(0xFFFFFFFF)
+private val PlayerTextSecondary = Color(0xB8FFFFFF)
+private val PlayerTextMuted = Color(0x80FFFFFF)
+private val PlayerSheetBg = Color(0xFF10131A)
+private val PlayerSheetCardBg = Color(0xFF181C26)
 
 @OptIn(UnstableApi::class)
 @ExperimentalMaterial3Api
@@ -179,10 +169,9 @@ fun PlayerScreen(
     val view = LocalView.current
     val activity = context as? Activity
 
-    // True Full-Screen Immersive System Bars Management (Netflix / VLC / MX Player Pro standard):
-    // Hides both statusBars() and navigationBars() (phone 3-button / gesture bar) with
-    // BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE and extends video into short-edge cutout areas
-    // so the phone's navigation buttons never eat part of the screen while watching.
+    // True Full-Screen Immersive System Bars Management:
+    // Hides both statusBars() and navigationBars() with transient swipe behavior so the
+    // phone's 3-button / gesture navigation bar never takes part of the screen during playback.
     DisposableEffect(activity, view) {
         val window = activity?.window
         val insetsController = if (window != null) {
@@ -225,7 +214,6 @@ fun PlayerScreen(
         }
     }
 
-    // Re-enforce system navigation & status bar hiding whenever controls toggle or orientation changes
     LaunchedEffect(
         uiState.isControlsVisible,
         uiState.isTouchLocked,
@@ -246,50 +234,16 @@ fun PlayerScreen(
     var showBufferSheet by remember { mutableStateOf(false) }
     var showSleepTimerSheet by remember { mutableStateOf(false) }
 
-    // Dynamic Luxury Accent Palette tailored to stream type (Live TV vs Movies vs Series)
-    val streamTypeLower = uiState.currentStream?.streamType?.lowercase(Locale.ROOT) ?: "live"
-    val primaryNeonAccent = when (streamTypeLower) {
-        "movie" -> MoviesMintSpring
-        "series" -> SeriesIceAqua
-        else -> AmberGold
-    }
-    val secondaryChamberAccent = when (streamTypeLower) {
-        "movie" -> MoviesCyanTeal
-        "series" -> SeriesSeaJade
-        else -> TvBroadcastScarlet
-    }
-
-    // Continuous luxury chronograph animation for the center Play/Pause Sovereign Orb
-    val infiniteTransition = rememberInfiniteTransition(label = "player_luxury_chronograph")
-    val orbitalAngle by infiniteTransition.animateFloat(
-        initialValue = 0f,
-        targetValue = 360f,
-        animationSpec = infiniteRepeatable(
-            animation = tween(durationMillis = 7200, easing = LinearEasing),
-            repeatMode = RepeatMode.Restart
-        ),
-        label = "player_orb_angle"
-    )
-    val livePulse by infiniteTransition.animateFloat(
-        initialValue = 0.78f,
-        targetValue = 1.0f,
-        animationSpec = infiniteRepeatable(
-            animation = tween(durationMillis = 1400),
-            repeatMode = RepeatMode.Reverse
-        ),
-        label = "player_live_pulse"
-    )
-
     BoxWithConstraints(
         modifier = modifier
             .fillMaxSize()
-            .background(Color(0xFF03060A))
+            .background(Color.Black)
             .testTag("player_screen")
     ) {
         val screenWidth = constraints.maxWidth.toFloat().coerceAtLeast(1f)
         val screenHeight = constraints.maxHeight.toFloat().coerceAtLeast(1f)
 
-        // 1. Edge-to-Edge Media3 Video Surface with Pinch-to-Zoom & Pan
+        // 1. Edge-to-Edge Media3 Video Surface
         AndroidView(
             factory = { ctx ->
                 PlayerView(ctx).apply {
@@ -322,7 +276,7 @@ fun PlayerScreen(
                 )
         )
 
-        // 2. Gesture Detector Layer (Tap, Double-Tap, Vertical Brightness/Volume Swipe, Horizontal VOD Scrub, Pinch-to-Zoom)
+        // 2. Gesture Layer (Tap to show/hide controls, Double-Tap +/-10s, Left Swipe Brightness, Right Swipe Volume, Pinch Zoom)
         Box(
             modifier = Modifier
                 .fillMaxSize()
@@ -401,74 +355,62 @@ fun PlayerScreen(
                 }
         )
 
-        // 3. Cinema-Grade Wyzie Online Subtitle Overlay (Movies & Series)
+        // 3. Clean Cinema Subtitle Overlay (Movies & Series)
         val subtitleBottomPad by animateDpAsState(
-            targetValue = if (uiState.isControlsVisible && !uiState.isTouchLocked) 118.dp else 28.dp,
-            animationSpec = tween(220),
-            label = "subtitle_bottom_offset"
+            targetValue = if (uiState.isControlsVisible && !uiState.isTouchLocked) 96.dp else 24.dp,
+            animationSpec = tween(200),
+            label = "subtitle_bottom_pad"
         )
         if (!uiState.isLive && !uiState.currentSubtitleText.isNullOrBlank()) {
             Box(
                 contentAlignment = Alignment.Center,
                 modifier = Modifier
                     .align(Alignment.BottomCenter)
-                    .padding(start = 32.dp, end = 32.dp, bottom = subtitleBottomPad)
+                    .padding(start = 36.dp, end = 36.dp, bottom = subtitleBottomPad)
                     .testTag("player_active_subtitle_overlay")
             ) {
                 Surface(
-                    color = Color(0xD9050A12),
-                    shape = RoundedCornerShape(12.dp),
-                    border = BorderStroke(0.8.dp, primaryNeonAccent.copy(alpha = 0.32f))
+                    color = Color(0xB3000000),
+                    shape = RoundedCornerShape(6.dp)
                 ) {
                     Text(
                         text = uiState.currentSubtitleText!!,
-                        color = Color(0xFFFDFBF7),
+                        color = Color.White,
                         fontSize = (17f * uiState.subtitleScaleFactor).sp,
                         lineHeight = (23f * uiState.subtitleScaleFactor).sp,
-                        fontWeight = FontWeight.SemiBold,
+                        fontWeight = FontWeight.Medium,
                         textAlign = TextAlign.Center,
                         style = TextStyle(
                             shadow = Shadow(
                                 color = Color.Black,
-                                offset = Offset(0f, 2f),
+                                offset = Offset(0f, 1.5f),
                                 blurRadius = 4f
                             )
                         ),
-                        modifier = Modifier.padding(horizontal = 16.dp, vertical = 7.dp)
+                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 5.dp)
                     )
                 }
             }
         }
 
-        // 4. Gesture Feedback Overlays (Brightness, Volume + 200% Audio Boost, Scrub)
+        // 4. Minimal Gesture Feedback Pill (only visible while swiping Brightness, Volume, or Scrubbing)
         if (uiState.gestureBrightness != null) {
-            GestureBadge(
-                icon = { Icon(Icons.Default.BrightnessMedium, contentDescription = null, tint = AmberGold) },
-                label = "Display Brightness",
-                value = "${uiState.brightnessPercent}%",
+            MinimalGesturePill(
+                icon = Icons.Default.BrightnessMedium,
+                label = "${uiState.brightnessPercent}%",
                 progress = uiState.brightnessPercent / 100f,
                 isBoosted = false,
-                accentColor = primaryNeonAccent,
                 modifier = Modifier.align(Alignment.Center)
             )
         }
 
         if (uiState.gestureVolume != null) {
             val volPct = uiState.gestureVolume!!
-            val isBoost = volPct > 100
-            GestureBadge(
-                icon = {
-                    Icon(
-                        if (volPct == 0) Icons.AutoMirrored.Filled.VolumeOff else Icons.AutoMirrored.Filled.VolumeUp,
-                        contentDescription = null,
-                        tint = if (isBoost) LiveRed else AmberGold
-                    )
-                },
-                label = if (isBoost) "VLC Audio Boost" else "Master Volume",
-                value = "$volPct%",
+            MinimalGesturePill(
+                icon = if (volPct == 0) Icons.AutoMirrored.Filled.VolumeOff else Icons.AutoMirrored.Filled.VolumeUp,
+                label = "$volPct%",
                 progress = (volPct / 200f).coerceIn(0f, 1f),
-                isBoosted = isBoost,
-                accentColor = if (isBoost) LiveRed else primaryNeonAccent,
+                isBoosted = volPct > 100,
                 modifier = Modifier.align(Alignment.Center)
             )
         }
@@ -476,112 +418,97 @@ fun PlayerScreen(
         if (uiState.gestureSeekSeconds != null) {
             val sec = uiState.gestureSeekSeconds!!
             val prefix = if (sec >= 0) "+$sec" else "$sec"
-            GestureBadge(
-                icon = {
-                    Icon(
-                        if (sec >= 0) Icons.Default.FastForward else Icons.Default.FastRewind,
-                        contentDescription = null,
-                        tint = AmberGold
-                    )
-                },
-                label = "Timeline Scrub",
-                value = "$prefix s",
-                progress = 1f,
+            MinimalGesturePill(
+                icon = if (sec >= 0) Icons.Default.FastForward else Icons.Default.FastRewind,
+                label = "${prefix}s",
+                progress = null,
                 isBoosted = false,
-                accentColor = primaryNeonAccent,
                 modifier = Modifier.align(Alignment.Center)
             )
         }
 
-        // Pinch-to-Zoom Reset Pill when zoomed in
+        // Pinch-to-Zoom Reset Pill (only visible when zoomed in)
         if (uiState.videoZoomScale > 1.02f) {
             Surface(
-                color = Color(0xE608121E),
+                color = Color(0xBF000000),
                 shape = RoundedCornerShape(50),
-                border = BorderStroke(1.dp, AmberGold),
+                border = BorderStroke(0.8.dp, Color.White.copy(alpha = 0.25f)),
                 modifier = Modifier
                     .align(Alignment.TopCenter)
-                    .padding(top = 74.dp)
+                    .padding(top = 64.dp)
                     .clickable { viewModel.resetZoomAndPan() }
                     .testTag("player_reset_zoom_pill")
             ) {
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
-                    modifier = Modifier.padding(horizontal = 14.dp, vertical = 6.dp)
+                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp)
                 ) {
-                    Icon(Icons.Default.ZoomOutMap, contentDescription = null, tint = AmberGold, modifier = Modifier.size(14.dp))
+                    Icon(Icons.Default.ZoomOutMap, contentDescription = null, tint = Color.White, modifier = Modifier.size(14.dp))
                     Spacer(modifier = Modifier.width(6.dp))
                     Text(
-                        text = "Zoom ${String.format(Locale.US, "%.1fx", uiState.videoZoomScale)} • Tap to Reset",
-                        color = PaleGold,
+                        text = "${String.format(Locale.US, "%.1fx", uiState.videoZoomScale)} • Reset",
+                        color = Color.White,
                         fontSize = 11.sp,
-                        fontWeight = FontWeight.ExtraBold
+                        fontWeight = FontWeight.Medium
                     )
                 }
             }
         }
 
-        // 5. Luxury Buffering Halo Indicator
+        // 5. Clean Buffering Spinner
         if (uiState.isBuffering) {
-            Box(
+            CircularProgressIndicator(
+                color = AmberGold,
+                trackColor = Color.White.copy(alpha = 0.18f),
+                strokeWidth = 2.8.dp,
                 modifier = Modifier
-                    .size(78.dp)
-                    .background(Color(0xD9060E18), CircleShape)
-                    .border(
-                        width = 1.2.dp,
-                        brush = Brush.linearGradient(listOf(AmberGold, primaryNeonAccent)),
-                        shape = CircleShape
-                    )
-                    .align(Alignment.Center),
-                contentAlignment = Alignment.Center
-            ) {
-                CircularProgressIndicator(
-                    color = AmberGold,
-                    trackColor = primaryNeonAccent.copy(alpha = 0.2f),
-                    strokeWidth = 3.dp,
-                    modifier = Modifier.size(44.dp)
-                )
-            }
+                    .size(44.dp)
+                    .align(Alignment.Center)
+            )
         }
 
-        // 6. Error Banner with Instant Retry
+        // 6. Subtle Error Banner with Retry
         if (uiState.error != null) {
             Surface(
-                color = Color(0xF01C090D),
-                shape = RoundedCornerShape(16.dp),
-                border = BorderStroke(1.dp, LiveRed.copy(alpha = 0.8f)),
+                color = Color(0xE6180B0D),
+                shape = RoundedCornerShape(10.dp),
+                border = BorderStroke(0.8.dp, LiveRed.copy(alpha = 0.6f)),
                 modifier = Modifier
                     .align(Alignment.TopCenter)
-                    .padding(top = 76.dp, start = 20.dp, end = 20.dp)
+                    .padding(top = 68.dp, start = 24.dp, end = 24.dp)
             ) {
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
-                    modifier = Modifier.padding(horizontal = 14.dp, vertical = 9.dp)
+                    modifier = Modifier.padding(horizontal = 14.dp, vertical = 8.dp)
                 ) {
                     Text(
                         text = uiState.error!!,
-                        color = PaleGold,
+                        color = Color.White,
                         fontSize = 12.sp,
                         modifier = Modifier.weight(1f, fill = false)
                     )
                     Spacer(modifier = Modifier.width(12.dp))
-                    Button(
-                        onClick = { viewModel.retryCurrentStream() },
-                        colors = ButtonDefaults.buttonColors(containerColor = AmberGold, contentColor = DarkGraphite),
-                        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp),
+                    Surface(
+                        color = AmberGold,
+                        shape = RoundedCornerShape(6.dp),
                         modifier = Modifier
-                            .height(30.dp)
+                            .clickable { viewModel.retryCurrentStream() }
                             .testTag("player_retry_button")
                     ) {
-                        Icon(Icons.Default.Refresh, contentDescription = null, tint = DarkGraphite, modifier = Modifier.size(14.dp))
-                        Spacer(modifier = Modifier.width(4.dp))
-                        Text("Retry", color = DarkGraphite, fontSize = 11.sp, fontWeight = FontWeight.ExtraBold)
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp)
+                        ) {
+                            Icon(Icons.Default.Refresh, contentDescription = null, tint = Color.Black, modifier = Modifier.size(13.dp))
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text("Retry", color = Color.Black, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                        }
                     }
                 }
             }
         }
 
-        // 7. Touch Lock Mode Capsule (MX Player Pro style)
+        // 7. Touch Lock Capsule (when screen is locked)
         if (uiState.isTouchLocked && uiState.isControlsVisible) {
             Box(
                 modifier = Modifier
@@ -590,9 +517,9 @@ fun PlayerScreen(
                     .padding(20.dp)
             ) {
                 Surface(
-                    color = Color(0xEB08121C),
+                    color = Color(0xCC000000),
                     shape = RoundedCornerShape(50),
-                    border = BorderStroke(1.2.dp, AmberGold),
+                    border = BorderStroke(1.dp, Color.White.copy(alpha = 0.3f)),
                     modifier = Modifier
                         .align(Alignment.TopStart)
                         .clickable { viewModel.toggleTouchLock() }
@@ -600,25 +527,25 @@ fun PlayerScreen(
                 ) {
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
-                        modifier = Modifier.padding(horizontal = 16.dp, vertical = 9.dp)
+                        modifier = Modifier.padding(horizontal = 14.dp, vertical = 8.dp)
                     ) {
-                        Icon(Icons.Default.Lock, contentDescription = "Unlock Screen", tint = AmberGold, modifier = Modifier.size(17.dp))
-                        Spacer(modifier = Modifier.width(7.dp))
+                        Icon(Icons.Default.Lock, contentDescription = "Unlock", tint = AmberGold, modifier = Modifier.size(16.dp))
+                        Spacer(modifier = Modifier.width(6.dp))
                         Text(
-                            text = "Touch Locked • Tap to Unlock",
-                            color = PaleGold,
+                            text = "Screen Locked • Tap to Unlock",
+                            color = Color.White,
                             fontSize = 12.sp,
-                            fontWeight = FontWeight.ExtraBold
+                            fontWeight = FontWeight.Medium
                         )
                     }
                 }
             }
         }
 
-        // 8. Sovereign Cinema & Broadcast Cockpit HUD Overlay (when unlocked)
+        // 8. Clean, Simple, Professional Cinema Player Controls Overlay
         AnimatedVisibility(
             visible = uiState.isControlsVisible && !uiState.isTouchLocked,
-            enter = fadeIn(tween(200)),
+            enter = fadeIn(tween(180)),
             exit = fadeOut(tween(180)),
             modifier = Modifier.fillMaxSize()
         ) {
@@ -627,521 +554,242 @@ fun PlayerScreen(
                     .fillMaxSize()
                     .background(
                         Brush.verticalGradient(
-                            colors = listOf(
-                                Color(0xEB04080F),
-                                Color(0x4004080F),
-                                Color.Transparent,
-                                Color(0x4D04080F),
-                                Color(0xF204080F)
-                            )
+                            0.0f to Color.Black.copy(alpha = 0.78f),
+                            0.22f to Color.Black.copy(alpha = 0.25f),
+                            0.50f to Color.Black.copy(alpha = 0.15f),
+                            0.76f to Color.Black.copy(alpha = 0.30f),
+                            1.0f to Color.Black.copy(alpha = 0.86f)
                         )
                     )
                     .displayCutoutPadding()
             ) {
                 // =========================================================================
-                // A. TOP SOVEREIGN BROADCAST & CINEMA HEADER CONSOLE
+                // A. CLEAN MINIMAL TOP BAR (Frameless on subtle top gradient)
                 // =========================================================================
-                Surface(
-                    color = Color(0xD907101A),
-                    shape = RoundedCornerShape(20.dp),
-                    border = BorderStroke(
-                        width = 1.dp,
-                        brush = Brush.horizontalGradient(
-                            colors = listOf(
-                                AmberGold.copy(alpha = 0.55f),
-                                primaryNeonAccent.copy(alpha = 0.40f),
-                                Champagne.copy(alpha = 0.22f)
-                            )
-                        )
-                    ),
+                Row(
                     modifier = Modifier
                         .fillMaxWidth()
                         .align(Alignment.TopCenter)
-                        .padding(horizontal = 14.dp, vertical = 10.dp)
+                        .padding(horizontal = 16.dp, vertical = 12.dp),
+                    verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Row(
+                    IconButton(
+                        onClick = onBack,
                         modifier = Modifier
-                            .fillMaxWidth()
-                            .background(
-                                Brush.horizontalGradient(
-                                    colors = listOf(
-                                        Color(0xFF0A1624),
-                                        secondaryChamberAccent.copy(alpha = 0.16f),
-                                        Color(0xFF08111C)
-                                    )
-                                )
-                            )
-                            .padding(horizontal = 10.dp, vertical = 8.dp),
-                        verticalAlignment = Alignment.CenterVertically
+                            .size(40.dp)
+                            .testTag("player_back_button")
                     ) {
-                        // Glass Back Medallion
-                        IconButton(
-                            onClick = onBack,
-                            modifier = Modifier
-                                .size(38.dp)
-                                .background(Color(0xFF101D2C), CircleShape)
-                                .border(0.8.dp, Champagne.copy(alpha = 0.30f), CircleShape)
-                                .testTag("player_back_button")
-                        ) {
-                            Icon(
-                                imageVector = Icons.AutoMirrored.Filled.ArrowBack,
-                                contentDescription = "Back",
-                                tint = PaleGold,
-                                modifier = Modifier.size(19.dp)
-                            )
-                        }
+                        Icon(
+                            imageVector = Icons.AutoMirrored.Filled.ArrowBack,
+                            contentDescription = "Back",
+                            tint = PlayerTextPrimary,
+                            modifier = Modifier.size(22.dp)
+                        )
+                    }
 
-                        Spacer(modifier = Modifier.width(10.dp))
+                    Spacer(modifier = Modifier.width(8.dp))
 
-                        // Channel Crest / VOD Poster Medallion
-                        Box(
-                            modifier = Modifier
-                                .size(40.dp)
-                                .clip(RoundedCornerShape(11.dp))
-                                .background(
-                                    Brush.radialGradient(
-                                        listOf(
-                                            primaryNeonAccent.copy(alpha = 0.22f),
-                                            Color(0xFF0B1520)
-                                        )
-                                    )
-                                )
-                                .border(
-                                    width = 0.9.dp,
-                                    color = primaryNeonAccent.copy(alpha = 0.45f),
-                                    shape = RoundedCornerShape(11.dp)
-                                ),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            val iconUrl = uiState.currentStream?.streamIcon.orEmpty()
-                            if (iconUrl.isNotEmpty()) {
-                                AsyncImage(
-                                    model = iconUrl,
-                                    contentDescription = uiState.currentStream?.name,
-                                    contentScale = if (uiState.isLive) ContentScale.Fit else ContentScale.Crop,
-                                    modifier = Modifier
-                                        .fillMaxSize()
-                                        .padding(if (uiState.isLive) 4.dp else 0.dp)
-                                )
-                            } else {
-                                Icon(
-                                    imageVector = when (streamTypeLower) {
-                                        "movie" -> Icons.Default.Movie
-                                        "series" -> Icons.Default.VideoLibrary
-                                        else -> Icons.Default.Tv
-                                    },
-                                    contentDescription = null,
-                                    tint = AmberGold,
-                                    modifier = Modifier.size(20.dp)
-                                )
+                    // Title + Subtle Single-Line Metadata
+                    Column(
+                        modifier = Modifier
+                            .weight(1f)
+                            .padding(end = 12.dp)
+                    ) {
+                        Text(
+                            text = uiState.currentStream?.name ?: "Stream",
+                            color = PlayerTextPrimary,
+                            fontSize = 16.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+
+                        val subtitleMeta = buildString {
+                            if (uiState.currentProgram != null) {
+                                append(uiState.currentProgram!!.title)
+                            } else if (!uiState.isLive && uiState.activeWyzieOption != null) {
+                                append("CC: ${uiState.activeWyzieOption!!.languageDisplay}")
+                            }
+                            val specs = listOf(
+                                uiState.resolutionLabel,
+                                uiState.videoCodecLabel,
+                                uiState.fpsLabel
+                            ).filter { it.isNotEmpty() }
+                            if (specs.isNotEmpty()) {
+                                if (isNotEmpty()) append("  •  ")
+                                append(specs.joinToString(" • "))
                             }
                         }
 
-                        Spacer(modifier = Modifier.width(10.dp))
-
-                        // Stream Title & Telemetry Ribbon
-                        Column(
-                            modifier = Modifier
-                                .weight(1f)
-                                .padding(end = 6.dp)
-                        ) {
+                        if (subtitleMeta.isNotEmpty()) {
+                            Spacer(modifier = Modifier.height(2.dp))
                             Text(
-                                text = uiState.currentStream?.name ?: "SetPlay Stream",
-                                color = Color.White,
-                                fontSize = 14.5.sp,
-                                fontWeight = FontWeight.ExtraBold,
-                                letterSpacing = 0.2.sp,
+                                text = subtitleMeta,
+                                color = PlayerTextSecondary,
+                                fontSize = 11.5.sp,
+                                fontWeight = FontWeight.Normal,
                                 maxLines = 1,
                                 overflow = TextOverflow.Ellipsis
                             )
-                            Spacer(modifier = Modifier.height(2.dp))
-                            Row(
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(5.dp)
+                        }
+                    }
+
+                    // Top-Right Clean Utility Icons
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(4.dp)
+                    ) {
+                        // Previous Channel Recall (Live TV only)
+                        if (uiState.previousStream != null) {
+                            Surface(
+                                color = Color.White.copy(alpha = 0.14f),
+                                shape = RoundedCornerShape(50),
+                                modifier = Modifier
+                                    .clickable { viewModel.recallPreviousChannel() }
+                                    .testTag("player_recall_channel_button")
                             ) {
-                                // Section Identity Micro-Badge
-                                Surface(
-                                    color = secondaryChamberAccent.copy(alpha = 0.35f),
-                                    shape = RoundedCornerShape(5.dp),
-                                    border = BorderStroke(0.6.dp, primaryNeonAccent.copy(alpha = 0.65f))
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp)
                                 ) {
-                                    Row(
-                                        verticalAlignment = Alignment.CenterVertically,
-                                        modifier = Modifier.padding(horizontal = 5.dp, vertical = 1.5.dp)
-                                    ) {
-                                        Box(
-                                            modifier = Modifier
-                                                .size(5.dp)
-                                                .background(
-                                                    if (uiState.isLive) LiveRed else primaryNeonAccent,
-                                                    CircleShape
-                                                )
-                                        )
-                                        Spacer(modifier = Modifier.width(3.5.dp))
-                                        Text(
-                                            text = when (streamTypeLower) {
-                                                "movie" -> "CINEMA"
-                                                "series" -> "SERIES"
-                                                else -> "ON AIR"
-                                            },
-                                            color = PaleGold,
-                                            fontSize = 8.5.sp,
-                                            fontWeight = FontWeight.ExtraBold,
-                                            letterSpacing = 0.4.sp
-                                        )
-                                    }
-                                }
-
-                                if (uiState.currentProgram != null) {
+                                    Icon(
+                                        Icons.Default.Replay,
+                                        contentDescription = "Recall",
+                                        tint = PlayerTextPrimary,
+                                        modifier = Modifier.size(14.dp)
+                                    )
+                                    Spacer(modifier = Modifier.width(4.dp))
                                     Text(
-                                        text = "Now: ${uiState.currentProgram?.title}",
-                                        color = Champagne,
+                                        text = "Recall",
+                                        color = PlayerTextPrimary,
                                         fontSize = 11.sp,
-                                        fontWeight = FontWeight.Medium,
-                                        maxLines = 1,
-                                        overflow = TextOverflow.Ellipsis,
-                                        modifier = Modifier.weight(1f, fill = false)
-                                    )
-                                } else if (!uiState.isLive && uiState.activeWyzieOption != null) {
-                                    Text(
-                                        text = "${uiState.activeWyzieOption!!.flagEmoji} ${uiState.activeWyzieOption!!.languageDisplay}",
-                                        color = primaryNeonAccent,
-                                        fontSize = 10.5.sp,
-                                        fontWeight = FontWeight.Bold,
-                                        maxLines = 1,
-                                        overflow = TextOverflow.Ellipsis
-                                    )
-                                }
-
-                                if (uiState.resolutionLabel.isNotEmpty()) {
-                                    TechBadge(
-                                        text = uiState.resolutionLabel,
-                                        isHighlight = uiState.is4K,
-                                        accentColor = primaryNeonAccent
-                                    )
-                                }
-                                if (uiState.videoCodecLabel.isNotEmpty()) {
-                                    TechBadge(
-                                        text = uiState.videoCodecLabel,
-                                        accentColor = primaryNeonAccent
-                                    )
-                                }
-                                if (uiState.audioCodecLabel.isNotEmpty()) {
-                                    TechBadge(
-                                        text = uiState.audioCodecLabel,
-                                        accentColor = primaryNeonAccent
-                                    )
-                                }
-                                if (uiState.fpsLabel.isNotEmpty()) {
-                                    TechBadge(
-                                        text = uiState.fpsLabel,
-                                        accentColor = primaryNeonAccent
+                                        fontWeight = FontWeight.Medium
                                     )
                                 }
                             }
                         }
 
-                        // Right-Side Luxury Action Cluster
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(5.dp)
+                        // Channel List Drawer (Live TV only)
+                        if (uiState.isLive && uiState.siblingChannels.isNotEmpty()) {
+                            IconButton(
+                                onClick = { viewModel.toggleChannelZapper() },
+                                modifier = Modifier
+                                    .size(40.dp)
+                                    .testTag("player_zapper_drawer_button")
+                            ) {
+                                Icon(
+                                    imageVector = Icons.AutoMirrored.Filled.FormatListBulleted,
+                                    contentDescription = "Channels",
+                                    tint = if (uiState.isChannelZapperOpen) AmberGold else PlayerTextPrimary,
+                                    modifier = Modifier.size(21.dp)
+                                )
+                            }
+                        }
+
+                        // Catchup Archive (Live TV only when supported)
+                        if (uiState.currentStream?.tvArchive == 1 || uiState.catchupPrograms.isNotEmpty()) {
+                            IconButton(
+                                onClick = { showCatchupSheet = true },
+                                modifier = Modifier
+                                    .size(40.dp)
+                                    .testTag("player_catchup_button")
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.History,
+                                    contentDescription = "Catchup",
+                                    tint = PlayerTextPrimary,
+                                    modifier = Modifier.size(21.dp)
+                                )
+                            }
+                        }
+
+                        // Favorite Toggle
+                        val isFav = uiState.currentStream?.isFavorite == true
+                        IconButton(
+                            onClick = { uiState.currentStream?.let { onToggleFavorite(it) } },
+                            modifier = Modifier
+                                .size(40.dp)
+                                .testTag("player_favorite_button")
                         ) {
-                            // Screen Rotation Toggle
-                            LuxuryHeaderIconWell(
-                                icon = Icons.Default.ScreenRotation,
-                                contentDescription = "Rotate Landscape / Portrait",
-                                tint = if (uiState.isLandscapeLocked) AmberGold else PaleGold,
-                                isActive = uiState.isLandscapeLocked,
-                                onClick = { viewModel.toggleScreenOrientation(activity) },
-                                modifier = Modifier.testTag("player_rotate_top_button")
-                            )
-
-                            // Last Channel Recall Capsule
-                            if (uiState.previousStream != null) {
-                                Surface(
-                                    color = Color.Transparent,
-                                    shape = RoundedCornerShape(50),
-                                    border = BorderStroke(1.dp, PaleGold.copy(alpha = 0.7f)),
-                                    modifier = Modifier
-                                        .clip(RoundedCornerShape(50))
-                                        .background(
-                                            Brush.horizontalGradient(
-                                                listOf(AmberGold, Color(0xFFF5B942))
-                                            )
-                                        )
-                                        .clickable { viewModel.recallPreviousChannel() }
-                                        .testTag("player_recall_channel_button")
-                                ) {
-                                    Row(
-                                        verticalAlignment = Alignment.CenterVertically,
-                                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp)
-                                    ) {
-                                        Icon(
-                                            Icons.Default.Replay,
-                                            contentDescription = "Previous Channel",
-                                            tint = DarkGraphite,
-                                            modifier = Modifier.size(13.dp)
-                                        )
-                                        Spacer(modifier = Modifier.width(4.dp))
-                                        Text(
-                                            text = "Recall",
-                                            color = DarkGraphite,
-                                            fontSize = 10.5.sp,
-                                            fontWeight = FontWeight.ExtraBold
-                                        )
-                                    }
-                                }
-                            }
-
-                            // Live Channel Zapper Drawer Toggle
-                            if (uiState.isLive && uiState.siblingChannels.isNotEmpty()) {
-                                LuxuryHeaderIconWell(
-                                    icon = Icons.AutoMirrored.Filled.FormatListBulleted,
-                                    contentDescription = "Channel List Drawer",
-                                    tint = AmberGold,
-                                    isActive = uiState.isChannelZapperOpen,
-                                    onClick = { viewModel.toggleChannelZapper() },
-                                    modifier = Modifier.testTag("player_zapper_drawer_button")
-                                )
-                            }
-
-                            // Catchup Archive Button
-                            if (uiState.currentStream?.tvArchive == 1 || uiState.catchupPrograms.isNotEmpty()) {
-                                LuxuryHeaderIconWell(
-                                    icon = Icons.Default.History,
-                                    contentDescription = "Catchup Archive",
-                                    tint = CatchupGreen,
-                                    isActive = false,
-                                    onClick = { showCatchupSheet = true },
-                                    modifier = Modifier.testTag("player_catchup_button")
-                                )
-                            }
-
-                            // Favorite Star Button
-                            val isFav = uiState.currentStream?.isFavorite == true
-                            LuxuryHeaderIconWell(
-                                icon = if (isFav) Icons.Default.Star else Icons.Default.StarBorder,
+                            Icon(
+                                imageVector = if (isFav) Icons.Default.Star else Icons.Default.StarBorder,
                                 contentDescription = "Favorite",
-                                tint = if (isFav) AmberGold else PaleGold,
-                                isActive = isFav,
-                                onClick = { uiState.currentStream?.let { onToggleFavorite(it) } },
-                                modifier = Modifier.testTag("player_favorite_button")
+                                tint = if (isFav) AmberGold else PlayerTextPrimary,
+                                modifier = Modifier.size(21.dp)
                             )
+                        }
 
-                            // In-App Picture-in-Picture (PiP) Button
-                            LuxuryHeaderIconWell(
-                                icon = Icons.Default.PictureInPictureAlt,
+                        // In-App Picture-in-Picture
+                        IconButton(
+                            onClick = { onEnterInAppPip() },
+                            modifier = Modifier
+                                .size(40.dp)
+                                .testTag("player_pip_button")
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.PictureInPictureAlt,
                                 contentDescription = "Picture in Picture",
-                                tint = primaryNeonAccent,
-                                isActive = false,
-                                onClick = { onEnterInAppPip() },
-                                modifier = Modifier.testTag("player_pip_button")
+                                tint = PlayerTextPrimary,
+                                modifier = Modifier.size(20.dp)
                             )
                         }
                     }
                 }
 
                 // =========================================================================
-                // B. LEFT & RIGHT EDGE-LIT VERTICAL TELEMETRY TOWERS (BRIGHTNESS & VOLUME)
-                // =========================================================================
-                VerticalSideControlBar(
-                    icon = {
-                        Icon(
-                            imageVector = Icons.Default.BrightnessMedium,
-                            contentDescription = "Brightness",
-                            tint = AmberGold,
-                            modifier = Modifier.size(15.dp)
-                        )
-                    },
-                    valueLabel = "${uiState.brightnessPercent}%",
-                    progress = (uiState.brightnessPercent / 100f).coerceIn(0f, 1f),
-                    isBoosted = false,
-                    accentColor = primaryNeonAccent,
-                    onStepUp = {
-                        viewModel.setBrightnessPercent(uiState.brightnessPercent + 10, activity)
-                        viewModel.showControls()
-                    },
-                    onStepDown = {
-                        viewModel.setBrightnessPercent(uiState.brightnessPercent - 10, activity)
-                        viewModel.showControls()
-                    },
-                    onVerticalDragRatio = { deltaRatio ->
-                        viewModel.onBrightnessSwipe(deltaRatio, activity)
-                        viewModel.showControls()
-                    },
-                    modifier = Modifier
-                        .align(Alignment.CenterStart)
-                        .padding(start = 16.dp)
-                        .testTag("player_left_brightness_bar")
-                )
-
-                VerticalSideControlBar(
-                    icon = {
-                        Icon(
-                            imageVector = if (uiState.volumePercent == 0) {
-                                Icons.AutoMirrored.Filled.VolumeOff
-                            } else {
-                                Icons.AutoMirrored.Filled.VolumeUp
-                            },
-                            contentDescription = "Volume & Audio Boost",
-                            tint = if (uiState.volumePercent > 100) LiveRed else AmberGold,
-                            modifier = Modifier.size(15.dp)
-                        )
-                    },
-                    valueLabel = "${uiState.volumePercent}%",
-                    progress = (uiState.volumePercent / 200f).coerceIn(0f, 1f),
-                    isBoosted = uiState.volumePercent > 100,
-                    accentColor = primaryNeonAccent,
-                    onStepUp = {
-                        viewModel.setVolumePercent(uiState.volumePercent + 10)
-                        viewModel.showControls()
-                    },
-                    onStepDown = {
-                        viewModel.setVolumePercent(uiState.volumePercent - 10)
-                        viewModel.showControls()
-                    },
-                    onVerticalDragRatio = { deltaRatio ->
-                        viewModel.onVolumeSwipeRatio(deltaRatio)
-                        viewModel.showControls()
-                    },
-                    modifier = Modifier
-                        .align(Alignment.CenterEnd)
-                        .padding(end = 16.dp)
-                        .testTag("player_right_volume_bar")
-                )
-
-                // =========================================================================
-                // C. CENTER CHRONOGRAPH ORBITAL TRANSPORT HUB
+                // B. MINIMAL CENTER PLAYBACK CONTROLS (Netflix / Apple TV+ Style)
                 // =========================================================================
                 Row(
                     modifier = Modifier.align(Alignment.Center),
-                    horizontalArrangement = Arrangement.spacedBy(22.dp),
+                    horizontalArrangement = Arrangement.spacedBy(36.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     if (uiState.isLive && uiState.siblingChannels.size > 1) {
-                        LuxuryTransportSatelliteButton(
-                            icon = Icons.Default.KeyboardArrowUp,
-                            microLabel = "CH -",
+                        CleanCenterCircleButton(
+                            icon = Icons.Default.SkipPrevious,
                             contentDescription = "Previous Channel",
-                            accentColor = primaryNeonAccent,
+                            sizeDp = 48,
+                            iconSizeDp = 24,
                             onClick = { viewModel.zapChannelOffset(-1) },
                             modifier = Modifier.testTag("player_prev_channel")
                         )
-                    }
-
-                    if (!uiState.isLive) {
-                        LuxuryTransportSatelliteButton(
+                    } else if (!uiState.isLive) {
+                        CleanCenterCircleButton(
                             icon = Icons.Default.FastRewind,
-                            microLabel = "-10s",
-                            contentDescription = "Rewind 10s",
-                            accentColor = primaryNeonAccent,
+                            contentDescription = "Rewind 10 seconds",
+                            sizeDp = 48,
+                            iconSizeDp = 24,
                             onClick = { viewModel.seekRelative(-10) },
                             modifier = Modifier.testTag("player_rewind_10")
                         )
                     }
 
-                    // Primary 3D Sovereign Play/Pause Chronograph Medallion
-                    Box(
-                        contentAlignment = Alignment.Center,
-                        modifier = Modifier
-                            .size(76.dp)
-                            .clip(CircleShape)
-                            .clickable { viewModel.togglePlayPause() }
-                            .testTag("player_play_pause")
-                    ) {
-                        Canvas(modifier = Modifier.fillMaxSize()) {
-                            val center = Offset(size.width / 2f, size.height / 2f)
-                            val maxR = size.minDimension / 2f
-
-                            // 1. Breathing Outer Ambient Halo
-                            drawCircle(
-                                brush = Brush.radialGradient(
-                                    colors = listOf(
-                                        AmberGold.copy(alpha = 0.42f * livePulse),
-                                        primaryNeonAccent.copy(alpha = 0.18f * livePulse),
-                                        Color.Transparent
-                                    ),
-                                    center = center,
-                                    radius = maxR
-                                ),
-                                radius = maxR,
-                                center = center
-                            )
-
-                            // 2. Rotating Chronograph Sweep-Gradient Outer Bezel
-                            val bezelR = maxR * 0.88f
-                            rotate(degrees = orbitalAngle, pivot = center) {
-                                drawCircle(
-                                    brush = Brush.sweepGradient(
-                                        colors = listOf(
-                                            AmberGold,
-                                            PaleGold,
-                                            primaryNeonAccent,
-                                            Color.White.copy(alpha = 0.9f),
-                                            AmberGold.copy(alpha = 0.35f),
-                                            AmberGold
-                                        ),
-                                        center = center
-                                    ),
-                                    radius = bezelR,
-                                    center = center,
-                                    style = Stroke(width = 2.dp.toPx())
-                                )
-                            }
-
-                            // 3. Royal Gold Sculpted Medallion Disc
-                            val coreR = maxR * 0.78f
-                            drawCircle(
-                                brush = Brush.radialGradient(
-                                    colors = listOf(
-                                        PaleGold,
-                                        AmberGold,
-                                        Color(0xFFC98B1D)
-                                    ),
-                                    center = Offset(center.x - coreR * 0.25f, center.y - coreR * 0.25f),
-                                    radius = coreR * 1.35f
-                                ),
-                                radius = coreR,
-                                center = center
-                            )
-
-                            // 4. Top-Left Crystal Specular Arc
-                            drawArc(
-                                color = Color.White.copy(alpha = 0.65f),
-                                startAngle = 195f,
-                                sweepAngle = 110f,
-                                useCenter = false,
-                                topLeft = Offset(center.x - coreR * 0.84f, center.y - coreR * 0.84f),
-                                size = androidx.compose.ui.geometry.Size(coreR * 1.68f, coreR * 1.68f),
-                                style = Stroke(width = 1.2.dp.toPx(), cap = StrokeCap.Round)
-                            )
-                        }
-
-                        Icon(
-                            imageVector = if (uiState.isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow,
-                            contentDescription = if (uiState.isPlaying) "Pause" else "Play",
-                            tint = DarkGraphite,
-                            modifier = Modifier.size(34.dp)
-                        )
-                    }
+                    // Primary Play / Pause Button
+                    CleanCenterCircleButton(
+                        icon = if (uiState.isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow,
+                        contentDescription = if (uiState.isPlaying) "Pause" else "Play",
+                        sizeDp = 64,
+                        iconSizeDp = 32,
+                        isPrimary = true,
+                        onClick = { viewModel.togglePlayPause() },
+                        modifier = Modifier.testTag("player_play_pause")
+                    )
 
                     if (!uiState.isLive) {
-                        LuxuryTransportSatelliteButton(
+                        CleanCenterCircleButton(
                             icon = Icons.Default.FastForward,
-                            microLabel = "+10s",
-                            contentDescription = "Forward 10s",
-                            accentColor = primaryNeonAccent,
+                            contentDescription = "Forward 10 seconds",
+                            sizeDp = 48,
+                            iconSizeDp = 24,
                             onClick = { viewModel.seekRelative(10) },
                             modifier = Modifier.testTag("player_forward_10")
                         )
-                    }
-
-                    if (uiState.isLive && uiState.siblingChannels.size > 1) {
-                        LuxuryTransportSatelliteButton(
-                            icon = Icons.Default.KeyboardArrowDown,
-                            microLabel = "CH +",
+                    } else if (uiState.isLive && uiState.siblingChannels.size > 1) {
+                        CleanCenterCircleButton(
+                            icon = Icons.Default.SkipNext,
                             contentDescription = "Next Channel",
-                            accentColor = primaryNeonAccent,
+                            sizeDp = 48,
+                            iconSizeDp = 24,
                             onClick = { viewModel.zapChannelOffset(1) },
                             modifier = Modifier.testTag("player_next_channel")
                         )
@@ -1149,296 +797,213 @@ fun PlayerScreen(
                 }
 
                 // =========================================================================
-                // D. BOTTOM FLOATING GLASS COCKPIT DECK
+                // C. CLEAN BOTTOM TIMELINE & ACTION ROW (No Heavy Boxed Container)
                 // =========================================================================
-                Surface(
-                    color = Color(0xDF07101A),
-                    shape = RoundedCornerShape(22.dp),
-                    border = BorderStroke(
-                        width = 1.dp,
-                        brush = Brush.horizontalGradient(
-                            colors = listOf(
-                                primaryNeonAccent.copy(alpha = 0.45f),
-                                AmberGold.copy(alpha = 0.55f),
-                                primaryNeonAccent.copy(alpha = 0.45f)
-                            )
-                        )
-                    ),
+                Column(
                     modifier = Modifier
                         .fillMaxWidth()
                         .align(Alignment.BottomCenter)
-                        .padding(horizontal = 14.dp, vertical = 10.dp)
+                        .padding(horizontal = 20.dp, vertical = 12.dp)
                 ) {
-                    Column(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .background(
-                                Brush.verticalGradient(
-                                    colors = listOf(
-                                        Color(0xFF0C1826).copy(alpha = 0.92f),
-                                        Color(0xFF060C14).copy(alpha = 0.98f)
-                                    )
-                                )
+                    // 1. Sleek Cinema Progress Line (VOD) OR Minimal Live Status Line (Live TV)
+                    if (!uiState.isLive) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(
+                                text = formatTime(uiState.currentPositionMs),
+                                color = PlayerTextPrimary,
+                                fontSize = 12.sp,
+                                fontWeight = FontWeight.Medium
                             )
-                            .padding(horizontal = 14.dp, vertical = 9.dp)
-                    ) {
-                        // Upper Tier: VOD Scrubber Timeline OR Live Broadcast Telemetry Ribbon
-                        if (!uiState.isLive) {
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                Text(
-                                    text = formatTime(uiState.currentPositionMs),
-                                    color = PaleGold,
-                                    fontSize = 11.5.sp,
-                                    fontWeight = FontWeight.ExtraBold
-                                )
-                                Slider(
-                                    value = if (uiState.durationMs > 0) uiState.currentPositionMs.toFloat() else 0f,
-                                    onValueChange = { pos -> viewModel.seekToPosition(pos.toLong()) },
-                                    valueRange = 0f..(uiState.durationMs.toFloat().coerceAtLeast(1f)),
-                                    colors = SliderDefaults.colors(
-                                        thumbColor = AmberGold,
-                                        activeTrackColor = primaryNeonAccent,
-                                        inactiveTrackColor = MetalCharcoalElevated
-                                    ),
-                                    modifier = Modifier
-                                        .weight(1f)
-                                        .height(28.dp)
-                                        .padding(horizontal = 8.dp)
-                                        .testTag("player_timeline_slider")
-                                )
-                                Text(
-                                    text = formatTime(uiState.durationMs),
-                                    color = Champagne,
-                                    fontSize = 11.5.sp,
-                                    fontWeight = FontWeight.SemiBold
-                                )
-                            }
-                        } else {
-                            // Live TV Broadcast Status + EPG Progress Ribbon
-                            Row(
+
+                            CinemaTimelineScrubber(
+                                positionMs = uiState.currentPositionMs,
+                                durationMs = uiState.durationMs,
+                                onSeekTo = { targetMs -> viewModel.seekToPosition(targetMs) },
                                 modifier = Modifier
-                                    .fillMaxWidth()
-                                    .padding(bottom = 6.dp),
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                // Glowing Live Broadcast Pill
-                                Surface(
-                                    color = LiveRed.copy(alpha = 0.18f),
-                                    shape = RoundedCornerShape(50),
-                                    border = BorderStroke(0.8.dp, LiveRed.copy(alpha = 0.75f))
-                                ) {
-                                    Row(
-                                        verticalAlignment = Alignment.CenterVertically,
-                                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
-                                    ) {
-                                        Box(
-                                            modifier = Modifier
-                                                .size(6.5.dp)
-                                                .graphicsLayer {
-                                                    scaleX = livePulse
-                                                    scaleY = livePulse
-                                                }
-                                                .background(LiveRed, CircleShape)
-                                        )
-                                        Spacer(modifier = Modifier.width(5.dp))
-                                        Text(
-                                            text = "LIVE BROADCAST",
-                                            color = Color.White,
-                                            fontSize = 9.5.sp,
-                                            fontWeight = FontWeight.ExtraBold,
-                                            letterSpacing = 0.5.sp
-                                        )
-                                    }
-                                }
+                                    .weight(1f)
+                                    .padding(horizontal = 12.dp)
+                                    .testTag("player_timeline_slider")
+                            )
 
-                                Spacer(modifier = Modifier.width(10.dp))
-
-                                if (uiState.upcomingPrograms.size > 1) {
-                                    Text(
-                                        text = "Next: ${uiState.upcomingPrograms[1].title}",
-                                        color = Champagne,
-                                        fontSize = 11.sp,
-                                        fontWeight = FontWeight.Medium,
-                                        maxLines = 1,
-                                        overflow = TextOverflow.Ellipsis,
-                                        modifier = Modifier.weight(1f)
-                                    )
-                                } else if (uiState.currentProgram != null) {
-                                    Text(
-                                        text = uiState.currentProgram!!.title,
-                                        color = Champagne,
-                                        fontSize = 11.sp,
-                                        fontWeight = FontWeight.Medium,
-                                        maxLines = 1,
-                                        overflow = TextOverflow.Ellipsis,
-                                        modifier = Modifier.weight(1f)
-                                    )
-                                } else {
-                                    Text(
-                                        text = "Direct Ultra-Low Latency Stream",
-                                        color = Champagne.copy(alpha = 0.72f),
-                                        fontSize = 11.sp,
-                                        maxLines = 1,
-                                        modifier = Modifier.weight(1f)
-                                    )
-                                }
-
-                                if (uiState.sleepTimerRemainingMinutes != null) {
-                                    Surface(
-                                        color = AmberGold.copy(alpha = 0.18f),
-                                        shape = RoundedCornerShape(50),
-                                        border = BorderStroke(0.7.dp, AmberGold.copy(alpha = 0.6f)),
-                                        modifier = Modifier.padding(end = 8.dp)
-                                    ) {
-                                        Text(
-                                            text = "Sleep ${uiState.sleepTimerRemainingMinutes}m",
-                                            color = AmberGold,
-                                            fontSize = 10.sp,
-                                            fontWeight = FontWeight.ExtraBold,
-                                            modifier = Modifier.padding(horizontal = 7.dp, vertical = 2.dp)
-                                        )
-                                    }
-                                }
-
-                                Surface(
-                                    color = Color(0xFF101D2C),
-                                    shape = RoundedCornerShape(8.dp),
-                                    border = BorderStroke(0.7.dp, Champagne.copy(alpha = 0.25f))
-                                ) {
-                                    Text(
-                                        text = SimpleDateFormat("HH:mm", Locale.getDefault()).format(Date()),
-                                        color = PaleGold,
-                                        fontSize = 11.sp,
-                                        fontWeight = FontWeight.ExtraBold,
-                                        modifier = Modifier.padding(horizontal = 7.dp, vertical = 2.5.dp)
-                                    )
-                                }
-                            }
+                            Text(
+                                text = formatTime(uiState.durationMs),
+                                color = PlayerTextSecondary,
+                                fontSize = 12.sp,
+                                fontWeight = FontWeight.Normal
+                            )
                         }
-
-                        // Lower Tier: Unified Luxury Smoked-Glass Control Pills
+                    } else {
+                        // Clean Live Broadcast Row
                         Row(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .horizontalScroll(rememberScrollState()),
-                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                .padding(bottom = 4.dp),
                             verticalAlignment = Alignment.CenterVertically
                         ) {
-                            // 1. Touch Lock Pill
-                            LuxuryConsoleActionPill(
-                                icon = Icons.Default.LockOpen,
-                                label = "Lock",
-                                isHighlighted = false,
-                                accentColor = AmberGold,
-                                onClick = { viewModel.toggleTouchLock() },
-                                modifier = Modifier.testTag("player_touch_lock_button")
+                            Box(
+                                modifier = Modifier
+                                    .size(7.dp)
+                                    .background(LiveRed, CircleShape)
+                            )
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text(
+                                text = "LIVE",
+                                color = PlayerTextPrimary,
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.Bold,
+                                letterSpacing = 0.6.sp
                             )
 
-                            // 2. Audio Tracks & Boost Pill
-                            LuxuryConsoleActionPill(
-                                icon = Icons.AutoMirrored.Filled.VolumeUp,
-                                label = if (uiState.volumePercent > 100) "Audio ${uiState.volumePercent}%" else "Audio",
-                                isHighlighted = uiState.volumePercent > 100,
-                                accentColor = AmberGold,
-                                onClick = { showAudioSheet = true },
-                                modifier = Modifier.testTag("player_audio_tracks")
-                            )
+                            Spacer(modifier = Modifier.width(12.dp))
 
-                            // 3. Online Subtitles Studio Pill (Movies & Series ONLY)
-                            if (!uiState.isLive) {
-                                val hasActiveSub = uiState.activeWyzieOption != null ||
-                                    uiState.subtitleTracks.any { it.isSelected }
-                                val subLabel = when {
-                                    uiState.activeWyzieOption != null -> {
-                                        "${uiState.activeWyzieOption!!.flagEmoji} ${uiState.activeWyzieOption!!.languageCode.uppercase(Locale.ROOT)}"
-                                    }
-                                    uiState.subtitleTracks.any { it.isSelected } -> "CC ON"
-                                    else -> "Subtitles"
-                                }
-                                LuxuryConsoleActionPill(
-                                    icon = Icons.Default.ClosedCaption,
-                                    label = subLabel,
-                                    isHighlighted = hasActiveSub,
-                                    accentColor = primaryNeonAccent,
-                                    onClick = {
-                                        showSubtitleSheet = true
-                                        if (uiState.wyzieLanguageGroups.isEmpty() && !uiState.isSearchingOnlineSubtitles) {
-                                            viewModel.searchOnlineSubtitles()
-                                        }
-                                    },
-                                    modifier = Modifier.testTag("player_subtitle_tracks")
+                            val nextTitle = when {
+                                uiState.upcomingPrograms.size > 1 -> "Next: ${uiState.upcomingPrograms[1].title}"
+                                uiState.currentProgram != null -> uiState.currentProgram!!.title
+                                else -> ""
+                            }
+                            if (nextTitle.isNotEmpty()) {
+                                Text(
+                                    text = nextTitle,
+                                    color = PlayerTextSecondary,
+                                    fontSize = 12.sp,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                    modifier = Modifier.weight(1f)
                                 )
+                            } else {
+                                Spacer(modifier = Modifier.weight(1f))
                             }
 
-                            // 4. Sleep Timer Pill
-                            LuxuryConsoleActionPill(
-                                icon = Icons.Default.Bedtime,
-                                label = if (uiState.sleepTimerRemainingMinutes != null) {
-                                    "${uiState.sleepTimerRemainingMinutes}m"
-                                } else {
-                                    "Sleep"
-                                },
-                                isHighlighted = uiState.sleepTimerRemainingMinutes != null,
-                                accentColor = AmberGold,
-                                onClick = { showSleepTimerSheet = true },
-                                modifier = Modifier.testTag("player_sleep_timer_button")
-                            )
-
-                            // 5. Screen Orientation Pill (Landscape / Rotate)
-                            LuxuryConsoleActionPill(
-                                icon = Icons.Default.ScreenRotation,
-                                label = if (uiState.isLandscapeLocked) "Landscape" else "Rotate",
-                                isHighlighted = uiState.isLandscapeLocked,
-                                accentColor = AmberGold,
-                                onClick = { viewModel.toggleScreenOrientation(activity) },
-                                modifier = Modifier.testTag("player_rotate_button")
-                            )
-
-                            // 6. Buffer Profile Selector Pill
-                            LuxuryConsoleActionPill(
-                                icon = Icons.Default.Memory,
-                                label = when (uiState.bufferProfile) {
-                                    BufferProfile.FAST_ZAP -> "Zap"
-                                    BufferProfile.BALANCED -> "Auto"
-                                    BufferProfile.STABLE_4K -> "4K Buf"
-                                },
-                                isHighlighted = uiState.bufferProfile != BufferProfile.BALANCED,
-                                accentColor = primaryNeonAccent,
-                                onClick = { showBufferSheet = true },
-                                modifier = Modifier.testTag("player_buffer_button")
-                            )
-
-                            // 7. Playback Speed Pill (Movies & Series ONLY)
-                            if (!uiState.isLive) {
-                                LuxuryConsoleActionPill(
-                                    icon = Icons.Default.Speed,
-                                    label = "${uiState.playbackSpeed}x",
-                                    isHighlighted = uiState.playbackSpeed != 1.0f,
-                                    accentColor = primaryNeonAccent,
-                                    onClick = { showSpeedSheet = true },
-                                    modifier = Modifier.testTag("player_speed_button")
-                                )
-                            }
-
-                            // 8. Aspect Ratio Toggle Pill
-                            LuxuryConsoleActionPill(
-                                icon = Icons.Default.AspectRatio,
-                                label = uiState.aspectRatioMode.name.replace("RATIO_", "").replace("_", ":"),
-                                isHighlighted = uiState.aspectRatioMode != AspectRatioMode.FIT,
-                                accentColor = AmberGold,
-                                onClick = { viewModel.toggleAspectRatio() },
-                                modifier = Modifier.testTag("player_aspect_ratio_button")
+                            Text(
+                                text = SimpleDateFormat("HH:mm", Locale.getDefault()).format(Date()),
+                                color = PlayerTextSecondary,
+                                fontSize = 12.sp,
+                                fontWeight = FontWeight.Medium
                             )
                         }
+                    }
+
+                    Spacer(modifier = Modifier.height(6.dp))
+
+                    // 2. Clean, Frameless Bottom Utility Bar
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .horizontalScroll(rememberScrollState()),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        // Subtitles (Movies & Series)
+                        if (!uiState.isLive) {
+                            val hasActiveSub = uiState.activeWyzieOption != null ||
+                                uiState.subtitleTracks.any { it.isSelected }
+                            val subLabel = when {
+                                uiState.activeWyzieOption != null ->
+                                    "Subtitles (${uiState.activeWyzieOption!!.languageCode.uppercase(Locale.ROOT)})"
+                                uiState.subtitleTracks.any { it.isSelected } -> "Subtitles (ON)"
+                                else -> "Subtitles"
+                            }
+                            MinimalBottomBarAction(
+                                icon = Icons.Default.ClosedCaption,
+                                label = subLabel,
+                                isActive = hasActiveSub,
+                                onClick = {
+                                    showSubtitleSheet = true
+                                    if (uiState.wyzieLanguageGroups.isEmpty() && !uiState.isSearchingOnlineSubtitles) {
+                                        viewModel.searchOnlineSubtitles()
+                                    }
+                                },
+                                modifier = Modifier.testTag("player_subtitle_tracks")
+                            )
+                        }
+
+                        // Audio & Volume Boost
+                        MinimalBottomBarAction(
+                            icon = Icons.AutoMirrored.Filled.VolumeUp,
+                            label = if (uiState.volumePercent > 100) "Audio (${uiState.volumePercent}%)" else "Audio",
+                            isActive = uiState.volumePercent > 100,
+                            onClick = { showAudioSheet = true },
+                            modifier = Modifier.testTag("player_audio_tracks")
+                        )
+
+                        // Playback Speed (Movies & Series)
+                        if (!uiState.isLive) {
+                            MinimalBottomBarAction(
+                                icon = Icons.Default.Speed,
+                                label = "Speed (${uiState.playbackSpeed}x)",
+                                isActive = uiState.playbackSpeed != 1.0f,
+                                onClick = { showSpeedSheet = true },
+                                modifier = Modifier.testTag("player_speed_button")
+                            )
+                        }
+
+                        // Aspect Ratio
+                        val aspectLabel = when (uiState.aspectRatioMode) {
+                            AspectRatioMode.FIT -> "Fit"
+                            AspectRatioMode.FILL -> "Fill"
+                            AspectRatioMode.RATIO_16_9 -> "16:9"
+                            AspectRatioMode.ZOOM -> "Zoom"
+                        }
+                        MinimalBottomBarAction(
+                            icon = Icons.Default.AspectRatio,
+                            label = aspectLabel,
+                            isActive = uiState.aspectRatioMode != AspectRatioMode.FIT,
+                            onClick = { viewModel.toggleAspectRatio() },
+                            modifier = Modifier.testTag("player_aspect_ratio_button")
+                        )
+
+                        // Screen Orientation
+                        MinimalBottomBarAction(
+                            icon = Icons.Default.ScreenRotation,
+                            label = if (uiState.isLandscapeLocked) "Landscape" else "Rotate",
+                            isActive = uiState.isLandscapeLocked,
+                            onClick = { viewModel.toggleScreenOrientation(activity) },
+                            modifier = Modifier.testTag("player_rotate_button")
+                        )
+
+                        // Buffer Mode
+                        MinimalBottomBarAction(
+                            icon = Icons.Default.Memory,
+                            label = when (uiState.bufferProfile) {
+                                BufferProfile.FAST_ZAP -> "Fast Zap"
+                                BufferProfile.BALANCED -> "Buffer"
+                                BufferProfile.STABLE_4K -> "4K Buffer"
+                            },
+                            isActive = uiState.bufferProfile != BufferProfile.BALANCED,
+                            onClick = { showBufferSheet = true },
+                            modifier = Modifier.testTag("player_buffer_button")
+                        )
+
+                        // Sleep Timer
+                        MinimalBottomBarAction(
+                            icon = Icons.Default.Bedtime,
+                            label = if (uiState.sleepTimerRemainingMinutes != null) {
+                                "${uiState.sleepTimerRemainingMinutes}m"
+                            } else {
+                                "Sleep"
+                            },
+                            isActive = uiState.sleepTimerRemainingMinutes != null,
+                            onClick = { showSleepTimerSheet = true },
+                            modifier = Modifier.testTag("player_sleep_timer_button")
+                        )
+
+                        // Touch Lock
+                        MinimalBottomBarAction(
+                            icon = Icons.Default.LockOpen,
+                            label = "Lock",
+                            isActive = false,
+                            onClick = { viewModel.toggleTouchLock() },
+                            modifier = Modifier.testTag("player_touch_lock_button")
+                        )
                     }
                 }
             }
         }
 
-        // 9. In-Player Quick Channel Zapper Drawer
+        // 9. Quick Channel Zapper Drawer (Live TV)
         AnimatedVisibility(
             visible = uiState.isChannelZapperOpen,
             enter = slideInHorizontally(initialOffsetX = { it }),
@@ -1446,10 +1011,9 @@ fun PlayerScreen(
             modifier = Modifier.align(Alignment.CenterEnd)
         ) {
             Surface(
-                color = Color(0xF5070E17),
-                border = BorderStroke(1.dp, AmberGold.copy(alpha = 0.35f)),
+                color = Color(0xF210131A),
                 modifier = Modifier
-                    .width(300.dp)
+                    .width(290.dp)
                     .fillMaxHeight()
                     .testTag("in_player_channel_zapper")
             ) {
@@ -1457,43 +1021,31 @@ fun PlayerScreen(
                     modifier = Modifier
                         .fillMaxSize()
                         .displayCutoutPadding()
-                        .padding(14.dp)
+                        .padding(16.dp)
                 ) {
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.SpaceBetween,
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Column {
-                            Text(
-                                text = "Quick Channel Zapper",
-                                color = PaleGold,
-                                fontSize = 15.sp,
-                                fontWeight = FontWeight.ExtraBold
-                            )
-                            Text(
-                                text = "${uiState.siblingChannels.size} channels in category",
-                                color = Champagne,
-                                fontSize = 11.sp
-                            )
-                        }
-                        Surface(
-                            color = Color(0xFF122030),
-                            shape = RoundedCornerShape(50),
-                            border = BorderStroke(0.8.dp, AmberGold.copy(alpha = 0.5f)),
-                            modifier = Modifier.clickable { viewModel.toggleChannelZapper(false) }
-                        ) {
-                            Text(
-                                text = "Close",
-                                color = AmberGold,
-                                fontSize = 11.sp,
-                                fontWeight = FontWeight.ExtraBold,
-                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp)
-                            )
-                        }
+                        Text(
+                            text = "Channels (${uiState.siblingChannels.size})",
+                            color = PlayerTextPrimary,
+                            fontSize = 15.sp,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                        Text(
+                            text = "Close",
+                            color = AmberGold,
+                            fontSize = 13.sp,
+                            fontWeight = FontWeight.Medium,
+                            modifier = Modifier
+                                .clickable { viewModel.toggleChannelZapper(false) }
+                                .padding(4.dp)
+                        )
                     }
 
-                    Spacer(modifier = Modifier.height(10.dp))
+                    Spacer(modifier = Modifier.height(12.dp))
 
                     LazyColumn(
                         verticalArrangement = Arrangement.spacedBy(6.dp),
@@ -1504,25 +1056,27 @@ fun PlayerScreen(
                             Row(
                                 modifier = Modifier
                                     .fillMaxWidth()
-                                    .clip(RoundedCornerShape(12.dp))
-                                    .background(if (isCurrent) AmberGold else Color(0xFF0E1A28))
+                                    .clip(RoundedCornerShape(8.dp))
+                                    .background(
+                                        if (isCurrent) AmberGold.copy(alpha = 0.18f) else PlayerSheetCardBg
+                                    )
                                     .border(
-                                        width = 1.dp,
-                                        color = if (isCurrent) PaleGold else Champagne.copy(alpha = 0.2f),
-                                        shape = RoundedCornerShape(12.dp)
+                                        width = if (isCurrent) 1.dp else 0.dp,
+                                        color = if (isCurrent) AmberGold else Color.Transparent,
+                                        shape = RoundedCornerShape(8.dp)
                                     )
                                     .clickable {
                                         viewModel.playStream(ch, playlist)
                                         viewModel.toggleChannelZapper(false)
                                     }
-                                    .padding(8.dp),
+                                    .padding(horizontal = 10.dp, vertical = 8.dp),
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
                                 Box(
                                     modifier = Modifier
-                                        .size(34.dp)
-                                        .clip(RoundedCornerShape(8.dp))
-                                        .background(if (isCurrent) DarkGraphite else MetalCharcoalElevated),
+                                        .size(32.dp)
+                                        .clip(RoundedCornerShape(6.dp))
+                                        .background(Color.Black.copy(alpha = 0.35f)),
                                     contentAlignment = Alignment.Center
                                 ) {
                                     if (ch.streamIcon.isNotEmpty()) {
@@ -1535,26 +1089,19 @@ fun PlayerScreen(
                                                 .padding(2.dp)
                                         )
                                     } else {
-                                        Icon(Icons.Default.Tv, contentDescription = null, tint = AmberGold, modifier = Modifier.size(16.dp))
+                                        Icon(Icons.Default.Tv, contentDescription = null, tint = PlayerTextSecondary, modifier = Modifier.size(16.dp))
                                     }
                                 }
-                                Spacer(modifier = Modifier.width(8.dp))
+                                Spacer(modifier = Modifier.width(10.dp))
                                 Text(
                                     text = ch.name,
-                                    color = if (isCurrent) DarkGraphite else PaleGold,
+                                    color = if (isCurrent) AmberGold else PlayerTextPrimary,
                                     fontSize = 13.sp,
-                                    fontWeight = if (isCurrent) FontWeight.ExtraBold else FontWeight.Medium,
+                                    fontWeight = if (isCurrent) FontWeight.SemiBold else FontWeight.Normal,
                                     maxLines = 1,
                                     overflow = TextOverflow.Ellipsis,
                                     modifier = Modifier.weight(1f)
                                 )
-                                if (isCurrent) {
-                                    Box(
-                                        modifier = Modifier
-                                            .size(8.dp)
-                                            .background(DarkGraphite, CircleShape)
-                                    )
-                                }
                             }
                         }
                     }
@@ -1564,34 +1111,33 @@ fun PlayerScreen(
     }
 
     // =================================================================================
-    // MODAL SHEETS (AUDIO, WYZIE ONLINE SUBTITLE STUDIO, CATCHUP, BUFFER, SLEEP, SPEED)
+    // MODAL SHEETS (AUDIO, WYZIE SUBTITLES, CATCHUP, BUFFER, SLEEP, SPEED)
     // =================================================================================
 
-    // 1. Audio Tracks & VLC Audio Boost Modal Sheet
+    // 1. Audio Tracks & Volume Boost Sheet
     if (showAudioSheet) {
         ModalBottomSheet(
             onDismissRequest = { showAudioSheet = false },
-            containerColor = Color(0xFF0A1420)
+            containerColor = PlayerSheetBg
         ) {
             Column(
                 modifier = Modifier
-                    .padding(16.dp)
+                    .padding(horizontal = 20.dp, vertical = 8.dp)
                     .navigationBarsPadding()
             ) {
                 Text(
-                    text = "Audio Tracks & VLC Audio Boost",
-                    color = PaleGold,
-                    fontSize = 18.sp,
-                    fontWeight = FontWeight.ExtraBold
+                    text = "Audio & Volume",
+                    color = PlayerTextPrimary,
+                    fontSize = 17.sp,
+                    fontWeight = FontWeight.SemiBold
                 )
-                Spacer(modifier = Modifier.height(6.dp))
+                Spacer(modifier = Modifier.height(8.dp))
                 Text(
-                    text = "Volume & Audio Boost: ${uiState.volumePercent}% ${
-                        if (uiState.volumePercent > 100) "(+${((uiState.volumePercent - 100) * 0.12f).roundToInt()} dB Boost)" else ""
+                    text = "Volume: ${uiState.volumePercent}% ${
+                        if (uiState.volumePercent > 100) "(Audio Boost +${((uiState.volumePercent - 100) * 0.12f).roundToInt()} dB)" else ""
                     }",
-                    color = if (uiState.volumePercent > 100) AmberGold else Champagne,
-                    fontSize = 12.sp,
-                    fontWeight = FontWeight.Bold
+                    color = if (uiState.volumePercent > 100) AmberGold else PlayerTextSecondary,
+                    fontSize = 13.sp
                 )
                 Slider(
                     value = uiState.volumePercent.toFloat(),
@@ -1600,13 +1146,20 @@ fun PlayerScreen(
                     colors = SliderDefaults.colors(
                         thumbColor = AmberGold,
                         activeTrackColor = AmberGold,
-                        inactiveTrackColor = DarkGraphite
+                        inactiveTrackColor = Color.White.copy(alpha = 0.2f)
                     ),
                     modifier = Modifier.fillMaxWidth()
                 )
-                Spacer(modifier = Modifier.height(10.dp))
+                Spacer(modifier = Modifier.height(8.dp))
+                HorizontalDivider(color = Color.White.copy(alpha = 0.1f))
+                Spacer(modifier = Modifier.height(8.dp))
                 if (uiState.audioTracks.isEmpty()) {
-                    Text("Default Stream Audio Track", color = Champagne, fontSize = 14.sp)
+                    Text(
+                        text = "Default Audio Track",
+                        color = PlayerTextSecondary,
+                        fontSize = 14.sp,
+                        modifier = Modifier.padding(vertical = 8.dp)
+                    )
                 } else {
                     LazyColumn {
                         items(uiState.audioTracks) { track ->
@@ -1623,26 +1176,26 @@ fun PlayerScreen(
                             ) {
                                 Text(
                                     text = track.name,
-                                    color = if (track.isSelected) AmberGold else PaleGold,
+                                    color = if (track.isSelected) AmberGold else PlayerTextPrimary,
                                     fontSize = 14.sp,
-                                    fontWeight = if (track.isSelected) FontWeight.Bold else FontWeight.Normal
+                                    fontWeight = if (track.isSelected) FontWeight.SemiBold else FontWeight.Normal
                                 )
                                 if (track.isSelected) {
-                                    Icon(Icons.Default.Check, contentDescription = null, tint = AmberGold)
+                                    Icon(Icons.Default.Check, contentDescription = null, tint = AmberGold, modifier = Modifier.size(18.dp))
                                 }
                             }
                         }
                     }
                 }
+                Spacer(modifier = Modifier.height(12.dp))
             }
         }
     }
 
-    // 2. Wyzie Online Subtitle Studio Modal Sheet (Movies & Series)
+    // 2. Clean 2-Step Wyzie Online Subtitle Sheet (Movies & Series)
     if (showSubtitleSheet && !uiState.isLive) {
         WyzieSubtitleStudioSheet(
             uiState = uiState,
-            accentColor = primaryNeonAccent,
             onDismiss = { showSubtitleSheet = false },
             onSearchCustom = { query, season, episode ->
                 viewModel.searchOnlineSubtitles(query, season, episode)
@@ -1676,26 +1229,27 @@ fun PlayerScreen(
         )
     }
 
-    // 3. Catchup Archive Modal Sheet
+    // 3. Catchup Archive Sheet
     if (showCatchupSheet) {
         ModalBottomSheet(
             onDismissRequest = { showCatchupSheet = false },
-            containerColor = Color(0xFF0A1420)
+            containerColor = PlayerSheetBg
         ) {
             Column(
                 modifier = Modifier
-                    .padding(16.dp)
+                    .padding(horizontal = 20.dp, vertical = 8.dp)
                     .navigationBarsPadding()
             ) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Icon(Icons.Default.History, contentDescription = null, tint = AmberGold)
-                    Spacer(modifier = Modifier.width(8.dp))
-                    Text("Catchup Archive & Timeshift", color = PaleGold, fontSize = 18.sp, fontWeight = FontWeight.ExtraBold)
-                }
-                Spacer(modifier = Modifier.height(6.dp))
                 Text(
-                    text = "Jump back in time on ${uiState.currentStream?.name ?: "this channel"}",
-                    color = Champagne,
+                    text = "Catchup & Timeshift",
+                    color = PlayerTextPrimary,
+                    fontSize = 17.sp,
+                    fontWeight = FontWeight.SemiBold
+                )
+                Spacer(modifier = Modifier.height(4.dp))
+                Text(
+                    text = uiState.currentStream?.name ?: "",
+                    color = PlayerTextSecondary,
                     fontSize = 12.sp
                 )
                 Spacer(modifier = Modifier.height(12.dp))
@@ -1705,10 +1259,10 @@ fun PlayerScreen(
                         uiState.currentStream?.let { viewModel.playStream(it, playlist) }
                         showCatchupSheet = false
                     },
-                    colors = ButtonDefaults.buttonColors(containerColor = AmberGold, contentColor = DarkGraphite),
+                    colors = ButtonDefaults.buttonColors(containerColor = AmberGold, contentColor = Color.Black),
                     modifier = Modifier.fillMaxWidth()
                 ) {
-                    Text("Watch Live Broadcast Now", color = DarkGraphite, fontWeight = FontWeight.ExtraBold)
+                    Text("Return to Live Broadcast", color = Color.Black, fontWeight = FontWeight.SemiBold)
                 }
 
                 Spacer(modifier = Modifier.height(12.dp))
@@ -1721,8 +1275,8 @@ fun PlayerScreen(
                             Row(
                                 modifier = Modifier
                                     .fillMaxWidth()
-                                    .clip(RoundedCornerShape(10.dp))
-                                    .background(DarkGraphite)
+                                    .clip(RoundedCornerShape(8.dp))
+                                    .background(PlayerSheetCardBg)
                                     .clickable {
                                         uiState.currentStream?.let { stream ->
                                             viewModel.playStream(stream, playlist, prog.startEpoch, durationMin)
@@ -1734,20 +1288,18 @@ fun PlayerScreen(
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
                                 Column(modifier = Modifier.weight(1f)) {
-                                    Text(prog.title, color = PaleGold, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
+                                    Text(prog.title, color = PlayerTextPrimary, fontSize = 14.sp, fontWeight = FontWeight.Medium)
                                     Text(
                                         text = "${sdf.format(Date(prog.startEpoch * 1000))} ($durationMin min)",
-                                        color = Champagne,
-                                        fontSize = 11.sp
+                                        color = PlayerTextSecondary,
+                                        fontSize = 11.5.sp
                                     )
                                 }
-                                Icon(Icons.Default.PlayArrow, contentDescription = "Play Archive", tint = AmberGold)
+                                Icon(Icons.Default.PlayArrow, contentDescription = "Play", tint = AmberGold)
                             }
                         }
                     }
                 } else {
-                    Text("Quick Timeshift Rewind:", color = Champagne, fontSize = 13.sp, fontWeight = FontWeight.Medium)
-                    Spacer(modifier = Modifier.height(8.dp))
                     val nowSec = System.currentTimeMillis() / 1000
                     listOf(1 to "1 Hour Ago", 2 to "2 Hours Ago", 3 to "3 Hours Ago", 6 to "6 Hours Ago").forEach { (hours, label) ->
                         Row(
@@ -1764,33 +1316,32 @@ fun PlayerScreen(
                                     }
                                     showCatchupSheet = false
                                 }
-                                .padding(vertical = 10.dp),
+                                .padding(vertical = 12.dp),
                             horizontalArrangement = Arrangement.SpaceBetween
                         ) {
-                            Text(label, color = PaleGold, fontSize = 14.sp)
-                            Icon(Icons.Default.History, contentDescription = null, tint = AmberGold)
+                            Text(label, color = PlayerTextPrimary, fontSize = 14.sp)
+                            Icon(Icons.Default.History, contentDescription = null, tint = PlayerTextSecondary)
                         }
                     }
                 }
+                Spacer(modifier = Modifier.height(12.dp))
             }
         }
     }
 
-    // 4. Buffer Profile Modal Sheet
+    // 4. Buffer Profile Sheet
     if (showBufferSheet) {
         ModalBottomSheet(
             onDismissRequest = { showBufferSheet = false },
-            containerColor = Color(0xFF0A1420)
+            containerColor = PlayerSheetBg
         ) {
             Column(
                 modifier = Modifier
-                    .padding(16.dp)
+                    .padding(horizontal = 20.dp, vertical = 8.dp)
                     .navigationBarsPadding()
             ) {
-                Text("Stream Buffer & Latency Control", color = PaleGold, fontSize = 18.sp, fontWeight = FontWeight.ExtraBold)
-                Spacer(modifier = Modifier.height(6.dp))
-                Text("Adjust buffer size to prioritize fast channel zapping or freeze-free 4K playback.", color = Champagne, fontSize = 12.sp)
-                Spacer(modifier = Modifier.height(12.dp))
+                Text("Stream Buffer", color = PlayerTextPrimary, fontSize = 17.sp, fontWeight = FontWeight.SemiBold)
+                Spacer(modifier = Modifier.height(10.dp))
                 BufferProfile.entries.forEach { profile ->
                     val isSelected = uiState.bufferProfile == profile
                     Row(
@@ -1807,34 +1358,35 @@ fun PlayerScreen(
                         Column(modifier = Modifier.weight(1f)) {
                             Text(
                                 text = profile.label,
-                                color = if (isSelected) AmberGold else PaleGold,
+                                color = if (isSelected) AmberGold else PlayerTextPrimary,
                                 fontSize = 14.sp,
-                                fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal
+                                fontWeight = if (isSelected) FontWeight.SemiBold else FontWeight.Normal
                             )
-                            Text(text = profile.description, color = Champagne, fontSize = 11.sp)
+                            Text(text = profile.description, color = PlayerTextSecondary, fontSize = 12.sp)
                         }
                         if (isSelected) {
-                            Icon(Icons.Default.Check, contentDescription = null, tint = AmberGold)
+                            Icon(Icons.Default.Check, contentDescription = null, tint = AmberGold, modifier = Modifier.size(18.dp))
                         }
                     }
                 }
+                Spacer(modifier = Modifier.height(12.dp))
             }
         }
     }
 
-    // 5. Sleep Timer Modal Sheet
+    // 5. Sleep Timer Sheet
     if (showSleepTimerSheet) {
         ModalBottomSheet(
             onDismissRequest = { showSleepTimerSheet = false },
-            containerColor = Color(0xFF0A1420)
+            containerColor = PlayerSheetBg
         ) {
             Column(
                 modifier = Modifier
-                    .padding(16.dp)
+                    .padding(horizontal = 20.dp, vertical = 8.dp)
                     .navigationBarsPadding()
             ) {
-                Text("Sleep Timer", color = PaleGold, fontSize = 18.sp, fontWeight = FontWeight.ExtraBold)
-                Spacer(modifier = Modifier.height(12.dp))
+                Text("Sleep Timer", color = PlayerTextPrimary, fontSize = 17.sp, fontWeight = FontWeight.SemiBold)
+                Spacer(modifier = Modifier.height(10.dp))
                 val options = listOf(null to "Off", 15 to "15 Minutes", 30 to "30 Minutes", 60 to "60 Minutes", 90 to "90 Minutes")
                 options.forEach { (mins, label) ->
                     val isSelected = uiState.sleepTimerRemainingMinutes == mins
@@ -1850,32 +1402,33 @@ fun PlayerScreen(
                     ) {
                         Text(
                             text = label,
-                            color = if (isSelected) AmberGold else PaleGold,
+                            color = if (isSelected) AmberGold else PlayerTextPrimary,
                             fontSize = 14.sp,
-                            fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal
+                            fontWeight = if (isSelected) FontWeight.SemiBold else FontWeight.Normal
                         )
                         if (isSelected) {
-                            Icon(Icons.Default.Check, contentDescription = null, tint = AmberGold)
+                            Icon(Icons.Default.Check, contentDescription = null, tint = AmberGold, modifier = Modifier.size(18.dp))
                         }
                     }
                 }
+                Spacer(modifier = Modifier.height(12.dp))
             }
         }
     }
 
-    // 6. Playback Speed Modal Sheet (VOD only)
+    // 6. Playback Speed Sheet (VOD only)
     if (showSpeedSheet && !uiState.isLive) {
         ModalBottomSheet(
             onDismissRequest = { showSpeedSheet = false },
-            containerColor = Color(0xFF0A1420)
+            containerColor = PlayerSheetBg
         ) {
             Column(
                 modifier = Modifier
-                    .padding(16.dp)
+                    .padding(horizontal = 20.dp, vertical = 8.dp)
                     .navigationBarsPadding()
             ) {
-                Text("Playback Speed", color = PaleGold, fontSize = 18.sp, fontWeight = FontWeight.ExtraBold)
-                Spacer(modifier = Modifier.height(12.dp))
+                Text("Playback Speed", color = PlayerTextPrimary, fontSize = 17.sp, fontWeight = FontWeight.SemiBold)
+                Spacer(modifier = Modifier.height(10.dp))
                 val speeds = listOf(0.5f, 0.75f, 1.0f, 1.25f, 1.5f, 2.0f)
                 speeds.forEach { speed ->
                     val isSelected = uiState.playbackSpeed == speed
@@ -1891,33 +1444,242 @@ fun PlayerScreen(
                     ) {
                         Text(
                             text = "${speed}x ${if (speed == 1.0f) "(Normal)" else ""}",
-                            color = if (isSelected) AmberGold else PaleGold,
+                            color = if (isSelected) AmberGold else PlayerTextPrimary,
                             fontSize = 14.sp,
-                            fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal
+                            fontWeight = if (isSelected) FontWeight.SemiBold else FontWeight.Normal
                         )
                         if (isSelected) {
-                            Icon(Icons.Default.Check, contentDescription = null, tint = AmberGold)
+                            Icon(Icons.Default.Check, contentDescription = null, tint = AmberGold, modifier = Modifier.size(18.dp))
                         }
                     }
                 }
+                Spacer(modifier = Modifier.height(12.dp))
             }
         }
     }
 }
 
 /**
- * SetPlay Online Subtitle Studio Modal Sheet (Powered by Wyzie Subs API):
- * - Step 1: User selects their preferred Subtitle Language (Arabic, English, French, Spanish, etc.).
- * - Step 2: Displays the curated list of Wyzie subtitle options for that language so the user
- *   can tap any option to immediately start watching with it.
- * - Includes custom Title/IMDb search, Series Season/Episode refinement, Subtitle Sync Offset,
- *   and Subtitle Text Scale controls.
+ * Custom thin cinema timeline scrubber (replaces the bulky default Material3 Slider).
+ */
+@Composable
+private fun CinemaTimelineScrubber(
+    positionMs: Long,
+    durationMs: Long,
+    onSeekTo: (Long) -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val safeDuration = durationMs.coerceAtLeast(1L)
+    var isDragging by remember { mutableStateOf(false) }
+    var dragFraction by remember { mutableFloatStateOf(0f) }
+    var trackWidthPx by remember { mutableFloatStateOf(1f) }
+
+    val currentFraction = if (isDragging) {
+        dragFraction.coerceIn(0f, 1f)
+    } else {
+        (positionMs.toFloat() / safeDuration.toFloat()).coerceIn(0f, 1f)
+    }
+
+    Box(
+        contentAlignment = Alignment.CenterStart,
+        modifier = modifier
+            .height(28.dp)
+            .onSizeChanged { size ->
+                trackWidthPx = size.width.toFloat().coerceAtLeast(1f)
+            }
+            .pointerInput(safeDuration) {
+                detectTapGestures { offset ->
+                    val frac = (offset.x / trackWidthPx).coerceIn(0f, 1f)
+                    onSeekTo((frac * safeDuration).toLong())
+                }
+            }
+            .pointerInput(safeDuration) {
+                detectHorizontalDragGestures(
+                    onDragStart = { offset ->
+                        isDragging = true
+                        dragFraction = (offset.x / trackWidthPx).coerceIn(0f, 1f)
+                    },
+                    onDragEnd = {
+                        val target = (dragFraction * safeDuration).toLong()
+                        isDragging = false
+                        onSeekTo(target)
+                    },
+                    onDragCancel = {
+                        isDragging = false
+                    },
+                    onHorizontalDrag = { change, _ ->
+                        change.consume()
+                        dragFraction = (change.position.x / trackWidthPx).coerceIn(0f, 1f)
+                    }
+                )
+            }
+    ) {
+        Canvas(modifier = Modifier.fillMaxSize()) {
+            val trackHeight = 3.5.dp.toPx()
+            val centerY = size.height / 2f
+            val cornerRadius = CornerRadius(trackHeight / 2f, trackHeight / 2f)
+
+            // Unplayed background track
+            drawRoundRect(
+                color = Color.White.copy(alpha = 0.26f),
+                topLeft = Offset(0f, centerY - trackHeight / 2f),
+                size = Size(size.width, trackHeight),
+                cornerRadius = cornerRadius
+            )
+
+            // Active played track
+            val activeWidth = (size.width * currentFraction).coerceIn(0f, size.width)
+            if (activeWidth > 0f) {
+                drawRoundRect(
+                    color = AmberGold,
+                    topLeft = Offset(0f, centerY - trackHeight / 2f),
+                    size = Size(activeWidth, trackHeight),
+                    cornerRadius = cornerRadius
+                )
+            }
+
+            // Sleek circular thumb
+            val thumbRadius = if (isDragging) 7.5.dp.toPx() else 5.5.dp.toPx()
+            drawCircle(
+                color = AmberGold,
+                radius = thumbRadius,
+                center = Offset(activeWidth, centerY)
+            )
+        }
+    }
+}
+
+/**
+ * Clean, understated circular center transport button (Netflix / Apple TV+ style).
+ */
+@Composable
+private fun CleanCenterCircleButton(
+    icon: ImageVector,
+    contentDescription: String,
+    sizeDp: Int,
+    iconSizeDp: Int,
+    isPrimary: Boolean = false,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    Surface(
+        color = Color.Black.copy(alpha = if (isPrimary) 0.52f else 0.42f),
+        shape = CircleShape,
+        border = BorderStroke(
+            width = 1.dp,
+            color = Color.White.copy(alpha = if (isPrimary) 0.32f else 0.20f)
+        ),
+        modifier = modifier
+            .size(sizeDp.dp)
+            .clip(CircleShape)
+            .clickable(onClick = onClick)
+    ) {
+        Box(contentAlignment = Alignment.Center) {
+            Icon(
+                imageVector = icon,
+                contentDescription = contentDescription,
+                tint = Color.White,
+                modifier = Modifier.size(iconSizeDp.dp)
+            )
+        }
+    }
+}
+
+/**
+ * Frameless, clean bottom utility action item (Icon + Text).
+ */
+@Composable
+private fun MinimalBottomBarAction(
+    icon: ImageVector,
+    label: String,
+    isActive: Boolean,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val tint = if (isActive) AmberGold else PlayerTextPrimary
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        modifier = modifier
+            .clip(RoundedCornerShape(8.dp))
+            .clickable(onClick = onClick)
+            .padding(horizontal = 10.dp, vertical = 6.dp)
+    ) {
+        Icon(
+            imageVector = icon,
+            contentDescription = label,
+            tint = tint,
+            modifier = Modifier.size(18.dp)
+        )
+        Spacer(modifier = Modifier.width(6.dp))
+        Text(
+            text = label,
+            color = tint,
+            fontSize = 12.5.sp,
+            fontWeight = if (isActive) FontWeight.SemiBold else FontWeight.Medium,
+            maxLines = 1
+        )
+    }
+}
+
+/**
+ * Minimal gesture feedback pill shown only while actively swiping brightness, volume, or timeline.
+ */
+@Composable
+private fun MinimalGesturePill(
+    icon: ImageVector,
+    label: String,
+    progress: Float?,
+    isBoosted: Boolean,
+    modifier: Modifier = Modifier
+) {
+    Surface(
+        color = Color(0xCC0D1017),
+        shape = RoundedCornerShape(50),
+        border = BorderStroke(0.8.dp, Color.White.copy(alpha = 0.18f)),
+        modifier = modifier
+    ) {
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            modifier = Modifier.padding(horizontal = 16.dp, vertical = 10.dp)
+        ) {
+            Icon(
+                imageVector = icon,
+                contentDescription = null,
+                tint = if (isBoosted) LiveRed else AmberGold,
+                modifier = Modifier.size(18.dp)
+            )
+            Spacer(modifier = Modifier.width(8.dp))
+            Text(
+                text = label,
+                color = Color.White,
+                fontSize = 13.sp,
+                fontWeight = FontWeight.SemiBold
+            )
+            if (progress != null) {
+                Spacer(modifier = Modifier.width(10.dp))
+                LinearProgressIndicator(
+                    progress = { progress.coerceIn(0f, 1f) },
+                    color = if (isBoosted) LiveRed else AmberGold,
+                    trackColor = Color.White.copy(alpha = 0.2f),
+                    modifier = Modifier
+                        .width(72.dp)
+                        .height(4.dp)
+                        .clip(RoundedCornerShape(2.dp))
+                )
+            }
+        }
+    }
+}
+
+/**
+ * Clean 2-Step Online Subtitles Sheet (Powered by Wyzie Subs API):
+ * - Step 1: Choose Language
+ * - Step 2: Select Subtitle Option to start watching immediately
  */
 @ExperimentalMaterial3Api
 @Composable
 private fun WyzieSubtitleStudioSheet(
     uiState: PlayerUiState,
-    accentColor: Color,
     onDismiss: () -> Unit,
     onSearchCustom: (String, Int?, Int?) -> Unit,
     onSelectLanguage: (String) -> Unit,
@@ -1946,131 +1708,94 @@ private fun WyzieSubtitleStudioSheet(
 
     ModalBottomSheet(
         onDismissRequest = onDismiss,
-        containerColor = Color(0xFF07111C)
+        containerColor = PlayerSheetBg
     ) {
         Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 16.dp, vertical = 6.dp)
+                .padding(horizontal = 20.dp, vertical = 6.dp)
                 .navigationBarsPadding()
         ) {
-            // 1. Studio Header Bar
+            // Header
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Box(
-                        modifier = Modifier
-                            .size(36.dp)
-                            .background(accentColor.copy(alpha = 0.16f), CircleShape)
-                            .border(1.dp, accentColor.copy(alpha = 0.6f), CircleShape),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.Subtitles,
-                            contentDescription = null,
-                            tint = accentColor,
-                            modifier = Modifier.size(18.dp)
-                        )
-                    }
-                    Spacer(modifier = Modifier.width(10.dp))
-                    Column {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Text(
-                                text = "Online Subtitle Studio",
-                                color = Color.White,
-                                fontSize = 17.sp,
-                                fontWeight = FontWeight.ExtraBold
-                            )
-                            Spacer(modifier = Modifier.width(7.dp))
-                            Surface(
-                                color = AmberGold.copy(alpha = 0.18f),
-                                shape = RoundedCornerShape(6.dp),
-                                border = BorderStroke(0.7.dp, AmberGold.copy(alpha = 0.65f))
-                            ) {
-                                Text(
-                                    text = "WYZIE SUBS",
-                                    color = AmberGold,
-                                    fontSize = 8.5.sp,
-                                    fontWeight = FontWeight.ExtraBold,
-                                    letterSpacing = 0.5.sp,
-                                    modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
-                                )
-                            }
-                        }
-                        val matchedId = uiState.resolvedMediaQuery?.imdbId
-                            ?: uiState.resolvedMediaQuery?.tmdbId?.let { "TMDB:$it" }
-                        Text(
-                            text = buildString {
-                                append(uiState.resolvedMediaQuery?.cleanTitle ?: uiState.currentStream?.name ?: "VOD")
-                                if (!matchedId.isNullOrBlank()) append(" • $matchedId")
-                                if (uiState.wyzieLanguageGroups.isNotEmpty()) {
-                                    append(" • ${uiState.wyzieLanguageGroups.size} Languages")
-                                }
-                            },
-                            color = Champagne,
-                            fontSize = 11.sp,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis
-                        )
-                    }
+                Column {
+                    Text(
+                        text = "Subtitles",
+                        color = PlayerTextPrimary,
+                        fontSize = 18.sp,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                    val matchedId = uiState.resolvedMediaQuery?.imdbId
+                        ?: uiState.resolvedMediaQuery?.tmdbId?.let { "TMDB:$it" }
+                    Text(
+                        text = buildString {
+                            append(uiState.resolvedMediaQuery?.cleanTitle ?: uiState.currentStream?.name ?: "")
+                            if (!matchedId.isNullOrBlank()) append(" • $matchedId")
+                        },
+                        color = PlayerTextSecondary,
+                        fontSize = 12.sp,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
                 }
 
-                // Turn Subtitles Off Pill
+                // Turn Subtitles Off
                 val allOff = uiState.activeWyzieOption == null && uiState.subtitleTracks.none { it.isSelected }
                 Surface(
-                    color = if (allOff) AmberGold.copy(alpha = 0.2f) else Color(0xFF101E2E),
+                    color = if (allOff) AmberGold.copy(alpha = 0.2f) else PlayerSheetCardBg,
                     shape = RoundedCornerShape(50),
-                    border = BorderStroke(0.8.dp, if (allOff) AmberGold else Champagne.copy(alpha = 0.3f)),
+                    border = BorderStroke(0.8.dp, if (allOff) AmberGold else Color.White.copy(alpha = 0.15f)),
                     modifier = Modifier
                         .clickable { onTurnSubtitlesOff() }
                         .testTag("subtitle_off_button")
                 ) {
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
-                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp)
+                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp)
                     ) {
                         Icon(
                             imageVector = Icons.Default.ClosedCaptionDisabled,
-                            contentDescription = "Subtitles Off",
-                            tint = if (allOff) AmberGold else Champagne,
+                            contentDescription = "Off",
+                            tint = if (allOff) AmberGold else PlayerTextSecondary,
                             modifier = Modifier.size(14.dp)
                         )
-                        Spacer(modifier = Modifier.width(4.dp))
+                        Spacer(modifier = Modifier.width(5.dp))
                         Text(
                             text = "Off",
-                            color = if (allOff) AmberGold else PaleGold,
-                            fontSize = 11.sp,
-                            fontWeight = FontWeight.Bold
+                            color = if (allOff) AmberGold else PlayerTextPrimary,
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.Medium
                         )
                     }
                 }
             }
 
-            Spacer(modifier = Modifier.height(10.dp))
+            Spacer(modifier = Modifier.height(12.dp))
 
-            // 2. Compact Title / IMDb ID Search & Season/Episode Bar
+            // Search Input Bar (for custom title / IMDb ID / Season / Episode)
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(6.dp)
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
                 OutlinedTextField(
                     value = searchInput,
                     onValueChange = { searchInput = it },
                     placeholder = {
-                        Text("Movie/Series title or IMDb ID (tt...)", color = Champagne.copy(alpha = 0.5f), fontSize = 12.sp)
+                        Text("Title or IMDb ID (tt...)", color = PlayerTextMuted, fontSize = 12.sp)
                     },
                     singleLine = true,
                     colors = OutlinedTextFieldDefaults.colors(
-                        focusedTextColor = Color.White,
-                        unfocusedTextColor = PaleGold,
-                        focusedBorderColor = accentColor,
-                        unfocusedBorderColor = Champagne.copy(alpha = 0.28f),
-                        focusedContainerColor = Color(0xFF0C1826),
-                        unfocusedContainerColor = Color(0xFF0C1826)
+                        focusedTextColor = PlayerTextPrimary,
+                        unfocusedTextColor = PlayerTextPrimary,
+                        focusedBorderColor = AmberGold,
+                        unfocusedBorderColor = Color.White.copy(alpha = 0.18f),
+                        focusedContainerColor = PlayerSheetCardBg,
+                        unfocusedContainerColor = PlayerSheetCardBg
                     ),
                     modifier = Modifier
                         .weight(1f)
@@ -2081,28 +1806,28 @@ private fun WyzieSubtitleStudioSheet(
                     OutlinedTextField(
                         value = seasonInput,
                         onValueChange = { seasonInput = it.filter { ch -> ch.isDigit() }.take(2) },
-                        label = { Text("S", fontSize = 10.sp, color = Champagne) },
+                        label = { Text("S", fontSize = 10.sp, color = PlayerTextSecondary) },
                         singleLine = true,
                         colors = OutlinedTextFieldDefaults.colors(
-                            focusedTextColor = Color.White,
-                            unfocusedTextColor = PaleGold,
-                            focusedBorderColor = accentColor,
-                            unfocusedBorderColor = Champagne.copy(alpha = 0.28f)
+                            focusedTextColor = PlayerTextPrimary,
+                            unfocusedTextColor = PlayerTextPrimary,
+                            focusedBorderColor = AmberGold,
+                            unfocusedBorderColor = Color.White.copy(alpha = 0.18f)
                         ),
-                        modifier = Modifier.width(56.dp)
+                        modifier = Modifier.width(54.dp)
                     )
                     OutlinedTextField(
                         value = episodeInput,
                         onValueChange = { episodeInput = it.filter { ch -> ch.isDigit() }.take(3) },
-                        label = { Text("E", fontSize = 10.sp, color = Champagne) },
+                        label = { Text("E", fontSize = 10.sp, color = PlayerTextSecondary) },
                         singleLine = true,
                         colors = OutlinedTextFieldDefaults.colors(
-                            focusedTextColor = Color.White,
-                            unfocusedTextColor = PaleGold,
-                            focusedBorderColor = accentColor,
-                            unfocusedBorderColor = Champagne.copy(alpha = 0.28f)
+                            focusedTextColor = PlayerTextPrimary,
+                            unfocusedTextColor = PlayerTextPrimary,
+                            focusedBorderColor = AmberGold,
+                            unfocusedBorderColor = Color.White.copy(alpha = 0.18f)
                         ),
-                        modifier = Modifier.width(58.dp)
+                        modifier = Modifier.width(56.dp)
                     )
                 }
 
@@ -2115,124 +1840,98 @@ private fun WyzieSubtitleStudioSheet(
                         )
                     },
                     colors = ButtonDefaults.buttonColors(
-                        containerColor = accentColor,
-                        contentColor = DarkGraphite
+                        containerColor = AmberGold,
+                        contentColor = Color.Black
                     ),
-                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 10.dp),
+                    contentPadding = PaddingValues(horizontal = 14.dp, vertical = 12.dp),
                     modifier = Modifier.testTag("wyzie_search_button")
                 ) {
-                    Icon(Icons.Default.Search, contentDescription = "Search Subtitles", modifier = Modifier.size(16.dp))
+                    Icon(Icons.Default.Search, contentDescription = "Search", modifier = Modifier.size(16.dp))
                     Spacer(modifier = Modifier.width(4.dp))
-                    Text("Find", fontSize = 12.sp, fontWeight = FontWeight.ExtraBold)
+                    Text("Search", fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
                 }
             }
 
-            // 3. Active Subtitle Timing Sync & Font Size Controls (shown when an online subtitle is active)
+            // Subtitle Sync & Size Bar (visible when an online subtitle is active)
             if (uiState.activeWyzieOption != null) {
-                Spacer(modifier = Modifier.height(8.dp))
-                Surface(
-                    color = Color(0xFF0D1B2A),
-                    shape = RoundedCornerShape(12.dp),
-                    border = BorderStroke(0.8.dp, accentColor.copy(alpha = 0.45f)),
-                    modifier = Modifier.fillMaxWidth()
+                Spacer(modifier = Modifier.height(10.dp))
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(8.dp))
+                        .background(PlayerSheetCardBg)
+                        .padding(horizontal = 12.dp, vertical = 8.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
                 ) {
                     Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(horizontal = 10.dp, vertical = 7.dp),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
                     ) {
-                        // Sync Offset Controls
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(5.dp)
-                        ) {
-                            Text(
-                                text = "Sync: ${String.format(Locale.US, "%+.1fs", uiState.subtitleSyncOffsetMs / 1000f)}",
-                                color = PaleGold,
-                                fontSize = 11.sp,
-                                fontWeight = FontWeight.Bold
-                            )
-                            SmallStudioChip(label = "-0.5s", onClick = { onAdjustSyncOffset(-500L) })
-                            SmallStudioChip(label = "+0.5s", onClick = { onAdjustSyncOffset(500L) })
-                            if (uiState.subtitleSyncOffsetMs != 0L) {
-                                SmallStudioChip(label = "0.0s", onClick = onResetSyncOffset)
-                            }
+                        Text(
+                            text = "Sync ${String.format(Locale.US, "%+.1fs", uiState.subtitleSyncOffsetMs / 1000f)}",
+                            color = PlayerTextSecondary,
+                            fontSize = 12.sp
+                        )
+                        SmallTextButton(label = "-0.5s", onClick = { onAdjustSyncOffset(-500L) })
+                        SmallTextButton(label = "+0.5s", onClick = { onAdjustSyncOffset(500L) })
+                        if (uiState.subtitleSyncOffsetMs != 0L) {
+                            SmallTextButton(label = "Reset", onClick = onResetSyncOffset)
                         }
+                    }
 
-                        // Subtitle Size Controls
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(4.dp)
-                        ) {
-                            listOf(0.85f to "S", 1.0f to "M", 1.2f to "L", 1.4f to "XL").forEach { (scale, label) ->
-                                val selected = abs(uiState.subtitleScaleFactor - scale) < 0.05f
-                                Surface(
-                                    color = if (selected) accentColor else Color(0xFF142436),
-                                    shape = RoundedCornerShape(6.dp),
-                                    modifier = Modifier.clickable { onSelectScaleFactor(scale) }
-                                ) {
-                                    Text(
-                                        text = label,
-                                        color = if (selected) DarkGraphite else Champagne,
-                                        fontSize = 10.sp,
-                                        fontWeight = FontWeight.ExtraBold,
-                                        modifier = Modifier.padding(horizontal = 6.dp, vertical = 3.dp)
-                                    )
-                                }
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(4.dp)
+                    ) {
+                        listOf(0.85f to "S", 1.0f to "M", 1.2f to "L", 1.4f to "XL").forEach { (scale, label) ->
+                            val selected = abs(uiState.subtitleScaleFactor - scale) < 0.05f
+                            Surface(
+                                color = if (selected) AmberGold else Color.White.copy(alpha = 0.08f),
+                                shape = RoundedCornerShape(6.dp),
+                                modifier = Modifier.clickable { onSelectScaleFactor(scale) }
+                            ) {
+                                Text(
+                                    text = label,
+                                    color = if (selected) Color.Black else PlayerTextSecondary,
+                                    fontSize = 11.sp,
+                                    fontWeight = FontWeight.Medium,
+                                    modifier = Modifier.padding(horizontal = 7.dp, vertical = 3.dp)
+                                )
                             }
                         }
                     }
                 }
             }
 
-            Spacer(modifier = Modifier.height(10.dp))
+            Spacer(modifier = Modifier.height(14.dp))
 
-            // 4. Loading / Status / Step 1 (Language Selection) & Step 2 (Subtitle Options)
+            // Step 1 (Language) & Step 2 (Subtitle Options)
             if (uiState.isSearchingOnlineSubtitles || uiState.isDownloadingSubtitle) {
                 Box(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .height(180.dp),
+                        .height(160.dp),
                     contentAlignment = Alignment.Center
                 ) {
                     Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                        CircularProgressIndicator(color = accentColor, strokeWidth = 3.dp)
+                        CircularProgressIndicator(color = AmberGold, strokeWidth = 2.5.dp, modifier = Modifier.size(32.dp))
                         Spacer(modifier = Modifier.height(10.dp))
                         Text(
-                            text = if (uiState.isDownloadingSubtitle) {
-                                "Downloading & syncing subtitle cues..."
-                            } else {
-                                "Searching Wyzie Subs for available languages..."
-                            },
-                            color = PaleGold,
-                            fontSize = 13.sp,
-                            fontWeight = FontWeight.SemiBold
+                            text = if (uiState.isDownloadingSubtitle) "Loading subtitle..." else "Searching subtitles...",
+                            color = PlayerTextSecondary,
+                            fontSize = 13.sp
                         )
                     }
                 }
             } else if (uiState.wyzieLanguageGroups.isNotEmpty()) {
-                // STEP 1: CHOOSE SUBTITLE LANGUAGE
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    modifier = Modifier.padding(bottom = 6.dp)
-                ) {
-                    Icon(
-                        imageVector = Icons.Default.Language,
-                        contentDescription = null,
-                        tint = AmberGold,
-                        modifier = Modifier.size(15.dp)
-                    )
-                    Spacer(modifier = Modifier.width(6.dp))
-                    Text(
-                        text = "STEP 1 • CHOOSE LANGUAGE",
-                        color = AmberGold,
-                        fontSize = 11.sp,
-                        fontWeight = FontWeight.ExtraBold,
-                        letterSpacing = 0.6.sp
-                    )
-                }
+                Text(
+                    text = "Language",
+                    color = PlayerTextSecondary,
+                    fontSize = 12.sp,
+                    fontWeight = FontWeight.Medium,
+                    modifier = Modifier.padding(bottom = 8.dp)
+                )
 
                 LazyRow(
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -2241,17 +1940,17 @@ private fun WyzieSubtitleStudioSheet(
                         .testTag("wyzie_language_row")
                 ) {
                     items(uiState.wyzieLanguageGroups, key = { it.languageCode }) { group ->
-                        val isLangSelected = selectedGroup?.languageCode == group.languageCode
+                        val isSelected = selectedGroup?.languageCode == group.languageCode
                         val bg by animateColorAsState(
-                            targetValue = if (isLangSelected) accentColor.copy(alpha = 0.22f) else Color(0xFF0E1B2A),
-                            label = "lang_chip_bg_${group.languageCode}"
+                            targetValue = if (isSelected) AmberGold else PlayerSheetCardBg,
+                            label = "lang_${group.languageCode}"
                         )
                         Surface(
                             color = bg,
-                            shape = RoundedCornerShape(14.dp),
+                            shape = RoundedCornerShape(50),
                             border = BorderStroke(
-                                width = if (isLangSelected) 1.3.dp else 0.8.dp,
-                                color = if (isLangSelected) accentColor else Champagne.copy(alpha = 0.25f)
+                                width = 1.dp,
+                                color = if (isSelected) AmberGold else Color.White.copy(alpha = 0.12f)
                             ),
                             modifier = Modifier
                                 .clickable { onSelectLanguage(group.languageCode) }
@@ -2259,59 +1958,43 @@ private fun WyzieSubtitleStudioSheet(
                         ) {
                             Row(
                                 verticalAlignment = Alignment.CenterVertically,
-                                modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)
+                                modifier = Modifier.padding(horizontal = 14.dp, vertical = 8.dp)
                             ) {
-                                Text(text = group.flagEmoji, fontSize = 15.sp)
+                                Text(text = group.flagEmoji, fontSize = 14.sp)
                                 Spacer(modifier = Modifier.width(6.dp))
-                                Column {
-                                    Text(
-                                        text = group.languageDisplay,
-                                        color = if (isLangSelected) Color.White else PaleGold,
-                                        fontSize = 12.sp,
-                                        fontWeight = FontWeight.ExtraBold
-                                    )
-                                    Text(
-                                        text = "${group.options.size} option${if (group.options.size == 1) "" else "s"}",
-                                        color = if (isLangSelected) accentColor else Champagne.copy(alpha = 0.7f),
-                                        fontSize = 9.5.sp,
-                                        fontWeight = FontWeight.SemiBold
-                                    )
-                                }
+                                Text(
+                                    text = group.languageDisplay,
+                                    color = if (isSelected) Color.Black else PlayerTextPrimary,
+                                    fontSize = 13.sp,
+                                    fontWeight = if (isSelected) FontWeight.SemiBold else FontWeight.Normal
+                                )
+                                Spacer(modifier = Modifier.width(5.dp))
+                                Text(
+                                    text = "(${group.options.size})",
+                                    color = if (isSelected) Color.Black.copy(alpha = 0.7f) else PlayerTextMuted,
+                                    fontSize = 11.sp
+                                )
                             }
                         }
                     }
                 }
 
-                Spacer(modifier = Modifier.height(12.dp))
+                Spacer(modifier = Modifier.height(14.dp))
 
-                // STEP 2: CHOOSE SUBTITLE OPTION FOR SELECTED LANGUAGE
                 if (selectedGroup != null) {
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(bottom = 6.dp)
-                    ) {
-                        Text(
-                            text = "STEP 2 • SELECT ${selectedGroup.languageDisplay.uppercase(Locale.ROOT)} SUBTITLE TO WATCH",
-                            color = PaleGold,
-                            fontSize = 11.sp,
-                            fontWeight = FontWeight.ExtraBold,
-                            letterSpacing = 0.5.sp
-                        )
-                        Text(
-                            text = "${selectedGroup.options.size} available",
-                            color = Champagne,
-                            fontSize = 10.5.sp
-                        )
-                    }
+                    Text(
+                        text = "${selectedGroup.languageDisplay} Options",
+                        color = PlayerTextSecondary,
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.Medium,
+                        modifier = Modifier.padding(bottom = 8.dp)
+                    )
 
                     LazyColumn(
-                        verticalArrangement = Arrangement.spacedBy(7.dp),
+                        verticalArrangement = Arrangement.spacedBy(6.dp),
                         modifier = Modifier
                             .fillMaxWidth()
-                            .heightIn(max = 250.dp)
+                            .heightIn(max = 240.dp)
                             .testTag("wyzie_options_list")
                     ) {
                         itemsIndexed(
@@ -2319,501 +2002,126 @@ private fun WyzieSubtitleStudioSheet(
                             key = { idx, opt -> "${opt.id}_$idx" }
                         ) { idx, option ->
                             val isOptionActive = uiState.activeWyzieOption?.url == option.url
-                            Surface(
-                                color = if (isOptionActive) accentColor.copy(alpha = 0.18f) else Color(0xFF0C1826),
-                                shape = RoundedCornerShape(14.dp),
-                                border = BorderStroke(
-                                    width = if (isOptionActive) 1.2.dp else 0.8.dp,
-                                    color = if (isOptionActive) accentColor else Champagne.copy(alpha = 0.22f)
-                                ),
+                            Row(
                                 modifier = Modifier
                                     .fillMaxWidth()
+                                    .clip(RoundedCornerShape(10.dp))
+                                    .background(
+                                        if (isOptionActive) AmberGold.copy(alpha = 0.16f) else PlayerSheetCardBg
+                                    )
+                                    .border(
+                                        width = 1.dp,
+                                        color = if (isOptionActive) AmberGold else Color.White.copy(alpha = 0.08f),
+                                        shape = RoundedCornerShape(10.dp)
+                                    )
                                     .clickable { onSelectWyzieOption(option) }
-                                    .testTag("wyzie_option_${idx + 1}")
+                                    .padding(horizontal = 14.dp, vertical = 11.dp)
+                                    .testTag("wyzie_option_${idx + 1}"),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.SpaceBetween
                             ) {
-                                Row(
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .padding(horizontal = 12.dp, vertical = 10.dp),
-                                    verticalAlignment = Alignment.CenterVertically,
-                                    horizontalArrangement = Arrangement.SpaceBetween
-                                ) {
-                                    Column(modifier = Modifier.weight(1f)) {
-                                        Row(
-                                            verticalAlignment = Alignment.CenterVertically,
-                                            horizontalArrangement = Arrangement.spacedBy(6.dp)
-                                        ) {
-                                            Text(
-                                                text = "${option.flagEmoji} Option #${idx + 1} • ${option.languageDisplay}",
-                                                color = if (isOptionActive) accentColor else Color.White,
-                                                fontSize = 13.sp,
-                                                fontWeight = FontWeight.ExtraBold
-                                            )
-                                            Surface(
-                                                color = Color(0xFF15263A),
-                                                shape = RoundedCornerShape(5.dp),
-                                                border = BorderStroke(0.5.dp, Champagne.copy(alpha = 0.35f))
-                                            ) {
-                                                Text(
-                                                    text = option.format,
-                                                    color = PaleGold,
-                                                    fontSize = 8.5.sp,
-                                                    fontWeight = FontWeight.ExtraBold,
-                                                    modifier = Modifier.padding(horizontal = 5.dp, vertical = 1.5.dp)
-                                                )
-                                            }
-                                            Surface(
-                                                color = AmberGold.copy(alpha = 0.15f),
-                                                shape = RoundedCornerShape(5.dp),
-                                                border = BorderStroke(0.5.dp, AmberGold.copy(alpha = 0.5f))
-                                            ) {
-                                                Text(
-                                                    text = option.source,
-                                                    color = AmberGold,
-                                                    fontSize = 8.5.sp,
-                                                    fontWeight = FontWeight.Bold,
-                                                    modifier = Modifier.padding(horizontal = 5.dp, vertical = 1.5.dp)
-                                                )
-                                            }
-                                            if (option.isHearingImpaired) {
-                                                Surface(
-                                                    color = Color(0xFF203246),
-                                                    shape = RoundedCornerShape(5.dp)
-                                                ) {
-                                                    Text(
-                                                        text = "HI",
-                                                        color = Champagne,
-                                                        fontSize = 8.5.sp,
-                                                        fontWeight = FontWeight.Bold,
-                                                        modifier = Modifier.padding(horizontal = 5.dp, vertical = 1.5.dp)
-                                                    )
-                                                }
-                                            }
-                                        }
-                                        Spacer(modifier = Modifier.height(3.dp))
-                                        Text(
-                                            text = option.mediaName,
-                                            color = Champagne.copy(alpha = 0.82f),
-                                            fontSize = 11.sp,
-                                            maxLines = 1,
-                                            overflow = TextOverflow.Ellipsis
-                                        )
-                                    }
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Text(
+                                        text = "${option.languageDisplay} #${idx + 1}  •  ${option.format}",
+                                        color = if (isOptionActive) AmberGold else PlayerTextPrimary,
+                                        fontSize = 13.5.sp,
+                                        fontWeight = FontWeight.Medium
+                                    )
+                                    Spacer(modifier = Modifier.height(2.dp))
+                                    Text(
+                                        text = option.mediaName,
+                                        color = PlayerTextSecondary,
+                                        fontSize = 11.5.sp,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                }
 
-                                    Spacer(modifier = Modifier.width(10.dp))
+                                Spacer(modifier = Modifier.width(12.dp))
 
-                                    Surface(
-                                        color = if (isOptionActive) accentColor else AmberGold,
-                                        shape = RoundedCornerShape(50)
-                                    ) {
-                                        Row(
-                                            verticalAlignment = Alignment.CenterVertically,
-                                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp)
-                                        ) {
-                                            Icon(
-                                                imageVector = if (isOptionActive) Icons.Default.Check else Icons.Default.PlayArrow,
-                                                contentDescription = null,
-                                                tint = DarkGraphite,
-                                                modifier = Modifier.size(13.dp)
-                                            )
-                                            Spacer(modifier = Modifier.width(3.dp))
-                                            Text(
-                                                text = if (isOptionActive) "Active" else "Watch",
-                                                color = DarkGraphite,
-                                                fontSize = 10.5.sp,
-                                                fontWeight = FontWeight.ExtraBold
-                                            )
-                                        }
-                                    }
+                                if (isOptionActive) {
+                                    Icon(
+                                        imageVector = Icons.Default.Check,
+                                        contentDescription = "Selected",
+                                        tint = AmberGold,
+                                        modifier = Modifier.size(18.dp)
+                                    )
+                                } else {
+                                    Text(
+                                        text = "Apply",
+                                        color = AmberGold,
+                                        fontSize = 12.sp,
+                                        fontWeight = FontWeight.SemiBold
+                                    )
                                 }
                             }
                         }
                     }
                 }
             } else {
-                // Status or empty message
-                Surface(
-                    color = Color(0xFF0C1826),
-                    shape = RoundedCornerShape(12.dp),
-                    border = BorderStroke(0.8.dp, Champagne.copy(alpha = 0.25f)),
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    Text(
-                        text = uiState.onlineSubtitleStatusMessage
-                            ?: "Enter the Movie/Series title or IMDb ID (e.g. tt15398776) above and tap Find to load Wyzie subtitles.",
-                        color = Champagne,
-                        fontSize = 12.sp,
-                        modifier = Modifier.padding(14.dp)
-                    )
-                }
+                Text(
+                    text = uiState.onlineSubtitleStatusMessage
+                        ?: "Enter the movie/series title or IMDb ID above and tap Search.",
+                    color = PlayerTextSecondary,
+                    fontSize = 13.sp,
+                    modifier = Modifier.padding(vertical = 12.dp)
+                )
             }
 
-            // 5. Embedded Stream Subtitle Tracks (if container has built-in subtitle tracks)
+            // Embedded Stream Subtitle Tracks (if present in stream)
             if (uiState.subtitleTracks.isNotEmpty()) {
+                Spacer(modifier = Modifier.height(12.dp))
+                HorizontalDivider(color = Color.White.copy(alpha = 0.1f))
                 Spacer(modifier = Modifier.height(10.dp))
                 Text(
-                    text = "EMBEDDED STREAM SUBTITLES",
-                    color = Champagne,
-                    fontSize = 10.sp,
-                    fontWeight = FontWeight.ExtraBold,
-                    letterSpacing = 0.5.sp
+                    text = "Embedded Tracks",
+                    color = PlayerTextSecondary,
+                    fontSize = 12.sp,
+                    fontWeight = FontWeight.Medium
                 )
-                Spacer(modifier = Modifier.height(4.dp))
+                Spacer(modifier = Modifier.height(6.dp))
                 LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     items(uiState.subtitleTracks) { track ->
                         val selected = track.isSelected && uiState.activeWyzieOption == null
                         Surface(
-                            color = if (selected) AmberGold.copy(alpha = 0.22f) else Color(0xFF0E1B2A),
-                            shape = RoundedCornerShape(10.dp),
-                            border = BorderStroke(0.8.dp, if (selected) AmberGold else Champagne.copy(alpha = 0.25f)),
+                            color = if (selected) AmberGold else PlayerSheetCardBg,
+                            shape = RoundedCornerShape(50),
                             modifier = Modifier.clickable { onSelectEmbeddedTrack(track) }
                         ) {
                             Text(
                                 text = track.name,
-                                color = if (selected) AmberGold else PaleGold,
-                                fontSize = 11.5.sp,
-                                fontWeight = FontWeight.Bold,
-                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp)
+                                color = if (selected) Color.Black else PlayerTextPrimary,
+                                fontSize = 12.sp,
+                                fontWeight = FontWeight.Medium,
+                                modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp)
                             )
                         }
                     }
                 }
             }
 
-            Spacer(modifier = Modifier.height(8.dp))
+            Spacer(modifier = Modifier.height(12.dp))
         }
     }
 }
 
 @Composable
-private fun SmallStudioChip(
+private fun SmallTextButton(
     label: String,
     onClick: () -> Unit
 ) {
     Surface(
-        color = Color(0xFF15263A),
+        color = Color.White.copy(alpha = 0.08f),
         shape = RoundedCornerShape(6.dp),
-        border = BorderStroke(0.6.dp, Champagne.copy(alpha = 0.35f)),
         modifier = Modifier.clickable(onClick = onClick)
     ) {
         Text(
             text = label,
-            color = PaleGold,
-            fontSize = 10.sp,
-            fontWeight = FontWeight.ExtraBold,
-            modifier = Modifier.padding(horizontal = 7.dp, vertical = 3.dp)
+            color = PlayerTextPrimary,
+            fontSize = 11.sp,
+            fontWeight = FontWeight.Medium,
+            modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
         )
-    }
-}
-
-@Composable
-private fun LuxuryHeaderIconWell(
-    icon: androidx.compose.ui.graphics.vector.ImageVector,
-    contentDescription: String,
-    tint: Color,
-    isActive: Boolean,
-    onClick: () -> Unit,
-    modifier: Modifier = Modifier
-) {
-    Surface(
-        color = if (isActive) AmberGold.copy(alpha = 0.20f) else Color(0xFF101D2C),
-        shape = CircleShape,
-        border = BorderStroke(
-            width = 0.85.dp,
-            color = if (isActive) AmberGold else Champagne.copy(alpha = 0.28f)
-        ),
-        modifier = modifier
-            .size(36.dp)
-            .clip(CircleShape)
-            .clickable(onClick = onClick)
-    ) {
-        Box(contentAlignment = Alignment.Center) {
-            Icon(
-                imageVector = icon,
-                contentDescription = contentDescription,
-                tint = tint,
-                modifier = Modifier.size(18.dp)
-            )
-        }
-    }
-}
-
-@Composable
-private fun LuxuryTransportSatelliteButton(
-    icon: androidx.compose.ui.graphics.vector.ImageVector,
-    microLabel: String,
-    contentDescription: String,
-    accentColor: Color,
-    onClick: () -> Unit,
-    modifier: Modifier = Modifier
-) {
-    Surface(
-        color = Color(0xD909131F),
-        shape = CircleShape,
-        border = BorderStroke(
-            width = 1.1.dp,
-            brush = Brush.verticalGradient(
-                listOf(
-                    accentColor.copy(alpha = 0.7f),
-                    AmberGold.copy(alpha = 0.45f)
-                )
-            )
-        ),
-        modifier = modifier
-            .size(54.dp)
-            .clip(CircleShape)
-            .clickable(onClick = onClick)
-    ) {
-        Column(
-            horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.Center
-        ) {
-            Icon(
-                imageVector = icon,
-                contentDescription = contentDescription,
-                tint = PaleGold,
-                modifier = Modifier.size(22.dp)
-            )
-            Text(
-                text = microLabel,
-                color = accentColor,
-                fontSize = 8.sp,
-                fontWeight = FontWeight.ExtraBold,
-                letterSpacing = 0.3.sp
-            )
-        }
-    }
-}
-
-@Composable
-private fun LuxuryConsoleActionPill(
-    icon: androidx.compose.ui.graphics.vector.ImageVector,
-    label: String,
-    isHighlighted: Boolean,
-    accentColor: Color,
-    onClick: () -> Unit,
-    modifier: Modifier = Modifier
-) {
-    Surface(
-        color = if (isHighlighted) accentColor.copy(alpha = 0.22f) else Color(0xFF0E1B2A),
-        shape = RoundedCornerShape(14.dp),
-        border = BorderStroke(
-            width = if (isHighlighted) 1.1.dp else 0.8.dp,
-            color = if (isHighlighted) accentColor else Champagne.copy(alpha = 0.28f)
-        ),
-        modifier = modifier
-            .clip(RoundedCornerShape(14.dp))
-            .clickable(onClick = onClick)
-    ) {
-        Row(
-            verticalAlignment = Alignment.CenterVertically,
-            modifier = Modifier.padding(horizontal = 11.dp, vertical = 6.dp)
-        ) {
-            Icon(
-                imageVector = icon,
-                contentDescription = label,
-                tint = if (isHighlighted) accentColor else AmberGold,
-                modifier = Modifier.size(15.dp)
-            )
-            Spacer(modifier = Modifier.width(5.dp))
-            Text(
-                text = label,
-                color = if (isHighlighted) Color.White else PaleGold,
-                fontSize = 11.sp,
-                fontWeight = if (isHighlighted) FontWeight.ExtraBold else FontWeight.SemiBold,
-                maxLines = 1
-            )
-        }
-    }
-}
-
-/**
- * Edge-Lit Frosted-Glass Vertical Telemetry Tower for Brightness (left) and Volume + 200% Boost (right).
- */
-@Composable
-fun VerticalSideControlBar(
-    icon: @Composable () -> Unit,
-    valueLabel: String,
-    progress: Float,
-    isBoosted: Boolean,
-    accentColor: Color = AmberGold,
-    onStepUp: () -> Unit,
-    onStepDown: () -> Unit,
-    onVerticalDragRatio: (Float) -> Unit,
-    modifier: Modifier = Modifier
-) {
-    Surface(
-        color = Color(0xD907101A),
-        shape = RoundedCornerShape(24.dp),
-        border = BorderStroke(
-            width = 1.dp,
-            brush = Brush.verticalGradient(
-                colors = if (isBoosted) {
-                    listOf(LiveRed, AmberGold)
-                } else {
-                    listOf(accentColor.copy(alpha = 0.65f), Champagne.copy(alpha = 0.25f))
-                }
-            )
-        ),
-        modifier = modifier
-            .width(40.dp)
-            .pointerInput(Unit) {
-                detectDragGestures { change, dragAmount ->
-                    change.consume()
-                    val deltaRatio = -dragAmount.y / 210f
-                    onVerticalDragRatio(deltaRatio)
-                }
-            }
-    ) {
-        Column(
-            modifier = Modifier.padding(vertical = 7.dp, horizontal = 4.dp),
-            horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.spacedBy(5.dp)
-        ) {
-            // Step Up (+) Button
-            Box(
-                modifier = Modifier
-                    .size(25.dp)
-                    .clip(CircleShape)
-                    .background(Color(0xFF122030))
-                    .border(0.6.dp, Champagne.copy(alpha = 0.3f), CircleShape)
-                    .clickable { onStepUp() },
-                contentAlignment = Alignment.Center
-            ) {
-                Icon(Icons.Default.Add, contentDescription = "Increase", tint = PaleGold, modifier = Modifier.size(13.dp))
-            }
-
-            // Liquid Gradient Vertical Track
-            Box(
-                modifier = Modifier
-                    .width(6.dp)
-                    .height(82.dp)
-                    .clip(RoundedCornerShape(3.dp))
-                    .background(Color(0xFF101C2B)),
-                contentAlignment = Alignment.BottomCenter
-            ) {
-                Box(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .fillMaxHeight(progress.coerceIn(0.05f, 1f))
-                        .background(
-                            brush = Brush.verticalGradient(
-                                colors = if (isBoosted) {
-                                    listOf(LiveRed, AmberGold)
-                                } else {
-                                    listOf(AmberGold, accentColor)
-                                }
-                            ),
-                            shape = RoundedCornerShape(3.dp)
-                        )
-                )
-            }
-
-            Text(
-                text = valueLabel,
-                color = if (isBoosted) LiveRed else PaleGold,
-                fontSize = 9.sp,
-                fontWeight = FontWeight.ExtraBold,
-                maxLines = 1
-            )
-
-            icon()
-
-            // Step Down (-) Button
-            Box(
-                modifier = Modifier
-                    .size(25.dp)
-                    .clip(CircleShape)
-                    .background(Color(0xFF122030))
-                    .border(0.6.dp, Champagne.copy(alpha = 0.3f), CircleShape)
-                    .clickable { onStepDown() },
-                contentAlignment = Alignment.Center
-            ) {
-                Icon(Icons.Default.Remove, contentDescription = "Decrease", tint = Champagne, modifier = Modifier.size(13.dp))
-            }
-        }
-    }
-}
-
-@Composable
-fun TechBadge(
-    text: String,
-    isHighlight: Boolean = false,
-    accentColor: Color = AmberGold
-) {
-    Surface(
-        color = if (isHighlight) AmberGold else Color(0xFF101E2E),
-        shape = RoundedCornerShape(6.dp),
-        border = BorderStroke(
-            width = 0.65.dp,
-            color = if (isHighlight) PaleGold else accentColor.copy(alpha = 0.45f)
-        )
-    ) {
-        Text(
-            text = text,
-            color = if (isHighlight) DarkGraphite else PaleGold,
-            fontSize = 8.5.sp,
-            fontWeight = FontWeight.ExtraBold,
-            letterSpacing = 0.25.sp,
-            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
-        )
-    }
-}
-
-@Composable
-fun GestureBadge(
-    icon: @Composable () -> Unit,
-    label: String,
-    value: String,
-    progress: Float,
-    isBoosted: Boolean = false,
-    accentColor: Color = AmberGold,
-    modifier: Modifier = Modifier
-) {
-    Surface(
-        color = Color(0xEB07101B),
-        shape = RoundedCornerShape(18.dp),
-        border = BorderStroke(
-            width = 1.1.dp,
-            color = if (isBoosted) LiveRed else accentColor.copy(alpha = 0.65f)
-        ),
-        modifier = modifier
-            .widthIn(min = 164.dp)
-            .height(102.dp)
-    ) {
-        Column(
-            modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp),
-            horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.Center
-        ) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                icon()
-                Spacer(modifier = Modifier.width(6.dp))
-                Text(
-                    text = label,
-                    color = if (isBoosted) LiveRed else PaleGold,
-                    fontSize = 11.sp,
-                    fontWeight = FontWeight.Bold
-                )
-            }
-            Spacer(modifier = Modifier.height(6.dp))
-            Text(
-                text = value,
-                color = Color.White,
-                fontSize = 18.sp,
-                fontWeight = FontWeight.ExtraBold
-            )
-            Spacer(modifier = Modifier.height(6.dp))
-            LinearProgressIndicator(
-                progress = { progress.coerceIn(0f, 1f) },
-                color = if (isBoosted) LiveRed else AmberGold,
-                trackColor = Color(0xFF142234),
-                modifier = Modifier
-                    .width(132.dp)
-                    .height(4.5.dp)
-                    .clip(RoundedCornerShape(3.dp))
-            )
-        }
     }
 }
 
