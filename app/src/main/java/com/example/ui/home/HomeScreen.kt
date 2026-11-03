@@ -782,7 +782,7 @@ private fun KickOffArenaHeaderCard(
     val slateSummaryText = remember(totalVisibleMatchesCount, activeLeaguesInSlate) {
         when {
             totalVisibleMatchesCount > 0 && activeLeaguesInSlate > 0 ->
-                "$totalVisibleMatchesCount Games • $activeLeaguesInSlate ${if (activeLeaguesInSlate == 1) "League" else "Leagues"}"
+                "$totalVisibleMatchesCount Matches • $activeLeaguesInSlate ${if (activeLeaguesInSlate == 1) "League" else "Leagues"}"
             totalVisibleMatchesCount > 0 ->
                 "$totalVisibleMatchesCount Fixtures"
             else ->
@@ -802,7 +802,7 @@ private fun KickOffArenaHeaderCard(
             .padding(horizontal = 16.dp, vertical = 4.dp)
             .testTag("match_center_hero_card")
     ) {
-        Row(
+        Column(
             modifier = Modifier
                 .fillMaxWidth()
                 .background(
@@ -813,15 +813,14 @@ private fun KickOffArenaHeaderCard(
                         )
                     )
                 )
-                .padding(horizontal = 12.dp, vertical = 8.dp),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically
+                .padding(horizontal = 12.dp, vertical = 9.dp),
+            verticalArrangement = Arrangement.spacedBy(7.dp)
         ) {
-            // Left: Combined Matchday Badge + Helpful Slate & Live Metrics
+            // Top Row: Matchday Pill (Left) + Customize & Refresh Controls (Right)
             Row(
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                modifier = Modifier.weight(1f)
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
             ) {
                 Surface(
                     color = KickoffTropicalTeal.copy(alpha = 0.16f),
@@ -830,7 +829,7 @@ private fun KickOffArenaHeaderCard(
                 ) {
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
-                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 5.dp)
+                        modifier = Modifier.padding(horizontal = 9.dp, vertical = 5.dp)
                     ) {
                         Icon(
                             imageVector = Icons.Default.CalendarMonth,
@@ -842,7 +841,7 @@ private fun KickOffArenaHeaderCard(
                         Text(
                             text = "$dayTitle • $dayDate",
                             color = Color.White,
-                            fontSize = 10.sp,
+                            fontSize = 10.5.sp,
                             fontWeight = FontWeight.ExtraBold,
                             letterSpacing = 0.3.sp,
                             maxLines = 1,
@@ -851,54 +850,42 @@ private fun KickOffArenaHeaderCard(
                     }
                 }
 
-                Column(
-                    verticalArrangement = Arrangement.Center,
-                    modifier = Modifier.weight(1f, fill = false)
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
                 ) {
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    Surface(
+                        color = KickoffTropicalTeal.copy(alpha = 0.14f),
+                        shape = RoundedCornerShape(10.dp),
+                        border = BorderStroke(0.8.dp, KickoffTropicalTeal.copy(alpha = 0.45f)),
+                        modifier = Modifier
+                            .height(30.dp)
+                            .clip(RoundedCornerShape(10.dp))
+                            .clickable(onClick = onOpenCustomizeModal)
+                            .testTag("customize_teams_tournaments_btn")
                     ) {
-                        Text(
-                            text = slateSummaryText,
-                            color = Color.White,
-                            fontSize = 11.sp,
-                            fontWeight = FontWeight.Bold,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis
-                        )
-                        if (liveMatchesCount > 0) {
-                            Surface(
-                                color = LiveCrimson.copy(alpha = 0.22f),
-                                shape = RoundedCornerShape(50),
-                                border = BorderStroke(0.6.dp, LiveCrimson.copy(alpha = 0.6f))
-                            ) {
-                                Row(
-                                    verticalAlignment = Alignment.CenterVertically,
-                                    modifier = Modifier.padding(horizontal = 6.dp, vertical = 1.5.dp)
-                                ) {
-                                    Box(
-                                        modifier = Modifier
-                                            .size(4.5.dp)
-                                            .clip(CircleShape)
-                                            .background(LiveCrimson)
-                                    )
-                                    Spacer(modifier = Modifier.width(3.5.dp))
-                                    Text(
-                                        text = "$liveMatchesCount LIVE",
-                                        color = LiveCrimson,
-                                        fontSize = 8.5.sp,
-                                        fontWeight = FontWeight.ExtraBold,
-                                        maxLines = 1,
-                                        softWrap = false
-                                    )
-                                }
-                            }
-                        } else if (upcomingMatchesCount > 0) {
+                        Row(
+                            modifier = Modifier
+                                .padding(horizontal = 10.dp)
+                                .height(30.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.Center
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Tune,
+                                contentDescription = "Customize Teams and Leagues",
+                                tint = KickoffTropicalTeal,
+                                modifier = Modifier.size(13.dp)
+                            )
+                            Spacer(modifier = Modifier.width(5.dp))
                             Text(
-                                text = "• $upcomingMatchesCount Upcoming",
-                                color = KickoffPeachCream,
-                                fontSize = 10.sp,
+                                text = if (favoriteTeamsCount > 0) {
+                                    "Teams ($favoriteTeamsCount)"
+                                } else {
+                                    "Teams & Leagues"
+                                },
+                                color = Color.White,
+                                fontSize = 10.5.sp,
                                 fontWeight = FontWeight.SemiBold,
                                 maxLines = 1,
                                 softWrap = false
@@ -906,60 +893,82 @@ private fun KickOffArenaHeaderCard(
                         }
                     }
 
-                    Text(
-                        text = if (favoriteTeamsCount > 0) {
-                            "$favoriteTeamsCount Favorite ${if (favoriteTeamsCount == 1) "Team" else "Teams"} • $enabledLeaguesCount Active Leagues"
+                    Box(
+                        contentAlignment = Alignment.Center,
+                        modifier = Modifier
+                            .size(30.dp)
+                            .clip(CircleShape)
+                            .background(Color.White.copy(alpha = 0.06f))
+                            .clickable(onClick = onRefreshMatches)
+                            .testTag("refresh_matches_btn")
+                    ) {
+                        if (isLoadingMatches || liveScoreSyncState.isSyncingDelta) {
+                            CircularProgressIndicator(
+                                color = KickoffTropicalTeal,
+                                strokeWidth = 1.8.dp,
+                                modifier = Modifier.size(14.dp)
+                            )
                         } else {
-                            "$enabledLeaguesCount Active Tournaments Enabled"
-                        },
-                        color = ChampagneMuted,
-                        fontSize = 9.5.sp,
-                        fontWeight = FontWeight.Medium,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
-                    )
+                            Icon(
+                                imageVector = Icons.Default.Refresh,
+                                contentDescription = "Refresh Matches",
+                                tint = Champagne,
+                                modifier = Modifier.size(15.dp)
+                            )
+                        }
+                    }
                 }
             }
 
-            Spacer(modifier = Modifier.width(8.dp))
-
-            // Right: Compact Teams/Leagues Filter Pill + Refresh Button
+            // Bottom Row: Full Untruncated Slate Telemetry, Live Count Pill, and Active Tournaments
             Row(
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(6.dp)
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
             ) {
-                Surface(
-                    color = KickoffTropicalTeal.copy(alpha = 0.14f),
-                    shape = RoundedCornerShape(10.dp),
-                    border = BorderStroke(0.8.dp, KickoffTropicalTeal.copy(alpha = 0.45f)),
-                    modifier = Modifier
-                        .height(30.dp)
-                        .clip(RoundedCornerShape(10.dp))
-                        .clickable(onClick = onOpenCustomizeModal)
-                        .testTag("customize_teams_tournaments_btn")
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(7.dp)
                 ) {
-                    Row(
-                        modifier = Modifier
-                            .padding(horizontal = 10.dp)
-                            .height(30.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.Center
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.Tune,
-                            contentDescription = "Customize Teams and Leagues",
-                            tint = KickoffTropicalTeal,
-                            modifier = Modifier.size(13.dp)
-                        )
-                        Spacer(modifier = Modifier.width(5.dp))
+                    Text(
+                        text = slateSummaryText,
+                        color = Color.White,
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.Bold,
+                        maxLines = 1
+                    )
+                    if (liveMatchesCount > 0) {
+                        Surface(
+                            color = LiveCrimson.copy(alpha = 0.22f),
+                            shape = RoundedCornerShape(50),
+                            border = BorderStroke(0.6.dp, LiveCrimson.copy(alpha = 0.65f))
+                        ) {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                modifier = Modifier.padding(horizontal = 7.dp, vertical = 2.dp)
+                            ) {
+                                Box(
+                                    modifier = Modifier
+                                        .size(5.dp)
+                                        .clip(CircleShape)
+                                        .background(LiveCrimson)
+                                )
+                                Spacer(modifier = Modifier.width(4.dp))
+                                Text(
+                                    text = "$liveMatchesCount LIVE NOW",
+                                    color = Color.White,
+                                    fontSize = 8.5.sp,
+                                    fontWeight = FontWeight.ExtraBold,
+                                    maxLines = 1,
+                                    softWrap = false
+                                )
+                            }
+                        }
+                    } else if (upcomingMatchesCount > 0) {
                         Text(
-                            text = if (favoriteTeamsCount > 0) {
-                                "Teams ($favoriteTeamsCount)"
-                            } else {
-                                "Teams & Leagues"
-                            },
-                            color = Color.White,
-                            fontSize = 10.5.sp,
+                            text = "• $upcomingMatchesCount Upcoming",
+                            color = KickoffPeachCream,
+                            fontSize = 10.sp,
                             fontWeight = FontWeight.SemiBold,
                             maxLines = 1,
                             softWrap = false
@@ -967,30 +976,17 @@ private fun KickOffArenaHeaderCard(
                     }
                 }
 
-                Box(
-                    contentAlignment = Alignment.Center,
-                    modifier = Modifier
-                        .size(30.dp)
-                        .clip(CircleShape)
-                        .background(Color.White.copy(alpha = 0.06f))
-                        .clickable(onClick = onRefreshMatches)
-                        .testTag("refresh_matches_btn")
-                ) {
-                    if (isLoadingMatches || liveScoreSyncState.isSyncingDelta) {
-                        CircularProgressIndicator(
-                            color = KickoffTropicalTeal,
-                            strokeWidth = 1.8.dp,
-                            modifier = Modifier.size(14.dp)
-                        )
+                Text(
+                    text = if (favoriteTeamsCount > 0) {
+                        "$favoriteTeamsCount Fav • $enabledLeaguesCount Tournaments"
                     } else {
-                        Icon(
-                            imageVector = Icons.Default.Refresh,
-                            contentDescription = "Refresh Matches",
-                            tint = Champagne,
-                            modifier = Modifier.size(15.dp)
-                        )
-                    }
-                }
+                        "$enabledLeaguesCount Active Tournaments"
+                    },
+                    color = ChampagneMuted,
+                    fontSize = 10.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    maxLines = 1
+                )
             }
         }
     }
@@ -2034,15 +2030,127 @@ private fun FlashscoreTournamentHeader(
     }
 }
 
-private fun parseLiveMatchProgressFraction(liveBadge: String, status: MatchStatus): Float {
-    if (status == MatchStatus.HALFTIME || liveBadge.equals("HT", ignoreCase = true)) {
-        return 0.5f
+internal data class LiveMatchClockTelemetry(
+    val periodBadge: String,       // "1ST HALF", "2ND HALF", "HALF TIME", "FINAL", "KICKOFF"
+    val heroReadout: String,       // "86'", "41'", "HT", "FT", "20:00"
+    val bottomBadge: String,       // "HT 0-1", "LIVE MIN", "GMT+1", "FULL TIME"
+    val statusExplanation: String, // "2ND HALF • 86' PLAYED", "1ST HALF • 41' PLAYED"
+    val remainingLabel: String,    // "4' TO 90'", "4' TO HT", "BREAK"
+    val progressFraction: Float    // 0.06f..1.0f
+)
+
+internal fun parseLiveMatchProgressFraction(liveBadge: String, status: MatchStatus): Float {
+    val clean = liveBadge.trim()
+    if (status == MatchStatus.HALFTIME || clean.equals("HT", ignoreCase = true) || clean.contains("HT", ignoreCase = true)) {
+        return 0.50f
     }
-    val digits = liveBadge.takeWhile { it.isDigit() }.toIntOrNull()
-    if (digits != null) {
-        return (digits.toFloat() / 90f).coerceIn(0.06f, 1.0f)
+    // 1. Prefer minute immediately followed by apostrophe e.g. "2H • 86'" -> 86 or "45+2'" -> 45
+    val apostropheMatch = Regex("(\\d{1,3})(?:\\+\\d{1,2})?\\s*'").find(clean)
+    if (apostropheMatch != null) {
+        val minute = apostropheMatch.groupValues[1].toIntOrNull()
+        if (minute != null) {
+            return (minute.toFloat() / 90f).coerceIn(0.06f, 1.0f)
+        }
     }
-    return 0.5f
+    // 2. Fallback: remove "1H" / "2H" period prefixes and find the last numeric token
+    val withoutHalfPrefix = clean.replace(Regex("\\b[12]H\\b", RegexOption.IGNORE_CASE), "")
+    val allNumbers = Regex("\\d{1,3}").findAll(withoutHalfPrefix).mapNotNull { it.value.toIntOrNull() }.toList()
+    if (allNumbers.isNotEmpty()) {
+        val minute = allNumbers.first()
+        return (minute.toFloat() / 90f).coerceIn(0.06f, 1.0f)
+    }
+    return 0.50f
+}
+
+internal fun parseLiveMatchClockTelemetry(match: FootballMatch): LiveMatchClockTelemetry {
+    val clean = match.liveMinuteOrBadge.trim()
+    return when (match.status) {
+        MatchStatus.HALFTIME -> {
+            val htScore = match.halfTimeScore?.takeIf { it.isNotBlank() }
+            LiveMatchClockTelemetry(
+                periodBadge = "HALF TIME",
+                heroReadout = "HT",
+                bottomBadge = if (htScore != null) "HT $htScore" else "45' PLAYED",
+                statusExplanation = "HALF-TIME INTERVAL • 45' COMPLETED",
+                remainingLabel = if (htScore != null) "HT: $htScore" else "2ND HALF SOON",
+                progressFraction = 0.50f
+            )
+        }
+        MatchStatus.LIVE -> {
+            if (clean.equals("HT", ignoreCase = true)) {
+                val htScore = match.halfTimeScore?.takeIf { it.isNotBlank() }
+                return LiveMatchClockTelemetry(
+                    periodBadge = "HALF TIME",
+                    heroReadout = "HT",
+                    bottomBadge = if (htScore != null) "HT $htScore" else "45' PLAYED",
+                    statusExplanation = "HALF-TIME INTERVAL • 45' COMPLETED",
+                    remainingLabel = if (htScore != null) "HT: $htScore" else "2ND HALF SOON",
+                    progressFraction = 0.50f
+                )
+            }
+            val apostropheMatch = Regex("(\\d{1,3})(\\+\\d{1,2})?\\s*'").find(clean)
+            val withoutHalfPrefix = clean.replace(Regex("\\b[12]H\\b", RegexOption.IGNORE_CASE), "")
+            val fallbackMin = Regex("\\d{1,3}").find(withoutHalfPrefix)?.value?.toIntOrNull()
+            val baseMinute = apostropheMatch?.groupValues?.getOrNull(1)?.toIntOrNull() ?: fallbackMin ?: 45
+            val stoppageSuffix = apostropheMatch?.groupValues?.getOrNull(2).orEmpty()
+            val heroMin = "${baseMinute}${stoppageSuffix}'"
+
+            val isSecondHalf = clean.contains("2H", ignoreCase = true) || baseMinute > 45
+            val periodLabel = when {
+                baseMinute > 90 -> "EXTRA TIME"
+                stoppageSuffix.isNotEmpty() -> "STOPPAGE"
+                isSecondHalf -> "2ND HALF"
+                else -> "1ST HALF"
+            }
+            val explanation = when {
+                stoppageSuffix.isNotEmpty() && isSecondHalf -> "2ND HALF • $heroMin ADDED TIME"
+                stoppageSuffix.isNotEmpty() -> "1ST HALF • $heroMin ADDED TIME"
+                isSecondHalf -> "2ND HALF • ${baseMinute}' PLAYED"
+                else -> "1ST HALF • ${baseMinute}' PLAYED"
+            }
+            val remaining = when {
+                stoppageSuffix.isNotEmpty() -> "STOPPAGE TIME"
+                isSecondHalf -> {
+                    val left = (90 - baseMinute).coerceAtLeast(1)
+                    "${left}' TO 90'"
+                }
+                else -> {
+                    val left = (45 - baseMinute).coerceAtLeast(1)
+                    "${left}' TO HT"
+                }
+            }
+            val htScore = match.halfTimeScore?.takeIf { it.isNotBlank() }
+            LiveMatchClockTelemetry(
+                periodBadge = periodLabel,
+                heroReadout = heroMin,
+                bottomBadge = if (htScore != null && isSecondHalf) "HT $htScore" else "LIVE MIN",
+                statusExplanation = explanation,
+                remainingLabel = remaining,
+                progressFraction = parseLiveMatchProgressFraction(clean, match.status)
+            )
+        }
+        MatchStatus.FINISHED -> {
+            val htScore = match.halfTimeScore?.takeIf { it.isNotBlank() }
+            LiveMatchClockTelemetry(
+                periodBadge = "FULL TIME",
+                heroReadout = "FT",
+                bottomBadge = if (htScore != null) "HT $htScore" else "90' FINAL",
+                statusExplanation = "MATCH FINISHED",
+                remainingLabel = "FINAL",
+                progressFraction = 1.0f
+            )
+        }
+        MatchStatus.UPCOMING -> {
+            LiveMatchClockTelemetry(
+                periodBadge = "KICKOFF",
+                heroReadout = clean.ifBlank { match.kickoffTimeFormatted },
+                bottomBadge = "GMT+1",
+                statusExplanation = "UPCOMING KICKOFF",
+                remainingLabel = "SCHEDULED",
+                progressFraction = 0f
+            )
+        }
+    }
 }
 
 /**
@@ -2388,30 +2496,62 @@ private fun FlashscoreMatchCard(
                     )
                     .padding(horizontal = 12.dp, vertical = 9.dp)
             ) {
-                // Match Main Row: Animated Digital Clock Pod (Left) + Dual Team Scoreboard Rows (Right)
+                val clockTelemetry = remember(match.liveMinuteOrBadge, match.status, match.halfTimeScore, match.kickoffTimeFormatted) {
+                    parseLiveMatchClockTelemetry(match)
+                }
+
+                // Match Main Row: 3-Tier Broadcast Digital Clock Pod (Left) + Dual Team Scoreboard Rows (Right)
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    // 1. Left Column (60dp wide): Recessed Digital Stadium Clock Pod with Live Pulse
+                    // 1. Left Column (70dp wide): Crystal-Clear 3-Tier Broadcast Clock Pod
                     Surface(
-                        color = if (isLive) LiveCrimson.copy(alpha = 0.12f) else Color(0xFF06131B),
-                        shape = RoundedCornerShape(10.dp),
+                        color = if (isLive) Color(0xFF1A0810) else Color(0xFF06131B),
+                        shape = RoundedCornerShape(11.dp),
                         border = BorderStroke(
-                            width = if (isLive) 1.dp else 0.8.dp,
+                            width = if (isLive) 1.1.dp else 0.8.dp,
                             color = when {
                                 isLive -> LiveCrimson.copy(alpha = livePulseAlpha)
-                                isFinished -> Color.White.copy(alpha = 0.08f)
-                                else -> KickoffTropicalTeal.copy(alpha = 0.28f)
+                                isFinished -> Color.White.copy(alpha = 0.10f)
+                                else -> KickoffTropicalTeal.copy(alpha = 0.30f)
                             }
                         ),
-                        modifier = Modifier.width(60.dp)
+                        modifier = Modifier.width(70.dp)
                     ) {
                         Column(
                             horizontalAlignment = Alignment.CenterHorizontally,
                             verticalArrangement = Arrangement.Center,
-                            modifier = Modifier.padding(vertical = 6.dp, horizontal = 4.dp)
+                            modifier = Modifier.padding(vertical = 5.dp, horizontal = 4.dp)
                         ) {
+                            // Top Tier: Explicit Period Pill ("1ST HALF", "2ND HALF", "HALF TIME", "KICKOFF", "FULL TIME")
+                            Surface(
+                                color = when {
+                                    isLive -> LiveCrimson.copy(alpha = 0.24f)
+                                    isFinished -> Color.White.copy(alpha = 0.08f)
+                                    else -> KickoffTropicalTeal.copy(alpha = 0.16f)
+                                },
+                                shape = RoundedCornerShape(4.dp)
+                            ) {
+                                Text(
+                                    text = clockTelemetry.periodBadge,
+                                    color = when {
+                                        isLive -> KickoffPeachCream
+                                        isFinished -> ChampagneMuted
+                                        else -> KickoffTropicalTeal
+                                    },
+                                    fontSize = 7.5.sp,
+                                    fontWeight = FontWeight.ExtraBold,
+                                    letterSpacing = 0.2.sp,
+                                    maxLines = 1,
+                                    softWrap = false,
+                                    modifier = Modifier.padding(horizontal = 4.dp, vertical = 1.dp)
+                                )
+                            }
+
+                            Spacer(modifier = Modifier.height(2.dp))
+
+                            // Middle Tier: Hero Match Minute ("86'", "41'", "HT") or Kickoff Time ("20:00")
                             Row(
                                 verticalAlignment = Alignment.CenterVertically,
                                 horizontalArrangement = Arrangement.Center
@@ -2427,38 +2567,34 @@ private fun FlashscoreMatchCard(
                                             .clip(CircleShape)
                                             .background(LiveCrimson)
                                     )
-                                    Spacer(modifier = Modifier.width(3.5.dp))
+                                    Spacer(modifier = Modifier.width(3.dp))
                                 }
                                 Text(
-                                    text = match.liveMinuteOrBadge,
+                                    text = clockTelemetry.heroReadout,
                                     color = when (match.status) {
                                         MatchStatus.LIVE, MatchStatus.HALFTIME -> Color.White
                                         MatchStatus.FINISHED -> ChampagneMuted
                                         MatchStatus.UPCOMING -> Color.White
                                     },
-                                    fontSize = 12.sp,
+                                    fontSize = if (isLive) 13.5.sp else 12.sp,
                                     fontWeight = FontWeight.ExtraBold,
                                     textAlign = TextAlign.Center,
                                     maxLines = 1,
                                     softWrap = false
                                 )
                             }
+
                             Spacer(modifier = Modifier.height(1.5.dp))
-                            val subStatusText = when {
-                                match.halfTimeScore != null && (isLive || isFinished) ->
-                                    "HT ${match.halfTimeScore}"
-                                isLive -> "LIVE"
-                                isFinished -> "FT"
-                                else -> "GMT+1"
-                            }
+
+                            // Bottom Tier: Half-Time Score ("HT 0-1") or Status Sub-label ("LIVE MIN" / "GMT+1")
                             Text(
-                                text = subStatusText,
+                                text = clockTelemetry.bottomBadge,
                                 color = when {
                                     match.halfTimeScore != null && (isLive || isFinished) -> AmberGold
-                                    isLive -> LiveCrimson
+                                    isLive -> LiveCrimson.copy(alpha = 0.95f)
                                     else -> KickoffTropicalTeal.copy(alpha = 0.85f)
                                 },
-                                fontSize = 8.5.sp,
+                                fontSize = 8.sp,
                                 fontWeight = FontWeight.ExtraBold,
                                 textAlign = TextAlign.Center,
                                 maxLines = 1,
@@ -2502,30 +2638,144 @@ private fun FlashscoreMatchCard(
                     }
                 }
 
-                // Match Action Footer: Live 90-Minute Progress Hairline when LIVE, or subtle hairline when scheduled
+                // Match Action Footer: Real-Time Dual-Half Telemetry & 90-Minute Timeline when LIVE
                 Spacer(modifier = Modifier.height(8.dp))
                 if (isLive) {
-                    val progressFraction = remember(match.liveMinuteOrBadge, match.status) {
-                        parseLiveMatchProgressFraction(match.liveMinuteOrBadge, match.status)
+                    val latestGoalScorer = remember(match.goalScorersSummary) {
+                        match.goalScorersSummary
+                            ?.split(",")
+                            ?.map { it.trim() }
+                            ?.lastOrNull { it.isNotBlank() }
+                            .orEmpty()
                     }
-                    Box(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(2.dp)
-                            .clip(RoundedCornerShape(50))
-                            .background(Color.White.copy(alpha = 0.08f))
+                    Surface(
+                        color = Color(0xFF071620).copy(alpha = 0.90f),
+                        shape = RoundedCornerShape(8.dp),
+                        border = BorderStroke(0.6.dp, LiveCrimson.copy(alpha = 0.30f)),
+                        modifier = Modifier.fillMaxWidth()
                     ) {
-                        Box(
+                        Column(
                             modifier = Modifier
-                                .fillMaxWidth(progressFraction)
-                                .height(2.dp)
-                                .clip(RoundedCornerShape(50))
-                                .background(
-                                    Brush.horizontalGradient(
-                                        listOf(KickoffTropicalTeal, KickoffPeachCream, LiveCrimson)
+                                .fillMaxWidth()
+                                .padding(horizontal = 8.dp, vertical = 5.dp),
+                            verticalArrangement = Arrangement.spacedBy(4.dp)
+                        ) {
+                            // Telemetry Status Row: Clear human-readable match state + HT score / Latest Goal / Remaining time
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Box(
+                                        modifier = Modifier
+                                            .size(5.dp)
+                                            .clip(CircleShape)
+                                            .background(LiveCrimson)
                                     )
+                                    Spacer(modifier = Modifier.width(5.dp))
+                                    Text(
+                                        text = clockTelemetry.statusExplanation,
+                                        color = Color.White,
+                                        fontSize = 9.sp,
+                                        fontWeight = FontWeight.ExtraBold,
+                                        letterSpacing = 0.2.sp
+                                    )
+                                }
+
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                ) {
+                                    if (latestGoalScorer.isNotBlank()) {
+                                        Text(
+                                            text = "⚽ $latestGoalScorer",
+                                            color = KickoffPeachCream,
+                                            fontSize = 8.5.sp,
+                                            fontWeight = FontWeight.Bold,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis
+                                        )
+                                    }
+                                    if (match.halfTimeScore != null) {
+                                        Surface(
+                                            color = AmberGold.copy(alpha = 0.16f),
+                                            shape = RoundedCornerShape(4.dp),
+                                            border = BorderStroke(0.5.dp, AmberGold.copy(alpha = 0.55f))
+                                        ) {
+                                            Text(
+                                                text = "HT ${match.halfTimeScore}",
+                                                color = AmberGold,
+                                                fontSize = 8.sp,
+                                                fontWeight = FontWeight.ExtraBold,
+                                                modifier = Modifier.padding(horizontal = 4.5.dp, vertical = 1.dp)
+                                            )
+                                        }
+                                    } else {
+                                        Text(
+                                            text = clockTelemetry.remainingLabel,
+                                            color = KickoffTropicalTeal,
+                                            fontSize = 8.5.sp,
+                                            fontWeight = FontWeight.ExtraBold
+                                        )
+                                    }
+                                }
+                            }
+
+                            // Dual-Half 90-Minute Progress Timeline Bar (0' --- HT 45' --- 90')
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(5.dp)
+                            ) {
+                                Text(
+                                    text = "0'",
+                                    color = ChampagneMuted,
+                                    fontSize = 7.5.sp,
+                                    fontWeight = FontWeight.Bold
                                 )
-                        )
+                                Box(
+                                    modifier = Modifier
+                                        .weight(1f)
+                                        .height(4.dp)
+                                        .clip(RoundedCornerShape(50))
+                                        .background(Color.White.copy(alpha = 0.10f))
+                                ) {
+                                    // Illuminated elapsed match progress fill
+                                    Box(
+                                        modifier = Modifier
+                                            .fillMaxWidth(clockTelemetry.progressFraction)
+                                            .height(4.dp)
+                                            .clip(RoundedCornerShape(50))
+                                            .background(
+                                                Brush.horizontalGradient(
+                                                    listOf(KickoffTropicalTeal, KickoffPeachCream, LiveCrimson)
+                                                )
+                                            )
+                                    )
+                                    // Half-Time (45' / 50%) center marker tick
+                                    Box(
+                                        modifier = Modifier
+                                            .align(Alignment.Center)
+                                            .width(1.5.dp)
+                                            .height(4.dp)
+                                            .background(Color.White.copy(alpha = 0.55f))
+                                    )
+                                }
+                                Text(
+                                    text = "HT",
+                                    color = if (clockTelemetry.progressFraction >= 0.5f) AmberGold else ChampagneMuted,
+                                    fontSize = 7.5.sp,
+                                    fontWeight = FontWeight.ExtraBold
+                                )
+                                Text(
+                                    text = "90'",
+                                    color = ChampagneMuted,
+                                    fontSize = 7.5.sp,
+                                    fontWeight = FontWeight.Bold
+                                )
+                            }
+                        }
                     }
                 } else {
                     HorizontalDivider(

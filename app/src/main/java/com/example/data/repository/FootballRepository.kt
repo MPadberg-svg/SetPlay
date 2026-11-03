@@ -418,14 +418,19 @@ class FootballRepository(
     }
 
     /**
-     * Normalizes team names by stripping accents/diacritics and common club prefixes/suffixes
-     * ("FC", "AC", "CA", "Club", "CF", "SC", "AS", "RS") so records from SportAPI.ai and TheSportsDB
-     * merge accurately.
+     * Normalizes team names by stripping accents/diacritics, common club prefixes/suffixes
+     * ("FC", "AC", "CA", "Club", "CF", "SC", "AS", "RS", "FK", "SK", "LOSC", "OGC", "SL", "BSC", "SV"),
+     * and resolving multi-language / city-suffixed club names (e.g. "Feyenoord Rotterdam" -> "feyenoord",
+     * "Internazionale" / "Inter Milan" -> "inter milan", "Paris Saint-Germain" / "PSG" -> "paris saint germain")
+     * so records from SportAPI.ai, ESPN, API-Football, and TheSportsDB always merge into a single match.
      */
     fun normalizeTeamNameForMerge(rawName: String): String {
         if (rawName.isBlank()) return ""
         val decomposed = Normalizer.normalize(rawName, Normalizer.Form.NFD)
             .replace(Regex("\\p{InCombiningDiacriticalMarks}+"), "")
+            .replace("ø", "o", ignoreCase = true)
+            .replace("æ", "ae", ignoreCase = true)
+            .replace("ß", "ss", ignoreCase = true)
         val baseTokens = decomposed
             .lowercase(Locale.ROOT)
             .replace(Regex("[^a-z0-9\\s]"), " ")
@@ -433,12 +438,158 @@ class FootballRepository(
             .filter { token ->
                 token.isNotBlank() && token !in IGNORED_TEAM_TOKENS
             }
-        val finalTokens = if (baseTokens.size > 1 && baseTokens.last() == "athletic") {
+        val finalTokens = if (baseTokens.size > 1 && baseTokens.last() == "athletic" && baseTokens.first() != "athletic") {
             baseTokens.dropLast(1)
         } else {
             baseTokens
         }
-        return finalTokens.joinToString(" ").trim()
+        val joined = finalTokens.joinToString(" ").trim()
+        return canonicalizeClubMergeName(joined)
+    }
+
+    internal fun canonicalizeClubMergeName(normalized: String): String {
+        if (normalized.isBlank()) return ""
+        return when {
+            normalized.contains("internazionale") || normalized == "inter" || normalized == "inter milan" || normalized == "internazionale milano" ->
+                "inter milan"
+            normalized.contains("feyenoord") ->
+                "feyenoord"
+            normalized.contains("paris saint") || normalized == "psg" || normalized == "paris sg" ->
+                "paris saint germain"
+            normalized.contains("manchester city") || normalized == "man city" || normalized == "mancity" ->
+                "manchester city"
+            normalized.contains("manchester united") || normalized == "man utd" || normalized == "man united" ->
+                "manchester united"
+            normalized.contains("tottenham") || normalized == "spurs" ->
+                "tottenham"
+            normalized.contains("newcastle") ->
+                "newcastle"
+            normalized.contains("west ham") ->
+                "west ham"
+            normalized.contains("wolverhampton") || normalized == "wolves" ->
+                "wolverhampton"
+            normalized.contains("brighton") ->
+                "brighton"
+            normalized.contains("nottingham") || normalized == "nottm forest" ->
+                "nottingham forest"
+            normalized.contains("atletico madrid") || normalized == "atletico" || normalized == "atl madrid" ->
+                "atletico madrid"
+            normalized.contains("athletic bilbao") || normalized == "athletic" || normalized == "ath bilbao" ->
+                "athletic bilbao"
+            normalized.contains("real sociedad") || normalized == "sociedad" ->
+                "real sociedad"
+            normalized.contains("real betis") || normalized == "betis" ->
+                "real betis"
+            normalized.contains("villarreal") ->
+                "villarreal"
+            normalized.contains("bayern") ->
+                "bayern munich"
+            normalized.contains("dortmund") || normalized == "bvb" ->
+                "borussia dortmund"
+            normalized.contains("leverkusen") ->
+                "bayer leverkusen"
+            normalized.contains("leipzig") ->
+                "rb leipzig"
+            normalized.contains("monchengladbach") || normalized.contains("gladbach") ->
+                "monchengladbach"
+            normalized.contains("frankfurt") ->
+                "eintracht frankfurt"
+            normalized.contains("lille") || normalized == "losc" ->
+                "lille"
+            normalized.contains("marseille") ->
+                "marseille"
+            normalized.contains("lyonnais") || normalized == "lyon" ->
+                "lyon"
+            normalized.contains("monaco") ->
+                "monaco"
+            normalized.contains("brestois") || normalized == "brest" ->
+                "brest"
+            normalized.contains("rennais") || normalized == "rennes" ->
+                "rennes"
+            normalized.contains("psv") || normalized.contains("eindhoven") ->
+                "psv"
+            normalized.contains("ajax") ->
+                "ajax"
+            normalized.contains("sporting") && !normalized.contains("gijon") && !normalized.contains("braga") ->
+                "sporting cp"
+            normalized.contains("benfica") ->
+                "benfica"
+            normalized.contains("porto") ->
+                "porto"
+            normalized.contains("bodo") && normalized.contains("glimt") ->
+                "bodo glimt"
+            normalized.contains("club brugge") || normalized == "brugge" ->
+                "club brugge"
+            normalized.contains("crvena zvezda") || normalized.contains("red star") ->
+                "crvena zvezda"
+            normalized.contains("dinamo zagreb") ->
+                "dinamo zagreb"
+            normalized.contains("young boys") ->
+                "young boys"
+            normalized.contains("sturm graz") ->
+                "sturm graz"
+            normalized.contains("shakhtar") ->
+                "shakhtar donetsk"
+            normalized.contains("salzburg") ->
+                "salzburg"
+            normalized.contains("celtic") ->
+                "celtic"
+            normalized.contains("rangers") && !normalized.contains("queens") ->
+                "rangers"
+            normalized.contains("barcelona") || normalized == "barca" ->
+                "barcelona"
+            normalized.contains("real madrid") ->
+                "real madrid"
+            normalized.contains("raja") ->
+                "raja"
+            normalized.contains("wydad") ->
+                "wydad"
+            normalized.contains("far rabat") || normalized == "far" ->
+                "far rabat"
+            normalized.contains("berkane") ->
+                "berkane"
+            normalized.contains("ahly") && !normalized.contains("shabab") && !normalized.contains("jeddah") && !normalized.contains("saudi") ->
+                "ahly"
+            else -> normalized
+        }
+    }
+
+    internal fun areSameClubNames(nameA: String, nameB: String): Boolean {
+        val normA = normalizeTeamNameForMerge(nameA)
+        val normB = normalizeTeamNameForMerge(nameB)
+        if (normA.isBlank() || normB.isBlank()) return false
+        if (normA == normB) return true
+        val aliasesA = canonicalizeClubForTvMatch(nameA)
+        val aliasesB = canonicalizeClubForTvMatch(nameB)
+        if (aliasesA.intersect(aliasesB).isNotEmpty()) return true
+        val tokensA = normA.split(" ").filter { it.length >= 4 }
+        val tokensB = normB.split(" ").filter { it.length >= 4 }
+        if (tokensA.isNotEmpty() && tokensB.isNotEmpty() && tokensA.first() == tokensB.first() &&
+            tokensA.first() !in setOf("real", "united", "city", "sporting", "olympique", "borussia", "athletic", "atletico", "dynamo", "dinamo")
+        ) {
+            return true
+        }
+        return false
+    }
+
+    internal fun findOrBuildMergeKey(
+        mergedMap: Map<String, FootballMatch>,
+        homeName: String,
+        awayName: String
+    ): String {
+        val h = normalizeTeamNameForMerge(homeName).ifBlank { homeName.lowercase(Locale.ROOT).trim() }
+        val a = normalizeTeamNameForMerge(awayName).ifBlank { awayName.lowercase(Locale.ROOT).trim() }
+        val exactKey = "${h}__${a}"
+        if (mergedMap.containsKey(exactKey)) return exactKey
+
+        for ((existingKey, existingMatch) in mergedMap) {
+            if (areSameClubNames(existingMatch.homeTeamName, homeName) &&
+                areSameClubNames(existingMatch.awayTeamName, awayName)
+            ) {
+                return existingKey
+            }
+        }
+        return exactKey
     }
 
     /**
@@ -463,8 +614,14 @@ class FootballRepository(
             norm.contains("internazionale") || norm == "inter" || norm == "inter milan" -> {
                 aliases.addAll(listOf("internazionale", "inter milan", "inter"))
             }
+            norm.contains("feyenoord") -> {
+                aliases.addAll(listOf("feyenoord", "feyenoord rotterdam"))
+            }
             norm.contains("atletico madrid") || norm == "atletico" || norm == "atl madrid" -> {
                 aliases.addAll(listOf("atletico madrid", "atletico"))
+            }
+            norm.contains("athletic bilbao") || norm == "athletic" -> {
+                aliases.addAll(listOf("athletic bilbao", "athletic club", "athletic"))
             }
             norm.contains("tottenham") || norm == "spurs" -> {
                 aliases.addAll(listOf("tottenham hotspur", "tottenham", "spurs"))
@@ -486,6 +643,12 @@ class FootballRepository(
             }
             norm.contains("real madrid") -> {
                 aliases.add("real madrid")
+            }
+            norm.contains("lille") -> {
+                aliases.addAll(listOf("lille", "losc lille", "losc"))
+            }
+            norm.contains("bodo") -> {
+                aliases.addAll(listOf("bodo glimt", "bodo"))
             }
             norm.contains("raja") -> {
                 aliases.addAll(listOf("raja", "raja casablanca", "raja athletic"))
@@ -796,15 +959,9 @@ class FootballRepository(
 
         val mergedMap = LinkedHashMap<String, FootballMatch>()
 
-        fun buildMatchPairKey(homeName: String, awayName: String): String {
-            val h = normalizeTeamNameForMerge(homeName).ifBlank { homeName.lowercase(Locale.ROOT).trim() }
-            val a = normalizeTeamNameForMerge(awayName).ifBlank { awayName.lowercase(Locale.ROOT).trim() }
-            return "${h}__${a}"
-        }
-
         // Step 1: Seed with TheSportsDB v1 (`123`) fixtures (authoritative for `/tiny` badges & `idEvent`)
         for (tsdbMatch in parallelResults.sportsDbMatches) {
-            val key = buildMatchPairKey(tsdbMatch.homeTeamName, tsdbMatch.awayTeamName)
+            val key = findOrBuildMergeKey(mergedMap, tsdbMatch.homeTeamName, tsdbMatch.awayTeamName)
             val existing = mergedMap[key]
             if (existing == null) {
                 mergedMap[key] = tsdbMatch
@@ -815,7 +972,7 @@ class FootballRepository(
 
         // Step 2: Merge SportAPI.ai fixtures & real-time live scores (authoritative for live scores, minute clock & `1H`/`HT`/`2H`/`FT` status)
         for (sportApiMatch in parallelResults.sportApiMatches) {
-            val key = buildMatchPairKey(sportApiMatch.homeTeamName, sportApiMatch.awayTeamName)
+            val key = findOrBuildMergeKey(mergedMap, sportApiMatch.homeTeamName, sportApiMatch.awayTeamName)
             val existing = mergedMap[key]
             if (existing == null) {
                 mergedMap[key] = sportApiMatch
@@ -828,14 +985,13 @@ class FootballRepository(
 
         // Step 3: Supplement with API-Football & ESPN real-time scoreboard fixtures
         for (extraMatch in (parallelResults.apiFootballMatches + parallelResults.espnMatches)) {
-            val key = buildMatchPairKey(extraMatch.homeTeamName, extraMatch.awayTeamName)
+            val key = findOrBuildMergeKey(mergedMap, extraMatch.homeTeamName, extraMatch.awayTeamName)
             val existing = mergedMap[key]
             if (existing == null) {
                 mergedMap[key] = extraMatch
             } else {
                 // Prefer real-time scoreboard status/scores/clock over static fixture entries while preserving `/tiny` badges & IDs
-                val preferExtraLive = (existing.status == MatchStatus.UPCOMING && extraMatch.status != MatchStatus.UPCOMING) ||
-                    (existing.matchId.startsWith("tsdb_") && (extraMatch.status != MatchStatus.UPCOMING || extraMatch.espnEventId.isNotBlank()))
+                val preferExtraLive = shouldPreferCandidateLiveState(existing = existing, candidate = extraMatch)
                 mergedMap[key] = if (preferExtraLive) {
                     mergeMatchRecords(primaryLive = extraMatch, badgeAndTvSource = existing)
                 } else {
@@ -844,8 +1000,11 @@ class FootballRepository(
             }
         }
 
-        // Step 4: Cross-reference all matches with TheSportsDB `eventstv.php` TV listings + Slot-Aware MENA Broadcaster Resolver
-        resolveDayMatchesTvChannelsWithMenaPriority(mergedMap.values.toList(), parallelResults.tvBroadcasts)
+        // Step 4: Synchronize elapsed live minute clocks and cross-reference with TheSportsDB `eventstv.php` TV listings
+        val syncedMatches = mergedMap.values.map { match ->
+            synchronizeElapsedMatchClock(match, dayTab)
+        }
+        resolveDayMatchesTvChannelsWithMenaPriority(syncedMatches, parallelResults.tvBroadcasts)
     }
 
     private data class HybridParallelPayload(
@@ -855,6 +1014,28 @@ class FootballRepository(
         val espnMatches: List<FootballMatch>,
         val apiFootballMatches: List<FootballMatch>
     )
+
+    internal fun shouldPreferCandidateLiveState(
+        existing: FootballMatch,
+        candidate: FootballMatch
+    ): Boolean {
+        if (existing.status == MatchStatus.UPCOMING && candidate.status != MatchStatus.UPCOMING) return true
+        if (candidate.status == MatchStatus.UPCOMING && existing.status != MatchStatus.UPCOMING) return false
+        if (candidate.status == MatchStatus.FINISHED && existing.status != MatchStatus.FINISHED) return true
+        if (existing.status == MatchStatus.FINISHED && candidate.status != MatchStatus.FINISHED) return false
+
+        val existingHasExplicitMinute = existing.liveMinuteOrBadge.contains("'") && existing.liveMinuteOrBadge.any { it.isDigit() }
+        val candidateHasExplicitMinute = candidate.liveMinuteOrBadge.contains("'") && candidate.liveMinuteOrBadge.any { it.isDigit() }
+        if (candidateHasExplicitMinute && !existingHasExplicitMinute) return true
+        if (existingHasExplicitMinute && !candidateHasExplicitMinute) return false
+
+        val existingTotalGoals = (existing.homeScore ?: 0) + (existing.awayScore ?: 0)
+        val candidateTotalGoals = (candidate.homeScore ?: 0) + (candidate.awayScore ?: 0)
+        if (candidateTotalGoals > existingTotalGoals) return true
+
+        if (existing.matchId.startsWith("tsdb_") && candidate.espnEventId.isNotBlank()) return true
+        return false
+    }
 
     /**
      * Merges a live-authoritative match record (SportAPI.ai / ESPN Live) with a badge/TV-authoritative match record (TheSportsDB).
@@ -900,8 +1081,33 @@ class FootballRepository(
             else -> primaryLive.beinChannel
         }
 
+        // Ensure we never lose an explicit live minute badge or higher live score when merging two live records
+        val primaryHasMinute = primaryLive.liveMinuteOrBadge.contains("'") && primaryLive.liveMinuteOrBadge.any { it.isDigit() }
+        val secondaryHasMinute = badgeAndTvSource.liveMinuteOrBadge.contains("'") && badgeAndTvSource.liveMinuteOrBadge.any { it.isDigit() }
+        val resolvedLiveBadge = if (!primaryHasMinute && secondaryHasMinute && primaryLive.status == MatchStatus.LIVE) {
+            badgeAndTvSource.liveMinuteOrBadge
+        } else {
+            primaryLive.liveMinuteOrBadge
+        }
+
+        val resolvedHomeScore = when {
+            primaryLive.status == MatchStatus.UPCOMING -> null
+            primaryLive.homeScore != null && badgeAndTvSource.homeScore != null ->
+                maxOf(primaryLive.homeScore, badgeAndTvSource.homeScore)
+            else -> primaryLive.homeScore ?: badgeAndTvSource.homeScore
+        }
+        val resolvedAwayScore = when {
+            primaryLive.status == MatchStatus.UPCOMING -> null
+            primaryLive.awayScore != null && badgeAndTvSource.awayScore != null ->
+                maxOf(primaryLive.awayScore, badgeAndTvSource.awayScore)
+            else -> primaryLive.awayScore ?: badgeAndTvSource.awayScore
+        }
+
         return primaryLive.copy(
             beinChannel = resolvedBeinChannel,
+            liveMinuteOrBadge = resolvedLiveBadge,
+            homeScore = resolvedHomeScore,
+            awayScore = resolvedAwayScore,
             homeTeamBadge = bestHomeBadge,
             awayTeamBadge = bestAwayBadge,
             stadiumName = resolvedStadium,
@@ -1617,32 +1823,38 @@ class FootballRepository(
             )
         }
 
-        fun buildMatchPairKey(homeName: String, awayName: String): String {
-            val h = normalizeTeamNameForMerge(homeName).ifBlank { homeName.lowercase(Locale.ROOT).trim() }
-            val a = normalizeTeamNameForMerge(awayName).ifBlank { awayName.lowercase(Locale.ROOT).trim() }
-            return "${h}__${a}"
-        }
-
         val mergedMap = LinkedHashMap<String, FootballMatch>()
         for (existing in existingMatches) {
-            mergedMap[buildMatchPairKey(existing.homeTeamName, existing.awayTeamName)] = existing
+            val key = findOrBuildMergeKey(mergedMap, existing.homeTeamName, existing.awayTeamName)
+            val prev = mergedMap[key]
+            if (prev == null) {
+                mergedMap[key] = existing
+            } else {
+                val preferCandidate = shouldPreferCandidateLiveState(existing = prev, candidate = existing)
+                mergedMap[key] = if (preferCandidate) {
+                    mergeMatchRecords(primaryLive = existing, badgeAndTvSource = prev)
+                } else {
+                    mergeMatchRecords(primaryLive = prev, badgeAndTvSource = existing)
+                }
+            }
         }
 
         // 1. Merge TheSportsDB updates (preserving existing live status if already live)
         for (tsdbMatch in sportsDbDayMatches) {
-            val key = buildMatchPairKey(tsdbMatch.homeTeamName, tsdbMatch.awayTeamName)
+            val key = findOrBuildMergeKey(mergedMap, tsdbMatch.homeTeamName, tsdbMatch.awayTeamName)
             val existing = mergedMap[key]
             if (existing == null) {
                 mergedMap[key] = tsdbMatch
             } else {
-                val primary = if (tsdbMatch.status != MatchStatus.UPCOMING) tsdbMatch else existing
+                val preferTsdb = shouldPreferCandidateLiveState(existing = existing, candidate = tsdbMatch)
+                val primary = if (preferTsdb) tsdbMatch else existing
                 mergedMap[key] = mergeMatchRecords(primaryLive = primary, badgeAndTvSource = tsdbMatch)
             }
         }
 
         // 2. Merge SportAPI.ai real-time live scores & match minutes (Primary live source of truth)
         for (sportApiMatch in sportApiLiveMatches) {
-            val key = buildMatchPairKey(sportApiMatch.homeTeamName, sportApiMatch.awayTeamName)
+            val key = findOrBuildMergeKey(mergedMap, sportApiMatch.homeTeamName, sportApiMatch.awayTeamName)
             val existing = mergedMap[key]
             if (existing == null) {
                 mergedMap[key] = sportApiMatch
@@ -1653,13 +1865,12 @@ class FootballRepository(
 
         // 3. Supplement with real-time scoreboard deltas (API-Football & ESPN)
         for (extraMatch in (apiFootballMatches + espnLiveMatches)) {
-            val key = buildMatchPairKey(extraMatch.homeTeamName, extraMatch.awayTeamName)
+            val key = findOrBuildMergeKey(mergedMap, extraMatch.homeTeamName, extraMatch.awayTeamName)
             val existing = mergedMap[key]
             if (existing == null) {
                 mergedMap[key] = extraMatch
             } else {
-                val preferExtraLive = (existing.status == MatchStatus.UPCOMING && extraMatch.status != MatchStatus.UPCOMING) ||
-                    (extraMatch.status == MatchStatus.LIVE || extraMatch.status == MatchStatus.HALFTIME || extraMatch.status == MatchStatus.FINISHED)
+                val preferExtraLive = shouldPreferCandidateLiveState(existing = existing, candidate = extraMatch)
                 mergedMap[key] = if (preferExtraLive) {
                     mergeMatchRecords(primaryLive = extraMatch, badgeAndTvSource = existing)
                 } else {
@@ -3157,12 +3368,29 @@ class FootballRepository(
         }
     }
 
+    private fun normalizeIsoInput(isoString: String): String {
+        var cleaned = isoString.trim()
+        // Normalize fractional seconds (.000Z -> Z) and +00:00 -> Z for reliable SimpleDateFormat parsing
+        cleaned = cleaned.replace(Regex("""\.\d+(Z|[+-]\d{2}:?\d{2})"""), "$1")
+        if (cleaned.endsWith("+00:00") || cleaned.endsWith("-00:00")) {
+            cleaned = cleaned.dropLast(6) + "Z"
+        } else if (Regex(""".*[+-]\d{2}:\d{2}$""").matches(cleaned)) {
+            val tzPart = cleaned.takeLast(6).replace(":", "")
+            cleaned = cleaned.dropLast(6) + tzPart
+        }
+        return cleaned
+    }
+
     private fun formatIsoToMoroccoTime(isoString: String): String {
         if (isoString.isBlank()) return "20:00"
+        val normalized = normalizeIsoInput(isoString)
         val patterns = listOf(
-            "yyyy-MM-dd'T'HH:mm'Z'",
             "yyyy-MM-dd'T'HH:mm:ss'Z'",
+            "yyyy-MM-dd'T'HH:mm'Z'",
             "yyyy-MM-dd'T'HH:mm:ssZ",
+            "yyyy-MM-dd'T'HH:mmZ",
+            "yyyy-MM-dd'T'HH:mm:ss",
+            "yyyy-MM-dd'T'HH:mm",
             "yyyy-MM-dd HH:mm:ss",
             "yyyy-MM-dd HH:mm"
         )
@@ -3171,7 +3399,7 @@ class FootballRepository(
                 val parser = SimpleDateFormat(pattern, Locale.US).apply {
                     timeZone = TimeZone.getTimeZone("UTC")
                 }
-                val parsed: Date = parser.parse(isoString) ?: continue
+                val parsed: Date = parser.parse(normalized) ?: continue
                 val formatter = SimpleDateFormat("HH:mm", Locale.US).apply {
                     timeZone = TimeZone.getTimeZone("Africa/Casablanca")
                 }
@@ -3242,10 +3470,14 @@ class FootballRepository(
 
     private fun formatIsoToMoroccoDate(isoString: String): String {
         if (isoString.isBlank()) return ""
+        val normalized = normalizeIsoInput(isoString)
         val patterns = listOf(
-            "yyyy-MM-dd'T'HH:mm'Z'",
             "yyyy-MM-dd'T'HH:mm:ss'Z'",
+            "yyyy-MM-dd'T'HH:mm'Z'",
             "yyyy-MM-dd'T'HH:mm:ssZ",
+            "yyyy-MM-dd'T'HH:mmZ",
+            "yyyy-MM-dd'T'HH:mm:ss",
+            "yyyy-MM-dd'T'HH:mm",
             "yyyy-MM-dd HH:mm:ss",
             "yyyy-MM-dd HH:mm",
             "yyyy-MM-dd"
@@ -3255,7 +3487,7 @@ class FootballRepository(
                 val parser = SimpleDateFormat(pattern, Locale.US).apply {
                     timeZone = TimeZone.getTimeZone("UTC")
                 }
-                val parsed: Date = parser.parse(isoString) ?: continue
+                val parsed: Date = parser.parse(normalized) ?: continue
                 val formatter = SimpleDateFormat("yyyy-MM-dd", Locale.US).apply {
                     timeZone = TimeZone.getTimeZone("Africa/Casablanca")
                 }
@@ -3279,7 +3511,10 @@ class FootballRepository(
         private const val THESPORTSDB_MAX_REQ_PER_MINUTE = 60
 
         private val IGNORED_TEAM_TOKENS = setOf(
-            "fc", "ac", "ca", "club", "cf", "sc", "as", "rs", "de", "al", "el"
+            "fc", "ac", "ca", "club", "cf", "sc", "as", "rs", "de", "al", "el",
+            "fk", "sk", "gnk", "bsc", "sv", "vfb", "vfl", "tsg", "ud", "cd", "rcd", "rc",
+            "ogc", "losc", "osc", "sl", "cp", "bc", "acf", "ss", "ssc", "afc", "cfc", "sfc",
+            "kv", "krc", "rotterdam", "eindhoven", "amsterdam", "lisbon", "lissabon"
         )
 
         private val MENA_BROADCASTER_KEYWORDS = listOf(
@@ -3535,5 +3770,150 @@ class FootballRepository(
             FootballTeam("nat_brazil", "Brazil National Team", "BRA", "https://a.espncdn.com/i/teamlogos/countries/500/bra.png", "Brazil", "International"),
             FootballTeam("nat_portugal", "Portugal National Team", "POR", "https://a.espncdn.com/i/teamlogos/countries/500/por.png", "Portugal", "International")
         )
+
+        fun normalizeTeamNameForMerge(rawName: String): String {
+            if (rawName.isBlank()) return ""
+            val decomposed = Normalizer.normalize(rawName, Normalizer.Form.NFD)
+                .replace(Regex("\\p{InCombiningDiacriticalMarks}+"), "")
+                .replace("ø", "o", ignoreCase = true)
+                .replace("æ", "ae", ignoreCase = true)
+                .replace("ß", "ss", ignoreCase = true)
+            val baseTokens = decomposed
+                .lowercase(Locale.ROOT)
+                .replace(Regex("[^a-z0-9\\s]"), " ")
+                .split(Regex("\\s+"))
+                .filter { token ->
+                    token.isNotBlank() && token !in IGNORED_TEAM_TOKENS
+                }
+            val finalTokens = if (baseTokens.size > 1 && baseTokens.last() == "athletic" && baseTokens.first() != "athletic") {
+                baseTokens.dropLast(1)
+            } else {
+                baseTokens
+            }
+            val joined = finalTokens.joinToString(" ").trim()
+            return canonicalizeClubMergeName(joined)
+        }
+
+        fun canonicalizeClubMergeName(normalized: String): String {
+            if (normalized.isBlank()) return ""
+            return when {
+                normalized.contains("internazionale") || normalized == "inter" || normalized == "inter milan" || normalized == "internazionale milano" ->
+                    "inter milan"
+                normalized.contains("feyenoord") ->
+                    "feyenoord"
+                normalized.contains("paris saint") || normalized == "psg" || normalized == "paris sg" ->
+                    "paris saint germain"
+                normalized.contains("manchester city") || normalized == "man city" || normalized == "mancity" ->
+                    "manchester city"
+                normalized.contains("manchester united") || normalized == "man utd" || normalized == "man united" ->
+                    "manchester united"
+                normalized.contains("tottenham") || normalized == "spurs" ->
+                    "tottenham"
+                normalized.contains("newcastle") ->
+                    "newcastle"
+                normalized.contains("west ham") ->
+                    "west ham"
+                normalized.contains("wolverhampton") || normalized == "wolves" ->
+                    "wolverhampton"
+                normalized.contains("brighton") ->
+                    "brighton"
+                normalized.contains("nottingham") || normalized == "nottm forest" ->
+                    "nottingham forest"
+                normalized.contains("atletico madrid") || normalized == "atletico" || normalized == "atl madrid" ->
+                    "atletico madrid"
+                normalized.contains("athletic bilbao") || normalized == "athletic" || normalized == "ath bilbao" ->
+                    "athletic bilbao"
+                normalized.contains("real sociedad") || normalized == "sociedad" ->
+                    "real sociedad"
+                normalized.contains("real betis") || normalized == "betis" ->
+                    "real betis"
+                normalized.contains("villarreal") ->
+                    "villarreal"
+                normalized.contains("bayern") ->
+                    "bayern munich"
+                normalized.contains("dortmund") || normalized == "bvb" ->
+                    "borussia dortmund"
+                normalized.contains("leverkusen") ->
+                    "bayer leverkusen"
+                normalized.contains("leipzig") ->
+                    "rb leipzig"
+                normalized.contains("monchengladbach") || normalized.contains("gladbach") ->
+                    "monchengladbach"
+                normalized.contains("frankfurt") ->
+                    "eintracht frankfurt"
+                normalized.contains("lille") || normalized == "losc" ->
+                    "lille"
+                normalized.contains("marseille") ->
+                    "marseille"
+                normalized.contains("lyonnais") || normalized == "lyon" ->
+                    "lyon"
+                normalized.contains("monaco") ->
+                    "monaco"
+                normalized.contains("brestois") || normalized == "brest" ->
+                    "brest"
+                normalized.contains("rennais") || normalized == "rennes" ->
+                    "rennes"
+                normalized.contains("psv") || normalized.contains("eindhoven") ->
+                    "psv"
+                normalized.contains("ajax") ->
+                    "ajax"
+                normalized.contains("sporting") && !normalized.contains("gijon") && !normalized.contains("braga") ->
+                    "sporting cp"
+                normalized.contains("benfica") ->
+                    "benfica"
+                normalized.contains("porto") ->
+                    "porto"
+                normalized.contains("bodo") && normalized.contains("glimt") ->
+                    "bodo glimt"
+                normalized.contains("club brugge") || normalized == "brugge" ->
+                    "club brugge"
+                normalized.contains("crvena zvezda") || normalized.contains("red star") ->
+                    "crvena zvezda"
+                normalized.contains("dinamo zagreb") ->
+                    "dinamo zagreb"
+                normalized.contains("young boys") ->
+                    "young boys"
+                normalized.contains("sturm graz") ->
+                    "sturm graz"
+                normalized.contains("shakhtar") ->
+                    "shakhtar donetsk"
+                normalized.contains("salzburg") ->
+                    "salzburg"
+                normalized.contains("celtic") ->
+                    "celtic"
+                normalized.contains("rangers") && !normalized.contains("queens") ->
+                    "rangers"
+                normalized.contains("barcelona") || normalized == "barca" ->
+                    "barcelona"
+                normalized.contains("real madrid") ->
+                    "real madrid"
+                normalized.contains("raja") ->
+                    "raja"
+                normalized.contains("wydad") ->
+                    "wydad"
+                normalized.contains("far rabat") || normalized == "far" ->
+                    "far rabat"
+                normalized.contains("berkane") ->
+                    "berkane"
+                normalized.contains("ahly") && !normalized.contains("shabab") && !normalized.contains("jeddah") && !normalized.contains("saudi") ->
+                    "ahly"
+                else -> normalized
+            }
+        }
+
+        fun areSameClubNames(nameA: String, nameB: String): Boolean {
+            val normA = normalizeTeamNameForMerge(nameA)
+            val normB = normalizeTeamNameForMerge(nameB)
+            if (normA.isBlank() || normB.isBlank()) return false
+            if (normA == normB) return true
+            val tokensA = normA.split(" ").filter { it.length >= 4 }
+            val tokensB = normB.split(" ").filter { it.length >= 4 }
+            if (tokensA.isNotEmpty() && tokensB.isNotEmpty() && tokensA.first() == tokensB.first() &&
+                tokensA.first() !in setOf("real", "united", "city", "sporting", "olympique", "borussia", "athletic", "atletico", "dynamo", "dinamo")
+            ) {
+                return true
+            }
+            return false
+        }
     }
 }

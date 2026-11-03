@@ -63,7 +63,10 @@ data class PitchPlayerNode(
     val hasYellowCard: Boolean = false,
     val hasRedCard: Boolean = false,
     val subbedOffMinute: String? = null,
-    val subbedOnMinute: String? = null
+    val subbedOnMinute: String? = null,
+    val photoUrl: String = "",
+    val isMvp: Boolean = false,
+    val isCaptain: Boolean = false
 )
 
 data class MissingPlayerItem(
@@ -84,7 +87,9 @@ data class MatchLineupsData(
     val awayStartingXI: List<PitchPlayerNode>,
     val homeBench: List<PitchPlayerNode>,
     val awayBench: List<PitchPlayerNode>,
-    val missingPlayers: List<MissingPlayerItem>
+    val missingPlayers: List<MissingPlayerItem>,
+    val homeAvgRating: Double = 7.0,
+    val awayAvgRating: Double = 7.0
 )
 
 data class MatchStatComparison(
@@ -200,8 +205,11 @@ class MatchCenterEnricher(
             }
             val espnSummaryDeferred = async {
                 runCatching {
-                    val espnId = match.espnEventId.ifBlank {
+                    var espnId = match.espnEventId.ifBlank {
                         if (match.matchId.startsWith("espn_")) match.matchId.removePrefix("espn_") else ""
+                    }
+                    if (espnId.isBlank() && tournament != null && tournament.espnSlug.isNotBlank()) {
+                        espnId = resolveEspnEventIdFromScoreboard(tournament.espnSlug, match)
                     }
                     if (espnId.isNotBlank() && tournament != null && tournament.espnSlug.isNotBlank()) {
                         fetchTheSportsDbJson("https://site.api.espn.com/apis/site/v2/sports/soccer/${tournament.espnSlug}/summary?event=$espnId")
@@ -219,8 +227,118 @@ class MatchCenterEnricher(
         }
 
         val built = buildCompleteDossier(match, livePayload)
-        dossierCache[cacheKey] = built
-        built
+        val enrichedLineups = enrichLineupPlayerPhotosRemotely(built.lineups)
+        val finalDossier = built.copy(lineups = enrichedLineups)
+        dossierCache[cacheKey] = finalDossier
+        finalDossier
+    }
+
+    private fun resolveEspnEventIdFromScoreboard(espnSlug: String, match: FootballMatch): String {
+        val dateParam = runCatching {
+            val cal = java.util.Calendar.getInstance(java.util.TimeZone.getTimeZone("Africa/Casablanca"))
+            cal.add(java.util.Calendar.DAY_OF_YEAR, match.dayTab.dayOffset)
+            java.text.SimpleDateFormat("yyyyMMdd", java.util.Locale.US).apply {
+                timeZone = java.util.TimeZone.getTimeZone("Africa/Casablanca")
+            }.format(cal.time)
+        }.getOrDefault("")
+        val url = if (dateParam.length == 8) {
+            "https://site.api.espn.com/apis/site/v2/sports/soccer/$espnSlug/scoreboard?dates=$dateParam"
+        } else {
+            "https://site.api.espn.com/apis/site/v2/sports/soccer/$espnSlug/scoreboard"
+        }
+        val sbJson = runCatching { fetchTheSportsDbJson(url) }.getOrNull() ?: return ""
+        val events = sbJson.optJSONArray("events") ?: return ""
+        for (i in 0 until events.length()) {
+            val ev = events.optJSONObject(i) ?: continue
+            val comp = ev.optJSONArray("competitions")?.optJSONObject(0) ?: continue
+            val competitors = comp.optJSONArray("competitors") ?: continue
+            var hName = ""
+            var aName = ""
+            for (j in 0 until competitors.length()) {
+                val c = competitors.optJSONObject(j) ?: continue
+                val tName = c.optJSONObject("team")?.let {
+                    it.optString("displayName", it.optString("shortDisplayName", it.optString("name", "")))
+                }.orEmpty()
+                if (c.optString("homeAway") == "home") hName = tName
+                if (c.optString("homeAway") == "away") aName = tName
+            }
+            if (hName.isNotBlank() && aName.isNotBlank() &&
+                FootballRepository.areSameClubNames(hName, match.homeTeamName) &&
+                FootballRepository.areSameClubNames(aName, match.awayTeamName)
+            ) {
+                return ev.optString("id", "")
+            }
+        }
+        return ""
+    }
+
+    private suspend fun enrichLineupPlayerPhotosRemotely(lineups: MatchLineupsData): MatchLineupsData = supervisorScope {
+        suspend fun resolveNodePhoto(node: PitchPlayerNode): PitchPlayerNode {
+            if (node.photoUrl.isNotBlank() && !node.photoUrl.contains("/players/full/")) {
+                return node
+            }
+            val curated = resolveCuratedOrCachedPlayerPhoto(node.name)
+            if (curated.isNotBlank()) {
+                return node.copy(photoUrl = curated)
+            }
+            if (node.photoUrl.isNotBlank()) {
+                return node
+            }
+            val fetched = fetchPlayerPhotoFromSportsDb(node.name)
+            return if (fetched.isNotBlank()) node.copy(photoUrl = fetched) else node
+        }
+
+        val homeStartersDeferred = lineups.homeStartingXI.map { node -> async { resolveNodePhoto(node) } }
+        val awayStartersDeferred = lineups.awayStartingXI.map { node -> async { resolveNodePhoto(node) } }
+        val homeBenchDeferred = lineups.homeBench.map { node ->
+            async {
+                val curated = resolveCuratedOrCachedPlayerPhoto(node.name)
+                if (curated.isNotBlank()) node.copy(photoUrl = curated) else node
+            }
+        }
+        val awayBenchDeferred = lineups.awayBench.map { node ->
+            async {
+                val curated = resolveCuratedOrCachedPlayerPhoto(node.name)
+                if (curated.isNotBlank()) node.copy(photoUrl = curated) else node
+            }
+        }
+
+        lineups.copy(
+            homeStartingXI = homeStartersDeferred.map { it.await() },
+            awayStartingXI = awayStartersDeferred.map { it.await() },
+            homeBench = homeBenchDeferred.map { it.await() },
+            awayBench = awayBenchDeferred.map { it.await() }
+        )
+    }
+
+    private fun fetchPlayerPhotoFromSportsDb(playerName: String): String {
+        val cleanKey = playerName.trim().lowercase(Locale.ROOT)
+        if (cleanKey.isBlank() || cleanKey.startsWith("player #") || cleanKey.contains("#")) return ""
+        playerPhotoCache[cleanKey]?.let { return it }
+
+        val encoded = java.net.URLEncoder.encode(playerName.trim(), "UTF-8")
+        val json = runCatching {
+            fetchTheSportsDbJson("${FootballRepository.THESPORTSDB_BASE_URL}/searchplayers.php?p=$encoded")
+        }.getOrNull()
+
+        val players = json?.optJSONArray("player")
+        if (players != null) {
+            for (i in 0 until players.length()) {
+                val p = players.optJSONObject(i) ?: continue
+                val sport = p.optString("strSport", "Soccer")
+                if (!sport.equals("Soccer", ignoreCase = true)) continue
+                val photo = p.optString("strCutout", "").takeIf { it.startsWith("http") }
+                    ?: p.optString("strThumb", "").takeIf { it.startsWith("http") }
+                    ?: p.optString("strRender", "").takeIf { it.startsWith("http") }
+                    ?: ""
+                if (photo.isNotBlank()) {
+                    playerPhotoCache[cleanKey] = photo
+                    return photo
+                }
+            }
+        }
+        playerPhotoCache[cleanKey] = ""
+        return ""
     }
 
     private fun fetchTheSportsDbJson(urlStr: String): JSONObject? {
@@ -362,6 +480,110 @@ class MatchCenterEnricher(
         return null
     }
 
+    private data class RawPlayerEntry(
+        val name: String,
+        val jersey: Int,
+        val positionAbbr: String,
+        val photoUrl: String = "",
+        val formationPlace: Int = 99,
+        val goals: Int = 0,
+        val assists: Int = 0,
+        val yellowCard: Boolean = false,
+        val redCard: Boolean = false,
+        val subbedOffMin: String? = null,
+        val subbedOnMin: String? = null,
+        val isCaptain: Boolean = false
+    )
+
+    private fun parseEspnRosterEntries(
+        rosterObj: JSONObject?,
+        defaultGoalkeeper: Pair<String, Int>? = null,
+        teamName: String = ""
+    ): Pair<List<RawPlayerEntry>, List<RawPlayerEntry>> {
+        val starters = mutableListOf<RawPlayerEntry>()
+        val bench = mutableListOf<RawPlayerEntry>()
+        val rosterArr = rosterObj?.optJSONArray("roster") ?: return starters to bench
+
+        for (i in 0 until rosterArr.length()) {
+            val item = rosterArr.optJSONObject(i) ?: continue
+            val athlete = item.optJSONObject("athlete") ?: continue
+            var pName = athlete.optString("displayName", athlete.optString("fullName", "")).trim()
+            if (pName.isBlank()) continue
+            var jersey = item.optString("jersey", "").toIntOrNull() ?: (i + 1)
+            val pos = item.optJSONObject("position")?.optString("abbreviation", "SUB")?.ifBlank { "SUB" } ?: "SUB"
+            val formationPlace = item.optString("formationPlace", "99").toIntOrNull() ?: 99
+            val isCaptain = item.optBoolean("captain", false)
+
+            // Guard against corrupted ESPN goalkeeper entries (e.g., Péter Gulácsi appearing on Villarreal)
+            if (defaultGoalkeeper != null && pName.contains("Gulácsi", ignoreCase = true) && !teamName.contains("Leipzig", ignoreCase = true) && !teamName.contains("Hungary", ignoreCase = true)) {
+                pName = defaultGoalkeeper.first
+                jersey = defaultGoalkeeper.second
+            }
+
+            val espnHeadshot = athlete.optJSONObject("headshot")?.optString("href", "")?.takeIf { it.startsWith("http") }
+                ?: athlete.optString("id", "").takeIf { it.isNotBlank() }?.let { id ->
+                    "https://a.espncdn.com/i/headshots/soccer/players/full/$id.png"
+                }.orEmpty()
+            val resolvedPhoto = resolveCuratedOrCachedPlayerPhoto(pName).ifBlank { espnHeadshot }
+
+            var goals = 0
+            var assists = 0
+            var yellow = false
+            var red = false
+            val statsArr = item.optJSONArray("stats")
+            if (statsArr != null) {
+                for (s in 0 until statsArr.length()) {
+                    val st = statsArr.optJSONObject(s) ?: continue
+                    val stName = st.optString("name", "")
+                    val stVal = st.optDouble("value", 0.0).toInt()
+                    when (stName) {
+                        "totalGoals", "goals" -> goals = stVal
+                        "goalAssists", "assists" -> assists = stVal
+                        "yellowCards" -> if (stVal > 0) yellow = true
+                        "redCards" -> if (stVal > 0) red = true
+                    }
+                }
+            }
+
+            val subbedOut = item.optBoolean("subbedOut", false)
+            val subbedIn = item.optBoolean("subbedIn", false)
+            val entry = RawPlayerEntry(
+                name = pName,
+                jersey = jersey,
+                positionAbbr = pos,
+                photoUrl = resolvedPhoto,
+                formationPlace = formationPlace,
+                goals = goals,
+                assists = assists,
+                yellowCard = yellow,
+                redCard = red,
+                subbedOffMin = if (subbedOut) "68'" else null,
+                subbedOnMin = if (subbedIn) "68'" else null,
+                isCaptain = isCaptain
+            )
+
+            if (item.optBoolean("starter", false)) {
+                starters.add(entry)
+            } else {
+                bench.add(entry)
+            }
+        }
+
+        val sortedStarters = starters.sortedWith(
+            compareBy<RawPlayerEntry> { entry ->
+                val p = entry.positionAbbr.uppercase(Locale.ROOT)
+                when {
+                    p == "G" || p == "GK" || entry.formationPlace == 1 -> 0
+                    entry.formationPlace in 2..11 -> entry.formationPlace
+                    p.startsWith("D") || p in listOf("LB", "RB", "CB", "CD", "CD-L", "CD-R", "LWB", "RWB") -> 20
+                    p.startsWith("M") || p in listOf("CDM", "CM", "CAM", "LM", "RM", "DM", "AM") -> 30
+                    else -> 40
+                }
+            }
+        )
+        return sortedStarters to bench
+    }
+
     private fun buildLineupsForMatch(
         match: FootballMatch,
         tsdbLineupJson: JSONObject?,
@@ -384,87 +606,73 @@ class MatchCenterEnricher(
                 if (r.optString("homeAway") == "away") awayRosterObj = r
             }
 
-            val espnHomeStarters = mutableListOf<Pair<String, Int>>()
-            val espnAwayStarters = mutableListOf<Pair<String, Int>>()
-            val espnHomeBench = mutableListOf<Triple<String, Int, String>>()
-            val espnAwayBench = mutableListOf<Triple<String, Int, String>>()
-
-            val homeRosterArr = homeRosterObj?.optJSONArray("roster")
-            if (homeRosterArr != null) {
-                for (i in 0 until homeRosterArr.length()) {
-                    val item = homeRosterArr.optJSONObject(i) ?: continue
-                    val athlete = item.optJSONObject("athlete") ?: continue
-                    val pName = athlete.optString("displayName", athlete.optString("fullName", "")).trim()
-                    if (pName.isBlank()) continue
-                    val jersey = item.optString("jersey", "").toIntOrNull() ?: (i + 1)
-                    val pos = item.optJSONObject("position")?.optString("abbreviation", "SUB")?.ifBlank { "SUB" } ?: "SUB"
-                    if (item.optBoolean("starter", false)) {
-                        espnHomeStarters.add(pName to jersey)
-                    } else {
-                        espnHomeBench.add(Triple(pName, jersey, pos))
-                    }
-                }
-            }
-
-            val awayRosterArr = awayRosterObj?.optJSONArray("roster")
-            if (awayRosterArr != null) {
-                for (i in 0 until awayRosterArr.length()) {
-                    val item = awayRosterArr.optJSONObject(i) ?: continue
-                    val athlete = item.optJSONObject("athlete") ?: continue
-                    val pName = athlete.optString("displayName", athlete.optString("fullName", "")).trim()
-                    if (pName.isBlank()) continue
-                    val jersey = item.optString("jersey", "").toIntOrNull() ?: (i + 1)
-                    val pos = item.optJSONObject("position")?.optString("abbreviation", "SUB")?.ifBlank { "SUB" } ?: "SUB"
-                    if (item.optBoolean("starter", false)) {
-                        espnAwayStarters.add(pName to jersey)
-                    } else {
-                        espnAwayBench.add(Triple(pName, jersey, pos))
-                    }
-                }
-            }
+            val (espnHomeStarters, espnHomeBench) = parseEspnRosterEntries(
+                rosterObj = homeRosterObj,
+                defaultGoalkeeper = homeProfile.startingXI.firstOrNull(),
+                teamName = match.homeTeamName
+            )
+            val (espnAwayStarters, espnAwayBench) = parseEspnRosterEntries(
+                rosterObj = awayRosterObj,
+                defaultGoalkeeper = awayProfile.startingXI.firstOrNull(),
+                teamName = match.awayTeamName
+            )
 
             if (espnHomeStarters.size >= 11 && espnAwayStarters.size >= 11) {
                 val homeFormation = homeRosterObj?.optString("formation", "")?.takeIf { it.contains("-") } ?: homeProfile.formation
                 val awayFormation = awayRosterObj?.optString("formation", "")?.takeIf { it.contains("-") } ?: awayProfile.formation
 
-                val homeStarting = mapFormationToPitchNodes(
+                val rawHomeStarting = mapFormationToPitchNodesFromEntries(
                     teamKey = "home_${match.matchId}",
                     formation = homeFormation,
-                    players = espnHomeStarters.take(11),
+                    entries = espnHomeStarters.take(11),
                     goalsScored = homeGoals,
                     seed = seed
                 )
-                val awayStarting = mapFormationToPitchNodes(
+                val rawAwayStarting = mapFormationToPitchNodesFromEntries(
                     teamKey = "away_${match.matchId}",
                     formation = awayFormation,
-                    players = espnAwayStarters.take(11),
+                    entries = espnAwayStarters.take(11),
                     goalsScored = awayGoals,
                     seed = seed + 31
                 )
-                val homeBenchNodes = espnHomeBench.take(9).mapIndexed { idx, (name, num, pos) ->
+                val (homeStarting, awayStarting, homeAvg, awayAvg) = finalizeMvpAndTeamRatings(rawHomeStarting, rawAwayStarting)
+
+                val homeBenchNodes = espnHomeBench.take(9).mapIndexed { idx, entry ->
                     PitchPlayerNode(
                         playerId = "h_sub_$idx",
-                        name = name,
-                        shortName = extractShortPlayerName(name),
-                        jerseyNumber = num,
-                        positionCode = pos,
+                        name = entry.name,
+                        shortName = extractShortPlayerName(entry.name),
+                        jerseyNumber = entry.jersey,
+                        positionCode = entry.positionAbbr,
                         rowIndex = 5,
                         colIndex = idx,
                         colCountInRow = espnHomeBench.size.coerceAtMost(9),
-                        rating = 6.6
+                        rating = if (entry.goals > 0) 7.6 else if (entry.subbedOnMin != null) 6.9 else 6.6,
+                        goals = entry.goals,
+                        assists = entry.assists,
+                        hasYellowCard = entry.yellowCard,
+                        hasRedCard = entry.redCard,
+                        subbedOnMinute = entry.subbedOnMin,
+                        photoUrl = entry.photoUrl
                     )
                 }
-                val awayBenchNodes = espnAwayBench.take(9).mapIndexed { idx, (name, num, pos) ->
+                val awayBenchNodes = espnAwayBench.take(9).mapIndexed { idx, entry ->
                     PitchPlayerNode(
                         playerId = "a_sub_$idx",
-                        name = name,
-                        shortName = extractShortPlayerName(name),
-                        jerseyNumber = num,
-                        positionCode = pos,
+                        name = entry.name,
+                        shortName = extractShortPlayerName(entry.name),
+                        jerseyNumber = entry.jersey,
+                        positionCode = entry.positionAbbr,
                         rowIndex = 5,
                         colIndex = idx,
                         colCountInRow = espnAwayBench.size.coerceAtMost(9),
-                        rating = 6.6
+                        rating = if (entry.goals > 0) 7.6 else if (entry.subbedOnMin != null) 6.9 else 6.6,
+                        goals = entry.goals,
+                        assists = entry.assists,
+                        hasYellowCard = entry.yellowCard,
+                        hasRedCard = entry.redCard,
+                        subbedOnMinute = entry.subbedOnMin,
+                        photoUrl = entry.photoUrl
                     )
                 }
 
@@ -478,25 +686,49 @@ class MatchCenterEnricher(
                     awayStartingXI = awayStarting,
                     homeBench = homeBenchNodes.ifEmpty {
                         homeProfile.bench.mapIndexed { idx, (name, num, pos) ->
-                            PitchPlayerNode("h_sub_$idx", name, extractShortPlayerName(name), num, pos, 5, idx, homeProfile.bench.size, 6.5)
+                            PitchPlayerNode(
+                                playerId = "h_sub_$idx",
+                                name = name,
+                                shortName = extractShortPlayerName(name),
+                                jerseyNumber = num,
+                                positionCode = pos,
+                                rowIndex = 5,
+                                colIndex = idx,
+                                colCountInRow = homeProfile.bench.size,
+                                rating = 6.5,
+                                photoUrl = resolveCuratedOrCachedPlayerPhoto(name)
+                            )
                         }
                     },
                     awayBench = awayBenchNodes.ifEmpty {
                         awayProfile.bench.mapIndexed { idx, (name, num, pos) ->
-                            PitchPlayerNode("a_sub_$idx", name, extractShortPlayerName(name), num, pos, 5, idx, awayProfile.bench.size, 6.5)
+                            PitchPlayerNode(
+                                playerId = "a_sub_$idx",
+                                name = name,
+                                shortName = extractShortPlayerName(name),
+                                jerseyNumber = num,
+                                positionCode = pos,
+                                rowIndex = 5,
+                                colIndex = idx,
+                                colCountInRow = awayProfile.bench.size,
+                                rating = 6.5,
+                                photoUrl = resolveCuratedOrCachedPlayerPhoto(name)
+                            )
                         }
                     },
                     missingPlayers = listOf(
                         MissingPlayerItem(homeProfile.missingPlayerName, MatchTeamSide.HOME, "CM", "Squad Rotation / Fitness", "OUT"),
                         MissingPlayerItem(awayProfile.missingPlayerName, MatchTeamSide.AWAY, "CB", "Squad Rotation / Fitness", "OUT")
-                    )
+                    ),
+                    homeAvgRating = homeAvg,
+                    awayAvgRating = awayAvg
                 )
             }
         }
 
-        // 2. Check if TheSportsDB returned custom player names in `lineup` array
-        val tsdbHomeNames = mutableListOf<Pair<String, Int>>()
-        val tsdbAwayNames = mutableListOf<Pair<String, Int>>()
+        // 2. Check if TheSportsDB returned custom player names + cutouts in `lineup` array
+        val tsdbHomeEntries = mutableListOf<RawPlayerEntry>()
+        val tsdbAwayEntries = mutableListOf<RawPlayerEntry>()
         val lineupArr = tsdbLineupJson?.optJSONArray("lineup")
         if (lineupArr != null && lineupArr.length() >= 11) {
             for (i in 0 until lineupArr.length()) {
@@ -505,31 +737,71 @@ class MatchCenterEnricher(
                 val squadNum = obj.optString("intSquadNumber", "0").toIntOrNull() ?: (i + 1)
                 val isSub = obj.optString("strSubstitute", "No").equals("Yes", ignoreCase = true)
                 val teamName = obj.optString("strTeam", "")
+                val pos = obj.optString("strPosition", "M")
+                val cutout = obj.optString("strCutout", "").takeIf { it.startsWith("http") }
+                    ?: obj.optString("strThumb", "").takeIf { it.startsWith("http") }
+                    ?: obj.optString("strRender", "").takeIf { it.startsWith("http") }
+                    ?: resolveCuratedOrCachedPlayerPhoto(pName)
                 if (!isSub && pName.isNotBlank()) {
-                    if (teamName.contains(match.homeTeamName.take(4), ignoreCase = true)) {
-                        tsdbHomeNames.add(pName to squadNum)
-                    } else if (teamName.contains(match.awayTeamName.take(4), ignoreCase = true)) {
-                        tsdbAwayNames.add(pName to squadNum)
+                    val entry = RawPlayerEntry(name = pName, jersey = squadNum, positionAbbr = pos, photoUrl = cutout)
+                    if (FootballRepository.areSameClubNames(teamName, match.homeTeamName) ||
+                        teamName.contains(match.homeTeamName.take(4), ignoreCase = true)
+                    ) {
+                        tsdbHomeEntries.add(entry)
+                    } else if (FootballRepository.areSameClubNames(teamName, match.awayTeamName) ||
+                        teamName.contains(match.awayTeamName.take(4), ignoreCase = true)
+                    ) {
+                        tsdbAwayEntries.add(entry)
                     }
                 }
             }
         }
 
-        val homeStarting = mapFormationToPitchNodes(
+        val homeEntries = if (tsdbHomeEntries.size >= 11) {
+            tsdbHomeEntries.take(11)
+        } else {
+            homeProfile.startingXI.mapIndexed { idx, (name, num) ->
+                RawPlayerEntry(
+                    name = name,
+                    jersey = num,
+                    positionAbbr = if (idx == 0) "GK" else "P",
+                    photoUrl = resolveCuratedOrCachedPlayerPhoto(name),
+                    isCaptain = idx == 6
+                )
+            }
+        }
+
+        val awayEntries = if (tsdbAwayEntries.size >= 11) {
+            tsdbAwayEntries.take(11)
+        } else {
+            awayProfile.startingXI.mapIndexed { idx, (name, num) ->
+                RawPlayerEntry(
+                    name = name,
+                    jersey = num,
+                    positionAbbr = if (idx == 0) "GK" else "P",
+                    photoUrl = resolveCuratedOrCachedPlayerPhoto(name),
+                    isCaptain = idx == 6
+                )
+            }
+        }
+
+        val rawHomeStarting = mapFormationToPitchNodesFromEntries(
             teamKey = "home_${match.matchId}",
             formation = homeProfile.formation,
-            players = if (tsdbHomeNames.size >= 11) tsdbHomeNames.take(11) else homeProfile.startingXI,
+            entries = homeEntries,
             goalsScored = homeGoals,
             seed = seed
         )
 
-        val awayStarting = mapFormationToPitchNodes(
+        val rawAwayStarting = mapFormationToPitchNodesFromEntries(
             teamKey = "away_${match.matchId}",
             formation = awayProfile.formation,
-            players = if (tsdbAwayNames.size >= 11) tsdbAwayNames.take(11) else awayProfile.startingXI,
+            entries = awayEntries,
             goalsScored = awayGoals,
             seed = seed + 31
         )
+
+        val (homeStarting, awayStarting, homeAvg, awayAvg) = finalizeMvpAndTeamRatings(rawHomeStarting, rawAwayStarting)
 
         val homeBench = homeProfile.bench.mapIndexed { idx, (name, num, pos) ->
             PitchPlayerNode(
@@ -544,7 +816,8 @@ class MatchCenterEnricher(
                 rating = if (idx < 2 && match.status != MatchStatus.UPCOMING) 6.8 + (idx * 0.2) else 6.5,
                 subbedOnMinute = if (idx == 0 && match.status != MatchStatus.UPCOMING) "64'"
                 else if (idx == 1 && match.status == MatchStatus.FINISHED) "77'"
-                else null
+                else null,
+                photoUrl = resolveCuratedOrCachedPlayerPhoto(name)
             )
         }
 
@@ -561,7 +834,8 @@ class MatchCenterEnricher(
                 rating = if (idx < 2 && match.status != MatchStatus.UPCOMING) 6.7 + (idx * 0.2) else 6.5,
                 subbedOnMinute = if (idx == 0 && match.status != MatchStatus.UPCOMING) "68'"
                 else if (idx == 1 && match.status == MatchStatus.FINISHED) "81'"
-                else null
+                else null,
+                photoUrl = resolveCuratedOrCachedPlayerPhoto(name)
             )
         }
 
@@ -582,7 +856,7 @@ class MatchCenterEnricher(
             )
         )
 
-        val isConfirmed = tsdbHomeNames.size >= 11 || match.status != MatchStatus.UPCOMING
+        val isConfirmed = tsdbHomeEntries.size >= 11 || match.status != MatchStatus.UPCOMING
 
         return MatchLineupsData(
             isConfirmed = isConfirmed,
@@ -594,14 +868,50 @@ class MatchCenterEnricher(
             awayStartingXI = awayStarting,
             homeBench = homeBench,
             awayBench = awayBench,
-            missingPlayers = missing
+            missingPlayers = missing,
+            homeAvgRating = homeAvg,
+            awayAvgRating = awayAvg
         )
     }
 
-    private fun mapFormationToPitchNodes(
+    private data class FinalizedLineupRatings(
+        val homeXI: List<PitchPlayerNode>,
+        val awayXI: List<PitchPlayerNode>,
+        val homeAvg: Double,
+        val awayAvg: Double
+    )
+
+    private fun finalizeMvpAndTeamRatings(
+        homeXI: List<PitchPlayerNode>,
+        awayXI: List<PitchPlayerNode>
+    ): FinalizedLineupRatings {
+        val allNodes = homeXI + awayXI
+        val mvpPlayerId = allNodes.maxByOrNull { it.rating + (it.goals * 0.25) + (it.assists * 0.1) }?.playerId
+        val updatedHome = homeXI.mapIndexed { idx, node ->
+            node.copy(
+                isMvp = node.playerId == mvpPlayerId,
+                isCaptain = node.isCaptain || (idx == 6 && homeXI.none { it.isCaptain })
+            )
+        }
+        val updatedAway = awayXI.mapIndexed { idx, node ->
+            node.copy(
+                isMvp = node.playerId == mvpPlayerId,
+                isCaptain = node.isCaptain || (idx == 6 && awayXI.none { it.isCaptain })
+            )
+        }
+        val homeAvg = if (updatedHome.isNotEmpty()) {
+            Math.round(updatedHome.map { it.rating }.average() * 10.0) / 10.0
+        } else 7.0
+        val awayAvg = if (updatedAway.isNotEmpty()) {
+            Math.round(updatedAway.map { it.rating }.average() * 10.0) / 10.0
+        } else 7.0
+        return FinalizedLineupRatings(updatedHome, updatedAway, homeAvg, awayAvg)
+    }
+
+    private fun mapFormationToPitchNodesFromEntries(
         teamKey: String,
         formation: String,
-        players: List<Pair<String, Int>>,
+        entries: List<RawPlayerEntry>,
         goalsScored: Int,
         seed: Int
     ): List<PitchPlayerNode> {
@@ -615,29 +925,41 @@ class MatchCenterEnricher(
             listOf("ST", "CF", "RF")
         )
 
+        val hasExplicitEntryGoals = entries.any { it.goals > 0 }
         val nodes = mutableListOf<PitchPlayerNode>()
         var playerCursor = 0
 
         lines.forEachIndexed { rowIdx, countInLine ->
             for (colIdx in 0 until countInLine) {
-                val (fullName, shirtNum) = players.getOrElse(playerCursor) {
-                    "Player #${playerCursor + 1}" to (playerCursor + 1)
+                val entry = entries.getOrElse(playerCursor) {
+                    RawPlayerEntry(
+                        name = "Player #${playerCursor + 1}",
+                        jersey = playerCursor + 1,
+                        positionAbbr = "FW"
+                    )
                 }
                 val posLabels = positionLabelsByRow.getOrElse(rowIdx) { listOf("FW") }
                 val posCode = posLabels.getOrElse(colIdx) { posLabels.last() }
 
-                // Assign goals primarily to forwards/attacking mids
                 val isForward = playerCursor >= 8
                 val isMid = playerCursor in 5..7
-                val playerGoals = when {
-                    goalsScored <= 0 -> 0
-                    playerCursor == 9 -> (goalsScored + 1) / 2
-                    playerCursor == 10 && goalsScored >= 2 -> goalsScored / 2
-                    playerCursor == 7 && goalsScored >= 3 -> 1
-                    else -> 0
+                val playerGoals = if (hasExplicitEntryGoals) {
+                    entry.goals
+                } else {
+                    when {
+                        goalsScored <= 0 -> 0
+                        playerCursor == 9 -> (goalsScored + 1) / 2
+                        playerCursor == 10 && goalsScored >= 2 -> goalsScored / 2
+                        playerCursor == 7 && goalsScored >= 3 -> 1
+                        else -> 0
+                    }
                 }
-                val playerAssists = if (goalsScored > 0 && (playerCursor == 7 || playerCursor == 8)) 1 else 0
-                val yellowCard = (playerCursor == 2 || playerCursor == 5) && ((seed + playerCursor) % 3 == 0)
+                val playerAssists = if (hasExplicitEntryGoals) {
+                    entry.assists
+                } else {
+                    if (goalsScored > 0 && (playerCursor == 7 || playerCursor == 8)) 1 else 0
+                }
+                val yellowCard = entry.yellowCard || ((playerCursor == 2 || playerCursor == 5) && ((seed + playerCursor) % 3 == 0))
 
                 val baseRating = 6.7 + ((seed + playerCursor * 7) % 14) * 0.1 + (playerGoals * 0.8) + (playerAssists * 0.4)
                 val clampedRating = baseRating.coerceIn(6.2, 9.5)
@@ -645,9 +967,9 @@ class MatchCenterEnricher(
                 nodes.add(
                     PitchPlayerNode(
                         playerId = "${teamKey}_$playerCursor",
-                        name = fullName,
-                        shortName = extractShortPlayerName(fullName),
-                        jerseyNumber = shirtNum,
+                        name = entry.name,
+                        shortName = extractShortPlayerName(entry.name),
+                        jerseyNumber = entry.jersey,
                         positionCode = posCode,
                         rowIndex = rowIdx,
                         colIndex = colIdx,
@@ -656,8 +978,10 @@ class MatchCenterEnricher(
                         goals = playerGoals,
                         assists = playerAssists,
                         hasYellowCard = yellowCard,
-                        hasRedCard = false,
-                        subbedOffMinute = if (isForward && playerCursor == 8) "64'" else if (isMid && playerCursor == 6) "77'" else null
+                        hasRedCard = entry.redCard,
+                        subbedOffMinute = entry.subbedOffMin ?: if (isForward && playerCursor == 8) "64'" else if (isMid && playerCursor == 6) "77'" else null,
+                        photoUrl = entry.photoUrl.ifBlank { resolveCuratedOrCachedPlayerPhoto(entry.name) },
+                        isCaptain = entry.isCaptain
                     )
                 )
                 playerCursor++
@@ -1689,6 +2013,69 @@ class MatchCenterEnricher(
         val missingPlayerName: String
     )
 
+    private val playerPhotoCache = ConcurrentHashMap<String, String>()
+
+    internal fun resolveCuratedOrCachedPlayerPhoto(playerName: String): String {
+        val clean = playerName.trim().lowercase(Locale.ROOT)
+        if (clean.isBlank()) return ""
+        playerPhotoCache[clean]?.takeIf { it.isNotBlank() }?.let { return it }
+
+        val curated = when {
+            clean.contains("mbappé") || clean.contains("mbappe") -> "https://a.espncdn.com/i/headshots/soccer/players/full/231388.png"
+            clean.contains("vinícius") || clean.contains("vinicius") -> "https://a.espncdn.com/i/headshots/soccer/players/full/251664.png"
+            clean.contains("bellingham") -> "https://a.espncdn.com/i/headshots/soccer/players/full/291285.png"
+            clean.contains("courtois") -> "https://a.espncdn.com/i/headshots/soccer/players/full/137126.png"
+            clean.contains("valverde") -> "https://a.espncdn.com/i/headshots/soccer/players/full/238050.png"
+            clean.contains("rüdiger") || clean.contains("rudiger") -> "https://a.espncdn.com/i/headshots/soccer/players/full/163628.png"
+            clean.contains("modrić") || clean.contains("modric") -> "https://a.espncdn.com/i/headshots/soccer/players/full/93556.png"
+            clean.contains("rodrygo") -> "https://a.espncdn.com/i/headshots/soccer/players/full/260727.png"
+            clean.contains("yamal") -> "https://a.espncdn.com/i/headshots/soccer/players/full/362150.png"
+            clean.contains("lewandowski") -> "https://a.espncdn.com/i/headshots/soccer/players/full/125824.png"
+            clean.contains("raphinha") -> "https://a.espncdn.com/i/headshots/soccer/players/full/231050.png"
+            clean.contains("pedri") -> "https://a.espncdn.com/i/headshots/soccer/players/full/301875.png"
+            clean.contains("olmo") -> "https://a.espncdn.com/i/headshots/soccer/players/full/217820.png"
+            clean.contains("koundé") || clean.contains("kounde") -> "https://a.espncdn.com/i/headshots/soccer/players/full/233548.png"
+            clean.contains("hakimi") -> "https://a.espncdn.com/i/headshots/soccer/players/full/245841.png"
+            clean.contains("donnarumma") -> "https://a.espncdn.com/i/headshots/soccer/players/full/226198.png"
+            clean.contains("dembélé") || clean.contains("dembele") -> "https://a.espncdn.com/i/headshots/soccer/players/full/229743.png"
+            clean.contains("vitinha") -> "https://a.espncdn.com/i/headshots/soccer/players/full/288948.png"
+            clean.contains("marquinhos") -> "https://a.espncdn.com/i/headshots/soccer/players/full/173578.png"
+            clean.contains("barcola") -> "https://a.espncdn.com/i/headshots/soccer/players/full/325784.png"
+            clean.contains("joão neves") || clean.contains("joao neves") || clean == "neves" -> "https://a.espncdn.com/i/headshots/soccer/players/full/349554.png"
+            clean.contains("doué") || clean.contains("doue") -> "https://a.espncdn.com/i/headshots/soccer/players/full/343536.png"
+            clean.contains("fabián ruiz") || clean.contains("fabian ruiz") || clean == "ruiz" -> "https://a.espncdn.com/i/headshots/soccer/players/full/212650.png"
+            clean.contains("pacho") -> "https://a.espncdn.com/i/headshots/soccer/players/full/292857.png"
+            clean.contains("pépé") || clean.contains("pepe") -> "https://a.espncdn.com/i/headshots/soccer/players/full/220594.png"
+            clean.contains("parejo") -> "https://a.espncdn.com/i/headshots/soccer/players/full/104673.png"
+            clean.contains("baena") -> "https://a.espncdn.com/i/headshots/soccer/players/full/292694.png"
+            clean.contains("ayoze") || clean.contains("pérez") -> "https://a.espncdn.com/i/headshots/soccer/players/full/179761.png"
+            clean.contains("buchanan") -> "https://a.espncdn.com/i/headshots/soccer/players/full/285884.png"
+            clean.contains("gueye") -> "https://a.espncdn.com/i/headshots/soccer/players/full/302402.png"
+            clean.contains("comesaña") || clean.contains("comesana") -> "https://a.espncdn.com/i/headshots/soccer/players/full/242670.png"
+            clean.contains("haaland") -> "https://a.espncdn.com/i/headshots/soccer/players/full/253989.png"
+            clean.contains("foden") -> "https://a.espncdn.com/i/headshots/soccer/players/full/246669.png"
+            clean.contains("salah") -> "https://a.espncdn.com/i/headshots/soccer/players/full/173896.png"
+            clean.contains("van dijk") -> "https://a.espncdn.com/i/headshots/soccer/players/full/159531.png"
+            clean.contains("saka") -> "https://a.espncdn.com/i/headshots/soccer/players/full/280555.png"
+            clean.contains("declan rice") || clean == "rice" -> "https://a.espncdn.com/i/headshots/soccer/players/full/238232.png"
+            clean.contains("saliba") -> "https://a.espncdn.com/i/headshots/soccer/players/full/279379.png"
+            clean.contains("lautaro") -> "https://a.espncdn.com/i/headshots/soccer/players/full/219713.png"
+            clean.contains("thuram") -> "https://a.espncdn.com/i/headshots/soccer/players/full/219291.png"
+            clean.contains("barella") -> "https://a.espncdn.com/i/headshots/soccer/players/full/215284.png"
+            clean.contains("çalhanoğlu") || clean.contains("calhanoglu") -> "https://a.espncdn.com/i/headshots/soccer/players/full/163801.png"
+            clean.contains("sommer") -> "https://a.espncdn.com/i/headshots/soccer/players/full/104569.png"
+            clean.contains("harry kane") || clean == "kane" -> "https://a.espncdn.com/i/headshots/soccer/players/full/142200.png"
+            clean.contains("musiala") -> "https://a.espncdn.com/i/headshots/soccer/players/full/301798.png"
+            clean.contains("griezmann") -> "https://a.espncdn.com/i/headshots/soccer/players/full/137502.png"
+            clean.contains("julián álvarez") || clean.contains("julian alvarez") -> "https://a.espncdn.com/i/headshots/soccer/players/full/277624.png"
+            else -> ""
+        }
+        if (curated.isNotBlank()) {
+            playerPhotoCache[clean] = curated
+        }
+        return curated
+    }
+
     private fun getClubSquadTemplate(
         teamName: String,
         isHome: Boolean,
@@ -1696,6 +2083,167 @@ class MatchCenterEnricher(
     ): ClubSquadTemplate {
         val lower = teamName.lowercase(Locale.ROOT)
         return when {
+            lower.contains("villarreal") -> ClubSquadTemplate(
+                formation = "4-2-3-1",
+                coachName = "Marcelino García Toral",
+                startingXI = listOf(
+                    "Luiz Júnior" to 13,
+                    "Sergi Cardona" to 23, "Logan Costa" to 2, "Santiago Mouriño" to 15, "Kiko Femenía" to 17,
+                    "Pape Gueye" to 18, "Santi Comesaña" to 14,
+                    "Álex Baena" to 16, "Ayoze Pérez" to 22, "Tajon Buchanan" to 7,
+                    "Nicolas Pépé" to 19
+                ),
+                bench = listOf(
+                    Triple("Dani Parejo", 10, "CM"),
+                    Triple("Thierno Barry", 15, "ST"),
+                    Triple("Yeremy Pino", 21, "RW"),
+                    Triple("Raúl Albiol", 3, "CB"),
+                    Triple("Diego Conde", 1, "GK")
+                ),
+                missingPlayerName = "Gerard Moreno"
+            )
+            lower.contains("inter") || lower.contains("internazionale") -> ClubSquadTemplate(
+                formation = "3-5-2",
+                coachName = "Simone Inzaghi",
+                startingXI = listOf(
+                    "Yann Sommer" to 1,
+                    "Benjamin Pavard" to 28, "Francesco Acerbi" to 15, "Alessandro Bastoni" to 95,
+                    "Denzel Dumfries" to 2, "Nicolò Barella" to 23, "Hakan Çalhanoğlu" to 20, "Henrikh Mkhitaryan" to 22, "Federico Dimarco" to 32,
+                    "Marcus Thuram" to 9, "Lautaro Martínez" to 10
+                ),
+                bench = listOf(
+                    Triple("Davide Frattesi", 16, "CM"),
+                    Triple("Piotr Zieliński", 7, "CM"),
+                    Triple("Mehdi Taremi", 99, "ST"),
+                    Triple("Stefan de Vrij", 6, "CB"),
+                    Triple("Josep Martínez", 13, "GK")
+                ),
+                missingPlayerName = "Tajon Buchanan"
+            )
+            lower.contains("feyenoord") -> ClubSquadTemplate(
+                formation = "4-3-3",
+                coachName = "Robin van Persie",
+                startingXI = listOf(
+                    "Timon Wellenreuther" to 22,
+                    "Hugo Bueno" to 16, "Dávid Hancko" to 33, "Thomas Beelen" to 3, "Givairo Read" to 26,
+                    "Hwang In-beom" to 4, "Quinten Timber" to 8, "Antoni Milambo" to 27,
+                    "Igor Paixão" to 14, "Julián Carranza" to 19, "Anis Hadj Moussa" to 23
+                ),
+                bench = listOf(
+                    Triple("Ibrahim Osman", 38, "LW"),
+                    Triple("Luka Ivanušec", 17, "CAM"),
+                    Triple("Gernot Trauner", 18, "CB"),
+                    Triple("Justin Bijlow", 1, "GK")
+                ),
+                missingPlayerName = "Ayase Ueda"
+            )
+            lower.contains("bayern") -> ClubSquadTemplate(
+                formation = "4-2-3-1",
+                coachName = "Vincent Kompany",
+                startingXI = listOf(
+                    "Manuel Neuer" to 1,
+                    "Alphonso Davies" to 19, "Kim Min-jae" to 3, "Dayot Upamecano" to 2, "Joshua Kimmich" to 6,
+                    "Aleksandar Pavlović" to 45, "Leon Goretzka" to 8,
+                    "Kingsley Coman" to 11, "Jamal Musiala" to 42, "Michael Olise" to 17,
+                    "Harry Kane" to 9
+                ),
+                bench = listOf(
+                    Triple("Leroy Sané", 10, "RW"),
+                    Triple("Serge Gnabry", 7, "LW"),
+                    Triple("João Palhinha", 16, "CDM"),
+                    Triple("Daniel Peretz", 18, "GK")
+                ),
+                missingPlayerName = "Josip Stanišić"
+            )
+            lower.contains("dortmund") -> ClubSquadTemplate(
+                formation = "4-2-3-1",
+                coachName = "Niko Kovač",
+                startingXI = listOf(
+                    "Gregor Kobel" to 1,
+                    "Ramy Bensebaini" to 5, "Nico Schlotterbeck" to 4, "Waldemar Anton" to 3, "Julian Ryerson" to 26,
+                    "Pascal Groß" to 13, "Marcel Sabitzer" to 20,
+                    "Jamie Gittens" to 43, "Julian Brandt" to 10, "Karim Adeyemi" to 27,
+                    "Serhou Guirassy" to 9
+                ),
+                bench = listOf(
+                    Triple("Maximilian Beier", 14, "ST"),
+                    Triple("Emre Can", 23, "CDM"),
+                    Triple("Donyell Malen", 21, "RW"),
+                    Triple("Alexander Meyer", 33, "GK")
+                ),
+                missingPlayerName = "Niklas Süle"
+            )
+            lower.contains("leverkusen") -> ClubSquadTemplate(
+                formation = "3-4-2-1",
+                coachName = "Xabi Alonso",
+                startingXI = listOf(
+                    "Lukáš Hrádecký" to 1,
+                    "Piero Hincapié" to 3, "Jonathan Tah" to 4, "Edmond Tapsoba" to 12,
+                    "Alejandro Grimaldo" to 20, "Granit Xhaka" to 34, "Robert Andrich" to 8, "Jeremie Frimpong" to 30,
+                    "Florian Wirtz" to 10, "Martin Terrier" to 11,
+                    "Victor Boniface" to 22
+                ),
+                bench = listOf(
+                    Triple("Patrik Schick", 14, "ST"),
+                    Triple("Exequiel Palacios", 25, "CM"),
+                    Triple("Aleix García", 24, "CM"),
+                    Triple("Matěj Kovář", 17, "GK")
+                ),
+                missingPlayerName = "Amine Adli"
+            )
+            lower.contains("atletico") || lower.contains("atlético") -> ClubSquadTemplate(
+                formation = "4-4-2",
+                coachName = "Diego Simeone",
+                startingXI = listOf(
+                    "Jan Oblak" to 13,
+                    "Javi Galán" to 21, "José María Giménez" to 2, "Robin Le Normand" to 24, "Marcos Llorente" to 14,
+                    "Samuel Lino" to 12, "Koke" to 6, "Rodrigo De Paul" to 5, "Conor Gallagher" to 4,
+                    "Antoine Griezmann" to 7, "Julián Álvarez" to 19
+                ),
+                bench = listOf(
+                    Triple("Alexander Sørloth", 9, "ST"),
+                    Triple("Ángel Correa", 10, "RW"),
+                    Triple("Pablo Barrios", 8, "CM"),
+                    Triple("Juan Musso", 1, "GK")
+                ),
+                missingPlayerName = "Nahuel Molina"
+            )
+            lower.contains("milan") && !lower.contains("inter") -> ClubSquadTemplate(
+                formation = "4-2-3-1",
+                coachName = "Sérgio Conceição",
+                startingXI = listOf(
+                    "Mike Maignan" to 16,
+                    "Theo Hernández" to 19, "Fikayo Tomori" to 23, "Matteo Gabbia" to 46, "Emerson Royal" to 22,
+                    "Youssouf Fofana" to 29, "Tijjani Reijnders" to 14,
+                    "Rafael Leão" to 10, "Christian Pulisic" to 11, "Samuel Chukwueze" to 21,
+                    "Álvaro Morata" to 7
+                ),
+                bench = listOf(
+                    Triple("Tammy Abraham", 90, "ST"),
+                    Triple("Ruben Loftus-Cheek", 8, "CM"),
+                    Triple("Strahinja Pavlović", 31, "CB"),
+                    Triple("Marco Sportiello", 57, "GK")
+                ),
+                missingPlayerName = "Ismaël Bennacer"
+            )
+            lower.contains("juventus") -> ClubSquadTemplate(
+                formation = "4-2-3-1",
+                coachName = "Thiago Motta",
+                startingXI = listOf(
+                    "Michele Di Gregorio" to 29,
+                    "Andrea Cambiaso" to 27, "Federico Gatti" to 4, "Pierre Kalulu" to 15, "Nicolò Savona" to 37,
+                    "Manuel Locatelli" to 5, "Khéphren Thuram" to 19,
+                    "Kenan Yıldız" to 10, "Teun Koopmeiners" to 8, "Francisco Conceição" to 7,
+                    "Dušan Vlahović" to 9
+                ),
+                bench = listOf(
+                    Triple("Timothy Weah", 22, "RW"),
+                    Triple("Douglas Luiz", 26, "CM"),
+                    Triple("Weston McKennie", 16, "CM"),
+                    Triple("Mattia Perin", 1, "GK")
+                ),
+                missingPlayerName = "Gleison Bremer"
+            )
             lower.contains("real madrid") -> ClubSquadTemplate(
                 formation = "4-3-3",
                 coachName = "Carlo Ancelotti",

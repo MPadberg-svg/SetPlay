@@ -732,6 +732,46 @@ class ExampleRobolectricTest {
         )
         assertEquals(com.example.data.repository.MatchStatus.LIVE, stoppageStatus)
         assertEquals("2H • 90+4'", stoppageBadge)
+
+        // 10. Verify Canonical Club Name Deduplication (e.g. Feyenoord Rotterdam vs Feyenoord, Internazionale vs Inter Milan)
+        assertTrue(com.example.data.repository.FootballRepository.areSameClubNames("Feyenoord Rotterdam", "Feyenoord"))
+        assertTrue(com.example.data.repository.FootballRepository.areSameClubNames("FC Internazionale Milano", "Inter Milan"))
+        assertTrue(com.example.data.repository.FootballRepository.areSameClubNames("Athletic Bilbao", "Athletic Club"))
+        assertTrue(com.example.data.repository.FootballRepository.areSameClubNames("Paris Saint-Germain", "PSG"))
+
+        // 11. Verify Live Match Progress Fraction & 3-Tier Clock Telemetry Parser
+        val progress86 = com.example.ui.home.parseLiveMatchProgressFraction("2H • 86'", com.example.data.repository.MatchStatus.LIVE)
+        assertEquals(86f / 90f, progress86, 0.005f)
+        val progress41 = com.example.ui.home.parseLiveMatchProgressFraction("1H • 41'", com.example.data.repository.MatchStatus.LIVE)
+        assertEquals(41f / 90f, progress41, 0.005f)
+
+        val sampleLiveMatch86 = liveAthletic.copy(
+            liveMinuteOrBadge = "2H • 86'",
+            halfTimeScore = "0 - 1"
+        )
+        val telemetry86 = com.example.ui.home.parseLiveMatchClockTelemetry(sampleLiveMatch86)
+        assertEquals("2ND HALF", telemetry86.periodBadge)
+        assertEquals("86'", telemetry86.heroReadout)
+        assertEquals("HT 0 - 1", telemetry86.bottomBadge)
+        assertEquals("2ND HALF • 86' PLAYED", telemetry86.statusExplanation)
+
+        // 12. Verify Villarreal vs PSG Lineup Squads, Player Photos, MVP flag, and Team Average Ratings
+        val villarrealMatch = tsdbFixture.copy(
+            matchId = "ucl_vil_psg",
+            tournamentId = "uefa_cl",
+            homeTeamName = "Villarreal",
+            awayTeamName = "Paris Saint-Germain",
+            status = com.example.data.repository.MatchStatus.LIVE,
+            homeScore = 0,
+            awayScore = 4,
+            liveMinuteOrBadge = "1H • 38'"
+        )
+        val vilDossier = com.example.data.repository.MatchCenterEnricher(okhttp3.OkHttpClient()).buildCompleteDossier(villarrealMatch)
+        assertEquals("Luiz Júnior", vilDossier.lineups.homeStartingXI.first().name)
+        assertTrue(vilDossier.lineups.awayStartingXI.any { it.name.contains("Hakimi") && it.photoUrl.startsWith("https://") })
+        assertTrue((vilDossier.lineups.homeStartingXI + vilDossier.lineups.awayStartingXI).count { it.isMvp } == 1)
+        assertTrue(vilDossier.lineups.homeAvgRating >= 6.0)
+        assertTrue(vilDossier.lineups.awayAvgRating >= 6.0)
     }
 }
 
