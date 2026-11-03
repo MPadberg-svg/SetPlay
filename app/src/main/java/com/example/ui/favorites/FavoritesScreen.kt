@@ -150,22 +150,19 @@ fun FavoritesScreen(
         // VIP FAVORITES BOTANICAL EMERALD & SAGE VAULT HEADER
         // (#051F20 • #0B2B26 • #163832 • #235347 • #8EB69B • #DAF1DE)
         // =========================================================================
+        val movieFavCount = remember(favorites) { favorites.count { it.streamType.equals("movie", ignoreCase = true) } }
+        val seriesFavCount = remember(favorites) { favorites.count { it.streamType.equals("series", ignoreCase = true) } }
+
         Card(
-            shape = RoundedCornerShape(16.dp),
+            shape = RoundedCornerShape(14.dp),
             colors = CardDefaults.cardColors(containerColor = FavoritesEmeraldCard),
             border = BorderStroke(
                 width = 0.8.dp,
-                brush = Brush.horizontalGradient(
-                    listOf(
-                        FavoritesSagePrimary.copy(alpha = 0.45f),
-                        Color.White.copy(alpha = 0.08f),
-                        FavoritesBotanicalBorder
-                    )
-                )
+                color = FavoritesSagePrimary.copy(alpha = 0.38f)
             ),
             modifier = Modifier.fillMaxWidth()
         ) {
-            Box(
+            Row(
                 modifier = Modifier
                     .fillMaxWidth()
                     .background(
@@ -177,94 +174,71 @@ fun FavoritesScreen(
                             )
                         )
                     )
-                    .padding(horizontal = 14.dp, vertical = 11.dp)
+                    .padding(horizontal = 12.dp, vertical = 9.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
             ) {
-                Column(modifier = Modifier.fillMaxWidth()) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(9.dp),
+                    modifier = Modifier.weight(1f)
+                ) {
+                    Surface(
+                        color = FavoritesSagePrimary.copy(alpha = 0.16f),
+                        shape = RoundedCornerShape(10.dp),
+                        border = BorderStroke(0.7.dp, FavoritesSagePrimary.copy(alpha = 0.50f))
                     ) {
-                        Column(modifier = Modifier.weight(1f)) {
-                            // Unboxed inline eyebrow indicator with active server & linker status
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                Icon(
-                                    imageVector = Icons.Default.Verified,
-                                    contentDescription = null,
-                                    tint = FavoritesSagePrimary,
-                                    modifier = Modifier.size(13.dp)
-                                )
-                                Spacer(modifier = Modifier.width(5.dp))
-                                Text(
-                                    text = "${activePlaylist.name.uppercase()} • KICKOFF WATCH LINKER",
-                                    color = FavoritesSagePrimary,
-                                    fontSize = 9.5.sp,
-                                    fontWeight = FontWeight.ExtraBold,
-                                    letterSpacing = 0.6.sp,
-                                    maxLines = 1
-                                )
-                            }
-                            Spacer(modifier = Modifier.height(4.dp))
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 5.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Star,
+                                contentDescription = null,
+                                tint = FavoritesPaleMint,
+                                modifier = Modifier.size(13.dp)
+                            )
+                            Spacer(modifier = Modifier.width(5.dp))
                             Text(
-                                text = "Starred Channels, Cinema & Series",
+                                text = "SAVED COLLECTION",
                                 color = Color.White,
-                                fontSize = 16.sp,
-                                fontWeight = FontWeight.ExtraBold
-                            )
-                            Text(
-                                text = "Saved Live TV channels automatically pair with KickOff Arena 'Watch' buttons",
-                                color = FavoritesSagePrimary.copy(alpha = 0.88f),
-                                fontSize = 11.sp
-                            )
-                        }
-
-                        Column(horizontalAlignment = Alignment.End) {
-                            Surface(
-                                color = Color.White.copy(alpha = 0.08f),
-                                shape = RoundedCornerShape(50)
-                            ) {
-                                Text(
-                                    text = "${favorites.size} SAVED",
-                                    color = FavoritesPaleMint,
-                                    fontSize = 10.sp,
-                                    fontWeight = FontWeight.Bold,
-                                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp)
-                                )
-                            }
-                            Spacer(modifier = Modifier.height(4.dp))
-                            Text(
-                                text = "$liveFavCount Live TV Ready",
-                                color = FavoritesSagePrimary,
-                                fontSize = 11.sp,
-                                fontWeight = FontWeight.SemiBold
+                                fontSize = 9.5.sp,
+                                fontWeight = FontWeight.ExtraBold,
+                                letterSpacing = 0.4.sp
                             )
                         }
                     }
 
-                    Spacer(modifier = Modifier.height(8.dp))
-
-                    // Signature 6-Color Favorites Botanical Spectrum Strip
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(5.dp)
-                    ) {
-                        listOf(
-                            FavoritesObsidianBase,
-                            FavoritesEvergreenSurface,
-                            FavoritesEmeraldCard,
-                            FavoritesBotanicalBorder,
-                            FavoritesSagePrimary,
-                            FavoritesPaleMint
-                        ).forEach { swatch ->
-                            Box(
-                                modifier = Modifier
-                                    .weight(1f)
-                                    .height(2.5.dp)
-                                    .clip(RoundedCornerShape(50))
-                                    .background(swatch)
-                            )
-                        }
+                    Column(verticalArrangement = Arrangement.Center) {
+                        Text(
+                            text = "${favorites.size} Saved Items",
+                            color = Color.White,
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.ExtraBold,
+                            maxLines = 1
+                        )
+                        Text(
+                            text = "$liveFavCount Live TV • $movieFavCount Movies • $seriesFavCount Series",
+                            color = FavoritesSagePrimary.copy(alpha = 0.92f),
+                            fontSize = 10.sp,
+                            fontWeight = FontWeight.Medium,
+                            maxLines = 1
+                        )
                     }
+                }
+
+                Surface(
+                    color = Color.White.copy(alpha = 0.08f),
+                    shape = RoundedCornerShape(50),
+                    border = BorderStroke(0.6.dp, FavoritesSagePrimary.copy(alpha = 0.35f))
+                ) {
+                    Text(
+                        text = "$liveFavCount LIVE READY",
+                        color = FavoritesPaleMint,
+                        fontSize = 9.5.sp,
+                        fontWeight = FontWeight.Bold,
+                        modifier = Modifier.padding(horizontal = 9.dp, vertical = 4.dp)
+                    )
                 }
             }
         }

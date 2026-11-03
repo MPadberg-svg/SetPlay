@@ -174,121 +174,91 @@ fun LiveTvScreen(
                     .padding(horizontal = 16.dp, vertical = 10.dp)
             ) {
                 Card(
-                    shape = RoundedCornerShape(16.dp),
+                    shape = RoundedCornerShape(14.dp),
                     colors = CardDefaults.cardColors(containerColor = TvTwilightIndigo),
                     border = BorderStroke(
                         width = 0.8.dp,
-                        brush = Brush.horizontalGradient(
-                            listOf(
-                                TvBroadcastScarlet.copy(alpha = 0.5f),
-                                Color.White.copy(alpha = 0.08f),
-                                TvPlumMagenta.copy(alpha = 0.5f)
-                            )
-                        )
+                        color = TvBroadcastScarlet.copy(alpha = 0.35f)
                     ),
                     modifier = Modifier.fillMaxWidth()
                 ) {
-                    Box(
+                    Row(
                         modifier = Modifier
                             .fillMaxWidth()
                             .background(
                                 Brush.horizontalGradient(
                                     colors = listOf(
-                                        TvDeepMaroon.copy(alpha = 0.85f),
+                                        TvDeepMaroon.copy(alpha = 0.78f),
                                         TvTwilightIndigo,
                                         TvMidnightSlate
                                     )
                                 )
                             )
-                            .padding(horizontal = 14.dp, vertical = 11.dp)
+                            .padding(horizontal = 12.dp, vertical = 9.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Column(modifier = Modifier.fillMaxWidth()) {
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.SpaceBetween,
-                                verticalAlignment = Alignment.CenterVertically
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(9.dp),
+                            modifier = Modifier.weight(1f)
+                        ) {
+                            Surface(
+                                color = TvBroadcastScarlet.copy(alpha = 0.18f),
+                                shape = RoundedCornerShape(10.dp),
+                                border = BorderStroke(0.7.dp, TvBroadcastScarlet.copy(alpha = 0.55f))
                             ) {
-                                Column(modifier = Modifier.weight(1f)) {
-                                    // Unboxed inline status eyebrow with active server & protocol telemetry
-                                    Row(verticalAlignment = Alignment.CenterVertically) {
-                                        Box(
-                                            modifier = Modifier
-                                                .size(6.dp)
-                                                .alpha(livePulseAlpha)
-                                                .background(TvBroadcastScarlet, CircleShape)
-                                        )
-                                        Spacer(modifier = Modifier.width(6.dp))
-                                        Text(
-                                            text = "${activePlaylist.name.uppercase()} • HLS / MPEG-TS READY",
-                                            color = TvCrimsonRose,
-                                            fontSize = 9.5.sp,
-                                            fontWeight = FontWeight.ExtraBold,
-                                            letterSpacing = 0.7.sp,
-                                            maxLines = 1
-                                        )
-                                    }
-                                    Spacer(modifier = Modifier.height(4.dp))
-                                    Text(
-                                        text = "Broadcast Bouquets & EPG Directory",
-                                        color = Color.White,
-                                        fontSize = 16.sp,
-                                        fontWeight = FontWeight.ExtraBold
-                                    )
-                                    Text(
-                                        text = "Select a regional or sports bouquet to launch instant low-latency feeds",
-                                        color = Champagne.copy(alpha = 0.8f),
-                                        fontSize = 11.sp
-                                    )
-                                }
-
-                                Column(horizontalAlignment = Alignment.End) {
-                                    Surface(
-                                        color = Color.White.copy(alpha = 0.08f),
-                                        shape = RoundedCornerShape(50)
-                                    ) {
-                                        Text(
-                                            text = "${categories.size} BOUQUETS",
-                                            color = PaleGold,
-                                            fontSize = 10.sp,
-                                            fontWeight = FontWeight.Bold,
-                                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp)
-                                        )
-                                    }
-                                    Spacer(modifier = Modifier.height(4.dp))
-                                    Text(
-                                        text = "%,d Live Feeds".format(activePlaylist.channelCount),
-                                        color = TvCrimsonRose,
-                                        fontSize = 11.sp,
-                                        fontWeight = FontWeight.SemiBold
-                                    )
-                                }
-                            }
-
-                            Spacer(modifier = Modifier.height(8.dp))
-
-                            // Signature 6-Color Broadcast Studio Spectrum Strip
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.spacedBy(5.dp),
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                listOf(
-                                    TvMidnightSlate,
-                                    TvTwilightIndigo,
-                                    TvPlumMagenta,
-                                    TvCrimsonRose,
-                                    TvBroadcastScarlet,
-                                    TvDeepMaroon
-                                ).forEach { swatch ->
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 5.dp)
+                                ) {
                                     Box(
                                         modifier = Modifier
-                                            .weight(1f)
-                                            .height(2.5.dp)
-                                            .clip(RoundedCornerShape(50))
-                                            .background(swatch)
+                                            .size(6.dp)
+                                            .alpha(livePulseAlpha)
+                                            .background(TvBroadcastScarlet, CircleShape)
+                                    )
+                                    Spacer(modifier = Modifier.width(5.dp))
+                                    Text(
+                                        text = "LIVE DIRECTORY",
+                                        color = Color.White,
+                                        fontSize = 9.5.sp,
+                                        fontWeight = FontWeight.ExtraBold,
+                                        letterSpacing = 0.4.sp
                                     )
                                 }
                             }
+
+                            Column(verticalArrangement = Arrangement.Center) {
+                                Text(
+                                    text = "%,d Live Channels".format(activePlaylist.channelCount),
+                                    color = Color.White,
+                                    fontSize = 12.sp,
+                                    fontWeight = FontWeight.ExtraBold,
+                                    maxLines = 1
+                                )
+                                Text(
+                                    text = "${categories.size} Categories • EPG Schedule Ready",
+                                    color = Champagne.copy(alpha = 0.85f),
+                                    fontSize = 10.sp,
+                                    fontWeight = FontWeight.Medium,
+                                    maxLines = 1
+                                )
+                            }
+                        }
+
+                        Surface(
+                            color = Color.White.copy(alpha = 0.08f),
+                            shape = RoundedCornerShape(50),
+                            border = BorderStroke(0.6.dp, PaleGold.copy(alpha = 0.35f))
+                        ) {
+                            Text(
+                                text = "${categories.size} BOUQUETS",
+                                color = PaleGold,
+                                fontSize = 9.5.sp,
+                                fontWeight = FontWeight.Bold,
+                                modifier = Modifier.padding(horizontal = 9.dp, vertical = 4.dp)
+                            )
                         }
                     }
                 }

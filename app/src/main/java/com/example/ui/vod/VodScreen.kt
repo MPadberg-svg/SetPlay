@@ -212,37 +212,24 @@ fun VodScreen(
             )
             .testTag(if (isMovies) "movies_screen" else "series_screen")
     ) {
-        // Section-Specific Luxury Header Banner (Movies Sapphire/Cyan/Mint vs Series Pine/Cypress/Ice-Aqua)
+        val activeCategoryLabel = categories.find { it.categoryId == selectedCatId }?.categoryName
+            ?: if (isMovies) "All Cinema Categories" else "All Series Categories"
+
+        // Streamlined Section Details Bar (Combined Badge + Helpful Library Counts, No Decorative Color Lines)
         Card(
-            shape = RoundedCornerShape(16.dp),
+            shape = RoundedCornerShape(14.dp),
             colors = CardDefaults.cardColors(
                 containerColor = if (isMovies) MoviesAtlanticTeal else SeriesCypressCard
             ),
             border = BorderStroke(
                 width = 0.8.dp,
-                brush = if (isMovies) {
-                    Brush.horizontalGradient(
-                        listOf(
-                            MoviesMintSpring.copy(alpha = 0.45f),
-                            Color.White.copy(alpha = 0.08f),
-                            MoviesCyanTeal.copy(alpha = 0.45f)
-                        )
-                    )
-                } else {
-                    Brush.horizontalGradient(
-                        listOf(
-                            SeriesIceAqua.copy(alpha = 0.45f),
-                            Color.White.copy(alpha = 0.08f),
-                            SeriesSeaJade.copy(alpha = 0.45f)
-                        )
-                    )
-                }
+                color = sectionHighlight.copy(alpha = 0.35f)
             ),
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 16.dp, vertical = 6.dp)
+                .padding(horizontal = 16.dp, vertical = 5.dp)
         ) {
-            Box(
+            Row(
                 modifier = Modifier
                     .fillMaxWidth()
                     .background(
@@ -254,116 +241,80 @@ fun VodScreen(
                             }
                         )
                     )
-                    .padding(horizontal = 14.dp, vertical = 11.dp)
+                    .padding(horizontal = 12.dp, vertical = 9.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
             ) {
-                Column(modifier = Modifier.fillMaxWidth()) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(9.dp),
+                    modifier = Modifier.weight(1f)
+                ) {
+                    Surface(
+                        color = sectionHighlight.copy(alpha = 0.16f),
+                        shape = RoundedCornerShape(10.dp),
+                        border = BorderStroke(0.7.dp, sectionHighlight.copy(alpha = 0.50f))
                     ) {
-                        Column(modifier = Modifier.weight(1f)) {
-                            // Unboxed inline eyebrow indicator with active server & codec readiness
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                Icon(
-                                    imageVector = if (isMovies) Icons.Default.LocalMovies else Icons.Default.Layers,
-                                    contentDescription = null,
-                                    tint = sectionHighlight,
-                                    modifier = Modifier.size(13.dp)
-                                )
-                                Spacer(modifier = Modifier.width(5.dp))
-                                Text(
-                                    text = if (isMovies) {
-                                        "${activePlaylist.name.uppercase()} • 4K UHD & DOLBY VOD"
-                                    } else {
-                                        "${activePlaylist.name.uppercase()} • MULTI-SEASON ARCHIVE"
-                                    },
-                                    color = sectionHighlight,
-                                    fontSize = 9.5.sp,
-                                    fontWeight = FontWeight.ExtraBold,
-                                    letterSpacing = 0.6.sp,
-                                    maxLines = 1
-                                )
-                            }
-
-                            Spacer(modifier = Modifier.height(4.dp))
-
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 5.dp)
+                        ) {
+                            Icon(
+                                imageVector = if (isMovies) Icons.Default.LocalMovies else Icons.Default.Layers,
+                                contentDescription = null,
+                                tint = sectionHighlight,
+                                modifier = Modifier.size(13.dp)
+                            )
+                            Spacer(modifier = Modifier.width(5.dp))
                             Text(
-                                text = if (isMovies) "Box Office & Theatre Releases" else "Complete Seasons & Episode Guide",
+                                text = if (isMovies) "CINEMA VOD" else "SERIES ARCHIVE",
                                 color = Color.White,
-                                fontSize = 16.sp,
-                                fontWeight = FontWeight.ExtraBold
-                            )
-                            Text(
-                                text = if (isMovies) {
-                                    "Widescreen cinema library • Instant 4K UHD & FHD direct playback"
-                                } else {
-                                    "Tap any poster to browse seasons, episode synopses & ratings"
-                                },
-                                color = if (isMovies) MoviesAquamarine.copy(alpha = 0.85f) else SeriesIceAqua.copy(alpha = 0.8f),
-                                fontSize = 11.sp
-                            )
-                        }
-
-                        Column(horizontalAlignment = Alignment.End) {
-                            Surface(
-                                color = Color.White.copy(alpha = 0.08f),
-                                shape = RoundedCornerShape(50)
-                            ) {
-                                Text(
-                                    text = "%,d TITLES".format(totalCount),
-                                    color = sectionHighlight,
-                                    fontSize = 10.sp,
-                                    fontWeight = FontWeight.Bold,
-                                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp)
-                                )
-                            }
-                            Spacer(modifier = Modifier.height(4.dp))
-                            Text(
-                                text = "${categories.size} Categories",
-                                color = Champagne.copy(alpha = 0.8f),
-                                fontSize = 11.sp,
-                                fontWeight = FontWeight.Medium
+                                fontSize = 9.5.sp,
+                                fontWeight = FontWeight.ExtraBold,
+                                letterSpacing = 0.4.sp
                             )
                         }
                     }
 
-                    Spacer(modifier = Modifier.height(8.dp))
-
-                    // Signature 6-Color Section Palette Spectrum Bar
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(5.dp)
+                    Column(
+                        verticalArrangement = Arrangement.Center,
+                        modifier = Modifier.weight(1f, fill = false)
                     ) {
-                        val swatches = if (isMovies) {
-                            listOf(
-                                MoviesMintSpring,
-                                MoviesAquamarine,
-                                MoviesCyanTeal,
-                                MoviesOceanTeal,
-                                MoviesAtlanticTeal,
-                                MoviesSapphireNavy
-                            )
-                        } else {
-                            listOf(
-                                SeriesPineBase,
-                                SeriesForestSurface,
-                                SeriesCypressCard,
-                                SeriesSeaJade,
-                                SeriesMistTeal,
-                                SeriesIceAqua
-                            )
-                        }
-                        swatches.forEach { swatch ->
-                            Box(
-                                modifier = Modifier
-                                    .weight(1f)
-                                    .height(2.5.dp)
-                                    .clip(RoundedCornerShape(50))
-                                    .background(swatch)
-                            )
-                        }
+                        Text(
+                            text = if (isMovies) {
+                                "%,d Movies Available".format(totalCount)
+                            } else {
+                                "%,d Series Available".format(totalCount)
+                            },
+                            color = Color.White,
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.ExtraBold,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                        Text(
+                            text = "${categories.size} Genres • $activeCategoryLabel",
+                            color = sectionSecondaryAccent.copy(alpha = 0.90f),
+                            fontSize = 10.sp,
+                            fontWeight = FontWeight.Medium,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
                     }
+                }
+
+                Surface(
+                    color = Color.White.copy(alpha = 0.08f),
+                    shape = RoundedCornerShape(50),
+                    border = BorderStroke(0.6.dp, sectionHighlight.copy(alpha = 0.35f))
+                ) {
+                    Text(
+                        text = "${categories.size} GENRES",
+                        color = sectionHighlight,
+                        fontSize = 9.5.sp,
+                        fontWeight = FontWeight.Bold,
+                        modifier = Modifier.padding(horizontal = 9.dp, vertical = 4.dp)
+                    )
                 }
             }
         }
