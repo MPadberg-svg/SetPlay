@@ -140,14 +140,16 @@ data class MenaChannelMatchResult(
     val resolvedChannelLabel: String,
     val resolvedProviderName: String,
     val usedMenaFallbackProvider: Boolean,
-    val availableMenaChannelOptions: List<String>
+    val availableMenaChannelOptions: List<String>,
+    val optionsAvailableInFavorites: Set<String> = emptySet()
 )
 
 internal data class SportsDbTvBroadcastEntry(
     val eventId: String,
     val eventTitleNormalized: String,
     val channelName: String,
-    val country: String
+    val country: String,
+    val eventTitleRaw: String = ""
 )
 
 internal data class NormalizedChannelProfile(
@@ -155,6 +157,8 @@ internal data class NormalizedChannelProfile(
     val canonicalProvider: String,
     val channelNumbers: List<String>,
     val subBrandTokens: Set<String>,
+    val languageTokens: Set<String> = emptySet(),
+    val is4kFeed: Boolean = false,
     val canonicalKey: String = ""
 )
 
@@ -435,6 +439,91 @@ class FootballRepository(
             baseTokens
         }
         return finalTokens.joinToString(" ").trim()
+    }
+
+    /**
+     * Resolves common club aliases & abbreviations so TV broadcast entries (`eventstv.php`, ESPN, etc.)
+     * reliably link to the corresponding fixture even when one source uses "Man City" and the other uses "Manchester City",
+     * or "PSG" vs "Paris Saint-Germain", "Inter" vs "Internazionale", "Raja" vs "Raja Casablanca".
+     */
+    internal fun canonicalizeClubForTvMatch(rawName: String): Set<String> {
+        val norm = normalizeTeamNameForMerge(rawName)
+        if (norm.isBlank()) return emptySet()
+        val aliases = mutableSetOf(norm)
+        when {
+            norm.contains("manchester city") || norm == "man city" || norm == "mancity" -> {
+                aliases.addAll(listOf("manchester city", "man city"))
+            }
+            norm.contains("manchester united") || norm == "man utd" || norm == "man united" -> {
+                aliases.addAll(listOf("manchester united", "man utd", "man united"))
+            }
+            norm.contains("paris saint") || norm == "psg" || norm == "paris sg" -> {
+                aliases.addAll(listOf("paris saint germain", "paris sg", "psg"))
+            }
+            norm.contains("internazionale") || norm == "inter" || norm == "inter milan" -> {
+                aliases.addAll(listOf("internazionale", "inter milan", "inter"))
+            }
+            norm.contains("atletico madrid") || norm == "atletico" || norm == "atl madrid" -> {
+                aliases.addAll(listOf("atletico madrid", "atletico"))
+            }
+            norm.contains("tottenham") || norm == "spurs" -> {
+                aliases.addAll(listOf("tottenham hotspur", "tottenham", "spurs"))
+            }
+            norm.contains("bayern") -> {
+                aliases.addAll(listOf("bayern munich", "bayern munchen", "bayern"))
+            }
+            norm.contains("dortmund") || norm == "bvb" -> {
+                aliases.addAll(listOf("borussia dortmund", "dortmund"))
+            }
+            norm.contains("leverkusen") -> {
+                aliases.addAll(listOf("bayer leverkusen", "leverkusen"))
+            }
+            norm.contains("monchengladbach") || norm.contains("gladbach") -> {
+                aliases.addAll(listOf("borussia monchengladbach", "monchengladbach", "gladbach"))
+            }
+            norm.contains("barcelona") || norm == "barca" -> {
+                aliases.addAll(listOf("barcelona", "barca"))
+            }
+            norm.contains("real madrid") -> {
+                aliases.add("real madrid")
+            }
+            norm.contains("raja") -> {
+                aliases.addAll(listOf("raja", "raja casablanca", "raja athletic"))
+            }
+            norm.contains("wydad") -> {
+                aliases.addAll(listOf("wydad", "wydad casablanca"))
+            }
+            norm.contains("far rabat") || norm == "far" -> {
+                aliases.addAll(listOf("far rabat", "far"))
+            }
+            norm.contains("berkane") -> {
+                aliases.addAll(listOf("berkane", "renaissance berkane"))
+            }
+            norm.contains("ahly") && !norm.contains("shabab") && !norm.contains("jeddah") -> {
+                aliases.addAll(listOf("ahly", "ahly cairo"))
+            }
+        }
+        return aliases
+    }
+
+    internal fun doesTvEntryMatchFixtureTeams(
+        entry: SportsDbTvBroadcastEntry,
+        homeTeamName: String,
+        awayTeamName: String
+    ): Boolean {
+        val normEvent = entry.eventTitleNormalized
+        if (normEvent.isBlank()) return false
+        val homeAliases = canonicalizeClubForTvMatch(homeTeamName)
+        val awayAliases = canonicalizeClubForTvMatch(awayTeamName)
+        if (homeAliases.isEmpty() || awayAliases.isEmpty()) return false
+
+        val homeMatches = homeAliases.any { alias ->
+            alias.isNotBlank() && normEvent.contains(alias)
+        }
+        val awayMatches = awayAliases.any { alias ->
+            alias.isNotBlank() && normEvent.contains(alias)
+        }
+        return homeMatches && awayMatches
     }
 
     /**
@@ -830,8 +919,13 @@ class FootballRepository(
 
     /**
      * Resolves MENA TV Broadcast Channels across the entire day's schedule so concurrent matches
-     * in beIN-broadcast competitions receive distinct `'beIN Sports X Y'` channels (`1 4K`, `2 Max`, `1 Extra`, etc.),
-     * and non-beIN competitions display the real MENA broadcaster (`AD Sports Premium 1`, `STARZPLAY`, `Arryadia HD`, `SSC 1 HD`, etc.).
+     * in beIN-broadcast competitions receive distinct, authentic beIN Sports MENA channels
+     * (`beIN Sports 1 HD` through `beIN Sports 9 HD`, `beIN Sports 1 4K`, `beIN Sports 1 English`, `beIN Sports 1 French`,
+     * `beIN Sports Xtra 1..3`, `beIN Sports Max 4..6`), and non-beIN competitions display the real MENA broadcaster
+     * (`AD Sports Premium 1`, `STARZPLAY`, `Arryadia HD`, `SSC 1 HD`, etc.).
+     *
+     * Simultaneous matches across beIN competitions at the same kickoff time coordinate their slot indices
+     * so two concurrent games never collide on the same beIN channel number.
      */
     internal fun resolveDayMatchesTvChannelsWithMenaPriority(
         matches: List<FootballMatch>,
@@ -839,14 +933,16 @@ class FootballRepository(
     ): List<FootballMatch> {
         if (matches.isEmpty()) return emptyList()
 
-        // Track slot indices per (tournament/broadcaster family + kickoff time) so simultaneous games get distinct channels
+        // Track slot indices per tournament+time AND track already-claimed beIN channel numbers at each kickoff time
+        // so simultaneous games across the beIN network get distinct channels.
         val slotCounterByGroupAndTime = HashMap<String, Int>()
+        val claimedBeinChannelsByTime = HashMap<String, MutableSet<String>>()
 
-        // Order matches so marquee games in a given kickoff slot claim primary channels (e.g. beIN Sports 1 4K) first
+        // Order matches so marquee games and higher-priority tournaments claim flagship channels first
         val indexedMatches = matches.withIndex().sortedWith(
-            compareBy<IndexedValue<FootballMatch>> { it.value.tournamentId }
-                .thenBy { it.value.kickoffTimeFormatted }
+            compareBy<IndexedValue<FootballMatch>> { it.value.kickoffTimeFormatted }
                 .thenByDescending { isMarqueeMenaMatch(it.value.homeTeamName, it.value.awayTeamName) }
+                .thenBy { tournamentPriorityRank(it.value.tournamentId) }
                 .thenBy { it.index }
         )
 
@@ -863,48 +959,64 @@ class FootballRepository(
             val currentSlotIdx = slotCounterByGroupAndTime.getOrDefault(groupKey, 0)
             slotCounterByGroupAndTime[groupKey] = currentSlotIdx + 1
 
-            resolvedByOriginalIndex[indexed.index] = resolveMatchTvChannelsWithMenaPriority(
+            val claimedSet = claimedBeinChannelsByTime.getOrPut(match.kickoffTimeFormatted) { mutableSetOf() }
+
+            val resolvedMatch = resolveMatchTvChannelsWithMenaPriority(
                 match = match,
                 tvBroadcasts = tvBroadcasts,
-                slotIndex = currentSlotIdx
+                slotIndex = currentSlotIdx,
+                claimedChannelsAtKickoff = claimedSet
             )
+
+            if (isBeinTournament && resolvedMatch.beinChannel.isNotBlank()) {
+                val normKey = normalizeChannelNameForFavoritesMatch(resolvedMatch.beinChannel).canonicalKey
+                if (normKey.isNotBlank()) {
+                    claimedSet.add(normKey)
+                }
+            }
+
+            resolvedByOriginalIndex[indexed.index] = resolvedMatch
         }
 
         return resolvedByOriginalIndex.filterNotNull()
+    }
+
+    private fun tournamentPriorityRank(tournamentId: String): Int {
+        return ALL_TOURNAMENTS.firstOrNull { it.tournamentId == tournamentId }?.defaultSortOrder ?: 99
     }
 
     /**
      * Step 2 of Hybrid Pipeline: TV Channel Provider Resolution (TheSportsDB `eventstv.php` + Canonical MENA Broadcaster Engine).
      *
      * Rules:
-     * 1. **If beIN Sports provides the game**:
-     *    The channel name is formatted strictly as `'beIN Sports X Y'`:
-     *    - `'X'` = Channel number (`1, 2, 3, 4, 5, 6, 7, 8, 9`, etc.)
-     *    - `'Y'` = Channel tier/variant (`4K`, `Max`, `Extra`, `Premium`, `HD`, `English`, `French`, `AFC`)
-     * 2. **If beIN Sports does NOT provide the game**:
-     *    Displays the real name of the channel broadcasting the game for the MENA Zone:
-     *    - Serie A / Coppa Italia: `AD Sports Premium 1`, `AD Sports Premium 2`, `STARZPLAY`
-     *    - Botola Pro Inwi / Coupe du Trône: `Arryadia HD`, `Arryadia TNT`, `Al Aoula HD`, `Tamazight HD`
-     *    - Roshn Saudi League / King's Cup: `SSC 1 HD`, `SSC Extra 1`, `SSC Extra 2`, `SSC 2 HD`, `Thmanyah Sports 1`
-     *    - Other regional MENA broadcasters from `eventstv.php` (`Alkass One HD`, `ON Time Sports 1`, `Dubai Sports 1`, etc.)
+     * 1. **If an upstream source (`eventstv.php`, `strTVStation`, `tv_channel`, `broadcasts`, or custom source) provides a specific MENA channel**:
+     *    Preserves the exact channel name from the source (e.g., `"beIN Sports max 5"`, `"beIN Sports 1 HD"`, `"beIN Sports 1 4K"`, `"beIN Sports Xtra 1"`).
+     * 2. **If beIN Sports provides the competition and no specific numbered channel was in the raw feed**:
+     *    Allocates an authentic **beIN Sports MENA** channel according to real beIN Sports league participation:
+     *    - UEFA Champions League: `beIN Sports 1 HD` .. `beIN Sports 6 HD`, `beIN Sports 1 4K`, `beIN Sports 1 English`, `beIN Sports 1 French`, `beIN Sports Xtra 1`
+     *    - Premier League: `beIN Sports 1 HD`, `beIN Sports 2 HD`, `beIN Sports 1 English`, `beIN Sports 3 HD`, `beIN Sports 4 HD`, `beIN Sports 1 4K`
+     *    - LaLiga EA Sports: `beIN Sports 3 HD`, `beIN Sports 1 HD`, `beIN Sports 2 HD`, `beIN Sports 4 HD`, `beIN Sports 1 4K`
+     *    - Ligue 1 McDonald's: `beIN Sports 4 HD`, `beIN Sports 2 HD`, `beIN Sports 1 French`, `beIN Sports 5 HD`, `beIN Sports Max 4`
+     *    - Bundesliga: `beIN Sports 5 HD`, `beIN Sports 6 HD`, `beIN Sports 4 HD`, `beIN Sports Xtra 1`, `beIN Sports Max 5`
+     *    - CAF Champions League: `beIN Sports 6 HD`, `beIN Sports 5 HD`, `Arryadia TNT`, `ON Time Sports 1`
+     *    - UEFA Europa League: `beIN Sports 1 HD` .. `beIN Sports 6 HD`, `beIN Sports Xtra 1`
+     * 3. **If beIN Sports does NOT provide the game**:
+     *    Displays the real MENA broadcaster (`AD Sports Premium 1`, `STARZPLAY`, `Arryadia HD`, `Arryadia TNT`, `SSC 1 HD`, `SSC Extra 1`, etc.).
      */
     internal fun resolveMatchTvChannelsWithMenaPriority(
         match: FootballMatch,
         tvBroadcasts: List<SportsDbTvBroadcastEntry>,
-        slotIndex: Int = 0
+        slotIndex: Int = 0,
+        claimedChannelsAtKickoff: Set<String> = emptySet()
     ): FootballMatch {
-        val normHome = normalizeTeamNameForMerge(match.homeTeamName)
-        val normAway = normalizeTeamNameForMerge(match.awayTeamName)
         val isMarquee = isMarqueeMenaMatch(match.homeTeamName, match.awayTeamName)
 
         val matchingTvEntries = tvBroadcasts.filter { entry ->
             (match.sportsDbEventId.isNotBlank() && entry.eventId == match.sportsDbEventId) ||
-                (normHome.isNotBlank() && normAway.isNotBlank() &&
-                    entry.eventTitleNormalized.contains(normHome) &&
-                    entry.eventTitleNormalized.contains(normAway))
+                doesTvEntryMatchFixtureTeams(entry, match.homeTeamName, match.awayTeamName)
         }
 
-        val slotFallbacks = getSmartMenaFallbackChannels(
+        val rawSlotFallbacks = getSmartMenaFallbackChannels(
             tournamentId = match.tournamentId,
             tournamentName = match.tournamentName,
             slotIndex = slotIndex,
@@ -913,14 +1025,28 @@ class FootballRepository(
             awayTeamName = match.awayTeamName
         )
 
-        val defaultSlotPrimary = slotFallbacks.first()
-        val defaultChannelNum = extractChannelNumberOrDefault(defaultSlotPrimary, (slotIndex % 9) + 1)
-        val defaultBeinTier = extractBeinTierOrDefault(defaultSlotPrimary, if (isMarquee && slotIndex == 0) "4K" else "Max")
+        // Reorder slotFallbacks so any channel not yet claimed at this exact kickoff time is preferred first
+        val slotFallbacks = if (claimedChannelsAtKickoff.isEmpty()) {
+            rawSlotFallbacks
+        } else {
+            val unclaimed = rawSlotFallbacks.filter { ch ->
+                normalizeChannelNameForFavoritesMatch(ch).canonicalKey !in claimedChannelsAtKickoff
+            }
+            val claimed = rawSlotFallbacks.filter { ch ->
+                normalizeChannelNameForFavoritesMatch(ch).canonicalKey in claimedChannelsAtKickoff
+            }
+            unclaimed + claimed
+        }
 
-        // 1. Channels from TheSportsDB `eventstv.php` (beIN Sports names preserved EXACTLY as from source)
+        val defaultSlotPrimary = slotFallbacks.firstOrNull() ?: rawSlotFallbacks.first()
+        val defaultChannelNum = extractChannelNumberOrDefault(defaultSlotPrimary, (slotIndex % 9) + 1)
+        val defaultBeinTier = extractBeinTierOrDefault(defaultSlotPrimary, "HD")
+
+        // 1. Channels from TheSportsDB `eventstv.php` (beIN Sports names preserved EXACTLY as from source,
+        //    while generic un-numbered placeholders like "beIN Sports MENA" are resolved to the match's authentic channel)
         val menaChannelsFromTvDb = matchingTvEntries
             .map { it.channelName.trim() }
-            .filter { isMenaBroadcasterChannel(it) }
+            .filter { isMenaBroadcasterChannel(it) && !isGenericPlaceholderMenaChannel(it) }
             .map { rawCh ->
                 formatCanonicalMenaChannelName(
                     rawChannel = rawCh,
@@ -1008,12 +1134,51 @@ class FootballRepository(
         )
     }
 
+    /**
+     * Detects un-numbered or region-generic beIN Sports placeholder strings (such as `"beIN Sports"`,
+     * `"beIN Sports MENA"`, `"beIN Sports Connect"`, `"beIN Sports Arabia"`, `"beIN Sports HD"`,
+     * `"beIN Sports 1 MENA"`, `"beIN Sports 2 MENA"`, `"beIN SPORTS CONNECT Arabia"`) so the resolver
+     * upgrades them to the match's specific numbered beIN Sports channel (`beIN Sports 1 HD` .. `beIN Sports 9 HD`).
+     */
     private fun isGenericPlaceholderMenaChannel(rawChannel: String): Boolean {
         val lower = rawChannel.trim().lowercase(Locale.ROOT)
-        return lower == "bein sports 1 mena" ||
-            lower == "bein sports 2 mena" ||
-            lower == "bein sports mena" ||
-            lower == "bein sports"
+            .replace(Regex("\\s+"), " ")
+        if (lower in setOf(
+                "bein sports 1 mena",
+                "bein sports 2 mena",
+                "bein sports mena",
+                "bein sports",
+                "bein sport",
+                "bein sports hd",
+                "bein sports connect",
+                "bein sports connect arabia",
+                "bein connect",
+                "bein connect mena",
+                "bein sports arabia",
+                "bein sports france",
+                "bein sports us",
+                "bein sports usa",
+                "bein sports en espanol",
+                "bein sports australia",
+                "tod",
+                "tod tv"
+            )
+        ) {
+            return true
+        }
+        // If it's a beIN channel with NO channel number and NO specific sub-brand (4K, AFC, News), treat as generic
+        if ((lower.contains("bein") || lower.contains("be in")) &&
+            !Regex("""\b\d+\b""").containsMatchIn(lower) &&
+            !lower.contains("4k") &&
+            !lower.contains("uhd") &&
+            !lower.contains("afc") &&
+            !lower.contains("one") &&
+            !lower.contains("two") &&
+            !lower.contains("three")
+        ) {
+            return true
+        }
+        return false
     }
 
     internal fun isBeinProvidedTournament(tournamentId: String, tournamentName: String = ""): Boolean {
@@ -1045,6 +1210,7 @@ class FootballRepository(
     private fun extractChannelNumberOrDefault(channelLabel: String, defaultNum: Int): Int {
         val withoutRes = channelLabel.lowercase(Locale.ROOT)
             .replace("4k", " ")
+            .replace("2160p", " ")
             .replace("1080p", " ")
             .replace("1080i", " ")
             .replace("720p", " ")
@@ -1073,7 +1239,7 @@ class FootballRepository(
      * Formats MENA broadcaster channels:
      * - **If beIN Sports provides the game**:
      *   Preserves and displays the name of the channel from the source **EXACTLY as it is** (`trimmed`),
-     *   e.g. `"beIN Sports max 5"`, `"beIN Sports HD 2 Max"`, `"beIN Sports Xtra 1"`, `"beIN Sports 1 4K"`.
+     *   e.g. `"beIN Sports max 5"`, `"beIN Sports HD 2 Max"`, `"beIN Sports Xtra 1"`, `"beIN Sports 1 4K"`, `"beIN Sports 1 HD"`.
      * - **If beIN Sports does NOT provide the game**:
      *   Returns the authentic MENA broadcaster channel name (`AD Sports Premium 1`, `STARZPLAY`,
      *   `Arryadia HD`, `Arryadia TNT`, `Al Aoula HD`, `Tamazight HD`, `SSC 1 HD`, `SSC Extra 1`, `Alkass One HD`, `ON Time Sports 1`, etc.).
@@ -1081,7 +1247,7 @@ class FootballRepository(
     fun formatCanonicalMenaChannelName(
         rawChannel: String,
         defaultChannelNum: Int = 1,
-        defaultBeinTier: String = "Max"
+        defaultBeinTier: String = "HD"
     ): String {
         val trimmed = rawChannel.trim()
         if (trimmed.isBlank()) return "beIN Sports $defaultChannelNum $defaultBeinTier"
@@ -1165,15 +1331,19 @@ class FootballRepository(
     }
 
     /**
-     * Competition & Slot-Aware MENA Broadcaster Channel Map:
-     * - **If beIN Sports provides the game** (UCL, UEL, Premier League, La Liga, Ligue 1, Bundesliga, CAF CL):
-     *   Returns channels in the exact `'beIN Sports X Y'` format (`'X'` = `1, 2, 3...`, `'Y'` = `4K, Max, Extra, Premium, English, French`),
-     *   rotating across `slotIndex` so simultaneous matches on the same day get distinct real channels.
-     * - **If beIN Sports does NOT provide the game**:
-     *   Returns the real MENA broadcaster channels for that competition:
-     *   - Serie A: `["AD Sports Premium 1", "STARZPLAY", "AD Sports Premium 2"]`
-     *   - Botola Pro / Coupe du Trône: `["Arryadia HD", "Arryadia TNT", "Al Aoula HD", "Tamazight HD"]`
-     *   - Roshn Saudi League: `["SSC 1 HD", "SSC Extra 1", "SSC Extra 2", "Thmanyah Sports 1"]`
+     * Authentic beIN Sports MENA & Regional Broadcaster Participation Map:
+     *
+     * Reflects how **beIN Sports MENA** actually allocates its linear and overflow channels across competitions:
+     * - **Flagship Channels (`beIN Sports 1 HD` & `beIN Sports 2 HD`)**:
+     *   Premier League top clashes, UEFA Champions League headline fixtures, LaLiga El Clásico / Madrid / Barça.
+     * - **`beIN Sports 3 HD`**: Dedicated primary channel for **LaLiga EA Sports** + simultaneous UCL / EPL fixtures.
+     * - **`beIN Sports 4 HD`**: Dedicated primary channel for **Ligue 1 McDonald's** + UCL / EPL / LaLiga overflow.
+     * - **`beIN Sports 5 HD`**: Dedicated primary channel for **German Bundesliga** + European / CAF overflow.
+     * - **`beIN Sports 6 HD`**: Dedicated primary channel for **CAF Champions League / Confederation Cup** & **UEFA Europa League**.
+     * - **`beIN Sports 7 HD`, `8 HD`, `9 HD`**: Simultaneous multi-match UEFA Champions League / Europa League matchdays.
+     * - **Language Feeds (`beIN Sports 1 English`, `beIN Sports 2 English`, `beIN Sports 1 French`)**: English & French commentary feeds.
+     * - **Overflow & Tournament Feeds (`beIN Sports 1 4K`, `beIN Sports Xtra 1..3`, `beIN Sports Max 4..6`, `beIN Sports 1 AFC`)**:
+     *   Included as additional selectable options in the match's channel switcher.
      */
     fun getSmartMenaFallbackChannels(
         tournamentId: String,
@@ -1215,16 +1385,17 @@ class FootballRepository(
                 (listOf(primary) + pool.filter { it != primary }).distinct()
             }
 
-            // 4. CAF Champions League & Confederation Cup (beIN Sports + terrestrial host broadcasters)
+            // 4. CAF Champions League & Confederation Cup (beIN Sports 6 HD / 5 HD + terrestrial host broadcasters)
             tournamentId == "caf_cl" ||
                 lowerName.contains("caf champions") ||
                 lowerName.contains("confederation cup") ||
                 lowerName.contains("caf ") -> {
                 val beinCafPool = listOf(
-                    "beIN Sports 6 Max",
-                    "beIN Sports 5 Extra",
-                    "beIN Sports 1 Max",
-                    "beIN Sports 2 Extra"
+                    "beIN Sports 6 HD",
+                    "beIN Sports 5 HD",
+                    "beIN Sports 3 HD",
+                    "beIN Sports 4 HD",
+                    "beIN Sports Xtra 1"
                 )
                 val primary = beinCafPool[idx % beinCafPool.size]
                 val regionalExtras = buildList {
@@ -1242,102 +1413,136 @@ class FootballRepository(
                 (listOf(primary) + regionalExtras + beinCafPool.filter { it != primary }).distinct()
             }
 
-            // 5. UEFA Champions League (beIN Sports — 'beIN Sports X Y')
+            // 5. UEFA Champions League (beIN Sports 1 HD .. 8 HD + 1 4K + 1 English + 1 French + Xtra 1)
             tournamentId == "uefa_cl" || lowerName.contains("uefa champions") -> {
                 val uclPool = listOf(
-                    "beIN Sports 1 4K",
-                    "beIN Sports 2 Max",
-                    "beIN Sports 3 Max",
-                    "beIN Sports 1 Extra",
-                    "beIN Sports 2 Extra",
-                    "beIN Sports 4 Max",
-                    "beIN Sports 3 Extra",
-                    "beIN Sports 5 Max",
-                    "beIN Sports 4 Extra"
+                    "beIN Sports 1 HD",
+                    "beIN Sports 2 HD",
+                    "beIN Sports 3 HD",
+                    "beIN Sports 4 HD",
+                    "beIN Sports 5 HD",
+                    "beIN Sports 6 HD",
+                    "beIN Sports 7 HD",
+                    "beIN Sports 8 HD",
+                    "beIN Sports Xtra 1"
                 )
-                val primary = if (isMarquee && idx == 0) "beIN Sports 1 4K" else uclPool[idx % uclPool.size]
+                val primary = uclPool[idx % uclPool.size]
                 val next1 = uclPool[(idx + 1) % uclPool.size]
-                (listOf(primary, next1, "beIN Sports 1 English") + uclPool.take(3)).distinct()
-            }
-
-            // 6. Spanish La Liga (beIN Sports — 'beIN Sports X Y')
-            tournamentId == "laliga" || lowerName.contains("la liga") || lowerName.contains("laliga") -> {
-                val laligaPool = listOf(
+                val next2 = uclPool[(idx + 2) % uclPool.size]
+                (listOf(
+                    primary,
+                    next1,
+                    next2,
                     "beIN Sports 1 4K",
-                    "beIN Sports 3 Max",
-                    "beIN Sports 1 Extra",
-                    "beIN Sports 2 Extra",
-                    "beIN Sports 3 Extra"
-                )
-                val primary = if (isMarquee && idx == 0) "beIN Sports 1 4K" else laligaPool[idx % laligaPool.size]
-                val next1 = laligaPool[(idx + 1) % laligaPool.size]
-                (listOf(primary, next1, "beIN Sports 1 HD")).distinct()
+                    "beIN Sports 1 English",
+                    "beIN Sports 1 French",
+                    "beIN Sports Xtra 1"
+                ) + uclPool.take(4)).distinct()
             }
 
-            // 7. English Premier League (beIN Sports — 'beIN Sports X Y')
+            // 6. Spanish LaLiga EA Sports (beIN Sports 3 HD primary + 1 HD / 2 HD for Real Madrid & Barcelona + 4 HD)
+            tournamentId == "laliga" || lowerName.contains("la liga") || lowerName.contains("laliga") -> {
+                val laligaPool = if (isMarquee) {
+                    listOf(
+                        "beIN Sports 1 HD",
+                        "beIN Sports 3 HD",
+                        "beIN Sports 2 HD",
+                        "beIN Sports 4 HD",
+                        "beIN Sports 1 4K"
+                    )
+                } else {
+                    listOf(
+                        "beIN Sports 3 HD",
+                        "beIN Sports 1 HD",
+                        "beIN Sports 2 HD",
+                        "beIN Sports 4 HD",
+                        "beIN Sports 5 HD"
+                    )
+                }
+                val primary = laligaPool[idx % laligaPool.size]
+                val next1 = laligaPool[(idx + 1) % laligaPool.size]
+                (listOf(primary, next1, "beIN Sports 1 HD", "beIN Sports 3 HD", "beIN Sports 1 4K", "beIN Sports 1 English")).distinct()
+            }
+
+            // 7. English Premier League (beIN Sports 1 HD & 2 HD primary + 1 English + 3 HD..6 HD for simultaneous 16:00 kickoffs)
             tournamentId == "premier_league" || lowerName.contains("premier league") -> {
                 val eplPool = listOf(
-                    "beIN Sports 1 4K",
-                    "beIN Sports 2 Max",
-                    "beIN Sports 1 Extra",
-                    "beIN Sports 2 Extra",
-                    "beIN Sports 3 Max",
-                    "beIN Sports 1 English"
+                    "beIN Sports 1 HD",
+                    "beIN Sports 2 HD",
+                    "beIN Sports 3 HD",
+                    "beIN Sports 4 HD",
+                    "beIN Sports 5 HD",
+                    "beIN Sports 6 HD",
+                    "beIN Sports Xtra 1"
                 )
-                val primary = if (isMarquee && idx == 0) "beIN Sports 1 4K" else eplPool[idx % eplPool.size]
+                val primary = eplPool[idx % eplPool.size]
                 val next1 = eplPool[(idx + 1) % eplPool.size]
-                (listOf(primary, next1, "beIN Sports 1 English")).distinct()
+                (listOf(
+                    primary,
+                    next1,
+                    "beIN Sports 1 English",
+                    "beIN Sports 2 English",
+                    "beIN Sports 1 4K",
+                    "beIN Sports 1 HD",
+                    "beIN Sports 2 HD"
+                )).distinct()
             }
 
-            // 8. French Ligue 1 (beIN Sports — 'beIN Sports X Y')
+            // 8. French Ligue 1 McDonald's (beIN Sports 4 HD primary + 2 HD + 1 French + Max 4..6)
             tournamentId == "ligue_1" || lowerName.contains("ligue 1") -> {
                 val ligue1Pool = listOf(
-                    "beIN Sports 4 Max",
-                    "beIN Sports 2 Extra",
+                    "beIN Sports 4 HD",
+                    "beIN Sports 2 HD",
+                    "beIN Sports 5 HD",
+                    "beIN Sports 6 HD",
                     "beIN Sports 1 French",
-                    "beIN Sports 3 Extra",
-                    "beIN Sports 2 Max"
+                    "beIN Sports Max 4"
                 )
                 val primary = ligue1Pool[idx % ligue1Pool.size]
                 val next1 = ligue1Pool[(idx + 1) % ligue1Pool.size]
-                (listOf(primary, next1, "beIN Sports 1 French")).distinct()
+                (listOf(primary, next1, "beIN Sports 1 French", "beIN Sports 4 HD", "beIN Sports Max 4")).distinct()
             }
 
-            // 9. German Bundesliga (beIN Sports — 'beIN Sports X Y')
+            // 9. German Bundesliga (beIN Sports 5 HD primary + 6 HD + 4 HD + Xtra 1 + Max 5)
             tournamentId == "bundesliga" || lowerName.contains("bundesliga") -> {
                 val bundesPool = listOf(
-                    "beIN Sports 5 Max",
-                    "beIN Sports 1 Extra",
-                    "beIN Sports 2 Extra",
-                    "beIN Sports 6 Max",
-                    "beIN Sports 3 Extra"
+                    "beIN Sports 5 HD",
+                    "beIN Sports 6 HD",
+                    "beIN Sports 4 HD",
+                    "beIN Sports 7 HD",
+                    "beIN Sports Xtra 1",
+                    "beIN Sports Max 5"
                 )
                 val primary = bundesPool[idx % bundesPool.size]
                 val next1 = bundesPool[(idx + 1) % bundesPool.size]
-                (listOf(primary, next1)).distinct()
+                (listOf(primary, next1, "beIN Sports 5 HD", "beIN Sports Xtra 1")).distinct()
             }
 
-            // 10. UEFA Europa League & Conference League (beIN Sports — 'beIN Sports X Y')
+            // 10. UEFA Europa League & Conference League (beIN Sports 1 HD .. 8 HD + Xtra 1..2)
             tournamentId == "uefa_el" || lowerName.contains("europa") -> {
                 val uelPool = listOf(
-                    "beIN Sports 1 Max",
-                    "beIN Sports 2 Max",
-                    "beIN Sports 1 Extra",
-                    "beIN Sports 2 Extra",
-                    "beIN Sports 3 Max",
-                    "beIN Sports 3 Extra"
+                    "beIN Sports 1 HD",
+                    "beIN Sports 2 HD",
+                    "beIN Sports 3 HD",
+                    "beIN Sports 4 HD",
+                    "beIN Sports 5 HD",
+                    "beIN Sports 6 HD",
+                    "beIN Sports 7 HD",
+                    "beIN Sports 8 HD",
+                    "beIN Sports Xtra 1"
                 )
                 val primary = uelPool[idx % uelPool.size]
                 val next1 = uelPool[(idx + 1) % uelPool.size]
-                (listOf(primary, next1)).distinct()
+                (listOf(primary, next1, "beIN Sports 1 English", "beIN Sports Xtra 1")).distinct()
             }
 
             else -> {
                 val defaultPool = listOf(
-                    "beIN Sports 1 4K",
-                    "beIN Sports 2 Max",
-                    "beIN Sports 1 Extra",
-                    "beIN Sports 2 Extra"
+                    "beIN Sports 1 HD",
+                    "beIN Sports 2 HD",
+                    "beIN Sports 3 HD",
+                    "beIN Sports 4 HD",
+                    "beIN Sports 1 4K"
                 )
                 val primary = defaultPool[idx % defaultPool.size]
                 val next1 = defaultPool[(idx + 1) % defaultPool.size]
@@ -1774,16 +1979,31 @@ class FootballRepository(
                 homeTeamName = homeName,
                 awayTeamName = awayName
             )
-            val rawTvChannel = item.optString("tv_channel", item.optString("broadcast", "")).trim()
-            val upstreamMenaChannels = rawTvChannel
-                .split(",", ";", "/")
+            val rawTvChannelList = buildList {
+                add(item.optString("tv_channel", ""))
+                add(item.optString("broadcast", ""))
+                add(item.optString("tv_channels", ""))
+                val channelsArr = item.optJSONArray("channels") ?: item.optJSONArray("broadcasters") ?: item.optJSONArray("tv_stations")
+                if (channelsArr != null) {
+                    for (cIdx in 0 until channelsArr.length()) {
+                        val cObj = channelsArr.optJSONObject(cIdx)
+                        if (cObj != null) {
+                            add(cObj.optString("name", cObj.optString("channel", cObj.optString("tv_name", ""))))
+                        } else {
+                            add(channelsArr.optString(cIdx, ""))
+                        }
+                    }
+                }
+            }
+            val upstreamMenaChannels = rawTvChannelList
+                .flatMap { it.split(",", ";", "/", "|") }
                 .map { it.trim() }
-                .filter { it.isNotBlank() && isMenaBroadcasterChannel(it) }
+                .filter { it.isNotBlank() && isMenaBroadcasterChannel(it) && !isGenericPlaceholderMenaChannel(it) }
                 .map {
                     formatCanonicalMenaChannelName(
                         rawChannel = it,
                         defaultChannelNum = (i % 9) + 1,
-                        defaultBeinTier = if (isMarquee && i == 0) "4K" else "Max"
+                        defaultBeinTier = "HD"
                     )
                 }
 
@@ -2111,7 +2331,9 @@ class FootballRepository(
                 if (!response.isSuccessful) return cached?.second ?: emptyList()
                 val body = response.body?.string() ?: return cached?.second ?: emptyList()
                 val root = JSONObject(body)
-                val tvevents = root.optJSONArray("tvevents") ?: return emptyList()
+                val tvevents = root.optJSONArray("tvevents")
+                    ?: root.optJSONArray("events")
+                    ?: return emptyList()
                 val entries = mutableListOf<SportsDbTvBroadcastEntry>()
 
                 for (i in 0 until tvevents.length()) {
@@ -2126,7 +2348,8 @@ class FootballRepository(
                             eventId = idEvent,
                             eventTitleNormalized = normalizeTeamNameForMerge(strEvent),
                             channelName = strChannel,
-                            country = strCountry
+                            country = strCountry,
+                            eventTitleRaw = strEvent
                         )
                     )
                 }
@@ -2283,6 +2506,34 @@ class FootballRepository(
                         }
                     }
 
+                    // Extract any MENA/beIN broadcast channels present in ESPN's `broadcasts` or `geoBroadcasts` arrays
+                    val espnBroadcastChannels = mutableListOf<String>()
+                    val broadcastsArr = comp.optJSONArray("broadcasts")
+                    if (broadcastsArr != null) {
+                        for (bIdx in 0 until broadcastsArr.length()) {
+                            val bObj = broadcastsArr.optJSONObject(bIdx) ?: continue
+                            val namesArr = bObj.optJSONArray("names")
+                            if (namesArr != null) {
+                                for (nIdx in 0 until namesArr.length()) {
+                                    val chName = namesArr.optString(nIdx, "").trim()
+                                    if (chName.isNotBlank() && isMenaBroadcasterChannel(chName) && !isGenericPlaceholderMenaChannel(chName)) {
+                                        espnBroadcastChannels.add(chName)
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    val geoBroadcastsArr = comp.optJSONArray("geoBroadcasts")
+                    if (geoBroadcastsArr != null) {
+                        for (gIdx in 0 until geoBroadcastsArr.length()) {
+                            val gObj = geoBroadcastsArr.optJSONObject(gIdx) ?: continue
+                            val mediaName = gObj.optJSONObject("media")?.optString("shortName", "")?.trim().orEmpty()
+                            if (mediaName.isNotBlank() && isMenaBroadcasterChannel(mediaName) && !isGenericPlaceholderMenaChannel(mediaName)) {
+                                espnBroadcastChannels.add(mediaName)
+                            }
+                        }
+                    }
+
                     val isMarquee = isMarqueeMenaMatch(homeName, awayName)
                     val smartFallbacks = getSmartMenaFallbackChannels(
                         tournamentId = tournament.tournamentId,
@@ -2292,7 +2543,8 @@ class FootballRepository(
                         homeTeamName = homeName,
                         awayTeamName = awayName
                     )
-                    val primaryChannel = smartFallbacks.firstOrNull() ?: tournament.defaultBeinPool[i % tournament.defaultBeinPool.size]
+                    val combinedChannels = deduplicateMenaChannelOptions(espnBroadcastChannels + smartFallbacks)
+                    val primaryChannel = combinedChannels.firstOrNull() ?: tournament.defaultBeinPool[i % tournament.defaultBeinPool.size]
                     val channelHint = extractBeinHint(primaryChannel)
 
                     list.add(
@@ -2319,7 +2571,8 @@ class FootballRepository(
                             beinChannel = primaryChannel,
                             beinChannelNumberHint = channelHint,
                             menaProviderName = detectMenaProviderFromLabel(primaryChannel),
-                            fallbackMenaChannels = smartFallbacks.drop(1),
+                            fallbackMenaChannels = combinedChannels.drop(1),
+                            sourceTvChannels = espnBroadcastChannels.distinct(),
                             stageOrRound = tournament.name,
                             sportsDbEventId = "",
                             espnEventId = eventId,
@@ -2482,7 +2735,7 @@ class FootballRepository(
     /**
      * Checks whether two channel names represent the exact same broadcaster & channel
      * across naming variations (e.g., `'beIN Sports max 5'`, `'beIN Sports max 05'`,
-     * `'beIN Sports 5 max'`, `'beIN Sports 05 max'`).
+     * `'beIN Sports 5 max'`, `'beIN Sports 05 max'`, or `'AR| BEIN SPORTS 02 HD'` vs `'beIN Sports 2 HD'`).
      */
     fun areEquivalentMenaChannels(channelA: String, channelB: String): Boolean {
         if (channelA.equals(channelB, ignoreCase = true)) return true
@@ -2513,9 +2766,14 @@ class FootballRepository(
      *
      * Searches EXCLUSIVELY within the user's saved **Favorites** channels list (`isFavorite = true`).
      * Does NOT search the full Xtream catalog.
-     * Recognizes naming, word-order, and zero-padded number variations (such as `'beIN Sports max 5'`,
-     * `'beIN Sports max 05'`, `'beIN Sports 5 max'`, and `'beIN Sports 05 max'`) as the same channel,
-     * and updates `availableMenaChannelOptions` accordingly.
+     *
+     * Features:
+     * 1. Recognizes naming, word-order, prefix, codec, and zero-padded number variations
+     *    (such as `'AR| BEIN SPORTS 02 HD'`, `'[01] VIP | beIN Sports 2 FHD'`, `'beIN Sports Premium 2 HD'`,
+     *    `'beIN Sports max 5'`, `'beIN Sports max 05'`, `'beIN Sports 5 max'`, and `'beIN Sports 05 max'`)
+     *    as the exact same channel.
+     * 2. Computes `optionsAvailableInFavorites`: the subset of `availableMenaChannelOptions` that currently
+     *    have at least one matching stream in the user's Favorites, so the UI can highlight available options with a `★` badge.
      */
     suspend fun findMenaChannelsWithFavoritesPriority(
         playlistId: Long,
@@ -2523,7 +2781,9 @@ class FootballRepository(
         overrideChannelLabel: String? = null
     ): MenaChannelMatchResult = withContext(Dispatchers.IO) {
         val targetChannel = (overrideChannelLabel ?: match.beinChannel).trim()
-        val baseOptions = deduplicateMenaChannelOptions(listOf(match.beinChannel) + match.fallbackMenaChannels)
+        val baseOptions = deduplicateMenaChannelOptions(
+            match.sourceTvChannels + listOf(match.beinChannel) + match.fallbackMenaChannels
+        )
 
         // Update the corresponding option in availableMenaChannelOptions if targetChannel is a recognized variation
         // (e.g., 'beIN Sports 05 max' vs 'beIN Sports max 5') so the active option chip stays in sync.
@@ -2545,6 +2805,15 @@ class FootballRepository(
         // Search ONLY within the user's saved Favorites channels list
         val allFavoriteStreams = streamDao.getFavoriteLiveStreamsOnce(playlistId)
         val favoriteMatches = matchFavoriteChannelsStrictly(allFavoriteStreams, targetChannel)
+
+        val optionsInFavorites = if (allFavoriteStreams.isEmpty()) {
+            emptySet()
+        } else {
+            updatedOptions.filter { optionLabel ->
+                matchFavoriteChannelsStrictly(allFavoriteStreams, optionLabel).isNotEmpty()
+            }.toSet()
+        }
+
         val resolvedProvider = detectMenaProviderFromLabel(targetChannel)
 
         MenaChannelMatchResult(
@@ -2554,45 +2823,62 @@ class FootballRepository(
             resolvedProviderName = resolvedProvider,
             usedMenaFallbackProvider = overrideChannelLabel != null &&
                 !areEquivalentMenaChannels(targetChannel, match.beinChannel),
-            availableMenaChannelOptions = updatedOptions
+            availableMenaChannelOptions = updatedOptions,
+            optionsAvailableInFavorites = optionsInFavorites
         )
     }
 
     /**
      * Normalizes both a Kickoff channel name and a Favorite channel's name before comparing:
      * 1. Converts to lowercase and strips diacritics.
-     * 2. Ignores IPTV category prefixes, brackets, and quality/codec/language tags:
-     *    `AR:`, `MA:`, `VIP`, `|`, `┃`, `[HEVC]`, `4K`, `FHD`, `UHD`, `HD`, `SD`, `H265`, `TNT`.
-     * 3. Splits attached letter-digit tokens (e.g. `max05` -> `max 05`, `05max` -> `05 max`, `hd01` -> `hd 01`).
-     * 4. Canonicalizes zero-padded channel numbers (`05` -> `5`, `01` -> `1`) and word order so variations like:
-     *    - `'beIN Sports max 5'`
-     *    - `'beIN Sports max 05'`
-     *    - `'beIN Sports 5 max'`
-     *    - `'beIN Sports 05 max'`
-     *    produce the exact same `NormalizedChannelProfile` and `canonicalKey`.
+     * 2. Isolates the substring starting at the MENA broadcaster keyword (`bein`, `arryadia`, `ssc`, `adsport`, etc.)
+     *    so IPTV playlist numbers or category prefixes before the channel name (e.g. `"[01] AR | beIN Sports 02 HD"`,
+     *    `"14 - VIP ┃ beIN Sports 1 FHD"`) never corrupt `channelNumbers`, while preserving any language prefix (`EN|`, `FR|`).
+     * 3. Strips all IPTV codecs, resolutions, frame rates, audio tags, and server suffixes (`MP4A-LATM`, `H.264`, `HEVC`,
+     *    `2160p`, `1080p`, `720p`, `50fps`, `Backup 1`, `Server 2`) BEFORE splitting letter-digit boundaries.
+     * 4. Splits attached letter-digit tokens (e.g. `max05` -> `max 05`, `05max` -> `05 max`, `hd02` -> `hd 02`, `bein2` -> `bein 2`).
+     * 5. Canonicalizes zero-padded channel numbers (`02` -> `2`, `05` -> `5`, `01` -> `1`) and extracts sub-brand
+     *    (`max`, `extra`, `afc`, `premium`) and language (`en`, `fr`, `es`) tokens.
      */
     internal fun normalizeChannelNameForFavoritesMatch(rawName: String): NormalizedChannelProfile {
-        val lower = Normalizer.normalize(rawName, Normalizer.Form.NFD)
+        val lowerFull = Normalizer.normalize(rawName, Normalizer.Form.NFD)
             .replace(Regex("\\p{InCombiningDiacriticalMarks}+"), "")
             .lowercase(Locale.ROOT)
 
-        // 1. Strip IPTV category prefixes, brackets, delimiters, and codec/resolution tags BEFORE extracting channel numbers
-        val step1 = lower
-            .replace("[hevc]", " ")
+        // Detect if rawName has an explicit language tag in the prefix or body before stripping
+        val hasExplicitEnglish = Regex("""\b(english|eng|en)\b""").containsMatchIn(lowerFull)
+        val hasExplicitFrench = Regex("""\b(french|fra|fr)\b""").containsMatchIn(lowerFull)
+        val hasExplicitSpanish = Regex("""\b(spanish|espanol|esp|es)\b""").containsMatchIn(lowerFull)
+        val is4kFeed = Regex("""\b(4k|uhd|2160p|2160)\b""").containsMatchIn(lowerFull)
+
+        // Locate the start of the MENA broadcaster name so leading playlist numbers ("[01] VIP | ") are discarded
+        val providerStartMatch = BROADCASTER_START_REGEX.find(lowerFull)
+        val relevantSubstring = if (providerStartMatch != null) {
+            lowerFull.substring(providerStartMatch.range.first)
+        } else {
+            lowerFull
+        }
+
+        // 1. Strip codecs, audio formats, server/backup suffixes, and resolution tags BEFORE splitting letter-digit tokens
+        val step1 = relevantSubstring
+            .replace("mp4a-latm", " ")
+            .replace(Regex("""\b(mp4a|mpeg4|mpeg2|hevc|avc|vp9|av1|aac|ac3|eac3|latm|dd\+?|dolby)\b"""), " ")
             .replace(Regex("""\b([hx]\.?26[45]|5\.1|2\.0)\b"""), " ")
+            .replace(Regex("""\b(2160p|2160|1080p|1080i|1080|720p|720|576p|576|480p|480|50fps|60fps|25fps|30fps|fps)\b"""), " ")
+            .replace(Regex("""\b(server|srv|backup|bkp|source|src|feed|stream|ch)\s*#?\s*\d+\b"""), " ")
             .replace(Regex("""\b(ar|ma|mar|dz|tn|eg|ksa|ae|qa|fr|en|uk|us)\s*[:|┃\-]"""), " ")
             .replace(Regex("""[|┃\[\]()/\\:_\-+.,]+"""), " ")
             .replace(
-                Regex("""\b(hevc|4k|fhd|uhd|hd|sd|h265|h264|x265|x264|1080p|1080i|1080|720p|720|480p|480|50fps|60fps|tnt|vip|raw|live|mena|english|french|ar|ma|mar)\b"""),
+                Regex("""\b(hevc|4k|fhd|uhd|hd|sd|h265|h264|x265|x264|tnt|vip|raw|live|mena|arabia|connect|ar|ara|arabic|ma|mar|low|med|high)\b"""),
                 " "
             )
 
-        // 2. Separate attached letter-digit boundaries (e.g., "max05" -> "max 05", "05max" -> "05 max", "hd01" -> "hd 01")
+        // 2. Separate attached letter-digit boundaries (e.g., "max05" -> "max 05", "05max" -> "05 max", "hd02" -> "hd 02", "bein2" -> "bein 2")
         val step2 = step1
             .replace(Regex("""([a-z])(\d)"""), "$1 $2")
             .replace(Regex("""(\d)([a-z])"""), "$1 $2")
             .replace(
-                Regex("""\b(hevc|4k|fhd|uhd|hd|sd|tnt|vip|raw|live|mena|english|french|ar|ma|mar)\b"""),
+                Regex("""\b(hevc|4k|fhd|uhd|hd|sd|tnt|vip|raw|live|mena|arabia|connect|english|eng|en|french|fra|fr|spanish|espanol|esp|es|ar|ara|arabic|ma|mar)\b"""),
                 " "
             )
 
@@ -2613,6 +2899,7 @@ class FootballRepository(
             .replace(Regex("""\b(xtra|extra)\b"""), "extra")
             .replace(Regex("""\b(maxx|max)\b"""), "max")
             .replace(Regex("""\b(prem|premium)\b"""), "premium")
+            .replace(Regex("""\b(asia|asian)\b"""), "afc")
             // Number word normalization
             .replace(Regex("""\bone\b"""), "1")
             .replace(Regex("""\btwo\b"""), "2")
@@ -2624,7 +2911,7 @@ class FootballRepository(
             .replace(Regex("""\beight\b"""), "8")
             .replace(Regex("""\bnine\b"""), "9")
             .replace(Regex("""\bten\b"""), "10")
-            // Strip leading zeros on channel numbers ("05" -> "5", "01" -> "1", while "10" stays "10")
+            // Strip leading zeros on channel numbers ("05" -> "5", "02" -> "2", "01" -> "1", while "10" stays "10")
             .replace(Regex("""\b0+([1-9]\d*)\b"""), "$1")
             .replace(Regex("""\s+"""), " ")
             .trim()
@@ -2650,32 +2937,68 @@ class FootballRepository(
                 val rawDigits = matchResult.groupValues[1]
                 rawDigits.trimStart('0').ifEmpty { "0" }
             }
+            .filter { numStr ->
+                val n = numStr.toIntOrNull() ?: 0
+                n in 1..99
+            }
             .distinct()
             .toList()
 
-        val subBrands = setOf("premium", "extra", "max", "afc")
+        val subBrands = setOf("premium", "extra", "max", "afc", "news", "global", "nba")
             .filter { token -> Regex("""\b$token\b""").containsMatchIn(cleaned) }
             .toSet()
 
-        val canonicalKey = "${canonicalProvider}|nums=${numbers.sorted().joinToString(",")}|brands=${subBrands.sorted().joinToString(",")}"
+        val languageTokens = buildSet {
+            if (hasExplicitEnglish) add("en")
+            if (hasExplicitFrench) add("fr")
+            if (hasExplicitSpanish) add("es")
+        }
+
+        // Note: For beIN Sports MENA, "Premium 1..3" are the legacy names for flagship "beIN Sports 1..3 HD",
+        // whereas "max", "extra", "afc" are distinct overflow/tournament sub-brands.
+        val distinctSubBrandsForKey = subBrands - "premium"
+        val canonicalKey = buildString {
+            append(canonicalProvider)
+            append("|nums=").append(numbers.sorted().joinToString(","))
+            append("|brands=").append(distinctSubBrandsForKey.sorted().joinToString(","))
+            append("|lang=").append(languageTokens.sorted().joinToString(","))
+            if (is4kFeed && numbers.isEmpty()) {
+                append("|4k=true")
+            }
+        }
 
         return NormalizedChannelProfile(
             normalizedText = cleaned,
             canonicalProvider = canonicalProvider,
             channelNumbers = numbers,
             subBrandTokens = subBrands,
+            languageTokens = languageTokens,
+            is4kFeed = is4kFeed,
             canonicalKey = canonicalKey
         )
     }
 
     /**
-     * Strictly matches the Kickoff `channelLabel` against the user's saved `favoriteStreams`:
-     * - Requires matching normalized MENA provider alias (`bein`, `arryadia`, `ssc`, `adsport`, `starzplay`, etc.).
-     * - Recognizes zero-padded numbers (`05` vs `5`) and word-order variations (`beIN Sports max 5`,
-     *   `beIN Sports max 05`, `beIN Sports 5 max`, `beIN Sports 05 max`) as the exact same channel.
-     * - Enforces strict word-boundary matching (`\b5\b`, `\b1\b`, `\b4\b`) on the canonicalized Favorite name
-     *   AND exact number list equality so `"beIN Sports 1 4K"` only matches channel `1` (`1` or `01`) and NEVER
-     *   falsely matches `"beIN Sports 10"`, `"beIN Sports 11"`, or `"beIN Sports 4"`.
+     * Multi-Tier Strict Favorites Channel Matcher (`matchFavoriteChannelsStrictly`):
+     *
+     * Matches the Kickoff `channelLabel` exclusively against the user's saved `favoriteStreams`:
+     * - **Strict Provider & Number Isolation**:
+     *   `"beIN Sports 1 HD"` / `"beIN Sports 1 4K"` ONLY matches channel `1` (`1` or `01`), and NEVER matches
+     *   `"beIN Sports 10"`, `"beIN Sports 11"`, `"beIN Sports 12"`, or `"beIN Sports 4"`.
+     * - **Prefix & Codec Immunity**:
+     *   `"AR| BEIN SPORTS 02 HD"` (even with `MP4A-LATM` or `[01]` prefix) normalizes to `bein` + `["2"]`
+     *   and matches `"beIN Sports 2 HD"` with top priority.
+     * - **Sub-Brand Separation (`STANDARD`/`PREMIUM` vs `MAX` vs `EXTRA` vs `AFC`)**:
+     *   - Non-sport beIN channels (`beIN Sports News`, `beIN Sports Global`, `beIN Sports NBA`) are excluded.
+     *   - When the target channel is a standard flagship channel (`"beIN Sports 2 HD"`, `"beIN Sports 1 4K"`),
+     *     Favorites that belong to overflow sub-brands (`Max`, `Extra`/`Xtra`, `AFC`) are strictly rejected so
+     *     `Max 2` or `Xtra 2` never hijacks `beIN Sports 2 HD`.
+     *   - `beIN Sports Premium 1..3` in Favorites is recognized as equivalent to flagship `beIN Sports 1..3 HD`.
+     *   - When the target specifies an overflow sub-brand (e.g., `"beIN Sports max 5"` or `"beIN Sports 4 Max"`):
+     *     - **Tier 1**: Exact sub-brand match (`Max 5`, `max 05`, `5 max`, `05 max`). If any Tier 1 match exists in Favorites,
+     *       returns ONLY Tier 1 matches.
+     *     - **Tier 2**: If the user has no `Max` channel for that number in Favorites, falls back to standard `"beIN Sports N HD"`
+     *       with the exact same channel number (`4`).
      */
     internal fun matchFavoriteChannelsStrictly(
         favoriteStreams: List<StreamEntity>,
@@ -2685,10 +3008,12 @@ class FootballRepository(
         val targetProfile = normalizeChannelNameForFavoritesMatch(channelLabel)
         if (targetProfile.canonicalProvider.isBlank()) return emptyList()
 
+        val targetHardSubBrands = targetProfile.subBrandTokens intersect HARD_SUB_BRANDS
+
         data class RankedFavoriteMatch(
             val stream: StreamEntity,
-            val score: Int,
-            val hasExactSubBrandMatch: Boolean
+            val tier: Int, // Tier 1 = Exact sub-brand & language, Tier 2 = Same sub-brand / alternate language, Tier 3 = Standard number fallback
+            val score: Int
         )
 
         val matchedWithRank = favoriteStreams.mapNotNull { favStream ->
@@ -2699,75 +3024,113 @@ class FootballRepository(
                 return@mapNotNull null
             }
 
-            // 2. Strict Channel Number Check using word-boundary regex on zero-normalized numbers (\b1\b, \b5\b)
-            if (targetProfile.channelNumbers.isNotEmpty()) {
-                val allNumbersMatchWordBoundary = targetProfile.channelNumbers.all { num ->
-                    Regex("""\b${Regex.escape(num)}\b""").containsMatchIn(favProfile.normalizedText)
-                }
-                if (!allNumbersMatchWordBoundary || favProfile.channelNumbers != targetProfile.channelNumbers) {
-                    return@mapNotNull null
-                }
-            } else if (favProfile.channelNumbers.isNotEmpty() && targetProfile.canonicalProvider == "bein") {
-                // If Kickoff channel is generic "beIN Sports MENA" without a number, allow matching any numbered beIN Favorite;
-                // otherwise for specific numbered channels, step 2 above already enforced \bN\b.
+            // Exclude non-football beIN channels (News, Global, NBA) unless explicitly requested
+            if (favProfile.subBrandTokens.any { it in NON_FOOTBALL_SUB_BRANDS } &&
+                targetProfile.subBrandTokens.none { it in NON_FOOTBALL_SUB_BRANDS }
+            ) {
+                return@mapNotNull null
             }
 
-            // 3. Sub-brand check (e.g. Premium / Extra / Max / AFC)
-            if (targetProfile.canonicalProvider == "bein") {
-                if (targetProfile.subBrandTokens.isEmpty() &&
-                    favProfile.subBrandTokens.isNotEmpty() &&
-                    targetProfile.channelNumbers.isNotEmpty()
-                ) {
-                    return@mapNotNull null
+            val favHardSubBrands = favProfile.subBrandTokens intersect HARD_SUB_BRANDS
+
+            // 2. Strict Channel Number Check using word-boundary regex on zero-normalized numbers (\b1\b, \b2\b, \b5\b)
+            if (targetProfile.channelNumbers.isNotEmpty()) {
+                val isUnnumbered4kMatch = targetProfile.canonicalProvider == "bein" &&
+                    targetProfile.is4kFeed &&
+                    targetProfile.channelNumbers == listOf("1") &&
+                    favProfile.is4kFeed &&
+                    favProfile.channelNumbers.isEmpty() &&
+                    favHardSubBrands.isEmpty()
+
+                if (!isUnnumbered4kMatch) {
+                    val allNumbersMatchWordBoundary = targetProfile.channelNumbers.all { num ->
+                        Regex("""\b${Regex.escape(num)}\b""").containsMatchIn(favProfile.normalizedText)
+                    }
+                    if (!allNumbersMatchWordBoundary || favProfile.channelNumbers != targetProfile.channelNumbers) {
+                        return@mapNotNull null
+                    }
                 }
-                if (targetProfile.subBrandTokens.isNotEmpty() &&
-                    favProfile.subBrandTokens.isNotEmpty() &&
-                    !favProfile.subBrandTokens.containsAll(targetProfile.subBrandTokens)
-                ) {
+            } else if (targetProfile.is4kFeed && targetProfile.canonicalProvider == "bein") {
+                // Target is "beIN 4K" / "beIN Sports 4K": match either un-numbered 4K or channel 1
+                val valid4kOrCh1 = (favProfile.is4kFeed && favProfile.channelNumbers.isEmpty()) ||
+                    favProfile.channelNumbers == listOf("1")
+                if (!valid4kOrCh1) return@mapNotNull null
+            }
+
+            // 3. Sub-brand & Language Tier Evaluation
+            var matchTier = 1
+            if (targetHardSubBrands.isEmpty()) {
+                // Target is a STANDARD / PREMIUM / 4K / Language channel (e.g. "beIN Sports 2 HD", "beIN Sports 1 4K", "SSC 1 HD").
+                // NEVER allow overflow sub-brands ("max", "extra", "afc") to match a standard channel!
+                if (favHardSubBrands.isNotEmpty() && targetProfile.channelNumbers.isNotEmpty()) {
                     return@mapNotNull null
                 }
             } else {
-                if (targetProfile.subBrandTokens.isNotEmpty() &&
-                    !favProfile.subBrandTokens.containsAll(targetProfile.subBrandTokens)
-                ) {
-                    return@mapNotNull null
-                }
-                if (targetProfile.subBrandTokens.isEmpty() &&
-                    favProfile.subBrandTokens.isNotEmpty() &&
-                    targetProfile.channelNumbers.isNotEmpty()
-                ) {
-                    return@mapNotNull null
+                // Target explicitly requests a hard sub-brand ("max", "extra", or "afc")
+                when {
+                    favHardSubBrands == targetHardSubBrands -> {
+                        // Exact sub-brand match (e.g., 'beIN Sports max 5' -> 'beIN Sports max 05', '5 max', '05 max')
+                        matchTier = 1
+                    }
+                    favHardSubBrands.isEmpty() && targetProfile.canonicalProvider == "bein" -> {
+                        // Fallback to standard flagship channel with the exact same number ONLY if no exact sub-brand exists in Favorites
+                        matchTier = 3
+                    }
+                    else -> {
+                        // Conflicting sub-brand (e.g., target is 'Max' but Favorite is 'Extra' or 'AFC') -> reject
+                        return@mapNotNull null
+                    }
                 }
             }
 
-            val exactSubBrand = targetProfile.subBrandTokens.isNotEmpty() &&
-                favProfile.subBrandTokens.containsAll(targetProfile.subBrandTokens)
+            // 4. Language Feed Check (English / French / Arabic default)
+            val languageBonus: Int
+            if (targetProfile.languageTokens.isNotEmpty()) {
+                if (favProfile.languageTokens == targetProfile.languageTokens) {
+                    languageBonus = 35
+                } else if (favProfile.languageTokens.isEmpty()) {
+                    if (matchTier == 1) matchTier = 2
+                    languageBonus = 0
+                } else {
+                    // Target is English but Favorite is French (or vice versa) -> reject if standard number
+                    return@mapNotNull null
+                }
+            } else {
+                // Target is default/Arabic feed (e.g. "beIN Sports 2 HD"): prefer default/Arabic Favorites over EN/FR feeds
+                if (favProfile.languageTokens.isEmpty()) {
+                    languageBonus = 25
+                } else {
+                    if (matchTier == 1) matchTier = 2
+                    languageBonus = -15
+                }
+            }
 
-            // Rank matched Favorites by sub-brand exactness + video quality: 4K/UHD -> FHD/1080 -> HD -> SD
+            // 5. Rank within tier by sub-brand exactness + video quality: 4K/UHD -> FHD/1080 -> HD -> SD
             val lowerRaw = favStream.name.lowercase(Locale.ROOT)
-            var qualityScore = 100
-            if (exactSubBrand) {
-                qualityScore += 40
+            var qualityScore = 100 + languageBonus
+            if (targetHardSubBrands.isNotEmpty() && favHardSubBrands == targetHardSubBrands) {
+                qualityScore += 50
             }
-            if (lowerRaw.contains("4k") || lowerRaw.contains("uhd")) qualityScore += 30
+            if (targetProfile.is4kFeed && favProfile.is4kFeed) {
+                qualityScore += 45
+            }
+            if (lowerRaw.contains("4k") || lowerRaw.contains("uhd") || lowerRaw.contains("2160")) qualityScore += 30
             else if (lowerRaw.contains("fhd") || lowerRaw.contains("1080")) qualityScore += 20
-            else if (lowerRaw.contains("hd")) qualityScore += 10
+            else if (lowerRaw.contains("hd") || lowerRaw.contains("720")) qualityScore += 10
 
             RankedFavoriteMatch(
                 stream = favStream,
-                score = qualityScore,
-                hasExactSubBrandMatch = exactSubBrand
+                tier = matchTier,
+                score = qualityScore
             )
         }
 
-        // If the target specifies a sub-brand (e.g. 'max' in 'beIN Sports max 5') and the user has at least one
-        // Favorite stream with that exact sub-brand ('max 5', 'max 05', '5 max', '05 max'), return only those exact
-        // sub-brand matches so regular un-sub-branded channels (e.g. 'beIN Sports 5 HD') are not mixed in.
-        val filteredMatches = if (targetProfile.subBrandTokens.isNotEmpty() && matchedWithRank.any { it.hasExactSubBrandMatch }) {
-            matchedWithRank.filter { it.hasExactSubBrandMatch }
-        } else {
-            matchedWithRank
-        }
+        if (matchedWithRank.isEmpty()) return emptyList()
+
+        // Always return the highest priority tier available in Favorites:
+        // If Tier 1 matches exist (exact sub-brand & language), never mix in Tier 2 or Tier 3 fallback streams!
+        val bestTier = matchedWithRank.minOf { it.tier }
+        val filteredMatches = matchedWithRank.filter { it.tier == bestTier }
 
         return filteredMatches
             .sortedWith(compareByDescending<RankedFavoriteMatch> { it.score }.thenBy { it.stream.name })
@@ -2947,7 +3310,23 @@ class FootballRepository(
             "watania"
         )
 
+        private val HARD_SUB_BRANDS = setOf("max", "extra", "afc")
+        private val NON_FOOTBALL_SUB_BRANDS = setOf("news", "global", "nba")
+
+        private val BROADCASTER_START_REGEX = Regex(
+            """\b(be\s*in|bein|arryadia|arriyadia|riyadia|al\s*riyadia|snrt|al\s*aoula|tamazight|maghribia|ssc|thmanyah|shahid|ad\s*sport|abu\s*dhabi|starz|alkass|al\s*kass|on\s*time|ontime|dubai\s*sport|sharjah\s*sport|kuwait\s*sport|oman\s*sport|bahrain\s*sport|iraqia|watania)\b"""
+        )
+
         private val DEFAULT_GENERATED_POOL_CHANNELS = setOf(
+            "beIN Sports 1 HD",
+            "beIN Sports 2 HD",
+            "beIN Sports 3 HD",
+            "beIN Sports 4 HD",
+            "beIN Sports 5 HD",
+            "beIN Sports 6 HD",
+            "beIN Sports 7 HD",
+            "beIN Sports 8 HD",
+            "beIN Sports 9 HD",
             "beIN Sports 1 4K",
             "beIN Sports 1 Max",
             "beIN Sports 2 Max",
@@ -2955,14 +3334,18 @@ class FootballRepository(
             "beIN Sports 4 Max",
             "beIN Sports 5 Max",
             "beIN Sports 6 Max",
+            "beIN Sports Max 4",
+            "beIN Sports Max 5",
             "beIN Sports 1 Extra",
             "beIN Sports 2 Extra",
             "beIN Sports 3 Extra",
             "beIN Sports 4 Extra",
             "beIN Sports 5 Extra",
+            "beIN Sports Xtra 1",
+            "beIN Sports Xtra 2",
             "beIN Sports 1 English",
+            "beIN Sports 2 English",
             "beIN Sports 1 French",
-            "beIN Sports 1 HD",
             "Arryadia HD",
             "Arryadia TNT",
             "Al Aoula HD",
@@ -2987,8 +3370,8 @@ class FootballRepository(
                 espnSlug = "uefa.champions",
                 sportsDbLeagueId = "4480",
                 primaryMenaProvider = "beIN Sports MENA",
-                defaultBeinPool = listOf("beIN Sports 1 4K", "beIN Sports 2 Max", "beIN Sports 3 Max", "beIN Sports 1 Extra", "beIN Sports 2 Extra"),
-                fallbackMenaPool = listOf("beIN Sports 2 Max", "beIN Sports 1 Extra", "beIN Sports 1 English"),
+                defaultBeinPool = listOf("beIN Sports 1 HD", "beIN Sports 2 HD", "beIN Sports 3 HD", "beIN Sports 4 HD", "beIN Sports 5 HD", "beIN Sports 6 HD", "beIN Sports 1 4K"),
+                fallbackMenaPool = listOf("beIN Sports 2 HD", "beIN Sports 3 HD", "beIN Sports 1 English", "beIN Sports 1 4K"),
                 defaultSortOrder = 1
             ),
             TournamentCatalogItem(
@@ -2998,8 +3381,8 @@ class FootballRepository(
                 espnSlug = "esp.1",
                 sportsDbLeagueId = "4335",
                 primaryMenaProvider = "beIN Sports MENA",
-                defaultBeinPool = listOf("beIN Sports 1 4K", "beIN Sports 3 Max", "beIN Sports 1 Extra", "beIN Sports 2 Extra"),
-                fallbackMenaPool = listOf("beIN Sports 3 Max", "beIN Sports 1 Extra", "beIN Sports 1 HD"),
+                defaultBeinPool = listOf("beIN Sports 3 HD", "beIN Sports 1 HD", "beIN Sports 2 HD", "beIN Sports 4 HD", "beIN Sports 1 4K"),
+                fallbackMenaPool = listOf("beIN Sports 3 HD", "beIN Sports 1 HD", "beIN Sports 1 4K"),
                 defaultSortOrder = 2
             ),
             TournamentCatalogItem(
@@ -3009,8 +3392,8 @@ class FootballRepository(
                 espnSlug = "eng.1",
                 sportsDbLeagueId = "4328",
                 primaryMenaProvider = "beIN Sports MENA",
-                defaultBeinPool = listOf("beIN Sports 1 4K", "beIN Sports 2 Max", "beIN Sports 1 Extra", "beIN Sports 2 Extra"),
-                fallbackMenaPool = listOf("beIN Sports 2 Max", "beIN Sports 1 Extra", "beIN Sports 1 English"),
+                defaultBeinPool = listOf("beIN Sports 1 HD", "beIN Sports 2 HD", "beIN Sports 3 HD", "beIN Sports 4 HD", "beIN Sports 1 English", "beIN Sports 1 4K"),
+                fallbackMenaPool = listOf("beIN Sports 1 HD", "beIN Sports 2 HD", "beIN Sports 1 English"),
                 defaultSortOrder = 3
             ),
             TournamentCatalogItem(
@@ -3020,8 +3403,8 @@ class FootballRepository(
                 espnSlug = "fra.1",
                 sportsDbLeagueId = "4334",
                 primaryMenaProvider = "beIN Sports MENA",
-                defaultBeinPool = listOf("beIN Sports 4 Max", "beIN Sports 2 Extra", "beIN Sports 1 French", "beIN Sports 3 Extra"),
-                fallbackMenaPool = listOf("beIN Sports 2 Extra", "beIN Sports 1 French"),
+                defaultBeinPool = listOf("beIN Sports 4 HD", "beIN Sports 2 HD", "beIN Sports 1 French", "beIN Sports 5 HD", "beIN Sports Max 4"),
+                fallbackMenaPool = listOf("beIN Sports 4 HD", "beIN Sports 1 French", "beIN Sports Max 4"),
                 defaultSortOrder = 4
             ),
             TournamentCatalogItem(
@@ -3031,8 +3414,8 @@ class FootballRepository(
                 espnSlug = "ger.1",
                 sportsDbLeagueId = "4331",
                 primaryMenaProvider = "beIN Sports MENA",
-                defaultBeinPool = listOf("beIN Sports 5 Max", "beIN Sports 1 Extra", "beIN Sports 2 Extra", "beIN Sports 6 Max"),
-                fallbackMenaPool = listOf("beIN Sports 1 Extra", "beIN Sports 2 Extra"),
+                defaultBeinPool = listOf("beIN Sports 5 HD", "beIN Sports 6 HD", "beIN Sports 4 HD", "beIN Sports Xtra 1", "beIN Sports Max 5"),
+                fallbackMenaPool = listOf("beIN Sports 5 HD", "beIN Sports 6 HD", "beIN Sports Xtra 1"),
                 defaultSortOrder = 5
             ),
             TournamentCatalogItem(
@@ -3053,8 +3436,8 @@ class FootballRepository(
                 espnSlug = "caf.champions",
                 sportsDbLeagueId = "4486",
                 primaryMenaProvider = "beIN Sports MENA",
-                defaultBeinPool = listOf("beIN Sports 6 Max", "beIN Sports 5 Extra", "Arryadia TNT", "ON Time Sports 1"),
-                fallbackMenaPool = listOf("Arryadia TNT", "ON Time Sports 1", "beIN Sports 5 Extra"),
+                defaultBeinPool = listOf("beIN Sports 6 HD", "beIN Sports 5 HD", "Arryadia TNT", "ON Time Sports 1"),
+                fallbackMenaPool = listOf("Arryadia TNT", "ON Time Sports 1", "beIN Sports 5 HD"),
                 defaultSortOrder = 7
             ),
             TournamentCatalogItem(
@@ -3075,8 +3458,8 @@ class FootballRepository(
                 espnSlug = "uefa.europa",
                 sportsDbLeagueId = "4481",
                 primaryMenaProvider = "beIN Sports MENA",
-                defaultBeinPool = listOf("beIN Sports 1 Max", "beIN Sports 2 Max", "beIN Sports 1 Extra", "beIN Sports 2 Extra"),
-                fallbackMenaPool = listOf("beIN Sports 2 Max", "beIN Sports 1 Extra"),
+                defaultBeinPool = listOf("beIN Sports 1 HD", "beIN Sports 2 HD", "beIN Sports 3 HD", "beIN Sports 4 HD", "beIN Sports 5 HD", "beIN Sports 6 HD"),
+                fallbackMenaPool = listOf("beIN Sports 2 HD", "beIN Sports 3 HD", "beIN Sports Xtra 1"),
                 defaultSortOrder = 9
             ),
             TournamentCatalogItem(

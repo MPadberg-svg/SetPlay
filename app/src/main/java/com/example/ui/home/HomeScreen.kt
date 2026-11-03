@@ -3735,7 +3735,7 @@ private fun BeinChannelMatcherBottomSheet(
             if (state.availableMenaChannelOptions.size > 1) {
                 Spacer(modifier = Modifier.height(10.dp))
                 Text(
-                    text = "MATCH TV CHANNELS (TAP TO CHECK IN YOUR FAVORITES)",
+                    text = "MATCH TV CHANNELS (★ = SAVED IN YOUR FAVORITES)",
                     color = ChampagneMuted,
                     fontSize = 10.sp,
                     fontWeight = FontWeight.ExtraBold
@@ -3744,21 +3744,41 @@ private fun BeinChannelMatcherBottomSheet(
                 LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     items(state.availableMenaChannelOptions, key = { it }) { optionLabel ->
                         val isSelected = optionLabel.equals(state.resolvedChannelLabel, ignoreCase = true)
+                        val isSavedInFavs = state.optionsAvailableInFavorites.any {
+                            it.equals(optionLabel, ignoreCase = true)
+                        }
                         FilterChip(
                             selected = isSelected,
                             onClick = { onSelectMenaChannelOption(optionLabel) },
+                            leadingIcon = if (isSavedInFavs) {
+                                {
+                                    Icon(
+                                        imageVector = Icons.Default.Star,
+                                        contentDescription = "In Favorites",
+                                        tint = if (isSelected) DarkGraphite else AmberGold,
+                                        modifier = Modifier.size(13.dp)
+                                    )
+                                }
+                            } else null,
                             label = {
                                 Text(
                                     text = optionLabel,
                                     fontSize = 11.sp,
-                                    fontWeight = if (isSelected) FontWeight.ExtraBold else FontWeight.Medium
+                                    fontWeight = if (isSelected || isSavedInFavs) FontWeight.ExtraBold else FontWeight.Medium
                                 )
                             },
+                            border = FilterChipDefaults.filterChipBorder(
+                                enabled = true,
+                                selected = isSelected,
+                                borderColor = if (isSavedInFavs) AmberGold else ChampagneSubtleBorder,
+                                selectedBorderColor = ArenaPitchGreen,
+                                borderWidth = if (isSavedInFavs) 1.1.dp else 0.8.dp
+                            ),
                             colors = FilterChipDefaults.filterChipColors(
                                 selectedContainerColor = ArenaPitchGreen,
                                 selectedLabelColor = DarkGraphite,
-                                containerColor = DarkGraphite,
-                                labelColor = PaleGold
+                                containerColor = if (isSavedInFavs) AmberGold.copy(alpha = 0.12f) else DarkGraphite,
+                                labelColor = if (isSavedInFavs) AmberGold else PaleGold
                             )
                         )
                     }
@@ -3810,6 +3830,34 @@ private fun BeinChannelMatcherBottomSheet(
                                 fontWeight = FontWeight.ExtraBold,
                                 textAlign = TextAlign.Center
                             )
+                            val firstAvailableFavChannel = state.optionsAvailableInFavorites.firstOrNull {
+                                !it.equals(state.resolvedChannelLabel, ignoreCase = true)
+                            }
+                            if (firstAvailableFavChannel != null) {
+                                Spacer(modifier = Modifier.height(10.dp))
+                                OutlinedButton(
+                                    onClick = { onSelectMenaChannelOption(firstAvailableFavChannel) },
+                                    border = BorderStroke(1.dp, ArenaPitchGreen),
+                                    colors = ButtonDefaults.outlinedButtonColors(
+                                        containerColor = ArenaPitchGreen.copy(alpha = 0.14f),
+                                        contentColor = ArenaFloodlightLime
+                                    ),
+                                    modifier = Modifier.fillMaxWidth()
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.Star,
+                                        contentDescription = null,
+                                        tint = AmberGold,
+                                        modifier = Modifier.size(15.dp)
+                                    )
+                                    Spacer(modifier = Modifier.width(6.dp))
+                                    Text(
+                                        text = "Watch on $firstAvailableFavChannel (In Your Favorites)",
+                                        fontWeight = FontWeight.ExtraBold,
+                                        fontSize = 12.sp
+                                    )
+                                }
+                            }
                             Spacer(modifier = Modifier.height(14.dp))
                             Row(
                                 horizontalArrangement = Arrangement.spacedBy(10.dp),

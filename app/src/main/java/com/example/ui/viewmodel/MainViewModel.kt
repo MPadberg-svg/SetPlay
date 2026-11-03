@@ -71,6 +71,7 @@ data class BeinChannelMatcherState(
     val resolvedProviderName: String = match.menaProviderName,
     val usedMenaFallbackProvider: Boolean = false,
     val availableMenaChannelOptions: List<String> = (listOf(match.beinChannel) + match.fallbackMenaChannels).distinct(),
+    val optionsAvailableInFavorites: Set<String> = emptySet(),
     val requiresAddToFavoritesPrompt: Boolean = false,
     val missingFavoriteNotificationMessage: String =
         "\"${match.beinChannel}\" is not in your Favorites yet. Please test and add \"${match.beinChannel}\" to your Favorites first to watch this game.",
@@ -577,6 +578,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     resolvedProviderName = result.resolvedProviderName,
                     usedMenaFallbackProvider = result.usedMenaFallbackProvider,
                     availableMenaChannelOptions = result.availableMenaChannelOptions,
+                    optionsAvailableInFavorites = result.optionsAvailableInFavorites,
                     requiresAddToFavoritesPrompt = result.favoriteMatches.isEmpty(),
                     missingFavoriteNotificationMessage =
                         "\"${result.resolvedChannelLabel}\" is not in your Favorites yet. Please test and add \"${result.resolvedChannelLabel}\" to your Favorites first to watch this game.",
@@ -632,6 +634,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     resolvedProviderName = result.resolvedProviderName,
                     usedMenaFallbackProvider = result.usedMenaFallbackProvider,
                     availableMenaChannelOptions = result.availableMenaChannelOptions,
+                    optionsAvailableInFavorites = result.optionsAvailableInFavorites,
                     requiresAddToFavoritesPrompt = result.favoriteMatches.isEmpty(),
                     missingFavoriteNotificationMessage =
                         "\"${result.resolvedChannelLabel}\" is not in your Favorites yet. Please test and add \"${result.resolvedChannelLabel}\" to your Favorites first to watch this game.",
