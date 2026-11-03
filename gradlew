@@ -280,6 +280,7 @@ EOF
 
   sed -i '/kotlin.compiler.execution.strategy/d' gradle.properties 2>/dev/null || true
   sed -i '/org.gradle.configuration-cache/d' gradle.properties 2>/dev/null || true
+  sed -i 's/fallbackToDestructiveMigration(dropAllTables = true)/fallbackToDestructiveMigration()/g' app/src/main/java/com/example/data/local/StreamVaultDatabase.kt 2>/dev/null || true
 fi
 
 # 3. Ensure Gradle 8.11.1 binary is available

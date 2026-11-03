@@ -38,6 +38,7 @@ abstract class StreamVaultDatabase : RoomDatabase() {
         @Volatile
         private var INSTANCE: StreamVaultDatabase? = null
 
+        @Suppress("DEPRECATION")
         fun getInstance(context: Context): StreamVaultDatabase {
             return INSTANCE ?: synchronized(this) {
                 val instance = Room.databaseBuilder(
@@ -45,7 +46,7 @@ abstract class StreamVaultDatabase : RoomDatabase() {
                     StreamVaultDatabase::class.java,
                     "streamvault_database.db"
                 )
-                    .fallbackToDestructiveMigration(dropAllTables = true)
+                    .fallbackToDestructiveMigration()
                     .build()
                 INSTANCE = instance
                 instance
