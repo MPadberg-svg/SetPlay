@@ -171,7 +171,7 @@ fun VodScreen(
                     name = "${selectedSeriesStream!!.name} • S${episode.seasonNumber}E${episode.episodeNumber} - ${episode.title}",
                     streamType = "series",
                     streamIcon = episode.thumbnail.ifBlank { selectedSeriesStream!!.streamIcon },
-                    epgChannelId = "",
+                    epgChannelId = "${selectedSeriesStream!!.streamId}:${episode.seasonNumber}:${episode.episodeNumber}",
                     categoryId = selectedSeriesStream!!.categoryId,
                     containerExtension = episode.containerExtension.ifBlank { "mp4" },
                     isFavorite = selectedSeriesStream!!.isFavorite,

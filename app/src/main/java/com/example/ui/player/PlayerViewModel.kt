@@ -29,6 +29,11 @@ import com.example.data.local.StreamVaultDatabase
 import com.example.data.model.EpgProgramEntity
 import com.example.data.model.PlaylistEntity
 import com.example.data.model.StreamEntity
+import com.example.data.remote.ResolvedMediaQuery
+import com.example.data.remote.SubtitleCue
+import com.example.data.remote.WyzieLanguageGroup
+import com.example.data.remote.WyzieSubtitleOption
+import com.example.data.remote.WyzieSubtitleService
 import com.example.data.remote.XtreamClient
 import com.example.data.repository.IptvRepository
 import kotlinx.coroutines.Job
@@ -102,7 +107,19 @@ data class PlayerUiState(
     val gestureBrightness: Float? = null, // 0..1
     val gestureVolume: Int? = null,       // 0..200
     val gestureSeekSeconds: Long? = null, // relative scrub seconds
-    val isControlsVisible: Boolean = true
+    val isControlsVisible: Boolean = true,
+    // Wyzie Online Subtitles (Movies & Series)
+    val wyzieLanguageGroups: List<WyzieLanguageGroup> = emptyList(),
+    val selectedWyzieLanguageCode: String? = null,
+    val activeWyzieOption: WyzieSubtitleOption? = null,
+    val activeWyzieCues: List<SubtitleCue> = emptyList(),
+    val currentSubtitleText: String? = null,
+    val isSearchingOnlineSubtitles: Boolean = false,
+    val isDownloadingSubtitle: Boolean = false,
+    val onlineSubtitleStatusMessage: String? = null,
+    val resolvedMediaQuery: ResolvedMediaQuery? = null,
+    val subtitleSyncOffsetMs: Long = 0L,
+    val subtitleScaleFactor: Float = 1.0f
 )
 
 @OptIn(UnstableApi::class)
@@ -115,12 +132,15 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application) 
         epgDao = database.epgDao(),
         parentalDao = database.parentalSettingsDao()
     )
+    private val wyzieSubtitleService = WyzieSubtitleService()
 
     private val audioManager = application.getSystemService(Context.AUDIO_SERVICE) as AudioManager
     private var activePlaylistCache: PlaylistEntity? = null
     private var loudnessEnhancer: LoudnessEnhancer? = null
     private var volumeFloatAccumulator: Float = 75f
     private var brightnessFloatAccumulator: Float = 65f
+    private var subtitleSearchJob: Job? = null
+    private var subtitleDownloadJob: Job? = null
 
     val player: ExoPlayer by lazy {
         val okHttpClient = OkHttpClient.Builder()
@@ -333,7 +353,17 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application) 
             currentProgram = null,
             videoZoomScale = 1.0f,
             videoPanOffsetX = 0f,
-            videoPanOffsetY = 0f
+            videoPanOffsetY = 0f,
+            wyzieLanguageGroups = emptyList(),
+            selectedWyzieLanguageCode = null,
+            activeWyzieOption = null,
+            activeWyzieCues = emptyList(),
+            currentSubtitleText = null,
+            isSearchingOnlineSubtitles = false,
+            isDownloadingSubtitle = false,
+            onlineSubtitleStatusMessage = null,
+            resolvedMediaQuery = null,
+            subtitleSyncOffsetMs = 0L
         )
 
         player.setMediaItem(mediaItemBuilder.build())
@@ -343,7 +373,7 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application) 
         }
         player.play()
 
-        // Update watch history, sibling channels for fast zapping, and EPG
+        // Update watch history, sibling channels for fast zapping, EPG, or Wyzie VOD subtitles
         viewModelScope.launch {
             repository.updateWatchHistory(stream.id)
             if (stream.streamType.equals("live", ignoreCase = true)) {
@@ -359,6 +389,9 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application) 
                     upcomingPrograms = upcoming,
                     catchupPrograms = catchupList
                 )
+            } else {
+                // Pre-resolve and fetch Wyzie online subtitles for Movies & Series
+                searchOnlineSubtitles()
             }
         }
 
@@ -373,6 +406,8 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application) 
         sleepTimerJob?.cancel()
         controlsFadeJob?.cancel()
         gestureFadeJob?.cancel()
+        subtitleSearchJob?.cancel()
+        subtitleDownloadJob?.cancel()
         try {
             loudnessEnhancer?.enabled = false
         } catch (_: Exception) {}
@@ -388,7 +423,15 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application) 
             videoZoomScale = 1.0f,
             videoPanOffsetX = 0f,
             videoPanOffsetY = 0f,
-            sleepTimerRemainingMinutes = null
+            sleepTimerRemainingMinutes = null,
+            wyzieLanguageGroups = emptyList(),
+            selectedWyzieLanguageCode = null,
+            activeWyzieOption = null,
+            activeWyzieCues = emptyList(),
+            currentSubtitleText = null,
+            isSearchingOnlineSubtitles = false,
+            isDownloadingSubtitle = false,
+            onlineSubtitleStatusMessage = null
         )
     }
 
@@ -553,6 +596,12 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     fun selectSubtitleTrack(track: TrackItem?) {
+        // When selecting an embedded track or turning all subtitles off, clear active online Wyzie cues
+        _uiState.value = _uiState.value.copy(
+            activeWyzieOption = null,
+            activeWyzieCues = emptyList(),
+            currentSubtitleText = null
+        )
         val paramsBuilder = player.trackSelectionParameters.buildUpon()
         if (track == null) {
             paramsBuilder.setTrackTypeDisabled(C.TRACK_TYPE_TEXT, true)
@@ -564,6 +613,138 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application) 
                 )
         }
         player.trackSelectionParameters = paramsBuilder.build()
+    }
+
+    /**
+     * Searches Wyzie Subs API for the current Movie or Series stream (or a custom title / IMDb ID / S/E).
+     */
+    fun searchOnlineSubtitles(
+        customQuery: String? = null,
+        season: Int? = null,
+        episode: Int? = null
+    ) {
+        val stream = _uiState.value.currentStream ?: return
+        if (stream.streamType.equals("live", ignoreCase = true)) return
+
+        subtitleSearchJob?.cancel()
+        subtitleSearchJob = viewModelScope.launch {
+            _uiState.value = _uiState.value.copy(
+                isSearchingOnlineSubtitles = true,
+                onlineSubtitleStatusMessage = null
+            )
+
+            val response = wyzieSubtitleService.fetchSubtitlesForStream(
+                stream = stream,
+                playlist = activePlaylistCache,
+                customSearchQuery = customQuery,
+                overrideSeason = season,
+                overrideEpisode = episode
+            )
+
+            val currentSelectedLang = _uiState.value.selectedWyzieLanguageCode
+            val resolvedSelectedLang = when {
+                currentSelectedLang != null && response.languageGroups.any { it.languageCode == currentSelectedLang } -> {
+                    currentSelectedLang
+                }
+                else -> response.languageGroups.firstOrNull()?.languageCode
+            }
+
+            _uiState.value = _uiState.value.copy(
+                isSearchingOnlineSubtitles = false,
+                resolvedMediaQuery = response.resolvedQuery,
+                wyzieLanguageGroups = response.languageGroups,
+                selectedWyzieLanguageCode = resolvedSelectedLang,
+                onlineSubtitleStatusMessage = response.statusMessage
+            )
+        }
+    }
+
+    /**
+     * Selects a language in the Wyzie Subtitle Studio to display all subtitle options for that language.
+     */
+    fun selectOnlineSubtitleLanguage(languageCode: String?) {
+        _uiState.value = _uiState.value.copy(selectedWyzieLanguageCode = languageCode)
+    }
+
+    /**
+     * Downloads and activates the chosen [WyzieSubtitleOption] so playback immediately displays subtitles.
+     */
+    fun applyOnlineSubtitleOption(option: WyzieSubtitleOption, onReady: () -> Unit = {}) {
+        subtitleDownloadJob?.cancel()
+        subtitleDownloadJob = viewModelScope.launch {
+            _uiState.value = _uiState.value.copy(
+                isDownloadingSubtitle = true,
+                onlineSubtitleStatusMessage = null
+            )
+
+            val result = wyzieSubtitleService.downloadAndParseSubtitle(option)
+            result.fold(
+                onSuccess = { cues ->
+                    // Disable embedded ExoPlayer text track so it doesn't overlap with Wyzie subtitles
+                    try {
+                        player.trackSelectionParameters = player.trackSelectionParameters.buildUpon()
+                            .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, true)
+                            .build()
+                    } catch (_: Exception) {}
+
+                    val currentPos = player.currentPosition + _uiState.value.subtitleSyncOffsetMs
+                    val immediateCue = findCueAtTime(cues, currentPos)
+                    _uiState.value = _uiState.value.copy(
+                        isDownloadingSubtitle = false,
+                        activeWyzieOption = option,
+                        activeWyzieCues = cues,
+                        currentSubtitleText = immediateCue,
+                        onlineSubtitleStatusMessage = null
+                    )
+                    onReady()
+                },
+                onFailure = { err ->
+                    _uiState.value = _uiState.value.copy(
+                        isDownloadingSubtitle = false,
+                        onlineSubtitleStatusMessage = err.localizedMessage ?: "Failed to load subtitle option"
+                    )
+                }
+            )
+        }
+    }
+
+    fun clearOnlineSubtitles() {
+        _uiState.value = _uiState.value.copy(
+            activeWyzieOption = null,
+            activeWyzieCues = emptyList(),
+            currentSubtitleText = null
+        )
+    }
+
+    fun adjustSubtitleSyncOffset(deltaMs: Long) {
+        val nextOffset = (_uiState.value.subtitleSyncOffsetMs + deltaMs).coerceIn(-30_000L, 30_000L)
+        val cues = _uiState.value.activeWyzieCues
+        val updatedText = if (cues.isNotEmpty()) {
+            findCueAtTime(cues, player.currentPosition + nextOffset)
+        } else {
+            null
+        }
+        _uiState.value = _uiState.value.copy(
+            subtitleSyncOffsetMs = nextOffset,
+            currentSubtitleText = updatedText
+        )
+    }
+
+    fun resetSubtitleSyncOffset() {
+        val cues = _uiState.value.activeWyzieCues
+        val updatedText = if (cues.isNotEmpty()) {
+            findCueAtTime(cues, player.currentPosition)
+        } else {
+            null
+        }
+        _uiState.value = _uiState.value.copy(
+            subtitleSyncOffsetMs = 0L,
+            currentSubtitleText = updatedText
+        )
+    }
+
+    fun setSubtitleScaleFactor(scale: Float) {
+        _uiState.value = _uiState.value.copy(subtitleScaleFactor = scale.coerceIn(0.8f, 1.5f))
     }
 
     /**
@@ -794,6 +975,22 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application) 
         }
     }
 
+    private fun findCueAtTime(cues: List<SubtitleCue>, positionMs: Long): String? {
+        if (cues.isEmpty() || positionMs < 0L) return null
+        var low = 0
+        var high = cues.lastIndex
+        while (low <= high) {
+            val mid = (low + high) ushr 1
+            val cue = cues[mid]
+            when {
+                positionMs < cue.startTimeMs -> high = mid - 1
+                positionMs > cue.endTimeMs -> low = mid + 1
+                else -> return cue.text
+            }
+        }
+        return null
+    }
+
     private fun startProgressTracking() {
         progressTrackingJob?.cancel()
         progressTrackingJob = viewModelScope.launch {
@@ -802,18 +999,27 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application) 
                 if (player.isPlaying) {
                     val pos = player.currentPosition
                     val dur = if (player.duration > 0 && player.duration != C.TIME_UNSET) player.duration else _uiState.value.durationMs
-                    _uiState.value = _uiState.value.copy(
-                        currentPositionMs = pos,
-                        durationMs = dur
-                    )
+                    val state = _uiState.value
+                    val activeCueText = if (state.activeWyzieCues.isNotEmpty() && !state.isLive) {
+                        findCueAtTime(state.activeWyzieCues, pos + state.subtitleSyncOffsetMs)
+                    } else {
+                        null
+                    }
+                    if (state.currentPositionMs != pos || state.durationMs != dur || state.currentSubtitleText != activeCueText) {
+                        _uiState.value = state.copy(
+                            currentPositionMs = pos,
+                            durationMs = dur,
+                            currentSubtitleText = activeCueText
+                        )
+                    }
                     tickCount++
-                    if (tickCount % 5 == 0 && !_uiState.value.isLive) {
-                        _uiState.value.currentStream?.let { s ->
+                    if (tickCount % 20 == 0 && !state.isLive) {
+                        state.currentStream?.let { s ->
                             repository.updatePlaybackPosition(s.id, pos)
                         }
                     }
                 }
-                delay(1000)
+                delay(250)
             }
         }
     }
@@ -824,6 +1030,8 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application) 
         controlsFadeJob?.cancel()
         gestureFadeJob?.cancel()
         sleepTimerJob?.cancel()
+        subtitleSearchJob?.cancel()
+        subtitleDownloadJob?.cancel()
         try {
             loudnessEnhancer?.release()
         } catch (_: Exception) {}
@@ -831,3 +1039,4 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application) 
         player.release()
     }
 }
+

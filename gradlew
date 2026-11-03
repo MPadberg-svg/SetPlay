@@ -35,6 +35,10 @@ if [ -n "$SPORT_API_KEY_SECRET" ] && ! grep -q "^SPORT_API_KEY=" .env 2>/dev/nul
   echo "SPORT_API_KEY=$SPORT_API_KEY_SECRET" >> .env
 fi
 
+if [ -n "$WYZIE_API_KEY_SECRET" ] && ! grep -q "^WYZIE_API_KEY=" .env 2>/dev/null; then
+  echo "WYZIE_API_KEY=$WYZIE_API_KEY_SECRET" >> .env
+fi
+
 # Accept Android SDK licenses if ANDROID_HOME is available
 if [ -n "$ANDROID_HOME" ] && [ -f "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" ]; then
   yes 2>/dev/null | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses > /dev/null 2>&1 || true
