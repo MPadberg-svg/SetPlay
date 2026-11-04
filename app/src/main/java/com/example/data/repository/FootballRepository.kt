@@ -43,27 +43,72 @@ enum class MatchDayTab(val defaultLabel: String, val dayOffset: Int) {
     DAY_PLUS_2("+2 Days", 2),
     DAY_PLUS_3("+3 Days", 3);
 
-    fun getDynamicTitle(): String {
+    fun getDynamicTitle(timeZoneId: String = "Africa/Casablanca"): String {
         return when (this) {
             YESTERDAY -> "Yesterday"
             TODAY -> "Today"
             TOMORROW -> "Tomorrow"
             DAY_PLUS_2, DAY_PLUS_3 -> {
-                val cal = Calendar.getInstance(TimeZone.getTimeZone("Africa/Casablanca"))
+                val tz = TimeZone.getTimeZone(timeZoneId)
+                val cal = Calendar.getInstance(tz)
                 cal.add(Calendar.DAY_OF_YEAR, dayOffset)
                 SimpleDateFormat("EEE d", Locale.US).apply {
-                    timeZone = TimeZone.getTimeZone("Africa/Casablanca")
+                    timeZone = tz
                 }.format(cal.time)
             }
         }
     }
 
-    fun getDynamicDateSubtitle(): String {
-        val cal = Calendar.getInstance(TimeZone.getTimeZone("Africa/Casablanca"))
+    fun getDynamicDateSubtitle(timeZoneId: String = "Africa/Casablanca"): String {
+        val tz = TimeZone.getTimeZone(timeZoneId)
+        val cal = Calendar.getInstance(tz)
         cal.add(Calendar.DAY_OF_YEAR, dayOffset)
         return SimpleDateFormat("dd MMM", Locale.US).apply {
-            timeZone = TimeZone.getTimeZone("Africa/Casablanca")
+            timeZone = tz
         }.format(cal.time)
+    }
+
+    fun getDayOfMonthNumber(timeZoneId: String = "Africa/Casablanca"): String {
+        val tz = TimeZone.getTimeZone(timeZoneId)
+        val cal = Calendar.getInstance(tz)
+        cal.add(Calendar.DAY_OF_YEAR, dayOffset)
+        return SimpleDateFormat("dd", Locale.US).apply {
+            timeZone = tz
+        }.format(cal.time)
+    }
+
+    fun getMonthShortUpper(timeZoneId: String = "Africa/Casablanca"): String {
+        val tz = TimeZone.getTimeZone(timeZoneId)
+        val cal = Calendar.getInstance(tz)
+        cal.add(Calendar.DAY_OF_YEAR, dayOffset)
+        return SimpleDateFormat("MMM", Locale.US).apply {
+            timeZone = tz
+        }.format(cal.time).uppercase(Locale.US)
+    }
+
+    fun getWeekdayFullUpper(timeZoneId: String = "Africa/Casablanca"): String {
+        val tz = TimeZone.getTimeZone(timeZoneId)
+        val cal = Calendar.getInstance(tz)
+        cal.add(Calendar.DAY_OF_YEAR, dayOffset)
+        return SimpleDateFormat("EEEE", Locale.US).apply {
+            timeZone = tz
+        }.format(cal.time).uppercase(Locale.US)
+    }
+
+    fun getShortDayCode(timeZoneId: String = "Africa/Casablanca"): String {
+        return when (this) {
+            YESTERDAY -> "YEST"
+            TODAY -> "TODAY"
+            TOMORROW -> "TOM"
+            DAY_PLUS_2, DAY_PLUS_3 -> {
+                val tz = TimeZone.getTimeZone(timeZoneId)
+                val cal = Calendar.getInstance(tz)
+                cal.add(Calendar.DAY_OF_YEAR, dayOffset)
+                SimpleDateFormat("EEE", Locale.US).apply {
+                    timeZone = tz
+                }.format(cal.time).uppercase(Locale.US)
+            }
+        }
     }
 
     // Backwards-compatible property used by UI components
@@ -131,7 +176,8 @@ data class FootballMatch(
     val fullTimeScore: String? = null,      // e.g. "2 - 1"
     val homeRedCards: Int = 0,
     val awayRedCards: Int = 0,
-    val goalScorersSummary: String? = null  // e.g. "Mbappé 18', Bellingham 67'"
+    val goalScorersSummary: String? = null, // e.g. "Mbappé 18', Bellingham 67'"
+    val referenceMoroccoTime: String = kickoffTimeFormatted // Canonical GMT+1 reference time for instant Country Zone conversion
 )
 
 data class MenaChannelMatchResult(
@@ -212,8 +258,9 @@ class FootballRepository(
 
     suspend fun fetchMatchFullDossier(
         match: FootballMatch,
-        forceRefresh: Boolean = false
-    ): MatchFullDossier = matchCenterEnricher.fetchMatchFullDossier(match, forceRefresh)
+        forceRefresh: Boolean = false,
+        countryZone: UserCountryZone = getSelectedCountryZone()
+    ): MatchFullDossier = matchCenterEnricher.fetchMatchFullDossier(match, forceRefresh, countryZone)
 
     val favoriteTeamsFlow: Flow<List<FavoriteTeamEntity>> = favoriteTeamDao.getAllFavoriteTeams()
     val tournamentPreferencesFlow: Flow<List<TournamentPreferenceEntity>> =
@@ -225,6 +272,58 @@ class FootballRepository(
 
     fun setTeamsOnboardingCompleted(completed: Boolean) {
         prefs.edit().putBoolean(KEY_ONBOARDING_COMPLETED, completed).apply()
+    }
+
+    fun hasCompletedCountryZoneOnboarding(): Boolean {
+        return prefs.getBoolean(KEY_COUNTRY_ONBOARDING_COMPLETED, false)
+    }
+
+    fun setCountryZoneOnboardingCompleted(completed: Boolean) {
+        prefs.edit().putBoolean(KEY_COUNTRY_ONBOARDING_COMPLETED, completed).apply()
+    }
+
+    fun getSelectedCountryZone(): UserCountryZone {
+        val savedCode = prefs.getString(KEY_SELECTED_COUNTRY_CODE, UserZoneRegistry.DEFAULT_COUNTRY_CODE)
+        return UserZoneRegistry.getZoneByCode(savedCode)
+    }
+
+    fun setSelectedCountryZone(countryCode: String): UserCountryZone {
+        val zone = UserZoneRegistry.getZoneByCode(countryCode)
+        prefs.edit()
+            .putString(KEY_SELECTED_COUNTRY_CODE, zone.countryCode)
+            .putBoolean(KEY_COUNTRY_ONBOARDING_COMPLETED, true)
+            .apply()
+        return zone
+    }
+
+    fun getSelectedSeasonTimeMode(): SeasonTimeMode {
+        val savedMode = prefs.getString(KEY_SELECTED_SEASON_TIME_MODE, SeasonTimeMode.AUTO.code)
+        return SeasonTimeMode.fromCode(savedMode)
+    }
+
+    fun setSelectedSeasonTimeMode(mode: SeasonTimeMode): SeasonTimeMode {
+        prefs.edit()
+            .putString(KEY_SELECTED_SEASON_TIME_MODE, mode.code)
+            .apply()
+        return mode
+    }
+
+    suspend fun prioritizeCountrySpotlightTournament(zone: UserCountryZone = getSelectedCountryZone()) {
+        ensureDefaultTournamentsInitialized()
+        val spotlightId = zone.spotlightTournamentId
+        if (spotlightId.isBlank()) return
+        val existing = tournamentPreferenceDao.getAllTournamentPreferencesOnce()
+        val target = existing.firstOrNull { it.tournamentId == spotlightId } ?: return
+        val updated = existing.map { pref ->
+            if (pref.tournamentId == target.tournamentId) {
+                pref.copy(isEnabled = true, isPinned = true, sortOrder = 0)
+            } else if (pref.sortOrder < target.sortOrder) {
+                pref.copy(sortOrder = pref.sortOrder + 1)
+            } else {
+                pref
+            }
+        }
+        tournamentPreferenceDao.upsertPreferences(updated)
     }
 
     suspend fun toggleFavoriteTeam(team: FootballTeam) {
@@ -1135,7 +1234,9 @@ class FootballRepository(
      */
     internal fun resolveDayMatchesTvChannelsWithMenaPriority(
         matches: List<FootballMatch>,
-        tvBroadcasts: List<SportsDbTvBroadcastEntry>
+        tvBroadcasts: List<SportsDbTvBroadcastEntry>,
+        zone: UserCountryZone = getSelectedCountryZone(),
+        seasonTimeMode: SeasonTimeMode = getSelectedSeasonTimeMode()
     ): List<FootballMatch> {
         if (matches.isEmpty()) return emptyList()
 
@@ -1171,7 +1272,9 @@ class FootballRepository(
                 match = match,
                 tvBroadcasts = tvBroadcasts,
                 slotIndex = currentSlotIdx,
-                claimedChannelsAtKickoff = claimedSet
+                claimedChannelsAtKickoff = claimedSet,
+                zone = zone,
+                seasonTimeMode = seasonTimeMode
             )
 
             if (isBeinTournament && resolvedMatch.beinChannel.isNotBlank()) {
@@ -1185,6 +1288,27 @@ class FootballRepository(
         }
 
         return resolvedByOriginalIndex.filterNotNull()
+    }
+
+    /**
+     * Instantly re-localizes a day's match list when the user switches their Country Zone ("User's Zone")
+     * or seasonal time mode (Auto / Winter / Summer), converting kickoff times, UTC offset badges,
+     * and official TV broadcasters for the new Country Zone.
+     */
+    fun reapplyCountryZoneToMatches(
+        matches: List<FootballMatch>,
+        zone: UserCountryZone = getSelectedCountryZone(),
+        seasonTimeMode: SeasonTimeMode = getSelectedSeasonTimeMode()
+    ): List<FootballMatch> {
+        if (matches.isEmpty()) return emptyList()
+        val sampleDay = matches.first().dayTab
+        val cal = Calendar.getInstance(TimeZone.getTimeZone("Africa/Casablanca"))
+        cal.add(Calendar.DAY_OF_YEAR, sampleDay.dayOffset)
+        val isoDateStr = SimpleDateFormat("yyyy-MM-dd", Locale.US).apply {
+            timeZone = TimeZone.getTimeZone("Africa/Casablanca")
+        }.format(cal.time)
+        val cachedTv = sportsDbTvCache[isoDateStr]?.second.orEmpty()
+        return resolveDayMatchesTvChannelsWithMenaPriority(matches, cachedTv, zone, seasonTimeMode)
     }
 
     private fun tournamentPriorityRank(tournamentId: String): Int {
@@ -1213,7 +1337,9 @@ class FootballRepository(
         match: FootballMatch,
         tvBroadcasts: List<SportsDbTvBroadcastEntry>,
         slotIndex: Int = 0,
-        claimedChannelsAtKickoff: Set<String> = emptySet()
+        claimedChannelsAtKickoff: Set<String> = emptySet(),
+        zone: UserCountryZone = getSelectedCountryZone(),
+        seasonTimeMode: SeasonTimeMode = getSelectedSeasonTimeMode()
     ): FootballMatch {
         val isMarquee = isMarqueeMenaMatch(match.homeTeamName, match.awayTeamName)
 
@@ -1222,7 +1348,7 @@ class FootballRepository(
                 doesTvEntryMatchFixtureTeams(entry, match.homeTeamName, match.awayTeamName)
         }
 
-        val rawSlotFallbacks = getSmartMenaFallbackChannels(
+        val rawMenaSlotFallbacks = getSmartMenaFallbackChannels(
             tournamentId = match.tournamentId,
             tournamentName = match.tournamentName,
             slotIndex = slotIndex,
@@ -1230,6 +1356,21 @@ class FootballRepository(
             homeTeamName = match.homeTeamName,
             awayTeamName = match.awayTeamName
         )
+
+        val rawSlotFallbacks = if (zone.countryCode == "MA") {
+            rawMenaSlotFallbacks
+        } else {
+            UserZoneRegistry.getCountryZoneChannelsForTournament(
+                zone = zone,
+                tournamentId = match.tournamentId,
+                tournamentName = match.tournamentName,
+                slotIndex = slotIndex,
+                isMarquee = isMarquee,
+                homeTeamName = match.homeTeamName,
+                awayTeamName = match.awayTeamName,
+                baseMenaFallbacks = rawMenaSlotFallbacks
+            )
+        }
 
         // Reorder slotFallbacks so any channel not yet claimed at this exact kickoff time is preferred first
         val slotFallbacks = if (claimedChannelsAtKickoff.isEmpty()) {
@@ -1248,47 +1389,67 @@ class FootballRepository(
         val defaultChannelNum = extractChannelNumberOrDefault(defaultSlotPrimary, (slotIndex % 9) + 1)
         val defaultBeinTier = extractBeinTierOrDefault(defaultSlotPrimary, "HD")
 
-        // 1. Channels from TheSportsDB `eventstv.php` (beIN Sports names preserved EXACTLY as from source,
-        //    while generic un-numbered placeholders like "beIN Sports MENA" are resolved to the match's authentic channel)
-        val menaChannelsFromTvDb = matchingTvEntries
-            .map { it.channelName.trim() }
-            .filter { isMenaBroadcasterChannel(it) && !isGenericPlaceholderMenaChannel(it) }
-            .map { rawCh ->
-                formatCanonicalMenaChannelName(
-                    rawChannel = rawCh,
-                    defaultChannelNum = defaultChannelNum,
-                    defaultBeinTier = defaultBeinTier
-                )
-            }
-            .distinct()
-            .sortedBy { menaBroadcasterPriorityRank(it, match.tournamentId) }
+        // 1. Channels from TheSportsDB `eventstv.php`
+        val menaChannelsFromTvDb = if (zone.macroRegion == BroadcastMacroRegion.MENA) {
+            matchingTvEntries
+                .map { it.channelName.trim() }
+                .filter { isMenaBroadcasterChannel(it) && !isGenericPlaceholderMenaChannel(it) }
+                .map { rawCh ->
+                    formatCanonicalMenaChannelName(
+                        rawChannel = rawCh,
+                        defaultChannelNum = defaultChannelNum,
+                        defaultBeinTier = defaultBeinTier
+                    )
+                }
+                .distinct()
+                .sortedBy { menaBroadcasterPriorityRank(it, match.tournamentId) }
+        } else {
+            // Filter TheSportsDB TV listings matching the user's selected European/American country
+            matchingTvEntries
+                .filter { entry ->
+                    val countryLower = entry.country.trim().lowercase(Locale.ROOT)
+                    zone.sportsDbCountryMatchers.any { matcher -> countryLower.contains(matcher) }
+                }
+                .map { it.channelName.trim() }
+                .filter { it.isNotBlank() && !isGenericPlaceholderMenaChannel(it) }
+                .distinct()
+        }
 
         // 2. Channels explicitly provided by upstream match payload (`strTVStation`, `tv_channel`, `broadcast`, or explicit custom channel)
-        val upstreamSourceChannels = match.sourceTvChannels
-            .map { it.trim() }
-            .filter { it.isNotBlank() && isMenaBroadcasterChannel(it) && !isGenericPlaceholderMenaChannel(it) }
-            .map { rawCh ->
-                formatCanonicalMenaChannelName(
-                    rawChannel = rawCh,
-                    defaultChannelNum = defaultChannelNum,
-                    defaultBeinTier = defaultBeinTier
-                )
-            }
+        val upstreamSourceChannels = if (zone.macroRegion == BroadcastMacroRegion.MENA) {
+            match.sourceTvChannels
+                .map { it.trim() }
+                .filter { it.isNotBlank() && isMenaBroadcasterChannel(it) && !isGenericPlaceholderMenaChannel(it) }
+                .map { rawCh ->
+                    formatCanonicalMenaChannelName(
+                        rawChannel = rawCh,
+                        defaultChannelNum = defaultChannelNum,
+                        defaultBeinTier = defaultBeinTier
+                    )
+                }
+        } else {
+            emptyList()
+        }
 
-        val existingSpecificChannels = (listOf(match.beinChannel) + match.fallbackMenaChannels)
-            .map { it.trim() }
-            .filter { it.isNotBlank() && isMenaBroadcasterChannel(it) && !isGenericPlaceholderMenaChannel(it) }
-            .map { rawCh ->
-                formatCanonicalMenaChannelName(
-                    rawChannel = rawCh,
-                    defaultChannelNum = defaultChannelNum,
-                    defaultBeinTier = defaultBeinTier
-                )
-            }
+        val existingSpecificChannels = if (zone.macroRegion == BroadcastMacroRegion.MENA) {
+            (listOf(match.beinChannel) + match.fallbackMenaChannels)
+                .map { it.trim() }
+                .filter { it.isNotBlank() && isMenaBroadcasterChannel(it) && !isGenericPlaceholderMenaChannel(it) }
+                .map { rawCh ->
+                    formatCanonicalMenaChannelName(
+                        rawChannel = rawCh,
+                        defaultChannelNum = defaultChannelNum,
+                        defaultBeinTier = defaultBeinTier
+                    )
+                }
+        } else {
+            rawMenaSlotFallbacks.take(2)
+        }
 
         // If `match.beinChannel` was explicitly set to a custom source channel (not from default fallback pools),
-        // treat it as a source channel so its exact name is preserved first.
-        val isCustomExplicitBein = match.beinChannel.isNotBlank() &&
+        // treat it as a source channel so its exact name is preserved first in MENA mode.
+        val isCustomExplicitBein = zone.macroRegion == BroadcastMacroRegion.MENA &&
+            match.beinChannel.isNotBlank() &&
             !isGenericPlaceholderMenaChannel(match.beinChannel) &&
             isMenaBroadcasterChannel(match.beinChannel) &&
             match.beinChannel.trim() !in DEFAULT_GENERATED_POOL_CHANNELS
@@ -1315,7 +1476,11 @@ class FootballRepository(
 
         val primaryChannel = combinedChannels.firstOrNull() ?: defaultSlotPrimary
         val fallbackList = combinedChannels.drop(1)
-        val providerName = detectMenaProviderFromLabel(primaryChannel)
+        val providerName = if (zone.countryCode == "MA") {
+            detectMenaProviderFromLabel(primaryChannel)
+        } else {
+            UserZoneRegistry.detectProviderNameForChannel(primaryChannel, zone)
+        }
 
         val hGoals = match.homeScore ?: 0
         val aGoals = match.awayScore ?: 0
@@ -1329,7 +1494,26 @@ class FootballRepository(
             "$hGoals - $aGoals"
         } else null
 
+        val canonicalRefMoroccoTime = match.referenceMoroccoTime.ifBlank { match.kickoffTimeFormatted }
+        val matchEpochMs = System.currentTimeMillis() + (match.dayTab.dayOffset * 86_400_000L)
+        val localizedKickoffTime = zone.convertMoroccoTimeToZoneTime(
+            moroccoTimeHHmm = canonicalRefMoroccoTime,
+            mode = seasonTimeMode,
+            epochMs = matchEpochMs
+        )
+        val utcOffsetBadge = zone.getUtcOffsetBadge(epochMs = matchEpochMs, mode = seasonTimeMode)
+        val localizedDateFormatted = "${match.dayTab.getDynamicTitle(zone.timeZoneId)} • $utcOffsetBadge"
+        val localizedLiveBadge = if (match.status == MatchStatus.UPCOMING) {
+            localizedKickoffTime
+        } else {
+            match.liveMinuteOrBadge
+        }
+
         return match.copy(
+            kickoffTimeFormatted = localizedKickoffTime,
+            kickoffDateFormatted = localizedDateFormatted,
+            liveMinuteOrBadge = localizedLiveBadge,
+            referenceMoroccoTime = canonicalRefMoroccoTime,
             beinChannel = primaryChannel,
             beinChannelNumberHint = extractBeinHint(primaryChannel),
             menaProviderName = providerName,
@@ -3093,7 +3277,7 @@ class FootballRepository(
                 " "
             )
 
-        // 3. Common MENA provider alias & sub-brand synonym normalization + zero-padded number canonicalization
+        // 3. Common MENA & Global provider alias & sub-brand synonym normalization + zero-padded number canonicalization
         val cleaned = step2
             .replace(Regex("""\bbe\s*in\s*sports?\b"""), "bein")
             .replace(Regex("""\bbein\s*sports?\b"""), "bein")
@@ -3106,6 +3290,21 @@ class FootballRepository(
             .replace(Regex("""\bstarz\s*play(\s*sports?)?\b"""), "starzplay")
             .replace(Regex("""\bthmanyah(\s*sports?)?\b"""), "thmanyah")
             .replace(Regex("""\bdubai\s*sports?\b"""), "dubaisport")
+            .replace(Regex("""\bcanal\s*plus\b"""), "canalplus")
+            .replace(Regex("""\bcanal\b"""), "canalplus")
+            .replace(Regex("""\b(tnt\s*sports?|bt\s*sports?)\b"""), "tntsports")
+            .replace(Regex("""\bsky\s*sports?\b"""), "skysports")
+            .replace(Regex("""\bmovistar(\s*plus)?\b"""), "movistar")
+            .replace(Regex("""\bdazn\b"""), "dazn")
+            .replace(Regex("""\bpremier\s*sports?\b"""), "premiersports")
+            .replace(Regex("""\bsport\s*tv\b"""), "sporttv")
+            .replace(Regex("""\bziggo(\s*sport)?\b"""), "ziggosport")
+            .replace(Regex("""\bs\s*sport\b"""), "ssport")
+            .replace(Regex("""\b(tabii(\s*spor)?|trt(\s*spor)?)\b"""), "tabii")
+            .replace(Regex("""\b(cbs\s*sports?|paramount)\b"""), "cbssports")
+            .replace(Regex("""\b(usa\s*network|peacock)\b"""), "usanetwork")
+            .replace(Regex("""\bespn\b"""), "espn")
+            .replace(Regex("""\b(tudn|univision)\b"""), "tudn")
             // Sub-brand synonym normalization
             .replace(Regex("""\b(xtra|extra)\b"""), "extra")
             .replace(Regex("""\b(maxx|max)\b"""), "max")
@@ -3139,6 +3338,20 @@ class FootballRepository(
             Regex("""\balkass\b""").containsMatchIn(cleaned) -> "alkass"
             Regex("""\bontime\b""").containsMatchIn(cleaned) -> "ontime"
             Regex("""\bdubaisport\b""").containsMatchIn(cleaned) -> "dubaisport"
+            Regex("""\bcanalplus\b""").containsMatchIn(cleaned) -> "canalplus"
+            Regex("""\btntsports\b""").containsMatchIn(cleaned) -> "tntsports"
+            Regex("""\bskysports\b""").containsMatchIn(cleaned) -> "skysports"
+            Regex("""\bmovistar\b""").containsMatchIn(cleaned) -> "movistar"
+            Regex("""\bdazn\b""").containsMatchIn(cleaned) -> "dazn"
+            Regex("""\bpremiersports\b""").containsMatchIn(cleaned) -> "premiersports"
+            Regex("""\bsporttv\b""").containsMatchIn(cleaned) -> "sporttv"
+            Regex("""\bziggosport\b""").containsMatchIn(cleaned) -> "ziggosport"
+            Regex("""\bssport\b""").containsMatchIn(cleaned) -> "ssport"
+            Regex("""\btabii\b""").containsMatchIn(cleaned) -> "tabii"
+            Regex("""\bcbssports\b""").containsMatchIn(cleaned) -> "cbssports"
+            Regex("""\busanetwork\b""").containsMatchIn(cleaned) -> "usanetwork"
+            Regex("""\bespn\b""").containsMatchIn(cleaned) -> "espn"
+            Regex("""\btudn\b""").containsMatchIn(cleaned) -> "tudn"
             else -> cleaned.split(" ").firstOrNull().orEmpty()
         }
 
@@ -3399,9 +3612,9 @@ class FootballRepository(
                 val parser = SimpleDateFormat(pattern, Locale.US).apply {
                     timeZone = TimeZone.getTimeZone("UTC")
                 }
-                val parsed: Date = parser.parse(normalized) ?: continue
+                 val parsed: Date = parser.parse(normalized) ?: continue
                 val formatter = SimpleDateFormat("HH:mm", Locale.US).apply {
-                    timeZone = TimeZone.getTimeZone("Africa/Casablanca")
+                    timeZone = TimeZone.getTimeZone("GMT+01:00")
                 }
                 return formatter.format(parsed)
             } catch (_: Exception) {
@@ -3500,6 +3713,9 @@ class FootballRepository(
 
     companion object {
         private const val KEY_ONBOARDING_COMPLETED = "has_completed_teams_onboarding_v1"
+        private const val KEY_COUNTRY_ONBOARDING_COMPLETED = "has_completed_country_zone_onboarding_v1"
+        private const val KEY_SELECTED_COUNTRY_CODE = "user_selected_country_code_v1"
+        private const val KEY_SELECTED_SEASON_TIME_MODE = "user_selected_season_time_mode_v1"
 
         // API #1: SportAPI.ai Base URL & 2,000 req/day ceiling
         const val SPORTAPI_BASE_URL = "https://sportapi.ai/api"
@@ -3549,7 +3765,7 @@ class FootballRepository(
         private val NON_FOOTBALL_SUB_BRANDS = setOf("news", "global", "nba")
 
         private val BROADCASTER_START_REGEX = Regex(
-            """\b(be\s*in|bein|arryadia|arriyadia|riyadia|al\s*riyadia|snrt|al\s*aoula|tamazight|maghribia|ssc|thmanyah|shahid|ad\s*sport|abu\s*dhabi|starz|alkass|al\s*kass|on\s*time|ontime|dubai\s*sport|sharjah\s*sport|kuwait\s*sport|oman\s*sport|bahrain\s*sport|iraqia|watania)\b"""
+            """\b(be\s*in|bein|arryadia|arriyadia|riyadia|al\s*riyadia|snrt|al\s*aoula|tamazight|maghribia|ssc|thmanyah|shahid|ad\s*sport|abu\s*dhabi|starz|alkass|al\s*kass|on\s*time|ontime|dubai\s*sport|sharjah\s*sport|kuwait\s*sport|oman\s*sport|bahrain\s*sport|iraqia|watania|canal\+|canal\s*plus|canal|tnt\s*sport|bt\s*sport|sky\s*sport|movistar|dazn|premier\s*sport|sport\s*tv|ziggo|s\s*sport|tabii|trt|cbs\s*sport|paramount|usa\s*network|peacock|espn|tudn|univision)\b"""
         )
 
         private val DEFAULT_GENERATED_POOL_CHANNELS = setOf(

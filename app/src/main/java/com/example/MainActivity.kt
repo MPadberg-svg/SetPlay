@@ -2094,142 +2094,62 @@ private fun LuxuryBottomNavSectionSlot(
                     }
                 }
 
-                // Live Contextual Telemetry Badges on Smoked-Glass Wells
-                if (showLiveEqualizer && !isSelected) {
+                // Live Contextual Telemetry Badges on Medallion / Smoked-Glass Wells
+                if (showLiveEqualizer) {
                     Box(
                         modifier = Modifier
                             .align(Alignment.TopEnd)
-                            .offset(x = 2.dp, y = (-1).dp)
+                            .offset(x = 3.dp, y = (-1).dp)
                     ) {
                         LiveEqualizerMiniBadge(
                             accentColor = LiveRed,
                             auroraPulse = auroraPulse
                         )
                     }
-                } else if (inactiveBadgeText != null && !isSelected) {
+                } else if (inactiveBadgeText != null) {
+                    val isLiveMatchBadge = item.screen == AppScreen.HOME && hasLivePulseDot
                     Box(
                         contentAlignment = Alignment.Center,
                         modifier = Modifier
                             .align(Alignment.TopEnd)
-                            .offset(x = 3.dp, y = (-1).dp)
+                            .offset(x = 5.dp, y = (-1).dp)
                             .background(
-                                color = Color(0xFF081520).copy(alpha = 0.95f),
+                                color = if (isLiveMatchBadge) LiveRed else Color(0xFF081520).copy(alpha = 0.96f),
                                 shape = RoundedCornerShape(50)
                             )
                             .border(
-                                width = 0.8.dp,
-                                color = item.crestNeonColor.copy(alpha = 0.72f),
+                                width = 0.85.dp,
+                                color = if (isLiveMatchBadge) Color.White.copy(alpha = 0.85f) else item.crestNeonColor.copy(alpha = 0.78f),
                                 shape = RoundedCornerShape(50)
                             )
-                            .padding(horizontal = 4.dp, vertical = 0.5.dp)
+                            .padding(horizontal = 4.5.dp, vertical = 1.dp)
                     ) {
                         Text(
                             text = inactiveBadgeText,
-                            color = item.crestCoreHighlight,
+                            color = if (isLiveMatchBadge) Color.White else item.crestCoreHighlight,
                             fontSize = 7.5.sp,
+                            lineHeight = 8.sp,
                             fontWeight = FontWeight.ExtraBold,
-                            letterSpacing = 0.1.sp,
+                            letterSpacing = 0.15.sp,
                             maxLines = 1
                         )
                     }
                 }
             }
 
-            // 2. Section Title Nameplate
+            // 2. Section Title Nameplate with clean breathing room above the laser pedestal
             Text(
                 text = item.label,
                 color = labelColor,
-                fontSize = if (isSelected) 10.5.sp else 9.5.sp,
+                fontSize = if (isSelected) 11.sp else 9.8.sp,
+                lineHeight = 12.sp,
                 fontWeight = if (isSelected) FontWeight.ExtraBold else FontWeight.SemiBold,
-                letterSpacing = if (isSelected) 0.3.sp else 0.15.sp,
+                letterSpacing = if (isSelected) 0.35.sp else 0.15.sp,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis
             )
 
-            Spacer(modifier = Modifier.height(1.5.dp))
-
-            // 3. Animated Stage Micro-Pill (Active) vs Precision Metallic Pedestal Dot (Inactive)
-            AnimatedContent(
-                targetState = isSelected,
-                transitionSpec = {
-                    fadeIn(tween(200)) togetherWith fadeOut(tween(150))
-                },
-                label = "section_stage_footer_${item.label}"
-            ) { selected ->
-                if (selected) {
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.Center,
-                        modifier = Modifier
-                            .height(13.dp)
-                            .background(
-                                brush = Brush.horizontalGradient(
-                                    colors = listOf(
-                                        item.chamberTint.copy(alpha = 0.55f),
-                                        item.crestNeonColor.copy(alpha = 0.22f),
-                                        item.chamberTint.copy(alpha = 0.55f)
-                                    )
-                                ),
-                                shape = RoundedCornerShape(50)
-                            )
-                            .border(
-                                width = 0.65.dp,
-                                brush = Brush.horizontalGradient(
-                                    colors = listOf(
-                                        item.crestNeonColor.copy(alpha = 0.55f),
-                                        item.crestCoreHighlight.copy(alpha = 0.75f),
-                                        item.crestNeonColor.copy(alpha = 0.55f)
-                                    )
-                                ),
-                                shape = RoundedCornerShape(50)
-                            )
-                            .padding(horizontal = 5.5.dp)
-                    ) {
-                        if (hasLivePulseDot) {
-                            Box(
-                                modifier = Modifier
-                                    .size(4.dp)
-                                    .graphicsLayer {
-                                        scaleX = auroraPulse
-                                        scaleY = auroraPulse
-                                    }
-                                    .background(
-                                        color = if (item.screen == AppScreen.LIVE_TV) LiveRed else item.crestNeonColor,
-                                        shape = CircleShape
-                                    )
-                            )
-                            Spacer(modifier = Modifier.width(3.dp))
-                        }
-                        Text(
-                            text = activeMicroTag,
-                            color = item.crestCoreHighlight,
-                            fontSize = 6.8.sp,
-                            fontWeight = FontWeight.ExtraBold,
-                            letterSpacing = 0.45.sp,
-                            maxLines = 1
-                        )
-                    }
-                } else {
-                    // Subtle metallic alignment dot so inactive sections feel anchored on the stage
-                    Box(
-                        contentAlignment = Alignment.Center,
-                        modifier = Modifier.height(13.dp)
-                    ) {
-                        Box(
-                            modifier = Modifier
-                                .size(3.dp)
-                                .background(
-                                    color = if (hasLivePulseDot) {
-                                        item.crestNeonColor.copy(alpha = 0.65f)
-                                    } else {
-                                        Champagne.copy(alpha = 0.22f)
-                                    },
-                                    shape = CircleShape
-                                )
-                        )
-                    }
-                }
-            }
+            Spacer(modifier = Modifier.height(4.dp))
         }
     }
 }

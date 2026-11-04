@@ -16,7 +16,10 @@ import com.example.data.repository.LiveScoreSyncState
 import com.example.data.repository.MatchDayTab
 import com.example.data.repository.MatchFullDossier
 import com.example.data.repository.MatchStatus
+import com.example.data.repository.SeasonTimeMode
 import com.example.data.repository.SyncProgress
+import com.example.data.repository.UserCountryZone
+import com.example.data.repository.UserZoneRegistry
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.async
@@ -165,8 +168,17 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     val connectionTestState: StateFlow<ConnectionTestState> = _connectionTestState.asStateFlow()
 
     // =========================================================================
-    // KickOff Arena State (5-Day Matchday Timeline, MENA Broadcasters & Favorites Matcher)
+    // KickOff Arena State (USER's Zone, 5-Day Matchday Timeline, Broadcasters & Favorites Matcher)
     // =========================================================================
+    private val _selectedCountryZone = MutableStateFlow(footballRepository.getSelectedCountryZone())
+    val selectedCountryZone: StateFlow<UserCountryZone> = _selectedCountryZone.asStateFlow()
+
+    private val _selectedSeasonTimeMode = MutableStateFlow(footballRepository.getSelectedSeasonTimeMode())
+    val selectedSeasonTimeMode: StateFlow<SeasonTimeMode> = _selectedSeasonTimeMode.asStateFlow()
+
+    private val _showCountryZoneModal = MutableStateFlow(false)
+    val showCountryZoneModal: StateFlow<Boolean> = _showCountryZoneModal.asStateFlow()
+
     val favoriteTeams: StateFlow<List<FavoriteTeamEntity>> =
         footballRepository.favoriteTeamsFlow.stateIn(
             viewModelScope,
@@ -242,7 +254,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     /**
      * Checks whether any match in the provided list is currently in-play (`LIVE` or `HALFTIME`)
-     * OR is an `UPCOMING` match on `TODAY` within the active kickoff window (-10 min to +140 min in Morocco `GMT+1` time)
+     * OR is an `UPCOMING` match on `TODAY` within the active kickoff window (-10 min to +140 min in the user's Country Zone time)
      * so upcoming games automatically transition to `LIVE` as soon as they kick off without manual refresh.
      */
     private fun hasLiveOrImminentKickoffMatches(
@@ -254,7 +266,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
         if (dayTab != MatchDayTab.TODAY) return false
 
-        val nowCal = Calendar.getInstance(TimeZone.getTimeZone("Africa/Casablanca"))
+        val zoneTz = runCatching {
+            _selectedCountryZone.value.getEffectiveTimeZone(_selectedSeasonTimeMode.value)
+        }.getOrElse { TimeZone.getTimeZone("Africa/Casablanca") }
+        val nowCal = Calendar.getInstance(zoneTz)
         val nowMinutes = nowCal.get(Calendar.HOUR_OF_DAY) * 60 + nowCal.get(Calendar.MINUTE)
 
         return matches.any { match ->
@@ -268,9 +283,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    private fun formatCurrentMoroccoSyncTime(epochMs: Long): String {
+    private fun formatCurrentZoneSyncTime(epochMs: Long): String {
+        val zoneTz = runCatching {
+            _selectedCountryZone.value.getEffectiveTimeZone(_selectedSeasonTimeMode.value, epochMs)
+        }.getOrElse { TimeZone.getTimeZone("Africa/Casablanca") }
         return SimpleDateFormat("HH:mm:ss", Locale.US).apply {
-            timeZone = TimeZone.getTimeZone("Africa/Casablanca")
+            timeZone = zoneTz
         }.format(Date(epochMs))
     }
 
@@ -370,7 +388,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         isPollingActive = true,
                         isSyncingDelta = false,
                         lastSyncedEpochMs = nowMs,
-                        lastSyncedTimeFormatted = formatCurrentMoroccoSyncTime(nowMs),
+                        lastSyncedTimeFormatted = formatCurrentZoneSyncTime(nowMs),
                         pollCycleCount = _liveScoreSyncState.value.pollCycleCount + 1,
                         activeLiveMatchesCount = liveCount,
                         primaryLiveSource = if (footballRepository.isSportApiKeyConfigured()) {
@@ -411,13 +429,100 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     isPollingActive = true,
                     isSyncingDelta = false,
                     lastSyncedEpochMs = nowMs,
-                    lastSyncedTimeFormatted = formatCurrentMoroccoSyncTime(nowMs),
+                    lastSyncedTimeFormatted = formatCurrentZoneSyncTime(nowMs),
                     activeLiveMatchesCount = liveCount
                 )
             } finally {
                 _isLoadingMatches.value = false
             }
         }
+    }
+
+    /**
+     * Switches the user's Country Zone (`MA`, `FR`, `ES`, `GB`, `SA`, `AE`, `EG`, `DZ`, `TN`, `QA`, `KW`, `DE`, `IT`, `PT`, `NL`, `TR`, `US`, `CA`, `BR`).
+     * Immediately re-localizes all loaded match schedules, kickoff times, UTC offset badges, and TV broadcast providers
+     * in 0ms on the UI, then triggers a background schedule sync.
+     */
+    fun selectCountryZone(countryCode: String) {
+        val newZone = footballRepository.setSelectedCountryZone(countryCode)
+        _selectedCountryZone.value = newZone
+        val mode = _selectedSeasonTimeMode.value
+
+        // Immediately re-localize all in-memory matches so kickoff times and TV channels update instantaneously
+        val relocalizedMap = _matchesByDay.value.mapValues { (_, list) ->
+            footballRepository.reapplyCountryZoneToMatches(list, newZone, mode)
+        }
+        _matchesByDay.value = relocalizedMap
+        _todayMatches.value = relocalizedMap[MatchDayTab.TODAY].orEmpty()
+        _tomorrowMatches.value = relocalizedMap[MatchDayTab.TOMORROW].orEmpty()
+
+        // If a Match Center Dossier is currently open, re-localize its match and broadcast guide
+        val openDossier = _selectedMatchDossier.value
+        if (openDossier != null) {
+            val relocalizedMatch = footballRepository.reapplyCountryZoneToMatches(
+                listOf(openDossier.match),
+                newZone,
+                mode
+            ).first()
+            viewModelScope.launch {
+                runCatching {
+                    footballRepository.fetchMatchFullDossier(relocalizedMatch, forceRefresh = true, countryZone = newZone)
+                }.onSuccess { updatedDossier ->
+                    _selectedMatchDossier.value = updatedDossier
+                }
+            }
+        }
+
+        // Refresh schedules in background for any date-boundary or live updates
+        refreshFootballSchedules()
+    }
+
+    /**
+     * Switches the seasonal clock mode ([SeasonTimeMode.AUTO], [SeasonTimeMode.WINTER], or [SeasonTimeMode.SUMMER])
+     * and immediately recalculates all match kickoff times and UTC badges in 0ms.
+     */
+    fun selectSeasonTimeMode(mode: SeasonTimeMode) {
+        val updatedMode = footballRepository.setSelectedSeasonTimeMode(mode)
+        _selectedSeasonTimeMode.value = updatedMode
+        val activeZone = _selectedCountryZone.value
+
+        val relocalizedMap = _matchesByDay.value.mapValues { (_, list) ->
+            footballRepository.reapplyCountryZoneToMatches(list, activeZone, updatedMode)
+        }
+        _matchesByDay.value = relocalizedMap
+        _todayMatches.value = relocalizedMap[MatchDayTab.TODAY].orEmpty()
+        _tomorrowMatches.value = relocalizedMap[MatchDayTab.TOMORROW].orEmpty()
+
+        val openDossier = _selectedMatchDossier.value
+        if (openDossier != null) {
+            val relocalizedMatch = footballRepository.reapplyCountryZoneToMatches(
+                listOf(openDossier.match),
+                activeZone,
+                updatedMode
+            ).first()
+            _selectedMatchDossier.value = openDossier.copy(match = relocalizedMatch)
+        }
+    }
+
+    fun prioritizeCountrySpotlightLeague() {
+        viewModelScope.launch {
+            footballRepository.prioritizeCountrySpotlightTournament(_selectedCountryZone.value)
+        }
+    }
+
+    fun autoDetectAndSelectCountryZone(): UserCountryZone {
+        val detected = UserZoneRegistry.detectDeviceCountryZone()
+        selectSeasonTimeMode(SeasonTimeMode.AUTO)
+        selectCountryZone(detected.countryCode)
+        return detected
+    }
+
+    fun openCountryZoneModal() {
+        _showCountryZoneModal.value = true
+    }
+
+    fun closeCountryZoneModal() {
+        _showCountryZoneModal.value = false
     }
 
     fun selectMatchDay(dayTab: MatchDayTab) {
@@ -476,6 +581,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun completeFirstTimeTeamsOnboarding() {
+        footballRepository.setCountryZoneOnboardingCompleted(true)
         footballRepository.setTeamsOnboardingCompleted(true)
         _showFirstTimeTeamsOnboarding.value = false
         _teamSearchQuery.value = ""

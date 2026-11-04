@@ -637,6 +637,30 @@ class ExampleRobolectricTest {
         assertTrue(dossier.standingsTable.any { it.isAwayTeam })
         assertTrue(dossier.menaBroadcastGuide.isNotEmpty())
 
+        // 6b. Verify Upcoming Match Lineups (Fenerbahce vs Liverpool):
+        // - Official lineups expected 1 hour before kick-off
+        // - Real named Fenerbahce & Liverpool starters with avatar URLs (zero "#1" placeholders)
+        // - No fabricated cards, goals, or substitution arrows before kick-off
+        val upcomingFenerLiverpool = tsdbFixture.copy(
+            matchId = "ucl_fener_liv",
+            homeTeamName = "Fenerbahce",
+            awayTeamName = "Liverpool",
+            status = com.example.data.repository.MatchStatus.UPCOMING
+        )
+        val upcomingLineups = footballRepository.fetchMatchFullDossier(upcomingFenerLiverpool).lineups
+        assertEquals(
+            "Official lineups expected 1 hour before kick-off",
+            upcomingLineups.lineupStatusHeadline
+        )
+        assertEquals(11, upcomingLineups.homeStartingXI.size)
+        assertEquals(11, upcomingLineups.awayStartingXI.size)
+        assertTrue(upcomingLineups.homeStartingXI.none { it.shortName.startsWith("#") })
+        assertTrue(upcomingLineups.awayStartingXI.none { it.shortName.startsWith("#") })
+        assertTrue(upcomingLineups.homeStartingXI.all { it.photoUrl.isNotBlank() })
+        assertTrue(upcomingLineups.awayStartingXI.all { it.photoUrl.isNotBlank() })
+        assertTrue(upcomingLineups.homeStartingXI.none { it.hasYellowCard || it.hasRedCard || it.subbedOffMinute != null })
+        assertTrue(upcomingLineups.awayStartingXI.none { it.hasYellowCard || it.hasRedCard || it.subbedOffMinute != null })
+
         // 7. Verify Canonical Tournament Order:
         // UEFA CL, La Liga, Premier League, Ligue 1, Bundesliga, Serie A, CAF CL, Botola Pro, then others
         assertEquals(
@@ -660,7 +684,8 @@ class ExampleRobolectricTest {
             matchId = "ucl_2100",
             tournamentId = "uefa_cl",
             status = com.example.data.repository.MatchStatus.UPCOMING,
-            kickoffTimeFormatted = "21:00"
+            kickoffTimeFormatted = "21:00",
+            referenceMoroccoTime = "21:00"
         )
         val upcoming1800 = tsdbFixture.copy(
             matchId = "botola_1800",
@@ -772,6 +797,86 @@ class ExampleRobolectricTest {
         assertTrue((vilDossier.lineups.homeStartingXI + vilDossier.lineups.awayStartingXI).count { it.isMvp } == 1)
         assertTrue(vilDossier.lineups.homeAvgRating >= 6.0)
         assertTrue(vilDossier.lineups.awayAvgRating >= 6.0)
+
+        // 13. Verify Kinetic 5-Day Broadcast Chrono-Stage Calendar Helpers on MatchDayTab
+        assertEquals("TODAY", com.example.data.repository.MatchDayTab.TODAY.getShortDayCode())
+        assertEquals("YEST", com.example.data.repository.MatchDayTab.YESTERDAY.getShortDayCode())
+        assertEquals("TOM", com.example.data.repository.MatchDayTab.TOMORROW.getShortDayCode())
+        assertEquals(2, com.example.data.repository.MatchDayTab.TODAY.getDayOfMonthNumber().length)
+        assertEquals(3, com.example.data.repository.MatchDayTab.TODAY.getMonthShortUpper().length)
+        assertTrue(com.example.data.repository.MatchDayTab.DAY_PLUS_2.getWeekdayFullUpper().isNotBlank())
+
+        // 14. Verify THE USER'S ZONE: Country Selection, Dual-Season (Winter/Summer) Timezone Kickoff Conversion & Official TV Broadcaster Mapping
+        assertEquals("MA", footballRepository.getSelectedCountryZone().countryCode)
+
+        // Switch User's Zone to France (FR) -> Canal+ Foot for UEFA Champions League
+        // France Winter Time (CET • GMT+1 = 21:00) vs Summer Time (CEST • GMT+2 = 22:00)
+        val franceZone = footballRepository.setSelectedCountryZone("FR")
+        assertEquals("FR", franceZone.countryCode)
+        assertEquals("France", franceZone.countryName)
+        assertTrue(franceZone.hasSeasonalTimeChange)
+        val frWinter = footballRepository.reapplyCountryZoneToMatches(
+            listOf(upcoming2100),
+            franceZone,
+            com.example.data.repository.SeasonTimeMode.WINTER
+        ).first()
+        assertTrue(frWinter.beinChannel.contains("Canal+", ignoreCase = true))
+        assertEquals("Canal+ (France)", frWinter.menaProviderName)
+        assertEquals("21:00", frWinter.kickoffTimeFormatted)
+        assertEquals("GMT+1", franceZone.getUtcOffsetBadge(mode = com.example.data.repository.SeasonTimeMode.WINTER))
+
+        val frSummer = footballRepository.reapplyCountryZoneToMatches(
+            listOf(upcoming2100),
+            franceZone,
+            com.example.data.repository.SeasonTimeMode.SUMMER
+        ).first()
+        assertEquals("22:00", frSummer.kickoffTimeFormatted)
+        assertEquals("GMT+2", franceZone.getUtcOffsetBadge(mode = com.example.data.repository.SeasonTimeMode.SUMMER))
+
+        // Switch User's Zone to United Kingdom (GB) -> TNT Sports 1 HD
+        // UK Winter Time (GMT+0 = 20:00) vs UK Summer Time (BST • GMT+1 = 21:00)
+        val ukZone = footballRepository.setSelectedCountryZone("GB")
+        assertEquals("GB", ukZone.countryCode)
+        val ukWinter = footballRepository.reapplyCountryZoneToMatches(
+            listOf(upcoming2100),
+            ukZone,
+            com.example.data.repository.SeasonTimeMode.WINTER
+        ).first()
+        assertTrue(ukWinter.beinChannel.contains("TNT Sports", ignoreCase = true))
+        assertEquals("20:00", ukWinter.kickoffTimeFormatted)
+
+        val ukSummer = footballRepository.reapplyCountryZoneToMatches(
+            listOf(upcoming2100),
+            ukZone,
+            com.example.data.repository.SeasonTimeMode.SUMMER
+        ).first()
+        assertEquals("21:00", ukSummer.kickoffTimeFormatted)
+
+        // Switch User's Zone to Egypt (EG) -> Winter Time (EET • GMT+2 = 22:00) vs Summer Time (EEST • GMT+3 = 23:00)
+        val egyptZone = footballRepository.setSelectedCountryZone("EG")
+        assertEquals(
+            "22:00",
+            egyptZone.convertMoroccoTimeToZoneTime("21:00", com.example.data.repository.SeasonTimeMode.WINTER)
+        )
+        assertEquals(
+            "23:00",
+            egyptZone.convertMoroccoTimeToZoneTime("21:00", com.example.data.repository.SeasonTimeMode.SUMMER)
+        )
+
+        // Switch User's Zone to Saudi Arabia (SA, Permanent GMT+3) -> 23:00 kickoff (converted from 21:00 GMT+1)
+        val saudiZone = footballRepository.setSelectedCountryZone("SA")
+        assertEquals("SA", saudiZone.countryCode)
+        val saRelocalized = footballRepository.reapplyCountryZoneToMatches(listOf(upcoming2100), saudiZone).first()
+        assertEquals("23:00", saRelocalized.kickoffTimeFormatted)
+        assertEquals("GMT+3", saudiZone.getUtcOffsetBadge())
+
+        // Restore default Morocco (MA) zone & verify Morocco Standard/Summer (GMT+1 = 21:00) vs Ramadan/Winter (GMT+0 = 20:00)
+        val moroccoZone = footballRepository.setSelectedCountryZone("MA")
+        footballRepository.setSelectedSeasonTimeMode(com.example.data.repository.SeasonTimeMode.AUTO)
+        assertEquals("MA", footballRepository.getSelectedCountryZone().countryCode)
+        assertEquals("21:00", moroccoZone.convertMoroccoTimeToZoneTime("21:00", com.example.data.repository.SeasonTimeMode.SUMMER))
+        assertEquals("20:00", moroccoZone.convertMoroccoTimeToZoneTime("21:00", com.example.data.repository.SeasonTimeMode.WINTER))
     }
 }
+
 
