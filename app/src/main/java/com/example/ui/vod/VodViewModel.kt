@@ -8,6 +8,7 @@ import com.example.data.model.CategoryEntity
 import com.example.data.model.PlaylistEntity
 import com.example.data.model.StreamEntity
 import com.example.data.remote.SeriesDetails
+import com.example.data.repository.EpisodeResumeInfo
 import com.example.data.repository.IptvRepository
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -36,6 +37,21 @@ class VodViewModel(application: Application) : AndroidViewModel(application) {
         parentalDao = database.parentalSettingsDao()
     )
 
+    // Progressive paging limit (starts at 180, resets on category/query change, increments by +180 on scroll)
+    val pageSize: Int = PAGE_SIZE
+    private val _currentLimit = MutableStateFlow(PAGE_SIZE)
+    val currentLimit: StateFlow<Int> = _currentLimit.asStateFlow()
+
+    // Recently watched streams for Continue Watching rail
+    val recentlyWatched: StateFlow<List<StreamEntity>> = repository.activePlaylist
+        .flatMapLatest { playlist ->
+            if (playlist == null) flowOf(emptyList()) else repository.getRecentlyWatched(playlist.id)
+        }
+        .stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
+
+    // Reactive per-episode resume map keyed by "${playlistId}_ep_${episodeId}"
+    val episodeResumeMap: StateFlow<Map<String, EpisodeResumeInfo>> = repository.episodeResumeMap
+
     // Independent Movies State
     private val _selectedMovieCategoryId = MutableStateFlow<String?>(null)
     val selectedMovieCategoryId: StateFlow<String?> = _selectedMovieCategoryId.asStateFlow()
@@ -52,14 +68,21 @@ class VodViewModel(application: Application) : AndroidViewModel(application) {
     val movieItems: StateFlow<List<StreamEntity>> = combine(
         repository.activePlaylist,
         _selectedMovieCategoryId,
-        _movieSearchQuery
-    ) { playlist, catId, query ->
-        Triple(playlist?.id, catId, query)
-    }.flatMapLatest { (playlistId, catId, query) ->
-        if (playlistId == null) {
+        _movieSearchQuery,
+        _currentLimit
+    ) { playlist, catId, query, limit ->
+        VodQueryParams(playlist?.id, catId, query, limit)
+    }.flatMapLatest { params ->
+        if (params.playlistId == null) {
             flowOf(emptyList())
         } else {
-            repository.queryStreamsFast(playlistId, "movie", catId, query)
+            repository.queryStreamsFast(
+                playlistId = params.playlistId,
+                streamType = "movie",
+                categoryId = params.categoryId,
+                query = params.query,
+                limit = params.limit
+            )
         }
     }.stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
 
@@ -79,14 +102,21 @@ class VodViewModel(application: Application) : AndroidViewModel(application) {
     val seriesItems: StateFlow<List<StreamEntity>> = combine(
         repository.activePlaylist,
         _selectedSeriesCategoryId,
-        _seriesSearchQuery
-    ) { playlist, catId, query ->
-        Triple(playlist?.id, catId, query)
-    }.flatMapLatest { (playlistId, catId, query) ->
-        if (playlistId == null) {
+        _seriesSearchQuery,
+        _currentLimit
+    ) { playlist, catId, query, limit ->
+        VodQueryParams(playlist?.id, catId, query, limit)
+    }.flatMapLatest { params ->
+        if (params.playlistId == null) {
             flowOf(emptyList())
         } else {
-            repository.queryStreamsFast(playlistId, "series", catId, query)
+            repository.queryStreamsFast(
+                playlistId = params.playlistId,
+                streamType = "series",
+                categoryId = params.categoryId,
+                query = params.query,
+                limit = params.limit
+            )
         }
     }.stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
 
@@ -105,18 +135,26 @@ class VodViewModel(application: Application) : AndroidViewModel(application) {
 
     fun selectMovieCategory(categoryId: String?) {
         _selectedMovieCategoryId.value = categoryId
+        _currentLimit.value = pageSize
     }
 
     fun onMovieSearchQueryChanged(query: String) {
         _movieSearchQuery.value = query
+        _currentLimit.value = pageSize
     }
 
     fun selectSeriesCategory(categoryId: String?) {
         _selectedSeriesCategoryId.value = categoryId
+        _currentLimit.value = pageSize
     }
 
     fun onSeriesSearchQueryChanged(query: String) {
         _seriesSearchQuery.value = query
+        _currentLimit.value = pageSize
+    }
+
+    fun loadNextPage() {
+        _currentLimit.value += pageSize
     }
 
     fun openSeriesDetails(seriesStream: StreamEntity, playlist: PlaylistEntity) {
@@ -151,5 +189,16 @@ class VodViewModel(application: Application) : AndroidViewModel(application) {
                 }
             }
         }
+    }
+
+    private data class VodQueryParams(
+        val playlistId: Long?,
+        val categoryId: String?,
+        val query: String,
+        val limit: Int
+    )
+
+    companion object {
+        const val PAGE_SIZE = 180
     }
 }

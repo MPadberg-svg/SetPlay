@@ -1,5 +1,7 @@
 package com.example.data.repository
 
+import android.content.Context
+import android.content.SharedPreferences
 import android.util.Log
 import com.example.data.local.CategoryDao
 import com.example.data.local.EpgDao
@@ -18,12 +20,14 @@ import com.example.util.SecurityManager
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.onStart
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicBoolean
 
 data class SyncProgress(
@@ -31,6 +35,12 @@ data class SyncProgress(
     val phase: String = "",
     val itemsProcessed: Int = 0,
     val error: String? = null
+)
+
+data class EpisodeResumeInfo(
+    val positionMs: Long,
+    val durationMs: Long = 0L,
+    val updatedAtMs: Long = System.currentTimeMillis()
 )
 
 class IptvRepository(
@@ -111,6 +121,7 @@ class IptvRepository(
         categoryDao.clearCategoriesForPlaylist(id)
         epgDao.clearEpgForPlaylist(id)
         playlistDao.deletePlaylist(id)
+        clearEpisodePositionsForPlaylist(id)
     }
 
     // Categories
@@ -150,27 +161,34 @@ class IptvRepository(
         return categoryDao.getCategoriesOnce(playlistId, type)
     }
 
-    // Streams & Fast Indexed Queries
+    // Streams & Fast Indexed Queries (with progressive dynamic limit & deterministic ORDER BY id ASC)
     fun queryStreamsFast(
         playlistId: Long,
         streamType: String,
         categoryId: String?,
-        query: String
+        query: String,
+        limit: Int = DEFAULT_PAGE_SIZE
     ): Flow<List<StreamEntity>> {
         val cleanQuery = query.trim()
         val hasCategory = !categoryId.isNullOrBlank()
         val hasQuery = cleanQuery.isNotEmpty()
+        val safeLimit = limit.coerceAtLeast(1)
 
         return when {
-            !hasCategory && !hasQuery -> streamDao.getStreamsInitial(playlistId, streamType, limit = 180)
-            hasCategory && !hasQuery -> streamDao.getStreamsByCategoryFast(playlistId, streamType, categoryId!!, limit = 200)
-            !hasCategory && hasQuery -> streamDao.searchStreamsByTypeFast(playlistId, streamType, cleanQuery, limit = 150)
-            else -> streamDao.searchStreamsInCategoryFast(playlistId, streamType, categoryId!!, cleanQuery, limit = 150)
+            !hasCategory && !hasQuery -> streamDao.getStreamsInitial(playlistId, streamType, limit = safeLimit)
+            hasCategory && !hasQuery -> streamDao.getStreamsByCategoryFast(playlistId, streamType, categoryId!!, limit = safeLimit)
+            !hasCategory && hasQuery -> streamDao.searchStreamsByTypeFast(playlistId, streamType, cleanQuery, limit = safeLimit)
+            else -> streamDao.searchStreamsInCategoryFast(playlistId, streamType, categoryId!!, cleanQuery, limit = safeLimit)
         }
     }
 
-    fun searchLiveChannels(playlistId: Long, query: String, categoryId: String?): Flow<List<StreamEntity>> {
-        return queryStreamsFast(playlistId, "live", categoryId, query)
+    fun searchLiveChannels(
+        playlistId: Long,
+        query: String,
+        categoryId: String?,
+        limit: Int = DEFAULT_PAGE_SIZE
+    ): Flow<List<StreamEntity>> {
+        return queryStreamsFast(playlistId, "live", categoryId, query, limit = limit)
     }
 
     fun searchAllStreams(playlistId: Long, query: String, streamType: String?): Flow<List<StreamEntity>> {
@@ -180,8 +198,13 @@ class IptvRepository(
         return streamDao.searchAllStreams(playlistId, query.trim(), null)
     }
 
-    fun getStreamsByCategory(playlistId: Long, type: String, categoryId: String): Flow<List<StreamEntity>> {
-        return streamDao.getStreamsByCategoryFast(playlistId, type, categoryId, limit = 200)
+    fun getStreamsByCategory(
+        playlistId: Long,
+        type: String,
+        categoryId: String,
+        limit: Int = DEFAULT_PAGE_SIZE
+    ): Flow<List<StreamEntity>> {
+        return streamDao.getStreamsByCategoryFast(playlistId, type, categoryId, limit = limit.coerceAtLeast(1))
     }
 
     suspend fun getStreamsByCategoryOnce(playlistId: Long, type: String, categoryId: String): List<StreamEntity> {
@@ -206,6 +229,72 @@ class IptvRepository(
 
     suspend fun updatePlaybackPosition(streamId: Long, positionMs: Long) {
         streamDao.updatePlaybackPosition(streamId, positionMs, System.currentTimeMillis())
+    }
+
+    // Per-Episode Playback Resume Tracking keyed by "${playlistId}_ep_${episodeId}"
+    val episodeResumeMap: StateFlow<Map<String, EpisodeResumeInfo>> = _episodeResumeStateFlow.asStateFlow()
+
+    fun buildEpisodeResumeKey(playlistId: Long, episodeId: Long): String {
+        return "${playlistId}_ep_${episodeId}"
+    }
+
+    fun getEpisodeResumeInfo(playlistId: Long, episodeId: Long): EpisodeResumeInfo? {
+        val key = buildEpisodeResumeKey(playlistId, episodeId)
+        episodeResumeCache[key]?.let { return it }
+        val prefs = episodePrefs ?: return null
+        val savedPos = prefs.getLong("${key}_pos", 0L)
+        if (savedPos <= 0L) return null
+        val savedDur = prefs.getLong("${key}_dur", 0L)
+        val savedAt = prefs.getLong("${key}_ts", 0L)
+        val info = EpisodeResumeInfo(positionMs = savedPos, durationMs = savedDur, updatedAtMs = savedAt)
+        episodeResumeCache[key] = info
+        _episodeResumeStateFlow.value = episodeResumeCache.toMap()
+        return info
+    }
+
+    fun getEpisodePositionMs(playlistId: Long, episodeId: Long): Long {
+        return getEpisodeResumeInfo(playlistId, episodeId)?.positionMs ?: 0L
+    }
+
+    fun getEpisodeDurationMs(playlistId: Long, episodeId: Long): Long {
+        return getEpisodeResumeInfo(playlistId, episodeId)?.durationMs ?: 0L
+    }
+
+    fun saveEpisodePositionMs(
+        playlistId: Long,
+        episodeId: Long,
+        positionMs: Long,
+        durationMs: Long = 0L
+    ) {
+        val key = buildEpisodeResumeKey(playlistId, episodeId)
+        val clampedPos = positionMs.coerceAtLeast(0L)
+        val existingDur = episodeResumeCache[key]?.durationMs ?: episodePrefs?.getLong("${key}_dur", 0L) ?: 0L
+        val effectiveDur = if (durationMs > 0L) durationMs else existingDur
+        val now = System.currentTimeMillis()
+        val info = EpisodeResumeInfo(
+            positionMs = clampedPos,
+            durationMs = effectiveDur,
+            updatedAtMs = now
+        )
+        episodeResumeCache[key] = info
+        _episodeResumeStateFlow.value = episodeResumeCache.toMap()
+        episodePrefs?.edit()
+            ?.putLong("${key}_pos", clampedPos)
+            ?.putLong("${key}_dur", effectiveDur)
+            ?.putLong("${key}_ts", now)
+            ?.apply()
+    }
+
+    fun clearEpisodePositionsForPlaylist(playlistId: Long) {
+        val prefix = "${playlistId}_ep_"
+        val keysToRemove = episodeResumeCache.keys.filter { it.startsWith(prefix) }
+        keysToRemove.forEach { episodeResumeCache.remove(it) }
+        _episodeResumeStateFlow.value = episodeResumeCache.toMap()
+        episodePrefs?.let { prefs ->
+            val editor = prefs.edit()
+            prefs.all.keys.filter { it.startsWith(prefix) }.forEach { editor.remove(it) }
+            editor.apply()
+        }
     }
 
     suspend fun getSiblingLiveChannels(playlistId: Long, categoryId: String): List<StreamEntity> {
@@ -325,6 +414,25 @@ class IptvRepository(
     }
 
     /**
+     * Re-applies persisted category locks from ParentalSettingsEntity.lockedCategoriesJson
+     * to CategoryEntity rows after a catalog re-sync (which uses OnConflictStrategy.REPLACE).
+     */
+    suspend fun restoreLockedCategories(playlistId: Long) {
+        val current = getParentalSettingsOnce()
+        val lockedIds = try {
+            val arr = JSONArray(current.lockedCategoriesJson)
+            val list = mutableListOf<String>()
+            for (i in 0 until arr.length()) list.add(arr.getString(i))
+            list
+        } catch (_: Exception) {
+            emptyList()
+        }
+        lockedIds.forEach { catId ->
+            categoryDao.setCategoryLocked(playlistId, catId, true)
+        }
+    }
+
+    /**
      * Synchronizes the account catalog with streaming bounded batches.
      * Prevents race conditions and preserves previous catalog on failure.
      */
@@ -380,6 +488,7 @@ class IptvRepository(
             val allCats = liveCats + vodCats + seriesCats
             if (allCats.isNotEmpty()) {
                 categoryDao.insertCategories(allCats)
+                restoreLockedCategories(playlist.id)
             }
 
             // Snapshot existing favorite streamIds before replace so user favorites survive re-sync
@@ -480,6 +589,54 @@ class IptvRepository(
             Result.failure(Exception(safeErr))
         } finally {
             isSyncInProgress.set(false)
+        }
+    }
+
+    companion object {
+        const val DEFAULT_PAGE_SIZE = 180
+        private const val EPISODE_RESUME_PREFS_NAME = "setplay_episode_resume_prefs"
+
+        @Volatile
+        private var episodePrefs: SharedPreferences? = null
+        private val episodeResumeCache = ConcurrentHashMap<String, EpisodeResumeInfo>()
+        private val _episodeResumeStateFlow = MutableStateFlow<Map<String, EpisodeResumeInfo>>(emptyMap())
+
+        fun initEpisodePreferences(context: Context) {
+            if (episodePrefs == null) {
+                synchronized(this) {
+                    if (episodePrefs == null) {
+                        val prefs = context.applicationContext.getSharedPreferences(
+                            EPISODE_RESUME_PREFS_NAME,
+                            Context.MODE_PRIVATE
+                        )
+                        episodePrefs = prefs
+                        loadEpisodePreferencesIntoCache(prefs)
+                    }
+                }
+            }
+        }
+
+        private fun loadEpisodePreferencesIntoCache(prefs: SharedPreferences) {
+            val allEntries = prefs.all
+            for ((rawKey, value) in allEntries) {
+                if (rawKey.endsWith("_pos") && value is Long && value > 0L) {
+                    val baseKey = rawKey.removeSuffix("_pos")
+                    val dur = prefs.getLong("${baseKey}_dur", 0L)
+                    val ts = prefs.getLong("${baseKey}_ts", 0L)
+                    episodeResumeCache[baseKey] = EpisodeResumeInfo(
+                        positionMs = value,
+                        durationMs = dur,
+                        updatedAtMs = ts
+                    )
+                }
+            }
+            _episodeResumeStateFlow.value = episodeResumeCache.toMap()
+        }
+
+        fun resetEpisodePreferencesForTesting() {
+            episodeResumeCache.clear()
+            _episodeResumeStateFlow.value = emptyMap()
+            episodePrefs?.edit()?.clear()?.apply()
         }
     }
 }

@@ -40,6 +40,7 @@ abstract class StreamVaultDatabase : RoomDatabase() {
 
         @Suppress("DEPRECATION")
         fun getInstance(context: Context): StreamVaultDatabase {
+            com.example.data.repository.IptvRepository.initEpisodePreferences(context.applicationContext)
             return INSTANCE ?: synchronized(this) {
                 val instance = Room.databaseBuilder(
                     context.applicationContext,

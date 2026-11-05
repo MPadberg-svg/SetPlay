@@ -70,7 +70,9 @@ import com.example.ui.theme.FavoritesObsidianBase
 import com.example.ui.theme.FavoritesPaleMint
 import com.example.ui.theme.FavoritesSagePrimary
 import com.example.ui.theme.PaleGold
+import com.example.ui.theme.luxuryFocusableCard
 import com.example.ui.viewmodel.MainViewModel
+import com.example.util.StreamMetadataParser
 
 @Composable
 fun FavoritesScreen(
@@ -360,6 +362,15 @@ fun FavoritesScreen(
             ) {
                 items(filteredList, key = { it.id }) { item ->
                     val isLiveChannel = item.streamType.equals("live", ignoreCase = true)
+                    val cleanTitle = remember(item.name) {
+                        StreamMetadataParser.cleanDisplayTitle(item.name)
+                    }
+                    val regionBadge = remember(item.name) {
+                        StreamMetadataParser.extractRegionOrLangBadge(item.name)
+                    }
+                    val qualityBadge = remember(item.name) {
+                        StreamMetadataParser.extractQualityBadge(item.name)
+                    }
                     val isMenaSportsChannel = remember(item.name) {
                         val lower = item.name.lowercase()
                         lower.contains("bein") || lower.contains("arryadia") ||
@@ -377,7 +388,12 @@ fun FavoritesScreen(
                         ),
                         modifier = Modifier
                             .fillMaxWidth()
-                            .clickable { onStreamClick(item) }
+                            .luxuryFocusableCard(
+                                accentColor = FavoritesSagePrimary,
+                                shape = RoundedCornerShape(14.dp),
+                                onClick = { onStreamClick(item) }
+                            )
+                            .testTag("favorite_item_${item.streamId}")
                     ) {
                         Row(
                             modifier = Modifier
@@ -400,20 +416,22 @@ fun FavoritesScreen(
                                     .background(
                                         Brush.radialGradient(
                                             colors = listOf(
-                                                Color.White.copy(alpha = 0.10f),
+                                                Color.White.copy(alpha = 0.12f),
                                                 FavoritesObsidianBase
                                             )
                                         )
                                     )
-                                    .border(0.8.dp, Color.White.copy(alpha = 0.10f), RoundedCornerShape(11.dp)),
+                                    .border(0.8.dp, Color.White.copy(alpha = 0.12f), RoundedCornerShape(11.dp)),
                                 contentAlignment = Alignment.Center
                             ) {
                                 if (item.streamIcon.isNotEmpty()) {
                                     AsyncImage(
                                         model = item.streamIcon,
-                                        contentDescription = item.name,
-                                        contentScale = ContentScale.Crop,
-                                        modifier = Modifier.fillMaxSize()
+                                        contentDescription = cleanTitle,
+                                        contentScale = if (isLiveChannel) ContentScale.Fit else ContentScale.Crop,
+                                        modifier = Modifier
+                                            .fillMaxSize()
+                                            .padding(if (isLiveChannel) 4.dp else 0.dp)
                                     )
                                 } else {
                                     Icon(
@@ -432,14 +450,33 @@ fun FavoritesScreen(
                             Spacer(modifier = Modifier.width(12.dp))
 
                             Column(modifier = Modifier.weight(1f)) {
-                                Text(
-                                    text = item.name,
-                                    color = Color.White,
-                                    fontSize = 14.5.sp,
-                                    fontWeight = FontWeight.SemiBold,
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis
-                                )
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Text(
+                                        text = cleanTitle,
+                                        color = Color.White,
+                                        fontSize = 14.5.sp,
+                                        fontWeight = FontWeight.ExtraBold,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis,
+                                        modifier = Modifier.weight(1f, fill = false)
+                                    )
+                                    if (qualityBadge != null) {
+                                        Spacer(modifier = Modifier.width(6.dp))
+                                        Surface(
+                                            color = FavoritesObsidianBase.copy(alpha = 0.78f),
+                                            shape = RoundedCornerShape(4.dp),
+                                            border = BorderStroke(0.6.dp, FavoritesPaleMint.copy(alpha = 0.55f))
+                                        ) {
+                                            Text(
+                                                text = qualityBadge,
+                                                color = FavoritesPaleMint,
+                                                fontSize = 8.sp,
+                                                fontWeight = FontWeight.ExtraBold,
+                                                modifier = Modifier.padding(horizontal = 4.5.dp, vertical = 1.dp)
+                                            )
+                                        }
+                                    }
+                                }
                                 Spacer(modifier = Modifier.height(4.dp))
                                 // Unboxed Inline Metadata Row
                                 Row(
@@ -447,7 +484,11 @@ fun FavoritesScreen(
                                     horizontalArrangement = Arrangement.spacedBy(6.dp)
                                 ) {
                                     Text(
-                                        text = "VIP • ${item.streamType.uppercase()}",
+                                        text = if (regionBadge != null) {
+                                            "$regionBadge • VIP ${item.streamType.uppercase()}"
+                                        } else {
+                                            "VIP • ${item.streamType.uppercase()}"
+                                        },
                                         color = FavoritesSagePrimary,
                                         fontSize = 10.5.sp,
                                         fontWeight = FontWeight.SemiBold

@@ -69,6 +69,7 @@ sealed class ConnectionTestState {
 data class BeinChannelMatcherState(
     val match: FootballMatch,
     val favoriteMatchedStreams: List<StreamEntity> = emptyList(),
+    val livePlaylistCandidates: List<StreamEntity> = emptyList(),
     val matchedStreams: List<StreamEntity> = emptyList(),
     val resolvedChannelLabel: String = match.beinChannel,
     val resolvedProviderName: String = match.menaProviderName,
@@ -679,6 +680,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 _beinChannelMatcherState.value = BeinChannelMatcherState(
                     match = match,
                     favoriteMatchedStreams = result.favoriteMatches,
+                    livePlaylistCandidates = result.livePlaylistCandidates,
                     matchedStreams = result.favoriteMatches,
                     resolvedChannelLabel = result.resolvedChannelLabel,
                     resolvedProviderName = result.resolvedProviderName,
@@ -696,7 +698,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     /**
      * Switches between the match's MENA broadcaster options inside the Kickoff Channel dialog.
-     * Looks up the selected channel exclusively in Favorites and either plays it immediately or shows the missing-favorite notification.
+     * Looks up the selected channel in Favorites (Tier 1) and Live TV catalog (Tier 2).
      */
     fun selectMenaChannelOptionInMatcher(
         channelLabel: String,
@@ -711,6 +713,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         if (playlist == null) {
             _beinChannelMatcherState.value = currentState.copy(
                 favoriteMatchedStreams = emptyList(),
+                livePlaylistCandidates = emptyList(),
                 matchedStreams = emptyList(),
                 resolvedChannelLabel = targetChannel,
                 resolvedProviderName = footballRepository.detectMenaProviderFromLabel(targetChannel),
@@ -735,6 +738,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 _beinChannelMatcherState.value = BeinChannelMatcherState(
                     match = currentState.match,
                     favoriteMatchedStreams = result.favoriteMatches,
+                    livePlaylistCandidates = result.livePlaylistCandidates,
                     matchedStreams = result.favoriteMatches,
                     resolvedChannelLabel = result.resolvedChannelLabel,
                     resolvedProviderName = result.resolvedProviderName,
@@ -763,9 +767,21 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             )
             _beinChannelMatcherState.value = currentState.copy(
                 favoriteMatchedStreams = result.favoriteMatches,
+                livePlaylistCandidates = result.livePlaylistCandidates,
                 matchedStreams = result.favoriteMatches,
                 requiresAddToFavoritesPrompt = result.favoriteMatches.isEmpty()
             )
+        }
+    }
+
+    fun pinToFavoritesAndPlayStream(
+        stream: StreamEntity,
+        onPlayStream: (StreamEntity) -> Unit
+    ) {
+        viewModelScope.launch {
+            repository.toggleFavorite(stream.id, true)
+            _beinChannelMatcherState.value = null
+            onPlayStream(stream.copy(isFavorite = true))
         }
     }
 

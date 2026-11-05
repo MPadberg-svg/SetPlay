@@ -314,6 +314,30 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application) 
         }
 
         val isLiveStream = stream.streamType.equals("live", ignoreCase = true) && catchupStartEpoch == null
+        val isSeriesStream = stream.streamType.equals("series", ignoreCase = true)
+
+        // Resolve per-episode resume timestamp for Series using stream.streamId (episodeId),
+        // or movie resume timestamp from stream.lastPositionMs
+        val resolvedResumePositionMs = when {
+            isLiveStream -> 0L
+            isSeriesStream -> {
+                val savedEpPos = repository.getEpisodePositionMs(playlist.id, stream.streamId)
+                if (savedEpPos > 0L) {
+                    savedEpPos
+                } else if (!stream.epgChannelId.contains(":")) {
+                    stream.lastPositionMs
+                } else {
+                    0L
+                }
+            }
+            else -> stream.lastPositionMs
+        }
+        val resolvedDurationMs = if (isSeriesStream) {
+            repository.getEpisodeDurationMs(playlist.id, stream.streamId)
+        } else {
+            0L
+        }
+        val effectiveStream = stream.copy(lastPositionMs = resolvedResumePositionMs)
 
         // Reset playback speed to 1.0x when switching to a Live TV stream
         if (isLiveStream && _uiState.value.playbackSpeed != 1.0f) {
@@ -322,7 +346,7 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application) 
 
         val mediaItemBuilder = MediaItem.Builder()
             .setUri(Uri.parse(streamUrl))
-            .setMediaId(stream.id.toString())
+            .setMediaId("${stream.id}_${stream.streamId}")
 
         if (isLiveStream) {
             val targetOffsetMs = when (_uiState.value.bufferProfile) {
@@ -340,9 +364,11 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application) 
         }
 
         _uiState.value = _uiState.value.copy(
-            currentStream = stream,
+            currentStream = effectiveStream,
             previousStream = previous,
             isLive = isLiveStream,
+            currentPositionMs = if (!isLiveStream && resolvedResumePositionMs > 5000L) resolvedResumePositionMs else 0L,
+            durationMs = resolvedDurationMs,
             playbackSpeed = if (isLiveStream) 1.0f else _uiState.value.playbackSpeed,
             error = null,
             isBuffering = true,
@@ -368,25 +394,25 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application) 
 
         player.setMediaItem(mediaItemBuilder.build())
         player.prepare()
-        if (!isLiveStream && stream.lastPositionMs > 5000L) {
-            player.seekTo(stream.lastPositionMs)
+        if (!isLiveStream && resolvedResumePositionMs > 5000L) {
+            player.seekTo(resolvedResumePositionMs)
         }
         player.play()
 
-        // Update watch history, sibling channels for fast zapping, EPG, or Wyzie VOD subtitles
+        // Update watch history, sibling channels for fast zapping, or Wyzie VOD subtitles (no EPG network overhead)
         viewModelScope.launch {
-            repository.updateWatchHistory(stream.id)
+            if (stream.id > 0L) {
+                repository.updateWatchHistory(stream.id)
+            }
             if (stream.streamType.equals("live", ignoreCase = true)) {
                 val siblings = repository.getSiblingLiveChannels(playlist.id, stream.categoryId)
-                _uiState.value = _uiState.value.copy(siblingChannels = siblings)
-
-                repository.refreshEpgForStream(playlist, stream.streamId)
-                val current = repository.getCurrentEpg(playlist.id, stream.streamId)
-                val upcoming = repository.getUpcomingEpg(playlist.id, stream.streamId).firstOrNull() ?: emptyList()
-                val catchupList = repository.getCatchupEpg(playlist.id, stream.streamId)
+                val catchupList = if (stream.tvArchive == 1) {
+                    repository.getCatchupEpg(playlist.id, stream.streamId)
+                } else {
+                    emptyList()
+                }
                 _uiState.value = _uiState.value.copy(
-                    currentProgram = current,
-                    upcomingPrograms = upcoming,
+                    siblingChannels = siblings,
                     catchupPrograms = catchupList
                 )
             } else {
@@ -567,7 +593,23 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     fun seekToPosition(positionMs: Long) {
-        player.seekTo(positionMs)
+        val clamped = positionMs.coerceAtLeast(0L)
+        player.seekTo(clamped)
+        val state = _uiState.value
+        _uiState.value = state.copy(currentPositionMs = clamped)
+        if (!state.isLive) {
+            state.currentStream?.let { s ->
+                val dur = state.durationMs
+                if (s.streamType.equals("series", ignoreCase = true)) {
+                    repository.saveEpisodePositionMs(s.playlistId, s.streamId, clamped, dur)
+                }
+                viewModelScope.launch {
+                    if (s.id > 0L) {
+                        repository.updatePlaybackPosition(s.id, clamped)
+                    }
+                }
+            }
+        }
     }
 
     fun setPlaybackSpeed(speed: Float) {
@@ -959,7 +1001,7 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application) 
         )
     }
 
-    private fun formatMimeToCodecBadge(mime: String?): String {
+    internal fun formatMimeToCodecBadge(mime: String?): String {
         if (mime == null) return ""
         return when {
             mime.contains("hevc", true) || mime.contains("h265", true) -> "HEVC"
@@ -967,8 +1009,10 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application) 
             mime.contains("av01", true) -> "AV1"
             mime.contains("vp9", true) -> "VP9"
             mime.contains("eac3", true) -> "EAC3+"
+            mime.contains("ac-4", true) || mime.contains("ac4", true) -> "AC4"
             mime.contains("ac3", true) -> "AC3"
-            mime.contains("aac", true) -> "AAC"
+            mime.contains("dts", true) -> "DTS"
+            mime.contains("aac", true) || mime.contains("mp4a", true) -> "AAC"
             mime.contains("mp3", true) -> "MP3"
             mime.contains("opus", true) -> "OPUS"
             else -> mime.substringAfterLast("/").uppercase()
@@ -1015,7 +1059,12 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application) 
                     tickCount++
                     if (tickCount % 20 == 0 && !state.isLive) {
                         state.currentStream?.let { s ->
-                            repository.updatePlaybackPosition(s.id, pos)
+                            if (s.streamType.equals("series", ignoreCase = true)) {
+                                repository.saveEpisodePositionMs(s.playlistId, s.streamId, pos, dur)
+                            }
+                            if (s.id > 0L) {
+                                repository.updatePlaybackPosition(s.id, pos)
+                            }
                         }
                     }
                 }

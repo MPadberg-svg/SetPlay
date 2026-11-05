@@ -47,10 +47,13 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
@@ -82,12 +85,15 @@ import com.example.ui.theme.TvDeepMaroon
 import com.example.ui.theme.TvMidnightSlate
 import com.example.ui.theme.TvPlumMagenta
 import com.example.ui.theme.TvTwilightIndigo
+import com.example.ui.theme.luxuryFocusableCard
+import com.example.util.StreamMetadataParser
 
 @Composable
 fun LiveTvScreen(
     viewModel: LiveTvViewModel,
     activePlaylist: PlaylistEntity?,
     onChannelClick: (StreamEntity) -> Unit,
+    onRequestUnlockCategory: ((CategoryWithCount, () -> Unit) -> Unit)? = null,
     modifier: Modifier = Modifier
 ) {
     if (activePlaylist == null) {
@@ -132,6 +138,7 @@ fun LiveTvScreen(
     val categorySearchQuery by viewModel.categorySearchQuery.collectAsStateWithLifecycle()
     val channelFilterQuery by viewModel.channelFilterQuery.collectAsStateWithLifecycle()
     val channels by viewModel.channels.collectAsStateWithLifecycle()
+    val currentLimit by viewModel.currentLimit.collectAsStateWithLifecycle()
 
     // Pulsing broadcast signal animation for Live TV Studio identity
     val infiniteTransition = rememberInfiniteTransition(label = "live_pulse")
@@ -238,7 +245,7 @@ fun LiveTvScreen(
                                     maxLines = 1
                                 )
                                 Text(
-                                    text = "${categories.size} Categories • EPG Schedule Ready",
+                                    text = "${categories.size} Categories • Instant Zap Ready",
                                     color = Champagne.copy(alpha = 0.85f),
                                     fontSize = 10.sp,
                                     fontWeight = FontWeight.Medium,
@@ -383,7 +390,15 @@ fun LiveTvScreen(
                         LiveCategoryDirectoryCard(
                             category = category,
                             isAllChannelsCard = false,
-                            onClick = { viewModel.selectCategory(category) }
+                            onClick = {
+                                if (category.isLocked && onRequestUnlockCategory != null) {
+                                    onRequestUnlockCategory(category) {
+                                        viewModel.selectCategory(category)
+                                    }
+                                } else {
+                                    viewModel.selectCategory(category)
+                                }
+                            }
                         )
                     }
                 }
@@ -526,7 +541,21 @@ fun LiveTvScreen(
                     }
                 }
             } else {
+                val listState = rememberLazyListState()
+                val shouldLoadMore by remember(channels.size, currentLimit) {
+                    derivedStateOf {
+                        val lastVisible = listState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: 0
+                        channels.size >= currentLimit && lastVisible >= (channels.size - 24).coerceAtLeast(0)
+                    }
+                }
+                LaunchedEffect(shouldLoadMore) {
+                    if (shouldLoadMore) {
+                        viewModel.loadNextPage()
+                    }
+                }
+
                 LazyColumn(
+                    state = listState,
                     modifier = Modifier
                         .fillMaxSize()
                         .testTag("live_channels_list"),
@@ -578,7 +607,11 @@ fun LiveCategoryDirectoryCard(
         ),
         modifier = Modifier
             .fillMaxWidth()
-            .clickable { onClick() }
+            .luxuryFocusableCard(
+                accentColor = if (isAllChannelsCard) AmberGold else TvBroadcastScarlet,
+                shape = RoundedCornerShape(16.dp),
+                onClick = onClick
+            )
             .testTag("category_card_${category.categoryId}")
     ) {
         Row(
@@ -649,10 +682,35 @@ fun LiveCategoryDirectoryCard(
 
                 Spacer(modifier = Modifier.width(12.dp))
 
+                val cleanedCatName = remember(category.categoryName, isAllChannelsCard) {
+                    if (isAllChannelsCard) category.categoryName
+                    else StreamMetadataParser.cleanDisplayTitle(category.categoryName)
+                }
+                val catRegionBadge = remember(category.categoryName, isAllChannelsCard) {
+                    if (isAllChannelsCard) null
+                    else StreamMetadataParser.extractRegionOrLangBadge(category.categoryName)
+                }
+
                 Column(modifier = Modifier.weight(1f)) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
+                        if (catRegionBadge != null) {
+                            Surface(
+                                color = TvBroadcastScarlet.copy(alpha = 0.22f),
+                                shape = RoundedCornerShape(5.dp),
+                                border = BorderStroke(0.6.dp, TvCrimsonRose.copy(alpha = 0.55f))
+                            ) {
+                                Text(
+                                    text = catRegionBadge,
+                                    color = PaleGold,
+                                    fontSize = 8.5.sp,
+                                    fontWeight = FontWeight.ExtraBold,
+                                    modifier = Modifier.padding(horizontal = 5.5.dp, vertical = 1.5.dp)
+                                )
+                            }
+                            Spacer(modifier = Modifier.width(6.dp))
+                        }
                         Text(
-                            text = category.categoryName,
+                            text = cleanedCatName,
                             color = Color.White,
                             fontSize = 14.5.sp,
                             fontWeight = FontWeight.ExtraBold,
@@ -675,7 +733,7 @@ fun LiveCategoryDirectoryCard(
                         text = if (isAllChannelsCard) {
                             "Full Live Broadcast Lineup • Instant Zap"
                         } else {
-                            "Live Broadcast Bouquet • Studio Feed"
+                            "Live Broadcast Bouquet • Direct Stream"
                         },
                         color = Champagne.copy(alpha = 0.72f),
                         fontSize = 11.sp
@@ -721,11 +779,16 @@ fun ChannelCard(
     onToggleFavorite: () -> Unit,
     modifier: Modifier = Modifier
 ) {
-    val liveProgressFraction = (0.35f + ((channel.streamId.hashCode() and 0x7FFFFFFF) % 50) / 100f).coerceIn(0.25f, 0.88f)
-    val isUltraHd = remember(channel.name) {
-        val upper = channel.name.uppercase()
-        upper.contains("4K") || upper.contains("UHD") || upper.contains("RAW") || upper.contains("MAX") || upper.contains("HEVC")
+    val cleanTitle = remember(channel.name) {
+        StreamMetadataParser.cleanDisplayTitle(channel.name)
     }
+    val regionBadge = remember(channel.name) {
+        StreamMetadataParser.extractRegionOrLangBadge(channel.name)
+    }
+    val qualityBadge = remember(channel.name) {
+        StreamMetadataParser.extractQualityBadge(channel.name)
+    }
+    val isUltraHd = qualityBadge == "4K UHD"
 
     Card(
         shape = RoundedCornerShape(16.dp),
@@ -741,7 +804,11 @@ fun ChannelCard(
         ),
         modifier = modifier
             .fillMaxWidth()
-            .clickable { onClick() }
+            .luxuryFocusableCard(
+                accentColor = if (channel.isFavorite) AmberGold else TvBroadcastScarlet,
+                shape = RoundedCornerShape(16.dp),
+                onClick = onClick
+            )
             .testTag("channel_item_${channel.streamId}")
     ) {
         Row(
@@ -761,7 +828,7 @@ fun ChannelCard(
             Box(
                 modifier = Modifier
                     .width(3.5.dp)
-                    .height(74.dp)
+                    .height(68.dp)
                     .background(
                         Brush.verticalGradient(
                             if (channel.isFavorite) {
@@ -798,7 +865,7 @@ fun ChannelCard(
                     if (channel.streamIcon.isNotEmpty()) {
                         AsyncImage(
                             model = channel.streamIcon,
-                            contentDescription = channel.name,
+                            contentDescription = cleanTitle,
                             contentScale = ContentScale.Fit,
                             modifier = Modifier
                                 .fillMaxSize()
@@ -819,7 +886,7 @@ fun ChannelCard(
                 Column(modifier = Modifier.weight(1f)) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Text(
-                            text = channel.name,
+                            text = cleanTitle,
                             color = Color.White,
                             fontSize = 14.sp,
                             fontWeight = FontWeight.ExtraBold,
@@ -827,23 +894,24 @@ fun ChannelCard(
                             overflow = TextOverflow.Ellipsis,
                             modifier = Modifier.weight(1f, fill = false)
                         )
-                        Spacer(modifier = Modifier.width(6.dp))
-                        // Broadcast Quality Micro-Tag (4K UHD / FHD)
-                        Surface(
-                            color = Color.Black.copy(alpha = 0.40f),
-                            shape = RoundedCornerShape(4.dp),
-                            border = BorderStroke(
-                                0.6.dp,
-                                if (isUltraHd) AmberGold.copy(alpha = 0.75f) else TvCrimsonRose.copy(alpha = 0.45f)
-                            )
-                        ) {
-                            Text(
-                                text = if (isUltraHd) "4K" else "FHD",
-                                color = if (isUltraHd) AmberGold else TvCrimsonRose,
-                                fontSize = 8.sp,
-                                fontWeight = FontWeight.ExtraBold,
-                                modifier = Modifier.padding(horizontal = 4.5.dp, vertical = 1.dp)
-                            )
+                        if (qualityBadge != null) {
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Surface(
+                                color = Color.Black.copy(alpha = 0.40f),
+                                shape = RoundedCornerShape(4.dp),
+                                border = BorderStroke(
+                                    0.6.dp,
+                                    if (isUltraHd) AmberGold.copy(alpha = 0.75f) else TvCrimsonRose.copy(alpha = 0.45f)
+                                )
+                            ) {
+                                Text(
+                                    text = qualityBadge,
+                                    color = if (isUltraHd) AmberGold else TvCrimsonRose,
+                                    fontSize = 8.sp,
+                                    fontWeight = FontWeight.ExtraBold,
+                                    modifier = Modifier.padding(horizontal = 4.5.dp, vertical = 1.dp)
+                                )
+                            }
                         }
                         if (channel.isLocked) {
                             Spacer(modifier = Modifier.width(5.dp))
@@ -858,7 +926,7 @@ fun ChannelCard(
 
                     Spacer(modifier = Modifier.height(4.dp))
 
-                    // Inline Live Status & Catchup Metadata
+                    // Authentic Inline Live Status, Region Badge & Catchup Metadata (Zero Fake Progress Bars)
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Box(
                             modifier = Modifier
@@ -868,7 +936,7 @@ fun ChannelCard(
                         )
                         Spacer(modifier = Modifier.width(5.dp))
                         Text(
-                            text = "ON AIR • ${(liveProgressFraction * 100).toInt()}%",
+                            text = if (regionBadge != null) "$regionBadge • LIVE" else "LIVE STREAM",
                             color = TvCrimsonRose,
                             fontSize = 10.sp,
                             fontWeight = FontWeight.ExtraBold,
@@ -891,29 +959,6 @@ fun ChannelCard(
                                 fontWeight = FontWeight.SemiBold
                             )
                         }
-                    }
-
-                    Spacer(modifier = Modifier.height(6.dp))
-
-                    // "Now & Next" Live EPG Progress Strip (Scarlet to AmberGold gradient)
-                    Box(
-                        modifier = Modifier
-                            .fillMaxWidth(0.90f)
-                            .height(2.5.dp)
-                            .clip(RoundedCornerShape(50))
-                            .background(Color.White.copy(alpha = 0.08f))
-                    ) {
-                        Box(
-                            modifier = Modifier
-                                .fillMaxWidth(liveProgressFraction)
-                                .height(2.5.dp)
-                                .clip(RoundedCornerShape(50))
-                                .background(
-                                    Brush.horizontalGradient(
-                                        listOf(TvBroadcastScarlet, TvCrimsonRose, AmberGold)
-                                    )
-                                )
-                        )
                     }
                 }
 

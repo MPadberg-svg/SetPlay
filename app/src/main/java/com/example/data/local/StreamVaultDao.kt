@@ -125,10 +125,10 @@ interface StreamDao {
     """)
     fun getCategoryStreamCounts(playlistId: Long, streamType: String): Flow<List<CategoryCountTuple>>
 
-    @Query("SELECT * FROM streams WHERE playlistId = :playlistId AND streamType = :streamType LIMIT :limit")
+    @Query("SELECT * FROM streams WHERE playlistId = :playlistId AND streamType = :streamType ORDER BY id ASC LIMIT :limit")
     fun getStreamsInitial(playlistId: Long, streamType: String, limit: Int = 180): Flow<List<StreamEntity>>
 
-    @Query("SELECT * FROM streams WHERE playlistId = :playlistId AND streamType = :streamType AND categoryId = :categoryId LIMIT :limit")
+    @Query("SELECT * FROM streams WHERE playlistId = :playlistId AND streamType = :streamType AND categoryId = :categoryId ORDER BY id ASC LIMIT :limit")
     fun getStreamsByCategoryFast(playlistId: Long, streamType: String, categoryId: String, limit: Int = 200): Flow<List<StreamEntity>>
 
     @Query("""
@@ -136,6 +136,7 @@ interface StreamDao {
         WHERE playlistId = :playlistId
           AND streamType = :streamType
           AND name LIKE '%' || :query || '%'
+        ORDER BY id ASC
         LIMIT :limit
     """)
     fun searchStreamsByTypeFast(playlistId: Long, streamType: String, query: String, limit: Int = 150): Flow<List<StreamEntity>>
@@ -146,6 +147,7 @@ interface StreamDao {
           AND streamType = :streamType
           AND categoryId = :categoryId
           AND name LIKE '%' || :query || '%'
+        ORDER BY id ASC
         LIMIT :limit
     """)
     fun searchStreamsInCategoryFast(
@@ -172,9 +174,10 @@ interface StreamDao {
           AND streamType = 'live'
           AND (:categoryId IS NULL OR :categoryId = '' OR categoryId = :categoryId)
           AND name LIKE '%' || :query || '%'
-        LIMIT 150
+        ORDER BY id ASC
+        LIMIT :limit
     """)
-    fun searchLiveChannels(playlistId: Long, query: String, categoryId: String?): Flow<List<StreamEntity>>
+    fun searchLiveChannels(playlistId: Long, query: String, categoryId: String?, limit: Int = 180): Flow<List<StreamEntity>>
 
     // General global search across Live, Movies, and Series
     @Query("""

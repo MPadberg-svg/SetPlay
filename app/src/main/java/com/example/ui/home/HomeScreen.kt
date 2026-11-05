@@ -173,6 +173,8 @@ import com.example.ui.theme.MenaBeinPurple
 import com.example.ui.theme.MenaSscDark
 import com.example.ui.theme.MenaSscTeal
 import com.example.ui.theme.MetalCharcoal
+import com.example.ui.theme.TabularNumeralTextStyle
+import com.example.ui.theme.luxuryFocusableCard
 import com.example.ui.theme.MetalCharcoalElevated
 import com.example.ui.theme.PaleGold
 import com.example.ui.viewmodel.AppScreen
@@ -614,6 +616,12 @@ fun HomeScreen(
             onPlayMatchedFavoriteStream = { stream ->
                 mainViewModel.dismissBeinChannelMatcher()
                 onStreamClick(stream)
+            },
+            onWatchAndPinCatalogStream = { stream ->
+                mainViewModel.pinToFavoritesAndPlayStream(
+                    stream = stream,
+                    onPlayStream = onStreamClick
+                )
             },
             onSelectMenaChannelOption = { channelLabel ->
                 mainViewModel.selectMenaChannelOptionInMatcher(
@@ -2454,9 +2462,14 @@ private fun SplitBroadcasterWatchCapsule(
     badgeAccent: Color = MenaBeinPurple,
     badgeText: Color,
     isLive: Boolean,
+    matchStatus: MatchStatus = if (isLive) MatchStatus.LIVE else MatchStatus.UPCOMING,
     watchTestTag: String,
-    onWatchClick: () -> Unit
+    onWatchClick: () -> Unit,
+    onActionClick: () -> Unit = onWatchClick
 ) {
+    val isLiveStatus = matchStatus == MatchStatus.LIVE || matchStatus == MatchStatus.HALFTIME
+    val isFinishedStatus = matchStatus == MatchStatus.FINISHED
+
     val interactionSource = remember { MutableInteractionSource() }
     val isPressed by interactionSource.collectIsPressedAsState()
     val scale by animateFloatAsState(
@@ -2477,18 +2490,25 @@ private fun SplitBroadcasterWatchCapsule(
     }
 
     Surface(
-        color = badgeBg.copy(alpha = 0.92f),
+        color = badgeBg.copy(alpha = if (isFinishedStatus) 0.72f else 0.92f),
         shape = RoundedCornerShape(50),
         border = BorderStroke(
             width = 1.dp,
             brush = Brush.horizontalGradient(
-                listOf(
-                    badgeAccent.copy(alpha = 0.75f),
-                    KickoffTropicalTeal.copy(alpha = 0.85f)
-                )
+                if (isFinishedStatus) {
+                    listOf(
+                        badgeAccent.copy(alpha = 0.45f),
+                        Champagne.copy(alpha = 0.35f)
+                    )
+                } else {
+                    listOf(
+                        badgeAccent.copy(alpha = 0.75f),
+                        KickoffTropicalTeal.copy(alpha = 0.85f)
+                    )
+                }
             )
         ),
-        shadowElevation = 4.dp,
+        shadowElevation = if (isFinishedStatus) 1.dp else 4.dp,
         modifier = Modifier
             .graphicsLayer {
                 scaleX = scale
@@ -2549,32 +2569,41 @@ private fun SplitBroadcasterWatchCapsule(
                 }
             }
 
-            // Stage 2: Illuminated Floodlight Watch CTA Pill with Circular Play Medallion
+            // Stage 2: Context-Aware Action Pill by MatchStatus (LIVE / UPCOMING / FINISHED)
             Surface(
                 color = Color.Transparent,
                 shape = RoundedCornerShape(50),
                 border = BorderStroke(
                     0.8.dp,
-                    if (isLive) KickoffPeachCream.copy(alpha = 0.9f) else Color.White.copy(alpha = 0.40f)
+                    when {
+                        isLiveStatus -> KickoffPeachCream.copy(alpha = 0.9f)
+                        isFinishedStatus -> Champagne.copy(alpha = 0.35f)
+                        else -> KickoffTropicalTeal.copy(alpha = 0.75f)
+                    }
                 ),
                 modifier = Modifier
                     .height(27.dp)
                     .clip(RoundedCornerShape(50))
                     .background(
-                        brush = if (isLive) {
-                            Brush.horizontalGradient(
+                        brush = when {
+                            isLiveStatus -> Brush.horizontalGradient(
                                 listOf(
                                     Color(0xFF80EE98),
                                     Color(0xFF09D1C7),
                                     KickoffTropicalTeal
                                 )
                             )
-                        } else {
-                            Brush.horizontalGradient(
+                            isFinishedStatus -> Brush.horizontalGradient(
                                 listOf(
-                                    Color(0xFF46DFB1),
-                                    KickoffTropicalTeal,
-                                    KickoffCeruleanBlue
+                                    Color(0xFF0B1C28),
+                                    Color(0xFF132C3D)
+                                )
+                            )
+                            else -> Brush.horizontalGradient(
+                                listOf(
+                                    KickoffOceanElevated,
+                                    KickoffCeruleanBlue,
+                                    KickoffTropicalTeal.copy(alpha = 0.88f)
                                 )
                             )
                         }
@@ -2582,7 +2611,7 @@ private fun SplitBroadcasterWatchCapsule(
                     .clickable(
                         interactionSource = interactionSource,
                         indication = null,
-                        onClick = onWatchClick
+                        onClick = onActionClick
                     )
                     .testTag(watchTestTag)
             ) {
@@ -2591,7 +2620,7 @@ private fun SplitBroadcasterWatchCapsule(
                     horizontalArrangement = Arrangement.Center,
                     modifier = Modifier.padding(start = 4.dp, end = 9.dp)
                 ) {
-                    // Recessed Dark Circular Play Medallion
+                    // Recessed Dark Circular Action Medallion
                     Box(
                         contentAlignment = Alignment.Center,
                         modifier = Modifier
@@ -2600,20 +2629,36 @@ private fun SplitBroadcasterWatchCapsule(
                             .background(DarkGraphite)
                     ) {
                         Icon(
-                            imageVector = Icons.Default.PlayArrow,
-                            contentDescription = "Watch Match",
-                            tint = if (isLive) Color(0xFF80EE98) else KickoffTropicalTeal,
+                            imageVector = if (isFinishedStatus) Icons.Default.Info else Icons.Default.PlayArrow,
+                            contentDescription = when {
+                                isLiveStatus -> "Watch Live Match"
+                                isFinishedStatus -> "Match Stats and TV Guide"
+                                else -> "Pre-Match Channel Test"
+                            },
+                            tint = when {
+                                isLiveStatus -> Color(0xFF80EE98)
+                                isFinishedStatus -> AmberGold
+                                else -> KickoffPeachCream
+                            },
                             modifier = Modifier.size(12.dp)
                         )
                     }
                     Spacer(modifier = Modifier.width(5.dp))
-                    if (isLive) {
+                    if (isLiveStatus) {
                         LiveBroadcastEqualizerBars()
                         Spacer(modifier = Modifier.width(4.dp))
                     }
                     Text(
-                        text = if (isLive) "WATCH LIVE" else "WATCH",
-                        color = DarkGraphite,
+                        text = when {
+                            isLiveStatus -> "WATCH LIVE"
+                            isFinishedStatus -> "STATS & TV"
+                            else -> "PRE-MATCH"
+                        },
+                        color = when {
+                            isLiveStatus -> DarkGraphite
+                            isFinishedStatus -> Champagne
+                            else -> Color.White
+                        },
                         fontSize = 9.5.sp,
                         fontWeight = FontWeight.ExtraBold,
                         letterSpacing = 0.4.sp,
@@ -2746,7 +2791,11 @@ private fun FlashscoreMatchCard(
             .fillMaxWidth()
             .padding(horizontal = if (isInsidePinnedSection) 0.dp else 16.dp)
             .clip(cardShape)
-            .clickable { onOpenDossier() }
+            .luxuryFocusableCard(
+                accentColor = if (isLive) LiveCrimson else KickoffTropicalTeal,
+                shape = cardShape,
+                onClick = { onOpenDossier() }
+            )
             .testTag("match_card_${match.matchId}")
     ) {
         Row(
@@ -2872,6 +2921,7 @@ private fun FlashscoreMatchCard(
                                     fontSize = if (isLive) 14.sp else 13.sp,
                                     lineHeight = 14.5.sp,
                                     fontWeight = FontWeight.ExtraBold,
+                                    style = TabularNumeralTextStyle,
                                     textAlign = TextAlign.Center,
                                     maxLines = 1,
                                     softWrap = false
@@ -3082,15 +3132,23 @@ private fun FlashscoreMatchCard(
 
                     Spacer(modifier = Modifier.width(8.dp))
 
-                    // Right side: Dual-Stage Broadcast Launch Deck
+                    // Right side: Dual-Stage Broadcast Launch Deck (Context-Aware by MatchStatus)
                     SplitBroadcasterWatchCapsule(
                         broadcasterName = match.beinChannel,
                         badgeBg = badgeBg,
                         badgeAccent = badgeAccent,
                         badgeText = badgeText,
                         isLive = isLive,
+                        matchStatus = match.status,
                         watchTestTag = "watch_bein_btn_${match.matchId}",
-                        onWatchClick = { onWatchBeinClicked(match.beinChannel) }
+                        onWatchClick = { onWatchBeinClicked(match.beinChannel) },
+                        onActionClick = {
+                            if (match.status == MatchStatus.FINISHED) {
+                                onOpenDossier()
+                            } else {
+                                onWatchBeinClicked(match.beinChannel)
+                            }
+                        }
                     )
                 }
             }
@@ -3185,6 +3243,7 @@ private fun FlashscoreTeamRow(
                     color = scoreColor,
                     fontSize = 13.sp,
                     fontWeight = FontWeight.ExtraBold,
+                    style = TabularNumeralTextStyle,
                     textAlign = TextAlign.Center,
                     modifier = Modifier
                         .width(26.dp)
@@ -4220,6 +4279,7 @@ private fun BeinChannelMatcherBottomSheet(
     state: BeinChannelMatcherState,
     activePlaylist: PlaylistEntity?,
     onPlayMatchedFavoriteStream: (StreamEntity) -> Unit,
+    onWatchAndPinCatalogStream: (StreamEntity) -> Unit = {},
     onSelectMenaChannelOption: (String) -> Unit,
     onConnectPlaylist: () -> Unit,
     onOpenFavoritesScreen: () -> Unit,
@@ -4236,6 +4296,7 @@ private fun BeinChannelMatcherBottomSheet(
                 .fillMaxWidth()
                 .navigationBarsPadding()
                 .padding(horizontal = 20.dp, vertical = 10.dp)
+                .testTag("bein_channel_matcher_sheet")
         ) {
             // Header: Match & Clicked MENA Broadcaster Badge
             Row(
@@ -4352,8 +4413,7 @@ private fun BeinChannelMatcherBottomSheet(
                 }
 
                 state.requiresAddToFavoritesPrompt -> {
-                    // Case B — No Match Found in Favorites:
-                    // Display clear notification that explicitly mentions the clicked channel name
+                    // Case B — No Match Found in Favorites (Tier 1), with Smart Tier 2 Playlist Catalog Candidates
                     Surface(
                         color = ArenaTurfDark,
                         shape = RoundedCornerShape(14.dp),
@@ -4365,20 +4425,20 @@ private fun BeinChannelMatcherBottomSheet(
                         Column(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .padding(16.dp),
+                                .padding(14.dp),
                             horizontalAlignment = Alignment.CenterHorizontally
                         ) {
                             Icon(
                                 imageVector = Icons.Default.StarBorder,
                                 contentDescription = null,
                                 tint = AmberGold,
-                                modifier = Modifier.size(28.dp)
+                                modifier = Modifier.size(24.dp)
                             )
-                            Spacer(modifier = Modifier.height(8.dp))
+                            Spacer(modifier = Modifier.height(6.dp))
                             Text(
                                 text = state.missingFavoriteNotificationMessage,
                                 color = PaleGold,
-                                fontSize = 14.sp,
+                                fontSize = 13.sp,
                                 fontWeight = FontWeight.ExtraBold,
                                 textAlign = TextAlign.Center
                             )
@@ -4386,7 +4446,7 @@ private fun BeinChannelMatcherBottomSheet(
                                 !it.equals(state.resolvedChannelLabel, ignoreCase = true)
                             }
                             if (firstAvailableFavChannel != null) {
-                                Spacer(modifier = Modifier.height(10.dp))
+                                Spacer(modifier = Modifier.height(8.dp))
                                 OutlinedButton(
                                     onClick = { onSelectMenaChannelOption(firstAvailableFavChannel) },
                                     border = BorderStroke(1.dp, ArenaPitchGreen),
@@ -4410,7 +4470,7 @@ private fun BeinChannelMatcherBottomSheet(
                                     )
                                 }
                             }
-                            Spacer(modifier = Modifier.height(14.dp))
+                            Spacer(modifier = Modifier.height(10.dp))
                             Row(
                                 horizontalArrangement = Arrangement.spacedBy(10.dp),
                                 modifier = Modifier.fillMaxWidth()
@@ -4448,6 +4508,132 @@ private fun BeinChannelMatcherBottomSheet(
                                         .testTag("missing_favorite_ok_btn")
                                 ) {
                                     Text("OK", fontWeight = FontWeight.ExtraBold, fontSize = 12.sp)
+                                }
+                            }
+                        }
+                    }
+
+                    // Tier 2 Smart Resolver: Matched streams found in the user's Live TV catalog
+                    if (state.livePlaylistCandidates.isNotEmpty()) {
+                        Spacer(modifier = Modifier.height(12.dp))
+                        Text(
+                            text = "FOUND IN YOUR PLAYLIST CATALOG (${state.livePlaylistCandidates.size}) — 1-TAP WATCH & PIN",
+                            color = ArenaFloodlightLime,
+                            fontSize = 10.5.sp,
+                            fontWeight = FontWeight.ExtraBold
+                        )
+                        Spacer(modifier = Modifier.height(6.dp))
+                        LazyColumn(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .heightIn(max = 220.dp)
+                                .testTag("catalog_candidate_streams_list"),
+                            verticalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            items(state.livePlaylistCandidates, key = { it.id }) { stream ->
+                                val qualityBadge = when {
+                                    stream.name.contains("4K", true) || stream.name.contains("UHD", true) -> "4K UHD"
+                                    stream.name.contains("FHD", true) || stream.name.contains("1080", true) -> "FHD"
+                                    stream.name.contains("HD", true) -> "HD"
+                                    else -> "LIVE"
+                                }
+                                Surface(
+                                    color = ArenaTurfElevated,
+                                    shape = RoundedCornerShape(12.dp),
+                                    border = BorderStroke(1.dp, KickoffTropicalTeal.copy(alpha = 0.7f)),
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .clickable { onWatchAndPinCatalogStream(stream) }
+                                        .testTag("catalog_candidate_stream_${stream.id}")
+                                ) {
+                                    Row(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .padding(horizontal = 12.dp, vertical = 9.dp),
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.SpaceBetween
+                                    ) {
+                                        Row(
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            modifier = Modifier.weight(1f)
+                                        ) {
+                                            Surface(
+                                                color = badgeBg,
+                                                shape = RoundedCornerShape(8.dp)
+                                            ) {
+                                                Icon(
+                                                    imageVector = Icons.Default.LiveTv,
+                                                    contentDescription = null,
+                                                    tint = badgeText,
+                                                    modifier = Modifier
+                                                        .padding(6.dp)
+                                                        .size(15.dp)
+                                                )
+                                            }
+                                            Spacer(modifier = Modifier.width(9.dp))
+                                            Column {
+                                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                                    Text(
+                                                        text = stream.name,
+                                                        color = PaleGold,
+                                                        fontSize = 12.5.sp,
+                                                        fontWeight = FontWeight.Bold,
+                                                        maxLines = 1,
+                                                        overflow = TextOverflow.Ellipsis,
+                                                        modifier = Modifier.weight(1f, fill = false)
+                                                    )
+                                                    Spacer(modifier = Modifier.width(6.dp))
+                                                    Surface(
+                                                        color = KickoffTropicalTeal.copy(alpha = 0.20f),
+                                                        shape = RoundedCornerShape(4.dp),
+                                                        border = BorderStroke(0.6.dp, KickoffTropicalTeal)
+                                                    ) {
+                                                        Text(
+                                                            text = qualityBadge,
+                                                            color = KickoffPeachCream,
+                                                            fontSize = 8.5.sp,
+                                                            fontWeight = FontWeight.ExtraBold,
+                                                            modifier = Modifier.padding(horizontal = 5.dp, vertical = 1.dp)
+                                                        )
+                                                    }
+                                                }
+                                                Text(
+                                                    text = "Matched in Live TV Catalog • Auto-saves to Favorites",
+                                                    color = Champagne,
+                                                    fontSize = 10.sp
+                                                )
+                                            }
+                                        }
+
+                                        Spacer(modifier = Modifier.width(8.dp))
+
+                                        Surface(
+                                            color = ArenaPitchGreen,
+                                            shape = RoundedCornerShape(8.dp),
+                                            modifier = Modifier
+                                                .clickable { onWatchAndPinCatalogStream(stream) }
+                                                .testTag("watch_and_pin_btn_${stream.id}")
+                                        ) {
+                                            Row(
+                                                verticalAlignment = Alignment.CenterVertically,
+                                                modifier = Modifier.padding(horizontal = 9.dp, vertical = 6.dp)
+                                            ) {
+                                                Icon(
+                                                    imageVector = Icons.Default.PlayArrow,
+                                                    contentDescription = "Watch & Pin to Favorites",
+                                                    tint = DarkGraphite,
+                                                    modifier = Modifier.size(13.dp)
+                                                )
+                                                Spacer(modifier = Modifier.width(3.dp))
+                                                Text(
+                                                    text = "Watch & Pin to Favorites",
+                                                    color = DarkGraphite,
+                                                    fontSize = 10.sp,
+                                                    fontWeight = FontWeight.ExtraBold
+                                                )
+                                            }
+                                        }
+                                    }
                                 }
                             }
                         }

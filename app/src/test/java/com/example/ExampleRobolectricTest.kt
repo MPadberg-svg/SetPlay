@@ -2,6 +2,7 @@ package com.example
 
 import android.app.Application
 import android.content.Context
+import android.view.KeyEvent
 import androidx.compose.ui.graphics.Color
 import androidx.room.Room
 import androidx.test.core.app.ApplicationProvider
@@ -12,6 +13,7 @@ import com.example.data.model.StreamEntity
 import com.example.data.remote.XtreamClient
 import com.example.data.repository.IptvRepository
 import com.example.ui.player.PlayerViewModel
+import com.example.ui.player.handlePlayerRemoteKeyEvent
 import com.example.ui.playlists.formatExpirationDate
 import com.example.ui.theme.AmberGold
 import com.example.ui.theme.Champagne
@@ -611,14 +613,15 @@ class ExampleRobolectricTest {
         )
         assertEquals(listOf(7L), matchSsc1.favoriteMatches.map { it.streamId })
 
-        // Case B: "beIN Sports 3 HD" is not in Favorites (even though streamId=8 is in the Xtream catalog)
+        // Case B: "beIN Sports 3 HD" is not in Favorites -> Tier 1 favoriteMatches is empty,
+        // while Smart Tier 2 livePlaylistCandidates finds streamId=8 ("AR: beIN Sports 3 HD") in the Live TV catalog!
         val matchMissingBein3 = footballRepository.findMenaChannelsWithFavoritesPriority(
             playlistId = playlistId,
             match = merged,
             overrideChannelLabel = "beIN Sports 3 HD"
         )
         assertTrue(matchMissingBein3.favoriteMatches.isEmpty())
-        assertTrue(matchMissingBein3.livePlaylistCandidates.isEmpty())
+        assertEquals(listOf(8L), matchMissingBein3.livePlaylistCandidates.map { it.streamId })
 
         // 6. Verify 5-Tab Match Center Dossier (Summary Timeline + HT/FT, 2D Pitch Lineups, Stats, H2H/Standings, MENA TV Guide)
         val dossier = footballRepository.fetchMatchFullDossier(merged)
@@ -877,6 +880,336 @@ class ExampleRobolectricTest {
         assertEquals("21:00", moroccoZone.convertMoroccoTimeToZoneTime("21:00", com.example.data.repository.SeasonTimeMode.SUMMER))
         assertEquals("20:00", moroccoZone.convertMoroccoTimeToZoneTime("21:00", com.example.data.repository.SeasonTimeMode.WINTER))
     }
+
+    @Test
+    fun `test StreamMetadataParser cleanDisplayTitle, region badge, quality badge, and AAC audio codec mapping`() {
+        // 1. Clean Display Title
+        assertEquals(
+            "Saw X",
+            com.example.util.StreamMetadataParser.cleanDisplayTitle("ES| Saw X")
+        )
+        assertEquals(
+            "La super risa en vacaciones 8",
+            com.example.util.StreamMetadataParser.cleanDisplayTitle("ES| La super risa en vacaciones 8")
+        )
+        assertEquals(
+            "beIN Sports 01",
+            com.example.util.StreamMetadataParser.cleanDisplayTitle("AR| BEIN SPORTS 01 4K")
+        )
+        assertEquals(
+            "beIN Sports 02",
+            com.example.util.StreamMetadataParser.cleanDisplayTitle("[01] AR | BEIN SPORTS 02 FHD HEVC")
+        )
+        assertEquals(
+            "Dune: Part Two",
+            com.example.util.StreamMetadataParser.cleanDisplayTitle("FR┃ Dune: Part Two [4K UHD]")
+        )
+
+        // 2. Region / Language Badge Extraction
+        assertEquals("ES", com.example.util.StreamMetadataParser.extractRegionOrLangBadge("ES| Saw X"))
+        assertEquals("AR", com.example.util.StreamMetadataParser.extractRegionOrLangBadge("[01] AR | BEIN SPORTS 02 FHD HEVC"))
+        assertEquals("FR", com.example.util.StreamMetadataParser.extractRegionOrLangBadge("FR┃ Dune: Part Two [4K UHD]"))
+        assertEquals("EN", com.example.util.StreamMetadataParser.extractRegionOrLangBadge("EN| Hard Knocks: Training Camp"))
+        assertNull(com.example.util.StreamMetadataParser.extractRegionOrLangBadge("Inception"))
+
+        // 3. Authentic Quality Badge Extraction (never fabricates 4K when absent)
+        assertEquals("4K UHD", com.example.util.StreamMetadataParser.extractQualityBadge("FR┃ Dune: Part Two [4K UHD]"))
+        assertEquals("1080p FHD", com.example.util.StreamMetadataParser.extractQualityBadge("[01] AR | BEIN SPORTS 02 FHD HEVC"))
+        assertEquals("HD", com.example.util.StreamMetadataParser.extractQualityBadge("AR: beIN Sports 4 HD"))
+        assertNull(com.example.util.StreamMetadataParser.extractQualityBadge("ES| La super risa en vacaciones 8"))
+
+        // 4. Audio Codec Badge (MP4A-LATM -> AAC, AC-4 -> AC4, DTS -> DTS)
+        val app = ApplicationProvider.getApplicationContext<Application>()
+        val playerViewModel = PlayerViewModel(app)
+        assertEquals("AAC", playerViewModel.formatMimeToCodecBadge("audio/mp4a-latm"))
+        assertEquals("AAC", playerViewModel.formatMimeToCodecBadge("audio/aac"))
+        assertEquals("AC4", playerViewModel.formatMimeToCodecBadge("audio/ac-4"))
+        assertEquals("DTS", playerViewModel.formatMimeToCodecBadge("audio/vnd.dts"))
+    }
+
+    @Test
+    fun `test Parental Controls multi-section category locks and re-sync lock restoration`() = runBlocking {
+        val repository = IptvRepository(
+            playlistDao = database.playlistDao(),
+            categoryDao = database.categoryDao(),
+            streamDao = database.streamDao(),
+            epgDao = database.epgDao(),
+            parentalDao = database.parentalSettingsDao()
+        )
+        val playlistId = repository.addOrUpdatePlaylist(
+            PlaylistEntity(
+                name = "Family Vault Account",
+                serverUrl = "https://iptv.setplay.io",
+                username = "family_user",
+                password = "secret",
+                isActive = true
+            )
+        )
+
+        // Insert Live TV, Movie, and Series categories
+        val initialCategories = listOf(
+            CategoryEntity(playlistId = playlistId, categoryId = "live_adult", categoryName = "18+ Live Channels", type = "LIVE"),
+            CategoryEntity(playlistId = playlistId, categoryId = "live_sports", categoryName = "AR| beIN Sports", type = "LIVE"),
+            CategoryEntity(playlistId = playlistId, categoryId = "vod_horror", categoryName = "ES| Horror & Thriller", type = "MOVIE"),
+            CategoryEntity(playlistId = playlistId, categoryId = "series_mature", categoryName = "FR| Mature Drama", type = "SERIES")
+        )
+        database.categoryDao().insertCategories(initialCategories)
+
+        // Enable Parental Lock and lock one category in each section (LIVE, MOVIE, SERIES)
+        repository.toggleParentalEnabled(true)
+        repository.setCategoryLocked(playlistId, "live_adult", true)
+        repository.setCategoryLocked(playlistId, "vod_horror", true)
+        repository.setCategoryLocked(playlistId, "series_mature", true)
+
+        assertTrue(repository.isCategoryLocked("live_adult"))
+        assertFalse(repository.isCategoryLocked("live_sports"))
+        assertTrue(repository.isCategoryLocked("vod_horror"))
+        assertTrue(repository.isCategoryLocked("series_mature"))
+
+        // Simulate a playlist re-sync where XtreamClient inserts fresh CategoryEntity instances with isLocked = false
+        database.categoryDao().insertCategories(initialCategories)
+        // Before restoration, Room REPLACE resets CategoryEntity.isLocked to false
+        assertFalse(repository.getCategories(playlistId, "LIVE").first().first { it.categoryId == "live_adult" }.isLocked)
+
+        // Restore locked categories from ParentalSettingsEntity.lockedCategoriesJson
+        repository.restoreLockedCategories(playlistId)
+
+        val liveCatsAfterSync = repository.getCategories(playlistId, "LIVE").first()
+        val movieCatsAfterSync = repository.getCategories(playlistId, "MOVIE").first()
+        val seriesCatsAfterSync = repository.getCategories(playlistId, "SERIES").first()
+
+        assertTrue(liveCatsAfterSync.first { it.categoryId == "live_adult" }.isLocked)
+        assertFalse(liveCatsAfterSync.first { it.categoryId == "live_sports" }.isLocked)
+        assertTrue(movieCatsAfterSync.first { it.categoryId == "vod_horror" }.isLocked)
+        assertTrue(seriesCatsAfterSync.first { it.categoryId == "series_mature" }.isLocked)
+    }
+
+    @Test
+    fun `test progressive catalog paging beyond 180 items and independent per-episode series resume tracking`() = runBlocking {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val app = ApplicationProvider.getApplicationContext<Application>()
+        IptvRepository.initEpisodePreferences(context)
+        IptvRepository.resetEpisodePreferencesForTesting()
+
+        val repository = IptvRepository(
+            playlistDao = database.playlistDao(),
+            categoryDao = database.categoryDao(),
+            streamDao = database.streamDao(),
+            epgDao = database.epgDao(),
+            parentalDao = database.parentalSettingsDao()
+        )
+        val playlist = PlaylistEntity(
+            name = "Cinema & Series Scale Account",
+            serverUrl = "https://iptv.setplay.io",
+            username = "scale_user",
+            password = "secret",
+            isActive = true
+        )
+        val playlistId = repository.addOrUpdatePlaylist(playlist)
+        val storedPlaylist = repository.getPlaylistById(playlistId)!!
+
+        // 1. Insert 420 movies into Room and verify deterministic progressive paging (180 -> 360 -> 420)
+        val moviesBatch = (1..420).map { idx ->
+            StreamEntity(
+                playlistId = playlistId,
+                streamId = 10_000L + idx,
+                categoryId = if (idx <= 250) "cat_action" else "cat_drama",
+                name = "Cinema Feature #%03d".format(idx),
+                streamType = "movie"
+            )
+        }
+        database.streamDao().insertStreamsBatch(moviesBatch)
+
+        val page1 = repository.queryStreamsFast(playlistId, "movie", null, "", limit = 180).first()
+        assertEquals(180, page1.size)
+        assertEquals("Cinema Feature #001", page1.first().name)
+        assertEquals("Cinema Feature #180", page1.last().name)
+
+        val page2 = repository.queryStreamsFast(playlistId, "movie", null, "", limit = 360).first()
+        assertEquals(360, page2.size)
+        assertEquals("Cinema Feature #001", page2.first().name)
+        assertEquals("Cinema Feature #360", page2.last().name)
+
+        val page3 = repository.queryStreamsFast(playlistId, "movie", null, "", limit = 540).first()
+        assertEquals(420, page3.size)
+        assertEquals("Cinema Feature #420", page3.last().name)
+
+        // Verify category-filtered paging
+        val catPage1 = repository.queryStreamsFast(playlistId, "movie", "cat_action", "", limit = 180).first()
+        val catPage2 = repository.queryStreamsFast(playlistId, "movie", "cat_action", "", limit = 360).first()
+        assertEquals(180, catPage1.size)
+        assertEquals(250, catPage2.size)
+
+        // Verify LiveTvViewModel and VodViewModel progressive paging & reset on category/query change
+        val liveTvVm = com.example.ui.livetv.LiveTvViewModel(app)
+        assertEquals(180, liveTvVm.currentLimit.value)
+        liveTvVm.loadNextPage()
+        assertEquals(360, liveTvVm.currentLimit.value)
+        liveTvVm.onChannelFilterQueryChanged("beIN")
+        assertEquals(180, liveTvVm.currentLimit.value)
+
+        val vodVm = com.example.ui.vod.VodViewModel(app)
+        assertEquals(180, vodVm.currentLimit.value)
+        vodVm.loadNextPage()
+        assertEquals(360, vodVm.currentLimit.value)
+        vodVm.selectMovieCategory("cat_action")
+        assertEquals(180, vodVm.currentLimit.value)
+        vodVm.loadNextPage()
+        assertEquals(360, vodVm.currentLimit.value)
+        vodVm.onMovieSearchQueryChanged("Feature")
+        assertEquals(180, vodVm.currentLimit.value)
+
+        // 2. Verify Series per-episode resume tracking keyed by "${playlistId}_ep_${episodeId}"
+        val seriesId = database.streamDao().let { dao ->
+            dao.insertStreamsBatch(
+                listOf(
+                    StreamEntity(
+                        playlistId = playlistId,
+                        streamId = 900L,
+                        categoryId = "series_vip",
+                        name = "The Last of Us",
+                        streamType = "series"
+                    )
+                )
+            )
+            dao.getStreamByProviderId(playlistId, 900L)!!.id
+        }
+
+        val ep1Stream = StreamEntity(
+            id = seriesId,
+            playlistId = playlistId,
+            streamId = 5001L, // Episode 1 episodeId
+            categoryId = "series_vip",
+            name = "The Last of Us • S1E1 - When You're Lost in the Darkness",
+            streamType = "series",
+            epgChannelId = "900:1:1",
+            containerExtension = "mp4"
+        )
+        val ep2Stream = StreamEntity(
+            id = seriesId,
+            playlistId = playlistId,
+            streamId = 5002L, // Episode 2 episodeId
+            categoryId = "series_vip",
+            name = "The Last of Us • S1E2 - Infected",
+            streamType = "series",
+            epgChannelId = "900:1:2",
+            containerExtension = "mp4"
+        )
+
+        val playerViewModel = PlayerViewModel(app)
+
+        // Play Episode 1 and scrub to 18 minutes (1,080,000 ms)
+        playerViewModel.playStream(ep1Stream, storedPlaylist)
+        playerViewModel.seekToPosition(1_080_000L)
+        assertEquals(1_080_000L, repository.getEpisodePositionMs(playlistId, 5001L))
+        assertEquals(0L, repository.getEpisodePositionMs(playlistId, 5002L))
+
+        // Play Episode 2 -> starts fresh at 0ms (does NOT collide with Episode 1's 18m position), then scrub to 7 minutes (420,000 ms)
+        playerViewModel.playStream(ep2Stream, storedPlaylist)
+        assertEquals(0L, playerViewModel.uiState.value.currentPositionMs)
+        playerViewModel.seekToPosition(420_000L)
+        assertEquals(420_000L, repository.getEpisodePositionMs(playlistId, 5002L))
+        // Episode 1's saved resume position remains intact at 1,080,000 ms
+        assertEquals(1_080_000L, repository.getEpisodePositionMs(playlistId, 5001L))
+
+        // Re-open Episode 1 -> resumes at 1,080,000 ms
+        playerViewModel.playStream(ep1Stream, storedPlaylist)
+        assertEquals(1_080_000L, playerViewModel.uiState.value.currentPositionMs)
+        assertEquals(1_080_000L, playerViewModel.uiState.value.currentStream?.lastPositionMs)
+    }
+
+    @Test
+    fun `test Android TV remote keybindings for channel zapping, VOD seeking, and play pause`() {
+        var centerTriggeredCount = 0
+        var playPauseTriggeredCount = 0
+        val zappedOffsets = mutableListOf<Int>()
+        val seekDeltas = mutableListOf<Int>()
+
+        // 1. Live TV with hidden controls: DPAD_UP / DPAD_DOWN / CHANNEL_UP / CHANNEL_DOWN zap channels
+        assertTrue(
+            handlePlayerRemoteKeyEvent(
+                keyCode = KeyEvent.KEYCODE_DPAD_UP,
+                isLive = true,
+                isControlsVisible = false,
+                isTouchLocked = false,
+                onShowControlsOrTogglePlay = { centerTriggeredCount++ },
+                onTogglePlayPause = { playPauseTriggeredCount++ },
+                onZapChannel = { zappedOffsets.add(it) },
+                onSeekRelative = { seekDeltas.add(it) }
+            )
+        )
+        assertTrue(
+            handlePlayerRemoteKeyEvent(
+                keyCode = KeyEvent.KEYCODE_CHANNEL_DOWN,
+                isLive = true,
+                isControlsVisible = true,
+                isTouchLocked = false,
+                onShowControlsOrTogglePlay = { centerTriggeredCount++ },
+                onTogglePlayPause = { playPauseTriggeredCount++ },
+                onZapChannel = { zappedOffsets.add(it) },
+                onSeekRelative = { seekDeltas.add(it) }
+            )
+        )
+        assertEquals(listOf(1, -1), zappedOffsets)
+
+        // 2. VOD mode: DPAD_LEFT / MEDIA_REWIND seek -10s, DPAD_RIGHT / MEDIA_FAST_FORWARD seek +10s
+        assertTrue(
+            handlePlayerRemoteKeyEvent(
+                keyCode = KeyEvent.KEYCODE_DPAD_LEFT,
+                isLive = false,
+                isControlsVisible = false,
+                isTouchLocked = false,
+                onShowControlsOrTogglePlay = { centerTriggeredCount++ },
+                onTogglePlayPause = { playPauseTriggeredCount++ },
+                onZapChannel = { zappedOffsets.add(it) },
+                onSeekRelative = { seekDeltas.add(it) }
+            )
+        )
+        assertTrue(
+            handlePlayerRemoteKeyEvent(
+                keyCode = KeyEvent.KEYCODE_MEDIA_FAST_FORWARD,
+                isLive = false,
+                isControlsVisible = false,
+                isTouchLocked = false,
+                onShowControlsOrTogglePlay = { centerTriggeredCount++ },
+                onTogglePlayPause = { playPauseTriggeredCount++ },
+                onZapChannel = { zappedOffsets.add(it) },
+                onSeekRelative = { seekDeltas.add(it) }
+            )
+        )
+        assertEquals(listOf(-10, 10), seekDeltas)
+
+        // 3. DPAD_CENTER and MEDIA_PLAY_PAUSE trigger controls/play-pause
+        assertTrue(
+            handlePlayerRemoteKeyEvent(
+                keyCode = KeyEvent.KEYCODE_DPAD_CENTER,
+                isLive = false,
+                isControlsVisible = false,
+                isTouchLocked = false,
+                onShowControlsOrTogglePlay = { centerTriggeredCount++ },
+                onTogglePlayPause = { playPauseTriggeredCount++ },
+                onZapChannel = { zappedOffsets.add(it) },
+                onSeekRelative = { seekDeltas.add(it) }
+            )
+        )
+        assertTrue(
+            handlePlayerRemoteKeyEvent(
+                keyCode = KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE,
+                isLive = false,
+                isControlsVisible = false,
+                isTouchLocked = false,
+                onShowControlsOrTogglePlay = { centerTriggeredCount++ },
+                onTogglePlayPause = { playPauseTriggeredCount++ },
+                onZapChannel = { zappedOffsets.add(it) },
+                onSeekRelative = { seekDeltas.add(it) }
+            )
+        )
+        assertEquals(1, centerTriggeredCount)
+        assertEquals(1, playPauseTriggeredCount)
+    }
 }
+
+
+
 
 

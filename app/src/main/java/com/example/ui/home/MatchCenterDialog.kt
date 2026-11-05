@@ -110,6 +110,7 @@ import com.example.ui.theme.LiveCrimson
 import com.example.ui.theme.MetalCharcoal
 import com.example.ui.theme.MetalCharcoalElevated
 import com.example.ui.theme.PaleGold
+import com.example.ui.theme.TabularNumeralTextStyle
 import java.util.Locale
 
 /**
@@ -425,6 +426,7 @@ private fun MatchCenterScoreboardHeader(
                                 },
                                 fontSize = 9.5.sp,
                                 fontWeight = FontWeight.ExtraBold,
+                                style = TabularNumeralTextStyle,
                                 modifier = Modifier.padding(horizontal = 9.dp, vertical = 2.5.dp)
                             )
                         }
@@ -441,6 +443,7 @@ private fun MatchCenterScoreboardHeader(
                             color = if (isLive) Color.White else KickoffPeachCream,
                             fontSize = 24.sp,
                             fontWeight = FontWeight.ExtraBold,
+                            style = TabularNumeralTextStyle,
                             letterSpacing = 0.8.sp
                         )
 

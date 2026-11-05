@@ -3197,9 +3197,21 @@ class FootballRepository(
             if (replacedEquivalent) mapped else (listOf(targetChannel) + baseOptions).distinct()
         }
 
-        // Search ONLY within the user's saved Favorites channels list
+        // Tier 1: Search within the user's saved Favorites channels list first
         val allFavoriteStreams = streamDao.getFavoriteLiveStreamsOnce(playlistId)
         val favoriteMatches = matchFavoriteChannelsStrictly(allFavoriteStreams, targetChannel)
+
+        // Tier 2: When not yet in Favorites, search the active playlist's Live TV catalog by provider keyword
+        // and filter/rank through matchFavoriteChannelsStrictly so the user can 1-tap "Watch & Pin to Favorites"
+        val liveCatalogCandidates = if (favoriteMatches.isEmpty() && playlistId > 0L && targetChannel.isNotBlank()) {
+            val providerKeywords = extractProviderSearchKeywords(targetChannel)
+            val rawCatalogStreams = providerKeywords
+                .flatMap { keyword -> streamDao.searchLiveStreamsByKeyword(playlistId, keyword) }
+                .distinctBy { it.id }
+            matchFavoriteChannelsStrictly(rawCatalogStreams, targetChannel)
+        } else {
+            emptyList()
+        }
 
         val optionsInFavorites = if (allFavoriteStreams.isEmpty()) {
             emptySet()
@@ -3213,7 +3225,7 @@ class FootballRepository(
 
         MenaChannelMatchResult(
             favoriteMatches = favoriteMatches,
-            livePlaylistCandidates = emptyList(), // Never search full Xtream catalog
+            livePlaylistCandidates = liveCatalogCandidates,
             resolvedChannelLabel = targetChannel,
             resolvedProviderName = resolvedProvider,
             usedMenaFallbackProvider = overrideChannelLabel != null &&
@@ -3221,6 +3233,42 @@ class FootballRepository(
             availableMenaChannelOptions = updatedOptions,
             optionsAvailableInFavorites = optionsInFavorites
         )
+    }
+
+    /**
+     * Extracts SQLite LIKE search keywords for the broadcaster in `channelLabel` so Tier 2 catalog lookup
+     * only scans matching provider streams (`"bein"`, `"arryadia"`, `"ssc"`, `"ad sport"`, `"alkass"`, etc.).
+     */
+    internal fun extractProviderSearchKeywords(channelLabel: String): List<String> {
+        val profile = normalizeChannelNameForFavoritesMatch(channelLabel)
+        return when (profile.canonicalProvider) {
+            "bein" -> listOf("bein", "be in")
+            "arryadia" -> listOf("arryadia", "riyadia", "arriyadia")
+            "tamazight" -> listOf("tamazight")
+            "maghribia" -> listOf("maghribia")
+            "ssc" -> listOf("ssc")
+            "thmanyah" -> listOf("thmanyah")
+            "adsport" -> listOf("ad sport", "abu dhabi")
+            "starzplay" -> listOf("starz")
+            "alkass" -> listOf("alkass", "al kass")
+            "ontime" -> listOf("on time", "ontime")
+            "dubaisport" -> listOf("dubai sport")
+            "canalplus" -> listOf("canal")
+            "tntsports" -> listOf("tnt sport", "bt sport")
+            "skysports" -> listOf("sky sport")
+            "movistar" -> listOf("movistar")
+            "dazn" -> listOf("dazn")
+            "premiersports" -> listOf("premier sport")
+            "sporttv" -> listOf("sport tv")
+            "ziggosport" -> listOf("ziggo")
+            "ssport" -> listOf("s sport")
+            "tabii" -> listOf("tabii", "trt")
+            "cbssports" -> listOf("cbs", "paramount")
+            "usanetwork" -> listOf("usa network", "peacock")
+            "espn" -> listOf("espn")
+            "tudn" -> listOf("tudn", "univision")
+            else -> listOfNotNull(profile.canonicalProvider.takeIf { it.length >= 2 })
+        }
     }
 
     /**

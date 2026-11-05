@@ -27,14 +27,17 @@ import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
+import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Clear
+import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.Layers
 import androidx.compose.material.icons.filled.LocalMovies
+import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.Movie
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Search
@@ -56,7 +59,10 @@ import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -74,9 +80,11 @@ import com.example.data.model.PlaylistEntity
 import com.example.data.model.StreamEntity
 import com.example.data.remote.SeriesDetails
 import com.example.data.remote.SeriesEpisode
+import com.example.data.repository.EpisodeResumeInfo
 import com.example.ui.theme.AmberGold
 import com.example.ui.theme.Champagne
 import com.example.ui.theme.DarkGraphite
+import com.example.ui.theme.LiveRed
 import com.example.ui.theme.MoviesAquamarine
 import com.example.ui.theme.MoviesAtlanticTeal
 import com.example.ui.theme.MoviesCyanTeal
@@ -90,6 +98,8 @@ import com.example.ui.theme.SeriesIceAqua
 import com.example.ui.theme.SeriesMistTeal
 import com.example.ui.theme.SeriesPineBase
 import com.example.ui.theme.SeriesSeaJade
+import com.example.ui.theme.luxuryFocusableCard
+import com.example.util.StreamMetadataParser
 
 @Composable
 fun VodScreen(
@@ -97,6 +107,8 @@ fun VodScreen(
     viewModel: VodViewModel,
     activePlaylist: PlaylistEntity?,
     onItemClick: (StreamEntity) -> Unit,
+    onRequestUnlockCategory: ((String, () -> Unit) -> Unit)? = null,
+    recentlyWatched: List<StreamEntity>? = null,
     modifier: Modifier = Modifier
 ) {
     val isMovies = sectionTab == VodTab.MOVIES
@@ -147,6 +159,9 @@ fun VodScreen(
     val seriesDetails by viewModel.seriesDetails.collectAsStateWithLifecycle()
     val isLoadingSeriesDetails by viewModel.isLoadingSeriesDetails.collectAsStateWithLifecycle()
     val selectedSeasonNumber by viewModel.selectedSeasonNumber.collectAsStateWithLifecycle()
+    val episodeResumeMap by viewModel.episodeResumeMap.collectAsStateWithLifecycle()
+    val fallbackRecentlyWatched by viewModel.recentlyWatched.collectAsStateWithLifecycle()
+    val currentLimit by viewModel.currentLimit.collectAsStateWithLifecycle()
 
     // If in Series tab and a Series item is selected, display the Series Detail hierarchy view
     if (!isMovies && selectedSeriesStream != null) {
@@ -158,12 +173,17 @@ fun VodScreen(
             seriesDetails = seriesDetails,
             isLoading = isLoadingSeriesDetails,
             selectedSeasonNumber = selectedSeasonNumber,
+            episodeResumeMap = episodeResumeMap,
             onSelectSeason = { viewModel.selectSeason(it) },
             onBack = { viewModel.closeSeriesDetails() },
             onToggleFavorite = {
                 viewModel.toggleFavorite(selectedSeriesStream!!.id, selectedSeriesStream!!.isFavorite)
             },
             onPlayEpisode = { episode ->
+                val savedEpPositionMs = viewModel.repository.getEpisodePositionMs(
+                    playlistId = activePlaylist.id,
+                    episodeId = episode.episodeId
+                )
                 val playableEpisodeStream = StreamEntity(
                     id = selectedSeriesStream!!.id,
                     playlistId = activePlaylist.id,
@@ -175,7 +195,8 @@ fun VodScreen(
                     categoryId = selectedSeriesStream!!.categoryId,
                     containerExtension = episode.containerExtension.ifBlank { "mp4" },
                     isFavorite = selectedSeriesStream!!.isFavorite,
-                    rating = episode.rating.ifBlank { selectedSeriesStream!!.rating }
+                    rating = episode.rating.ifBlank { selectedSeriesStream!!.rating },
+                    lastPositionMs = savedEpPositionMs
                 )
                 onItemClick(playableEpisodeStream)
             },
@@ -188,6 +209,12 @@ fun VodScreen(
     val items by (if (isMovies) viewModel.movieItems else viewModel.seriesItems).collectAsStateWithLifecycle()
     val selectedCatId by (if (isMovies) viewModel.selectedMovieCategoryId else viewModel.selectedSeriesCategoryId).collectAsStateWithLifecycle()
     val searchQuery by (if (isMovies) viewModel.movieSearchQuery else viewModel.seriesSearchQuery).collectAsStateWithLifecycle()
+
+    val resolvedRecentlyWatched = recentlyWatched ?: fallbackRecentlyWatched
+    val targetStreamType = if (isMovies) "movie" else "series"
+    val continueWatchingItems = remember(resolvedRecentlyWatched, targetStreamType) {
+        resolvedRecentlyWatched.filter { it.streamType.equals(targetStreamType, ignoreCase = true) }
+    }
 
     val onSelectCategory: (String?) -> Unit = { catId ->
         if (isMovies) viewModel.selectMovieCategory(catId) else viewModel.selectSeriesCategory(catId)
@@ -437,22 +464,61 @@ fun VodScreen(
                                 Modifier
                             }
                         )
-                        .clickable { onSelectCategory(if (isSelected) null else cat.categoryId) }
+                        .clickable {
+                            if (isSelected) {
+                                onSelectCategory(null)
+                            } else if (cat.isLocked && onRequestUnlockCategory != null) {
+                                onRequestUnlockCategory(cat.categoryId) {
+                                    onSelectCategory(cat.categoryId)
+                                }
+                            } else {
+                                onSelectCategory(cat.categoryId)
+                            }
+                        }
                 ) {
-                    Text(
-                        text = cat.categoryName,
-                        color = if (isSelected) sectionBaseBg else Champagne,
-                        fontSize = 12.sp,
-                        fontWeight = if (isSelected) FontWeight.ExtraBold else FontWeight.SemiBold,
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
                         modifier = Modifier.padding(horizontal = 14.dp, vertical = 6.5.dp)
-                    )
+                    ) {
+                        Text(
+                            text = cat.categoryName,
+                            color = if (isSelected) sectionBaseBg else Champagne,
+                            fontSize = 12.sp,
+                            fontWeight = if (isSelected) FontWeight.ExtraBold else FontWeight.SemiBold
+                        )
+                        if (cat.isLocked) {
+                            Spacer(modifier = Modifier.width(5.dp))
+                            Icon(
+                                imageVector = Icons.Default.Lock,
+                                contentDescription = "Locked Category",
+                                tint = if (isSelected) sectionBaseBg else LiveRed,
+                                modifier = Modifier.size(12.dp)
+                            )
+                        }
+                    }
                 }
             }
         }
 
         Spacer(modifier = Modifier.height(6.dp))
 
-        // Grid of Tailored Section Cards
+        // Sleek Horizontal "Continue Watching" Rail when at root (selectedCatId == null && searchQuery.isBlank())
+        if (selectedCatId == null && searchQuery.isBlank() && continueWatchingItems.isNotEmpty()) {
+            ContinueWatchingVodRail(
+                items = continueWatchingItems,
+                isMovies = isMovies,
+                onItemClick = { item ->
+                    if (isMovies) {
+                        onItemClick(item)
+                    } else {
+                        viewModel.openSeriesDetails(item, activePlaylist)
+                    }
+                }
+            )
+            Spacer(modifier = Modifier.height(6.dp))
+        }
+
+        // Grid of Tailored Section Cards with Progressive Paging
         if (items.isEmpty()) {
             Box(
                 modifier = Modifier
@@ -491,7 +557,21 @@ fun VodScreen(
                 }
             }
         } else {
+            val gridState = rememberLazyGridState()
+            val shouldLoadMore by remember(items.size, currentLimit) {
+                derivedStateOf {
+                    val lastVisible = gridState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: 0
+                    items.size >= currentLimit && lastVisible >= (items.size - 24).coerceAtLeast(0)
+                }
+            }
+            LaunchedEffect(shouldLoadMore) {
+                if (shouldLoadMore) {
+                    viewModel.loadNextPage()
+                }
+            }
+
             LazyVerticalGrid(
+                state = gridState,
                 columns = GridCells.Adaptive(minSize = 150.dp),
                 modifier = Modifier
                     .fillMaxSize()
@@ -520,6 +600,197 @@ fun VodScreen(
     }
 }
 
+@Composable
+private fun ContinueWatchingVodRail(
+    items: List<StreamEntity>,
+    isMovies: Boolean,
+    onItemClick: (StreamEntity) -> Unit
+) {
+    val accentColor = if (isMovies) MoviesMintSpring else SeriesIceAqua
+    val secondaryAccent = if (isMovies) MoviesCyanTeal else SeriesMistTeal
+    val cardBg = if (isMovies) MoviesAtlanticTeal else SeriesCypressCard
+    val baseBg = if (isMovies) MoviesSapphireNavy else SeriesPineBase
+
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .testTag("continue_watching_rail")
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp, vertical = 2.dp),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
+                Icon(
+                    imageVector = Icons.Default.History,
+                    contentDescription = null,
+                    tint = accentColor,
+                    modifier = Modifier.size(14.dp)
+                )
+                Text(
+                    text = "CONTINUE WATCHING",
+                    color = PaleGold,
+                    fontSize = 11.sp,
+                    fontWeight = FontWeight.ExtraBold,
+                    letterSpacing = 0.5.sp
+                )
+            }
+            Text(
+                text = "${items.size} in progress",
+                color = secondaryAccent,
+                fontSize = 10.sp,
+                fontWeight = FontWeight.SemiBold
+            )
+        }
+
+        Spacer(modifier = Modifier.height(6.dp))
+
+        LazyRow(
+            modifier = Modifier.fillMaxWidth(),
+            contentPadding = PaddingValues(horizontal = 16.dp),
+            horizontalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            items(items, key = { "cw_${it.id}_${it.streamId}" }) { item ->
+                val cleanTitle = remember(item.name) {
+                    StreamMetadataParser.cleanDisplayTitle(item.name)
+                }
+                val progressFraction = remember(item.lastPositionMs) {
+                    if (item.lastPositionMs > 0L) {
+                        val refDurationMs = if (isMovies) 105 * 60_000f else 45 * 60_000f
+                        (item.lastPositionMs.toFloat() / refDurationMs).coerceIn(0.08f, 0.94f)
+                    } else {
+                        0.15f
+                    }
+                }
+                val resumedMinutes = remember(item.lastPositionMs) {
+                    (item.lastPositionMs / 60_000L).toInt().coerceAtLeast(1)
+                }
+
+                Card(
+                    shape = RoundedCornerShape(14.dp),
+                    colors = CardDefaults.cardColors(containerColor = cardBg),
+                    border = BorderStroke(0.9.dp, accentColor.copy(alpha = 0.42f)),
+                    modifier = Modifier
+                        .width(196.dp)
+                        .luxuryFocusableCard(
+                            accentColor = accentColor,
+                            shape = RoundedCornerShape(14.dp),
+                            onClick = { onItemClick(item) }
+                        )
+                        .testTag("continue_watching_card_${item.streamId}")
+                ) {
+                    Column(modifier = Modifier.fillMaxWidth()) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .background(
+                                    Brush.horizontalGradient(
+                                        listOf(cardBg, baseBg.copy(alpha = 0.94f))
+                                    )
+                                )
+                                .padding(8.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Box(
+                                modifier = Modifier
+                                    .size(44.dp)
+                                    .clip(RoundedCornerShape(9.dp))
+                                    .background(baseBg)
+                                    .border(0.6.dp, Color.White.copy(alpha = 0.14f), RoundedCornerShape(9.dp)),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                if (item.streamIcon.isNotEmpty()) {
+                                    AsyncImage(
+                                        model = item.streamIcon,
+                                        contentDescription = cleanTitle,
+                                        contentScale = ContentScale.Crop,
+                                        modifier = Modifier.fillMaxSize()
+                                    )
+                                } else {
+                                    Icon(
+                                        imageVector = if (isMovies) Icons.Default.Movie else Icons.Default.VideoLibrary,
+                                        contentDescription = null,
+                                        tint = accentColor,
+                                        modifier = Modifier.size(20.dp)
+                                    )
+                                }
+                            }
+
+                            Spacer(modifier = Modifier.width(9.dp))
+
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    text = cleanTitle,
+                                    color = Color.White,
+                                    fontSize = 11.5.sp,
+                                    fontWeight = FontWeight.ExtraBold,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                                Spacer(modifier = Modifier.height(2.dp))
+                                Text(
+                                    text = if (item.lastPositionMs > 0L) {
+                                        "Resume • ${resumedMinutes}m in"
+                                    } else {
+                                        "Resume Playback"
+                                    },
+                                    color = accentColor,
+                                    fontSize = 9.5.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    maxLines = 1
+                                )
+                            }
+
+                            Spacer(modifier = Modifier.width(6.dp))
+
+                            Box(
+                                modifier = Modifier
+                                    .size(26.dp)
+                                    .clip(CircleShape)
+                                    .background(accentColor),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.PlayArrow,
+                                    contentDescription = "Resume",
+                                    tint = baseBg,
+                                    modifier = Modifier.size(15.dp)
+                                )
+                            }
+                        }
+
+                        // Progress Bar Along Bottom Edge of Card
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(3.5.dp)
+                                .background(Color.White.copy(alpha = 0.12f))
+                                .testTag("continue_watching_progress_${item.streamId}")
+                        ) {
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxWidth(progressFraction)
+                                    .height(3.5.dp)
+                                    .background(
+                                        Brush.horizontalGradient(
+                                            listOf(accentColor, AmberGold)
+                                        )
+                                    )
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
 /**
  * IMAX Glass Movie Poster Card — Sapphire, Cyan-Teal & Electric Mint Premiere Design
  * Features edge-lit specular gradient border, floating ★ Gold Rating + 4K UHD micro-badge,
@@ -532,6 +803,22 @@ fun MovieCinemaPosterCard(
     onToggleFavorite: () -> Unit,
     modifier: Modifier = Modifier
 ) {
+    val cleanTitle = remember(item.name) {
+        StreamMetadataParser.cleanDisplayTitle(item.name)
+    }
+    val regionBadge = remember(item.name) {
+        StreamMetadataParser.extractRegionOrLangBadge(item.name)
+    }
+    val qualityBadge = remember(item.name) {
+        StreamMetadataParser.extractQualityBadge(item.name)
+    }
+    val compactQualityBadge = remember(item.name) {
+        StreamMetadataParser.extractCompactQualityBadge(item.name)
+    }
+    val containerLabel = remember(item.containerExtension) {
+        item.containerExtension.ifBlank { "VOD" }.uppercase()
+    }
+
     Card(
         shape = RoundedCornerShape(16.dp),
         colors = CardDefaults.cardColors(containerColor = MoviesAtlanticTeal),
@@ -547,7 +834,11 @@ fun MovieCinemaPosterCard(
         ),
         modifier = modifier
             .fillMaxWidth()
-            .clickable { onClick() }
+            .luxuryFocusableCard(
+                accentColor = MoviesMintSpring,
+                shape = RoundedCornerShape(16.dp),
+                onClick = onClick
+            )
             .testTag("vod_item_${item.streamId}")
     ) {
         Column {
@@ -560,7 +851,7 @@ fun MovieCinemaPosterCard(
                 if (item.streamIcon.isNotEmpty()) {
                     AsyncImage(
                         model = item.streamIcon,
-                        contentDescription = item.name,
+                        contentDescription = cleanTitle,
                         contentScale = ContentScale.Crop,
                         modifier = Modifier.fillMaxSize()
                     )
@@ -591,7 +882,7 @@ fun MovieCinemaPosterCard(
                         )
                 )
 
-                // Top-Start Floating Frosted Glass Rating + 4K UHD Micro-Badge Row
+                // Top-Start Floating Frosted Glass Rating + Authentic Region & Quality Micro-Badge Row
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(4.dp),
@@ -599,7 +890,7 @@ fun MovieCinemaPosterCard(
                         .align(Alignment.TopStart)
                         .padding(8.dp)
                 ) {
-                    if (item.rating.isNotEmpty() && item.rating != "0") {
+                    if (item.rating.isNotEmpty() && item.rating != "0" && item.rating != "0.0") {
                         Surface(
                             color = MoviesSapphireNavy.copy(alpha = 0.84f),
                             shape = RoundedCornerShape(50),
@@ -626,18 +917,36 @@ fun MovieCinemaPosterCard(
                         }
                     }
 
-                    Surface(
-                        color = MoviesSapphireNavy.copy(alpha = 0.82f),
-                        shape = RoundedCornerShape(5.dp),
-                        border = BorderStroke(0.6.dp, MoviesMintSpring.copy(alpha = 0.55f))
-                    ) {
-                        Text(
-                            text = "4K",
-                            color = MoviesMintSpring,
-                            fontSize = 8.5.sp,
-                            fontWeight = FontWeight.ExtraBold,
-                            modifier = Modifier.padding(horizontal = 5.dp, vertical = 2.dp)
-                        )
+                    if (compactQualityBadge != null) {
+                        Surface(
+                            color = MoviesSapphireNavy.copy(alpha = 0.84f),
+                            shape = RoundedCornerShape(5.dp),
+                            border = BorderStroke(0.6.dp, MoviesMintSpring.copy(alpha = 0.65f))
+                        ) {
+                            Text(
+                                text = compactQualityBadge,
+                                color = MoviesMintSpring,
+                                fontSize = 8.5.sp,
+                                fontWeight = FontWeight.ExtraBold,
+                                modifier = Modifier.padding(horizontal = 5.dp, vertical = 2.dp)
+                            )
+                        }
+                    }
+
+                    if (regionBadge != null) {
+                        Surface(
+                            color = MoviesSapphireNavy.copy(alpha = 0.82f),
+                            shape = RoundedCornerShape(5.dp),
+                            border = BorderStroke(0.6.dp, MoviesCyanTeal.copy(alpha = 0.55f))
+                        ) {
+                            Text(
+                                text = regionBadge,
+                                color = Champagne,
+                                fontSize = 8.sp,
+                                fontWeight = FontWeight.ExtraBold,
+                                modifier = Modifier.padding(horizontal = 5.dp, vertical = 2.dp)
+                            )
+                        }
                     }
                 }
 
@@ -691,7 +1000,7 @@ fun MovieCinemaPosterCard(
                 }
             }
 
-            // Movie Title & Inline IMAX Format Footer
+            // Cleaned Movie Title & Authentic Format Footer
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -703,7 +1012,7 @@ fun MovieCinemaPosterCard(
                     .padding(horizontal = 10.dp, vertical = 8.dp)
             ) {
                 Text(
-                    text = item.name,
+                    text = cleanTitle,
                     color = Color.White,
                     fontSize = 12.5.sp,
                     fontWeight = FontWeight.ExtraBold,
@@ -717,13 +1026,13 @@ fun MovieCinemaPosterCard(
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Text(
-                        text = "IMAX 4K • HDR",
+                        text = qualityBadge ?: "CINEMA VOD",
                         color = MoviesMintSpring.copy(alpha = 0.90f),
                         fontSize = 9.5.sp,
                         fontWeight = FontWeight.Bold
                     )
                     Text(
-                        text = item.containerExtension.uppercase(),
+                        text = containerLabel,
                         color = Champagne.copy(alpha = 0.65f),
                         fontSize = 9.sp,
                         fontWeight = FontWeight.ExtraBold
@@ -746,11 +1055,25 @@ fun SeriesVaultCard(
     onToggleFavorite: () -> Unit,
     modifier: Modifier = Modifier
 ) {
+    val cleanTitle = remember(item.name) {
+        StreamMetadataParser.cleanDisplayTitle(item.name)
+    }
+    val regionBadge = remember(item.name) {
+        StreamMetadataParser.extractRegionOrLangBadge(item.name)
+    }
+    val compactQualityBadge = remember(item.name) {
+        StreamMetadataParser.extractCompactQualityBadge(item.name)
+    }
+
     Column(
         horizontalAlignment = Alignment.CenterHorizontally,
         modifier = modifier
             .fillMaxWidth()
-            .clickable { onClick() }
+            .luxuryFocusableCard(
+                accentColor = SeriesIceAqua,
+                shape = RoundedCornerShape(16.dp),
+                onClick = onClick
+            )
             .testTag("vod_item_${item.streamId}")
     ) {
         // Multi-Season Stacked-Deck Accent Bars in Mist-Teal & Ice-Aqua
@@ -799,7 +1122,7 @@ fun SeriesVaultCard(
                     if (item.streamIcon.isNotEmpty()) {
                         AsyncImage(
                             model = item.streamIcon,
-                            contentDescription = item.name,
+                            contentDescription = cleanTitle,
                             contentScale = ContentScale.Crop,
                             modifier = Modifier.fillMaxSize()
                         )
@@ -830,7 +1153,7 @@ fun SeriesVaultCard(
                             )
                     )
 
-                    // Top-Start Floating Frosted Glass Rating + SEASONS Micro-Badge Row
+                    // Top-Start Floating Frosted Glass Rating + Region + SERIES Micro-Badge Row
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.spacedBy(4.dp),
@@ -838,7 +1161,7 @@ fun SeriesVaultCard(
                             .align(Alignment.TopStart)
                             .padding(8.dp)
                     ) {
-                        if (item.rating.isNotEmpty() && item.rating != "0") {
+                        if (item.rating.isNotEmpty() && item.rating != "0" && item.rating != "0.0") {
                             Surface(
                                 color = SeriesPineBase.copy(alpha = 0.84f),
                                 shape = RoundedCornerShape(50),
@@ -871,12 +1194,28 @@ fun SeriesVaultCard(
                             border = BorderStroke(0.6.dp, SeriesIceAqua.copy(alpha = 0.55f))
                         ) {
                             Text(
-                                text = "SERIES",
+                                text = compactQualityBadge ?: "SERIES",
                                 color = SeriesIceAqua,
                                 fontSize = 8.sp,
                                 fontWeight = FontWeight.ExtraBold,
                                 modifier = Modifier.padding(horizontal = 5.dp, vertical = 2.dp)
                             )
+                        }
+
+                        if (regionBadge != null) {
+                            Surface(
+                                color = SeriesPineBase.copy(alpha = 0.82f),
+                                shape = RoundedCornerShape(5.dp),
+                                border = BorderStroke(0.6.dp, SeriesMistTeal.copy(alpha = 0.55f))
+                            ) {
+                                Text(
+                                    text = regionBadge,
+                                    color = Champagne,
+                                    fontSize = 8.sp,
+                                    fontWeight = FontWeight.ExtraBold,
+                                    modifier = Modifier.padding(horizontal = 5.dp, vertical = 2.dp)
+                                )
+                            }
                         }
                     }
 
@@ -930,7 +1269,7 @@ fun SeriesVaultCard(
                     }
                 }
 
-                // Series Title & Seasons Footer
+                // Cleaned Series Title & Seasons Footer
                 Column(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -942,7 +1281,7 @@ fun SeriesVaultCard(
                         .padding(horizontal = 10.dp, vertical = 8.dp)
                 ) {
                     Text(
-                        text = item.name,
+                        text = cleanTitle,
                         color = Color.White,
                         fontSize = 12.5.sp,
                         fontWeight = FontWeight.ExtraBold,
@@ -980,6 +1319,7 @@ fun SeriesDetailHierarchyScreen(
     seriesDetails: SeriesDetails?,
     isLoading: Boolean,
     selectedSeasonNumber: Int,
+    episodeResumeMap: Map<String, EpisodeResumeInfo> = emptyMap(),
     onSelectSeason: (Int) -> Unit,
     onBack: () -> Unit,
     onToggleFavorite: () -> Unit,
@@ -1269,9 +1609,12 @@ fun SeriesDetailHierarchyScreen(
                 verticalArrangement = Arrangement.spacedBy(10.dp)
             ) {
                 items(episodes, key = { "${it.seasonNumber}_${it.episodeNumber}_${it.episodeId}" }) { episode ->
+                    val resumeKey = "${seriesStream.playlistId}_ep_${episode.episodeId}"
+                    val resumeInfo = episodeResumeMap[resumeKey]
                     SeriesEpisodeCard(
                         episode = episode,
                         fallbackCover = seriesStream.streamIcon,
+                        resumeInfo = resumeInfo,
                         onPlay = { onPlayEpisode(episode) }
                     )
                 }
@@ -1280,161 +1623,243 @@ fun SeriesDetailHierarchyScreen(
     }
 }
 
+private fun resolveEpisodeResumeUi(
+    resumeInfo: EpisodeResumeInfo?,
+    durationLabel: String
+): Pair<Float, String>? {
+    val posMs = resumeInfo?.positionMs ?: 0L
+    if (posMs <= 0L) return null
+
+    val parsedDurationMs = run {
+        val clean = durationLabel.trim()
+        val colonParts = clean.split(":")
+        when {
+            colonParts.size == 3 -> {
+                val h = colonParts[0].trim().toLongOrNull() ?: 0L
+                val m = colonParts[1].trim().toLongOrNull() ?: 0L
+                val s = colonParts[2].trim().toLongOrNull() ?: 0L
+                (h * 3600L + m * 60L + s) * 1000L
+            }
+            colonParts.size == 2 -> {
+                val m = colonParts[0].trim().toLongOrNull() ?: 0L
+                val s = colonParts[1].trim().toLongOrNull() ?: 0L
+                (m * 60L + s) * 1000L
+            }
+            else -> {
+                val mins = Regex("(\\d+)").find(clean)?.groupValues?.getOrNull(1)?.toLongOrNull() ?: 0L
+                mins * 60_000L
+            }
+        }
+    }
+
+    val effectiveDurationMs = when {
+        (resumeInfo?.durationMs ?: 0L) > posMs -> resumeInfo!!.durationMs
+        parsedDurationMs > posMs -> parsedDurationMs
+        else -> (posMs + 15 * 60_000L).coerceAtLeast(45 * 60_000L)
+    }
+
+    val progressFraction = (posMs.toFloat() / effectiveDurationMs.toFloat()).coerceIn(0.05f, 0.96f)
+    val remainingMinutes = ((effectiveDurationMs - posMs) / 60_000L).toInt().coerceAtLeast(1)
+    return progressFraction to "Resume • ${remainingMinutes}m left"
+}
+
 @Composable
 fun SeriesEpisodeCard(
     episode: SeriesEpisode,
     fallbackCover: String,
+    resumeInfo: EpisodeResumeInfo? = null,
     onPlay: () -> Unit
 ) {
+    val resumeUi = remember(resumeInfo, episode.duration) {
+        resolveEpisodeResumeUi(resumeInfo, episode.duration)
+    }
+
     Card(
         shape = RoundedCornerShape(14.dp),
         colors = CardDefaults.cardColors(containerColor = SeriesCypressCard),
         border = BorderStroke(
             width = 1.dp,
-            color = Color.White.copy(alpha = 0.08f)
+            color = if (resumeUi != null) AmberGold.copy(alpha = 0.45f) else Color.White.copy(alpha = 0.08f)
         ),
         modifier = Modifier
             .fillMaxWidth()
-            .clickable { onPlay() }
+            .luxuryFocusableCard(
+                accentColor = SeriesIceAqua,
+                shape = RoundedCornerShape(14.dp),
+                onClick = onPlay
+            )
             .testTag("episode_card_${episode.seasonNumber}_${episode.episodeNumber}")
     ) {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .background(
-                    Brush.horizontalGradient(
-                        listOf(SeriesForestSurface, SeriesCypressCard)
-                    )
-                )
-                .padding(12.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            // Episode Artwork or Number Emblem
-            Box(
+        Column(modifier = Modifier.fillMaxWidth()) {
+            Row(
                 modifier = Modifier
-                    .width(104.dp)
-                    .height(62.dp)
-                    .clip(RoundedCornerShape(10.dp))
-                    .background(SeriesPineBase)
-                    .border(0.8.dp, Color.White.copy(alpha = 0.10f), RoundedCornerShape(10.dp)),
-                contentAlignment = Alignment.Center
+                    .fillMaxWidth()
+                    .background(
+                        Brush.horizontalGradient(
+                            listOf(SeriesForestSurface, SeriesCypressCard)
+                        )
+                    )
+                    .padding(12.dp),
+                verticalAlignment = Alignment.CenterVertically
             ) {
-                val thumbUrl = episode.thumbnail.ifBlank { fallbackCover }
-                if (thumbUrl.isNotEmpty()) {
-                    AsyncImage(
-                        model = thumbUrl,
-                        contentDescription = episode.title,
-                        contentScale = ContentScale.Crop,
-                        modifier = Modifier.fillMaxSize()
-                    )
-                } else {
-                    Icon(
-                        imageVector = Icons.Default.Tv,
-                        contentDescription = null,
-                        tint = SeriesIceAqua,
-                        modifier = Modifier.size(22.dp)
-                    )
-                }
-
-                // Episode Number Frosted Badge
-                Surface(
-                    color = SeriesPineBase.copy(alpha = 0.82f),
-                    shape = RoundedCornerShape(4.dp),
+                // Episode Artwork or Number Emblem
+                Box(
                     modifier = Modifier
-                        .align(Alignment.BottomStart)
-                        .padding(4.dp)
+                        .width(104.dp)
+                        .height(62.dp)
+                        .clip(RoundedCornerShape(10.dp))
+                        .background(SeriesPineBase)
+                        .border(0.8.dp, Color.White.copy(alpha = 0.10f), RoundedCornerShape(10.dp)),
+                    contentAlignment = Alignment.Center
                 ) {
-                    Text(
-                        text = "EP ${episode.episodeNumber}",
-                        color = SeriesIceAqua,
-                        fontSize = 9.sp,
-                        fontWeight = FontWeight.Bold,
-                        modifier = Modifier.padding(horizontal = 5.dp, vertical = 2.dp)
-                    )
-                }
-            }
+                    val thumbUrl = episode.thumbnail.ifBlank { fallbackCover }
+                    if (thumbUrl.isNotEmpty()) {
+                        AsyncImage(
+                            model = thumbUrl,
+                            contentDescription = episode.title,
+                            contentScale = ContentScale.Crop,
+                            modifier = Modifier.fillMaxSize()
+                        )
+                    } else {
+                        Icon(
+                            imageVector = Icons.Default.Tv,
+                            contentDescription = null,
+                            tint = SeriesIceAqua,
+                            modifier = Modifier.size(22.dp)
+                        )
+                    }
 
-            Spacer(modifier = Modifier.width(12.dp))
-
-            Column(modifier = Modifier.weight(1f)) {
-                Text(
-                    text = episode.title,
-                    color = Color.White,
-                    fontSize = 14.sp,
-                    fontWeight = FontWeight.SemiBold,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
-                )
-
-                Spacer(modifier = Modifier.height(3.dp))
-
-                // Unboxed Inline Episode Metadata
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(6.dp)
-                ) {
-                    Text(
-                        text = "S${episode.seasonNumber} • E${episode.episodeNumber}",
-                        color = SeriesIceAqua,
-                        fontSize = 11.sp,
-                        fontWeight = FontWeight.SemiBold
-                    )
-                    if (episode.duration.isNotBlank()) {
+                    // Episode Number Frosted Badge
+                    Surface(
+                        color = SeriesPineBase.copy(alpha = 0.82f),
+                        shape = RoundedCornerShape(4.dp),
+                        modifier = Modifier
+                            .align(Alignment.BottomStart)
+                            .padding(4.dp)
+                    ) {
                         Text(
-                            text = "• ${episode.duration}",
-                            color = Champagne.copy(alpha = 0.75f),
+                            text = "EP ${episode.episodeNumber}",
+                            color = SeriesIceAqua,
+                            fontSize = 9.sp,
+                            fontWeight = FontWeight.Bold,
+                            modifier = Modifier.padding(horizontal = 5.dp, vertical = 2.dp)
+                        )
+                    }
+                }
+
+                Spacer(modifier = Modifier.width(12.dp))
+
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = episode.title,
+                        color = Color.White,
+                        fontSize = 14.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+
+                    Spacer(modifier = Modifier.height(3.dp))
+
+                    // Unboxed Inline Episode Metadata
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        Text(
+                            text = "S${episode.seasonNumber} • E${episode.episodeNumber}",
+                            color = SeriesIceAqua,
                             fontSize = 11.sp,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                        if (episode.duration.isNotBlank()) {
+                            Text(
+                                text = "• ${episode.duration}",
+                                color = Champagne.copy(alpha = 0.75f),
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.Medium
+                            )
+                        }
+                        Text(
+                            text = "• ${episode.containerExtension.uppercase()}",
+                            color = Champagne.copy(alpha = 0.6f),
+                            fontSize = 10.5.sp,
                             fontWeight = FontWeight.Medium
                         )
                     }
-                    Text(
-                        text = "• ${episode.containerExtension.uppercase()}",
-                        color = Champagne.copy(alpha = 0.6f),
-                        fontSize = 10.5.sp,
-                        fontWeight = FontWeight.Medium
-                    )
+
+                    if (resumeUi != null) {
+                        Spacer(modifier = Modifier.height(3.dp))
+                        Text(
+                            text = resumeUi.second,
+                            color = AmberGold,
+                            fontSize = 10.5.sp,
+                            fontWeight = FontWeight.ExtraBold,
+                            modifier = Modifier.testTag("episode_resume_label_${episode.seasonNumber}_${episode.episodeNumber}")
+                        )
+                    } else if (episode.plot.isNotBlank()) {
+                        Spacer(modifier = Modifier.height(4.dp))
+                        Text(
+                            text = episode.plot,
+                            color = Champagne.copy(alpha = 0.72f),
+                            fontSize = 11.sp,
+                            maxLines = 2,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
                 }
 
-                if (episode.plot.isNotBlank()) {
-                    Spacer(modifier = Modifier.height(4.dp))
-                    Text(
-                        text = episode.plot,
-                        color = Champagne.copy(alpha = 0.72f),
-                        fontSize = 11.sp,
-                        maxLines = 2,
-                        overflow = TextOverflow.Ellipsis
-                    )
+                Spacer(modifier = Modifier.width(10.dp))
+
+                // Tier 1 Solid Ice-Aqua Play / Resume Pill Button
+                Surface(
+                    color = if (resumeUi != null) AmberGold else SeriesIceAqua,
+                    shape = RoundedCornerShape(50),
+                    modifier = Modifier
+                        .height(30.dp)
+                        .clip(RoundedCornerShape(50))
+                        .clickable(onClick = onPlay)
+                ) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.Center,
+                        modifier = Modifier.padding(horizontal = 12.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.PlayArrow,
+                            contentDescription = "Play Episode",
+                            tint = SeriesPineBase,
+                            modifier = Modifier.size(13.dp)
+                        )
+                        Spacer(modifier = Modifier.width(3.dp))
+                        Text(
+                            text = if (resumeUi != null) "Resume" else "Play",
+                            color = SeriesPineBase,
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                    }
                 }
             }
 
-            Spacer(modifier = Modifier.width(10.dp))
-
-            // Tier 1 Solid Ice-Aqua Play Pill Button
-            Surface(
-                color = SeriesIceAqua,
-                shape = RoundedCornerShape(50),
-                modifier = Modifier
-                    .height(30.dp)
-                    .clip(RoundedCornerShape(50))
-                    .clickable(onClick = onPlay)
-            ) {
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.Center,
-                    modifier = Modifier.padding(horizontal = 12.dp)
+            // Subtle Episode Progress Bar at the bottom of the card when saved progress exists
+            if (resumeUi != null) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(3.dp)
+                        .background(Color.White.copy(alpha = 0.12f))
+                        .testTag("episode_progress_bar_${episode.seasonNumber}_${episode.episodeNumber}")
                 ) {
-                    Icon(
-                        imageVector = Icons.Default.PlayArrow,
-                        contentDescription = "Play Episode",
-                        tint = SeriesPineBase,
-                        modifier = Modifier.size(13.dp)
-                    )
-                    Spacer(modifier = Modifier.width(3.dp))
-                    Text(
-                        text = "Play",
-                        color = SeriesPineBase,
-                        fontSize = 11.sp,
-                        fontWeight = FontWeight.SemiBold
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth(resumeUi.first)
+                            .height(3.dp)
+                            .background(
+                                Brush.horizontalGradient(
+                                    listOf(SeriesIceAqua, AmberGold)
+                                )
+                            )
                     )
                 }
             }

@@ -2,6 +2,7 @@ package com.example.ui.player
 
 import android.app.Activity
 import android.os.Build
+import android.view.KeyEvent
 import android.view.WindowManager
 import androidx.annotation.OptIn
 import androidx.compose.animation.AnimatedVisibility
@@ -17,6 +18,7 @@ import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.focusable
 import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
@@ -105,6 +107,8 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
@@ -113,6 +117,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Shadow
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.input.key.onKeyEvent
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.onSizeChanged
@@ -141,6 +146,8 @@ import com.example.ui.theme.AmberGold
 import com.example.ui.theme.DarkGraphite
 import com.example.ui.theme.LiveRed
 import com.example.ui.theme.PaleGold
+import com.example.ui.theme.TabularNumeralTextStyle
+import com.example.util.StreamMetadataParser
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -233,11 +240,40 @@ fun PlayerScreen(
     var showCatchupSheet by remember { mutableStateOf(false) }
     var showBufferSheet by remember { mutableStateOf(false) }
     var showSleepTimerSheet by remember { mutableStateOf(false) }
+    val playerFocusRequester = remember { FocusRequester() }
+
+    LaunchedEffect(Unit) {
+        runCatching { playerFocusRequester.requestFocus() }
+    }
+
+    val isLiveMode = uiState.isLive
 
     BoxWithConstraints(
         modifier = modifier
             .fillMaxSize()
             .background(Color.Black)
+            .focusRequester(playerFocusRequester)
+            .focusable()
+            .onKeyEvent { keyEvent ->
+                val nativeEvent = keyEvent.nativeKeyEvent
+                if (nativeEvent.action != KeyEvent.ACTION_DOWN) return@onKeyEvent false
+                handlePlayerRemoteKeyEvent(
+                    keyCode = nativeEvent.keyCode,
+                    isLive = isLiveMode,
+                    isControlsVisible = uiState.isControlsVisible,
+                    isTouchLocked = uiState.isTouchLocked,
+                    onShowControlsOrTogglePlay = {
+                        if (!uiState.isControlsVisible) {
+                            viewModel.showControls()
+                        } else {
+                            viewModel.togglePlayPause()
+                        }
+                    },
+                    onTogglePlayPause = { viewModel.togglePlayPause() },
+                    onZapChannel = { offset -> viewModel.zapChannelOffset(offset) },
+                    onSeekRelative = { seconds -> viewModel.seekRelative(seconds.toLong()) }
+                )
+            }
             .testTag("player_screen")
     ) {
         val screenWidth = constraints.maxWidth.toFloat().coerceAtLeast(1f)
@@ -595,8 +631,19 @@ fun PlayerScreen(
                             .weight(1f)
                             .padding(end = 12.dp)
                     ) {
+                        val rawStreamName = uiState.currentStream?.name ?: "Stream"
+                        val cleanedStreamTitle = remember(rawStreamName) {
+                            StreamMetadataParser.cleanDisplayTitle(rawStreamName)
+                        }
+                        val regionBadge = remember(rawStreamName) {
+                            StreamMetadataParser.extractRegionOrLangBadge(rawStreamName)
+                        }
+                        val parsedQualityBadge = remember(rawStreamName) {
+                            StreamMetadataParser.extractQualityBadge(rawStreamName)
+                        }
+
                         Text(
-                            text = uiState.currentStream?.name ?: "Stream",
+                            text = cleanedStreamTitle,
                             color = PlayerTextPrimary,
                             fontSize = 16.sp,
                             fontWeight = FontWeight.SemiBold,
@@ -605,14 +652,15 @@ fun PlayerScreen(
                         )
 
                         val subtitleMeta = buildString {
-                            if (uiState.currentProgram != null) {
-                                append(uiState.currentProgram!!.title)
-                            } else if (!uiState.isLive && uiState.activeWyzieOption != null) {
+                            if (!uiState.isLive && uiState.activeWyzieOption != null) {
                                 append("CC: ${uiState.activeWyzieOption!!.languageDisplay}")
+                            } else if (regionBadge != null) {
+                                append(regionBadge)
                             }
                             val specs = listOf(
-                                uiState.resolutionLabel,
+                                uiState.resolutionLabel.ifEmpty { parsedQualityBadge.orEmpty() },
                                 uiState.videoCodecLabel,
+                                uiState.audioCodecLabel,
                                 uiState.fpsLabel
                             ).filter { it.isNotEmpty() }
                             if (specs.isNotEmpty()) {
@@ -815,7 +863,8 @@ fun PlayerScreen(
                                 text = formatTime(uiState.currentPositionMs),
                                 color = PlayerTextPrimary,
                                 fontSize = 12.sp,
-                                fontWeight = FontWeight.Medium
+                                fontWeight = FontWeight.Medium,
+                                style = TabularNumeralTextStyle
                             )
 
                             CinemaTimelineScrubber(
@@ -832,11 +881,12 @@ fun PlayerScreen(
                                 text = formatTime(uiState.durationMs),
                                 color = PlayerTextSecondary,
                                 fontSize = 12.sp,
-                                fontWeight = FontWeight.Normal
+                                fontWeight = FontWeight.Normal,
+                                style = TabularNumeralTextStyle
                             )
                         }
                     } else {
-                        // Clean Live Broadcast Row
+                        // Clean Live Broadcast Row (Authentic Stream Specs, No EPG Clutter)
                         Row(
                             modifier = Modifier
                                 .fillMaxWidth()
@@ -850,32 +900,14 @@ fun PlayerScreen(
                             )
                             Spacer(modifier = Modifier.width(6.dp))
                             Text(
-                                text = "LIVE",
+                                text = "LIVE BROADCAST",
                                 color = PlayerTextPrimary,
                                 fontSize = 11.sp,
                                 fontWeight = FontWeight.Bold,
                                 letterSpacing = 0.6.sp
                             )
 
-                            Spacer(modifier = Modifier.width(12.dp))
-
-                            val nextTitle = when {
-                                uiState.upcomingPrograms.size > 1 -> "Next: ${uiState.upcomingPrograms[1].title}"
-                                uiState.currentProgram != null -> uiState.currentProgram!!.title
-                                else -> ""
-                            }
-                            if (nextTitle.isNotEmpty()) {
-                                Text(
-                                    text = nextTitle,
-                                    color = PlayerTextSecondary,
-                                    fontSize = 12.sp,
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis,
-                                    modifier = Modifier.weight(1f)
-                                )
-                            } else {
-                                Spacer(modifier = Modifier.weight(1f))
-                            }
+                            Spacer(modifier = Modifier.weight(1f))
 
                             Text(
                                 text = SimpleDateFormat("HH:mm", Locale.getDefault()).format(Date()),
@@ -2136,3 +2168,80 @@ private fun formatTime(millis: Long): String {
         String.format(Locale.US, "%02d:%02d", minutes, seconds)
     }
 }
+
+internal fun handlePlayerRemoteKeyEvent(
+    keyCode: Int,
+    isLive: Boolean,
+    isControlsVisible: Boolean,
+    isTouchLocked: Boolean,
+    onShowControlsOrTogglePlay: () -> Unit,
+    onTogglePlayPause: () -> Unit,
+    onZapChannel: (Int) -> Unit,
+    onSeekRelative: (Int) -> Unit
+): Boolean {
+    if (isTouchLocked) return false
+    return when (keyCode) {
+        KeyEvent.KEYCODE_DPAD_CENTER,
+        KeyEvent.KEYCODE_ENTER,
+        KeyEvent.KEYCODE_NUMPAD_ENTER -> {
+            onShowControlsOrTogglePlay()
+            true
+        }
+        KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE -> {
+            onTogglePlayPause()
+            true
+        }
+        KeyEvent.KEYCODE_CHANNEL_UP -> {
+            if (isLive) {
+                onZapChannel(1)
+                true
+            } else {
+                false
+            }
+        }
+        KeyEvent.KEYCODE_CHANNEL_DOWN -> {
+            if (isLive) {
+                onZapChannel(-1)
+                true
+            } else {
+                false
+            }
+        }
+        KeyEvent.KEYCODE_DPAD_UP -> {
+            if (isLive && !isControlsVisible) {
+                onZapChannel(1)
+                true
+            } else {
+                false
+            }
+        }
+        KeyEvent.KEYCODE_DPAD_DOWN -> {
+            if (isLive && !isControlsVisible) {
+                onZapChannel(-1)
+                true
+            } else {
+                false
+            }
+        }
+        KeyEvent.KEYCODE_DPAD_LEFT,
+        KeyEvent.KEYCODE_MEDIA_REWIND -> {
+            if (!isLive) {
+                onSeekRelative(-10)
+                true
+            } else {
+                false
+            }
+        }
+        KeyEvent.KEYCODE_DPAD_RIGHT,
+        KeyEvent.KEYCODE_MEDIA_FAST_FORWARD -> {
+            if (!isLive) {
+                onSeekRelative(10)
+                true
+            } else {
+                false
+            }
+        }
+        else -> false
+    }
+}
+

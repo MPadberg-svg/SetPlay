@@ -760,7 +760,7 @@ class WyzieSubtitleService(
             "el" -> "Greek"
             "sv" -> "Swedish"
             "id" -> "Indonesian"
-            else -> Locale(code).displayLanguage.ifBlank { code.uppercase(Locale.ROOT) }
+            else -> Locale.forLanguageTag(code).displayLanguage.ifBlank { code.uppercase(Locale.ROOT) }
         }
     }
 
