@@ -82,6 +82,19 @@ data class BeinChannelMatcherState(
     val isLoading: Boolean = false
 )
 
+data class LiveGoalAlertEvent(
+    val alertId: String,
+    val match: FootballMatch,
+    val scoringTeamName: String,
+    val homeTeamName: String,
+    val awayTeamName: String,
+    val homeScore: Int,
+    val awayScore: Int,
+    val minuteLabel: String,
+    val isFavoriteTeamGoal: Boolean,
+    val timestampMs: Long = System.currentTimeMillis()
+)
+
 @OptIn(ExperimentalCoroutinesApi::class)
 class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val database = StreamVaultDatabase.getInstance(application)
@@ -242,8 +255,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val _liveScoreSyncState = MutableStateFlow(LiveScoreSyncState())
     val liveScoreSyncState: StateFlow<LiveScoreSyncState> = _liveScoreSyncState.asStateFlow()
 
+    // In-Player Live Goal Alert State (auto-dismissed after 5 seconds)
+    private val _activeGoalAlert = MutableStateFlow<LiveGoalAlertEvent?>(null)
+    val activeGoalAlert: StateFlow<LiveGoalAlertEvent?> = _activeGoalAlert.asStateFlow()
+
     private var teamSearchJob: Job? = null
     private var livePollingJob: Job? = null
+    private var goalAlertDismissJob: Job? = null
 
     init {
         viewModelScope.launch {
@@ -294,13 +312,80 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     /**
+     * Compares `previousMatches` and `updatedMatches` on `TODAY` to detect live score increments.
+     * Prioritizes matches involving a user's Favorite Team first, or any live match on `TODAY`.
+     */
+    internal fun detectGoalScoredAlert(
+        previousMatches: List<FootballMatch>,
+        updatedMatches: List<FootballMatch>,
+        favoriteTeamIds: Set<String> = favoriteTeams.value.map { it.teamId.lowercase(Locale.ROOT) }.toSet(),
+        favoriteTeamNames: Set<String> = favoriteTeams.value.map { it.teamName.lowercase(Locale.ROOT) }.toSet()
+    ): LiveGoalAlertEvent? {
+        if (previousMatches.isEmpty() || updatedMatches.isEmpty()) return null
+
+        val prevById = previousMatches.associateBy { it.matchId }
+        val detectedAlerts = mutableListOf<LiveGoalAlertEvent>()
+
+        for (updated in updatedMatches) {
+            val prev = prevById[updated.matchId] ?: previousMatches.find {
+                it.homeTeamName.equals(updated.homeTeamName, ignoreCase = true) &&
+                    it.awayTeamName.equals(updated.awayTeamName, ignoreCase = true)
+            } ?: continue
+
+            val newHome = updated.homeScore ?: continue
+            val newAway = updated.awayScore ?: continue
+            val oldHome = prev.homeScore ?: 0
+            val oldAway = prev.awayScore ?: 0
+
+            val homeIncremented = newHome > oldHome
+            val awayIncremented = newAway > oldAway
+            if (!homeIncremented && !awayIncremented) continue
+
+            val isFavMatch = updated.homeTeamId.lowercase(Locale.ROOT) in favoriteTeamIds ||
+                updated.awayTeamId.lowercase(Locale.ROOT) in favoriteTeamIds ||
+                updated.homeTeamName.lowercase(Locale.ROOT) in favoriteTeamNames ||
+                updated.awayTeamName.lowercase(Locale.ROOT) in favoriteTeamNames
+
+            val scoringTeam = if (homeIncremented) updated.homeTeamName else updated.awayTeamName
+            detectedAlerts.add(
+                LiveGoalAlertEvent(
+                    alertId = "${updated.matchId}_${newHome}_${newAway}",
+                    match = updated,
+                    scoringTeamName = scoringTeam,
+                    homeTeamName = updated.homeTeamName,
+                    awayTeamName = updated.awayTeamName,
+                    homeScore = newHome,
+                    awayScore = newAway,
+                    minuteLabel = updated.liveMinuteOrBadge.ifBlank { "LIVE" },
+                    isFavoriteTeamGoal = isFavMatch
+                )
+            )
+        }
+
+        return detectedAlerts.sortedByDescending { it.isFavoriteTeamGoal }.firstOrNull()
+    }
+
+    fun triggerGoalAlert(alert: LiveGoalAlertEvent) {
+        _activeGoalAlert.value = alert
+        goalAlertDismissJob?.cancel()
+        goalAlertDismissJob = viewModelScope.launch {
+            delay(5000L)
+            if (_activeGoalAlert.value?.alertId == alert.alertId) {
+                _activeGoalAlert.value = null
+            }
+        }
+    }
+
+    fun dismissGoalAlert() {
+        goalAlertDismissJob?.cancel()
+        _activeGoalAlert.value = null
+    }
+
+    /**
      * Background SportAPI.ai Live Score & Match Minute Polling Engine:
      * - Automatically syncs live scores (`homeScore`, `awayScore`, `halfTimeScore`, `fullTimeScore`)
      *   and match minute clocks (`1H • 38'`, `HT`, `2H • 67'`, `90+3'`, `FT`) in the background without user refreshing.
-     * - Adaptive cadence:
-     *   - **30 seconds** when at least one match on `TODAY` or the active tab is `LIVE`, `HALFTIME`, or inside its kickoff window.
-     *   - **60 seconds** when on the KickOff Arena screen (`AppScreen.HOME`) monitoring `TODAY` for upcoming kickoffs.
-     * - Also silently updates `_selectedMatchDossier` if the user has a live match open in the 5-Tab Match Center.
+     * - Emits `LiveGoalAlertEvent` whenever a match on `TODAY` increments `homeScore` or `awayScore`.
      */
     private fun startConditionalLivePolling() {
         livePollingJob?.cancel()
@@ -315,7 +400,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
                 val pollIntervalMs = if (isFastLiveWindow) 30_000L else 60_000L
                 _liveScoreSyncState.value = _liveScoreSyncState.value.copy(
-                    isPollingActive = _currentScreen.value == AppScreen.HOME,
+                    isPollingActive = _currentScreen.value == AppScreen.HOME || isFastLiveWindow,
                     activeLiveMatchesCount = todayList.count {
                         it.status == MatchStatus.LIVE || it.status == MatchStatus.HALFTIME
                     }
@@ -323,11 +408,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
                 delay(pollIntervalMs)
 
-                if (_currentScreen.value != AppScreen.HOME) continue
-
                 val currentActiveDay = _selectedMatchDay.value
                 val shouldPollToday = isFastLiveWindow || currentActiveDay == MatchDayTab.TODAY
-                val shouldPollSelectedDay = currentActiveDay != MatchDayTab.TODAY &&
+                val shouldPollSelectedDay = _currentScreen.value == AppScreen.HOME &&
+                    currentActiveDay != MatchDayTab.TODAY &&
                     hasLiveOrImminentKickoffMatches(_matchesByDay.value[currentActiveDay].orEmpty(), currentActiveDay)
 
                 if (!shouldPollToday && !shouldPollSelectedDay) continue
@@ -346,6 +430,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                             dayTab = MatchDayTab.TODAY,
                             existingMatches = existingToday
                         )
+                        val goalAlert = detectGoalScoredAlert(
+                            previousMatches = existingToday,
+                            updatedMatches = refreshedToday
+                        )
+                        if (goalAlert != null) {
+                            triggerGoalAlert(goalAlert)
+                        }
                         updatedMap[MatchDayTab.TODAY] = refreshedToday
                         _todayMatches.value = refreshedToday
                     }

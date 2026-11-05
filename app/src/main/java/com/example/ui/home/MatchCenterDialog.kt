@@ -41,8 +41,10 @@ import androidx.compose.material.icons.filled.Star
 import androidx.compose.material.icons.filled.SwapVert
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.Dp
 import coil.compose.SubcomposeAsyncImage
+import coil.request.ImageRequest
 import com.example.data.repository.FootballMatch
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -1247,7 +1249,7 @@ private fun MatchLineups2DPitchTabContent(
                             horizontalArrangement = Arrangement.spacedBy(4.dp),
                             verticalAlignment = Alignment.CenterVertically
                         ) {
-                            // HOME TEAM TAB
+                            // HOME TEAM XI TAB
                             val isHomeSelected = pitchFilterMode == PitchTeamFilterMode.HOME_ONLY
                             Surface(
                                 color = if (isHomeSelected) Color(0xFF1589FF) else Color.Transparent,
@@ -1261,20 +1263,20 @@ private fun MatchLineups2DPitchTabContent(
                                 Row(
                                     modifier = Modifier
                                         .fillMaxWidth()
-                                        .padding(vertical = 8.dp, horizontal = 8.dp),
+                                        .padding(vertical = 8.dp, horizontal = 6.dp),
                                     horizontalArrangement = Arrangement.Center,
                                     verticalAlignment = Alignment.CenterVertically
                                 ) {
                                     TeamCrestImage(
                                         badgeUrl = match.homeTeamBadge,
                                         teamName = match.homeTeamName,
-                                        sizeDp = 18
+                                        sizeDp = 16
                                     )
-                                    Spacer(modifier = Modifier.width(6.dp))
+                                    Spacer(modifier = Modifier.width(5.dp))
                                     Text(
-                                        text = match.homeTeamName,
+                                        text = "${match.homeTeamName} XI",
                                         color = if (isHomeSelected) Color.White else Champagne,
-                                        fontSize = 11.5.sp,
+                                        fontSize = 10.5.sp,
                                         fontWeight = FontWeight.ExtraBold,
                                         maxLines = 1,
                                         overflow = TextOverflow.Ellipsis
@@ -1282,7 +1284,7 @@ private fun MatchLineups2DPitchTabContent(
                                 }
                             }
 
-                            // AWAY TEAM TAB
+                            // AWAY TEAM XI TAB
                             val isAwaySelected = pitchFilterMode == PitchTeamFilterMode.AWAY_ONLY
                             Surface(
                                 color = if (isAwaySelected) Color(0xFF1589FF) else Color.Transparent,
@@ -1296,20 +1298,20 @@ private fun MatchLineups2DPitchTabContent(
                                 Row(
                                     modifier = Modifier
                                         .fillMaxWidth()
-                                        .padding(vertical = 8.dp, horizontal = 8.dp),
+                                        .padding(vertical = 8.dp, horizontal = 6.dp),
                                     horizontalArrangement = Arrangement.Center,
                                     verticalAlignment = Alignment.CenterVertically
                                 ) {
                                     TeamCrestImage(
                                         badgeUrl = match.awayTeamBadge,
                                         teamName = match.awayTeamName,
-                                        sizeDp = 18
+                                        sizeDp = 16
                                     )
-                                    Spacer(modifier = Modifier.width(6.dp))
+                                    Spacer(modifier = Modifier.width(5.dp))
                                     Text(
-                                        text = match.awayTeamName,
+                                        text = "${match.awayTeamName} XI",
                                         color = if (isAwaySelected) Color.White else Champagne,
-                                        fontSize = 11.5.sp,
+                                        fontSize = 10.5.sp,
                                         fontWeight = FontWeight.ExtraBold,
                                         maxLines = 1,
                                         overflow = TextOverflow.Ellipsis
@@ -1317,7 +1319,7 @@ private fun MatchLineups2DPitchTabContent(
                                 }
                             }
 
-                            // COMPARE 22 TAB
+                            // STACKED 3D DUAL VIEW TAB
                             val isBothSelected = pitchFilterMode == PitchTeamFilterMode.BOTH
                             Surface(
                                 color = if (isBothSelected) AmberGold.copy(alpha = 0.24f) else Color.Transparent,
@@ -1329,11 +1331,12 @@ private fun MatchLineups2DPitchTabContent(
                                     .testTag("pitch_mode_both")
                             ) {
                                 Text(
-                                    text = "22 XI",
+                                    text = "🏟️ Stacked 3D Dual View",
                                     color = if (isBothSelected) AmberGold else ChampagneMuted,
-                                    fontSize = 10.sp,
+                                    fontSize = 9.5.sp,
                                     fontWeight = FontWeight.ExtraBold,
-                                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp)
+                                    maxLines = 1,
+                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 8.dp)
                                 )
                             }
                         }
@@ -1981,388 +1984,315 @@ private fun TacticalPitch2DView(
     selectedPlayer: PitchPlayerNode?,
     onSelectPlayer: (PitchPlayerNode) -> Unit
 ) {
-    val isSingleTeam3D = filterMode != PitchTeamFilterMode.BOTH
-    val pitchCanvasHeight = if (isSingleTeam3D) 450.dp else 690.dp
-
     val homeKitPrimary = remember(match.homeTeamName) { resolveTeamPrimaryKitColor(match.homeTeamName, isHome = true) }
     val awayKitPrimary = remember(match.awayTeamName) { resolveTeamPrimaryKitColor(match.awayTeamName, isHome = false) }
 
-    Surface(
-        color = if (isSingleTeam3D) Color(0xFF071A12) else Color(0xFF0C3B24),
-        shape = RoundedCornerShape(18.dp),
-        border = BorderStroke(1.2.dp, ArenaPitchGreen.copy(alpha = 0.8f)),
+    Column(
         modifier = Modifier
             .fillMaxWidth()
-            .testTag("tactical_2d_pitch")
+            .testTag("tactical_2d_pitch"),
+        verticalArrangement = Arrangement.spacedBy(14.dp)
+    ) {
+        if (filterMode != PitchTeamFilterMode.AWAY_ONLY) {
+            SingleTeam3DPitchCard(
+                teamName = match.homeTeamName,
+                teamBadge = match.homeTeamBadge,
+                formation = lineups.homeFormation,
+                coachName = lineups.homeCoach,
+                avgRating = lineups.homeAvgRating,
+                startingXI = lineups.homeStartingXI,
+                kitPrimaryColor = homeKitPrimary,
+                gkColor = Color(0xFF29B6F6),
+                accentColor = ArenaFloodlightLime,
+                passingNetColor = Color(0xFF00E5FF),
+                isHomeTeam = true,
+                showPassingNetwork = showPassingNetwork,
+                isPlayedOrLive = isPlayedOrLive,
+                selectedPlayer = selectedPlayer,
+                onSelectPlayer = onSelectPlayer
+            )
+        }
+
+        if (filterMode != PitchTeamFilterMode.HOME_ONLY) {
+            SingleTeam3DPitchCard(
+                teamName = match.awayTeamName,
+                teamBadge = match.awayTeamBadge,
+                formation = lineups.awayFormation,
+                coachName = lineups.awayCoach,
+                avgRating = lineups.awayAvgRating,
+                startingXI = lineups.awayStartingXI,
+                kitPrimaryColor = awayKitPrimary,
+                gkColor = Color(0xFF26A69A),
+                accentColor = AmberGold,
+                passingNetColor = Color(0xFFFFD166),
+                isHomeTeam = false,
+                showPassingNetwork = showPassingNetwork,
+                isPlayedOrLive = isPlayedOrLive,
+                selectedPlayer = selectedPlayer,
+                onSelectPlayer = onSelectPlayer
+            )
+        }
+    }
+}
+
+@Composable
+private fun SingleTeam3DPitchCard(
+    teamName: String,
+    teamBadge: String,
+    formation: String,
+    coachName: String,
+    avgRating: Double,
+    startingXI: List<PitchPlayerNode>,
+    kitPrimaryColor: Color,
+    gkColor: Color,
+    accentColor: Color,
+    passingNetColor: Color,
+    isHomeTeam: Boolean,
+    showPassingNetwork: Boolean,
+    isPlayedOrLive: Boolean,
+    selectedPlayer: PitchPlayerNode?,
+    onSelectPlayer: (PitchPlayerNode) -> Unit
+) {
+    Surface(
+        color = Color(0xFF071A12),
+        shape = RoundedCornerShape(18.dp),
+        border = BorderStroke(1.2.dp, accentColor.copy(alpha = 0.65f)),
+        modifier = Modifier.fillMaxWidth()
     ) {
         Column(modifier = Modifier.fillMaxWidth()) {
-            // In BOTH mode, show top and bottom end-zone bars
-            if (!isSingleTeam3D) {
-                TacticalEndZoneTeamBar(
-                    teamName = match.homeTeamName,
-                    teamBadge = match.homeTeamBadge,
-                    formation = lineups.homeFormation,
-                    coachName = lineups.homeCoach,
-                    avgRating = lineups.homeAvgRating,
-                    accentColor = ArenaFloodlightLime,
-                    isTopBar = true
-                )
-            }
+            TacticalEndZoneTeamBar(
+                teamName = teamName,
+                teamBadge = teamBadge,
+                formation = formation,
+                coachName = coachName,
+                avgRating = avgRating,
+                accentColor = accentColor,
+                isTopBar = isHomeTeam
+            )
 
             BoxWithConstraints(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .height(pitchCanvasHeight)
+                    .height(455.dp)
             ) {
                 val pitchW = maxWidth
                 val pitchH = maxHeight
+                val rowMax = (startingXI.maxOfOrNull { it.rowIndex } ?: 3).coerceAtLeast(1)
 
-                val homeRowMax = (lineups.homeStartingXI.maxOfOrNull { it.rowIndex } ?: 3).coerceAtLeast(1)
-                val awayRowMax = (lineups.awayStartingXI.maxOfOrNull { it.rowIndex } ?: 3).coerceAtLeast(1)
+                // 3D Perspective Stadium Pitch coordinates:
+                // - Goalkeeper (rowIndex = 0) at bottom near goal box (y = 0.81f)
+                // - Defenders, Midfielders, and Forwards advancing up to top attacking box (y = 0.13f)
+                // - Horizontal spread narrows toward the top to match the 3D trapezoid perspective
+                fun compute3DPlayerNormalizedCoords(player: PitchPlayerNode): Pair<Float, Float> {
+                    val progressFromGkToAttack = (player.rowIndex.toFloat() / rowMax.toFloat()).coerceIn(0f, 1f)
+                    val isWidePlayer = player.colCountInRow >= 3 &&
+                        (player.colIndex == 0 || player.colIndex == player.colCountInRow - 1)
+                    val wingPushUp = if (isWidePlayer && player.rowIndex in 1 until rowMax) 0.025f else 0f
 
-                // Compute 365Scores-style perspective coordinates:
-                // In single-team mode (HOME_ONLY or AWAY_ONLY):
-                // - Goalkeeper (rowIndex = 0) is at the BOTTOM near the goal box (y = 0.82f)
-                // - Defenders (rowIndex = 1) are above GK
-                // - Midfielders are in the middle
-                // - Striker / Forwards (rowIndex = rowMax) are at the TOP attacking end (y = 0.13f)!
-                // Horizontal spread narrows slightly toward the top to match the 3D trapezoid perspective!
-                fun computePlayerNormalizedCoords(
-                    player: PitchPlayerNode,
-                    isHome: Boolean
-                ): Pair<Float, Float> {
-                    if (filterMode != PitchTeamFilterMode.BOTH) {
-                        val rowMax = if (isHome) homeRowMax else awayRowMax
-                        val progressFromGkToAttack = (player.rowIndex.toFloat() / rowMax.toFloat()).coerceIn(0f, 1f)
-                        val isWidePlayer = player.colCountInRow >= 3 &&
-                            (player.colIndex == 0 || player.colIndex == player.colCountInRow - 1)
-                        val wingPushUp = if (isWidePlayer && player.rowIndex in 1..(rowMax - 1)) 0.025f else 0f
-
-                        // Y goes from 0.81f (GK at bottom) up to 0.13f (Striker at top)
-                        val yFraction = (0.81f - progressFromGkToAttack * 0.68f - wingPushUp).coerceIn(0.11f, 0.83f)
-
-                        // Perspective horizontal width: wider at bottom (0.76f span), narrower at top (0.58f span)
-                        val perspectiveSpan = 0.78f - (1f - yFraction) * 0.20f
-                        val leftMargin = (1f - perspectiveSpan) / 2f
-                        val xFraction = if (player.colCountInRow <= 1) {
-                            0.5f
-                        } else {
-                            leftMargin + (player.colIndex.toFloat() / (player.colCountInRow - 1).toFloat()) * perspectiveSpan
-                        }
-                        return xFraction to yFraction
+                    val yFraction = (0.81f - progressFromGkToAttack * 0.68f - wingPushUp).coerceIn(0.11f, 0.83f)
+                    val perspectiveSpan = 0.78f - (1f - yFraction) * 0.20f
+                    val leftMargin = (1f - perspectiveSpan) / 2f
+                    val xFraction = if (player.colCountInRow <= 1) {
+                        0.5f
                     } else {
-                        val xFraction = if (player.colCountInRow <= 1) {
-                            0.5f
-                        } else {
-                            0.13f + (player.colIndex.toFloat() / (player.colCountInRow - 1).toFloat()) * 0.74f
-                        }
-                        val isWidePlayer = player.colCountInRow >= 3 &&
-                            (player.colIndex == 0 || player.colIndex == player.colCountInRow - 1)
-                        val wingAdvance = if (isWidePlayer) 0.015f else 0f
-                        val yFraction = if (isHome) {
-                            val base = 0.065f + (player.rowIndex.toFloat() / homeRowMax.toFloat()) * 0.385f
-                            (base + wingAdvance).coerceIn(0.055f, 0.460f)
-                        } else {
-                            val base = 0.915f - (player.rowIndex.toFloat() / awayRowMax.toFloat()) * 0.375f
-                            (base - wingAdvance).coerceIn(0.530f, 0.922f)
-                        }
-                        return xFraction to yFraction
+                        leftMargin + (player.colIndex.toFloat() / (player.colCountInRow - 1).toFloat()) * perspectiveSpan
                     }
+                    return xFraction to yFraction
                 }
 
-                // 1. Pitch Grass Stripes, 3D Perspective Trapezoid Turf, and Markings
+                // 1. 3D Perspective Trapezoid Stadium Pitch Turf & Lines
                 Canvas(modifier = Modifier.fillMaxSize()) {
                     val w = size.width
                     val h = size.height
 
-                    if (isSingleTeam3D) {
-                        // 365Scores-style 3D Perspective Trapezoid Stadium Pitch
-                        val topY = h * 0.10f
-                        val bottomY = h * 0.89f
-                        val topLeftX = w * 0.13f
-                        val topRightX = w * 0.87f
-                        val bottomLeftX = w * 0.02f
-                        val bottomRightX = w * 0.98f
+                    val topY = h * 0.10f
+                    val bottomY = h * 0.89f
+                    val topLeftX = w * 0.13f
+                    val topRightX = w * 0.87f
+                    val bottomLeftX = w * 0.02f
+                    val bottomRightX = w * 0.98f
 
-                        val turfPath = Path().apply {
-                            moveTo(topLeftX, topY)
-                            lineTo(topRightX, topY)
-                            lineTo(bottomRightX, bottomY)
-                            lineTo(bottomLeftX, bottomY)
-                            close()
-                        }
+                    val turfPath = Path().apply {
+                        moveTo(topLeftX, topY)
+                        lineTo(topRightX, topY)
+                        lineTo(bottomRightX, bottomY)
+                        lineTo(bottomLeftX, bottomY)
+                        close()
+                    }
 
-                        // Base dark apron at the bottom (below bottomY, where 4-2-3-1 badge sits)
-                        drawRect(
-                            color = Color(0xFF1F6E3C),
-                            topLeft = Offset(0f, bottomY),
-                            size = Size(w, h - bottomY)
-                        )
+                    // Bottom turf apron
+                    drawRect(
+                        color = Color(0xFF1F6E3C),
+                        topLeft = Offset(0f, bottomY),
+                        size = Size(w, h - bottomY)
+                    )
 
-                        // Draw mowed grass stripes clipped inside the 3D trapezoid
-                        clipPath(turfPath) {
-                            val stripeCount = 10
-                            val turfH = bottomY - topY
-                            val stripeH = turfH / stripeCount
-                            for (i in 0 until stripeCount) {
-                                drawRect(
-                                    color = if (i % 2 == 0) Color(0xFF237A43) else Color(0xFF1D6938),
-                                    topLeft = Offset(0f, topY + i * stripeH),
-                                    size = Size(w, stripeH + 1f)
-                                )
-                            }
-                        }
-
-                        val lineColor = Color.White.copy(alpha = 0.62f)
-                        val stroke = Stroke(width = 1.8.dp.toPx())
-
-                        // Outer trapezoid pitch lines
-                        drawPath(path = turfPath, color = lineColor, style = stroke)
-
-                        // Helper to interpolate X along left/right sidelines at normalized vertical t (0 = top, 1 = bottom)
-                        fun leftSideX(t: Float) = topLeftX + (bottomLeftX - topLeftX) * t
-                        fun rightSideX(t: Float) = topRightX + (bottomRightX - topRightX) * t
-                        fun yAt(t: Float) = topY + (bottomY - topY) * t
-
-                        // Halfway line & perspective center oval
-                        val midT = 0.48f
-                        val midY = yAt(midT)
-                        drawLine(
-                            color = lineColor,
-                            start = Offset(leftSideX(midT), midY),
-                            end = Offset(rightSideX(midT), midY),
-                            strokeWidth = 1.8.dp.toPx()
-                        )
-                        drawOval(
-                            color = lineColor,
-                            topLeft = Offset(w * 0.36f, midY - h * 0.075f),
-                            size = Size(w * 0.28f, h * 0.15f),
-                            style = stroke
-                        )
-
-                        // Top attacking penalty box (perspective trapezoid)
-                        val topPenBottomT = 0.18f
-                        val topPenPath = Path().apply {
-                            moveTo(w * 0.30f, topY)
-                            lineTo(w * 0.70f, topY)
-                            lineTo(w * 0.72f, yAt(topPenBottomT))
-                            lineTo(w * 0.28f, yAt(topPenBottomT))
-                            close()
-                        }
-                        drawPath(topPenPath, color = lineColor, style = stroke)
-
-                        val topSixBottomT = 0.07f
-                        val topSixPath = Path().apply {
-                            moveTo(w * 0.40f, topY)
-                            lineTo(w * 0.60f, topY)
-                            lineTo(w * 0.61f, yAt(topSixBottomT))
-                            lineTo(w * 0.39f, yAt(topSixBottomT))
-                            close()
-                        }
-                        drawPath(topSixPath, color = lineColor, style = stroke)
-
-                        // Bottom Goalkeeper penalty box (perspective trapezoid)
-                        val botPenTopT = 0.79f
-                        val botPenPath = Path().apply {
-                            moveTo(w * 0.24f, yAt(botPenTopT))
-                            lineTo(w * 0.76f, yAt(botPenTopT))
-                            lineTo(w * 0.79f, bottomY)
-                            lineTo(w * 0.21f, bottomY)
-                            close()
-                        }
-                        drawPath(botPenPath, color = lineColor, style = stroke)
-
-                        val botSixTopT = 0.91f
-                        val botSixPath = Path().apply {
-                            moveTo(w * 0.36f, yAt(botSixTopT))
-                            lineTo(w * 0.64f, yAt(botSixTopT))
-                            lineTo(w * 0.66f, bottomY)
-                            lineTo(w * 0.34f, bottomY)
-                            close()
-                        }
-                        drawPath(botSixPath, color = lineColor, style = stroke)
-                    } else {
-                        // Classic 2D Full-Pitch for BOTH TEAMS (22 View)
-                        val stripeCount = 12
-                        val stripeH = h / stripeCount
+                    // Mowed grass stripes clipped inside 3D trapezoid
+                    clipPath(turfPath) {
+                        val stripeCount = 10
+                        val turfH = bottomY - topY
+                        val stripeH = turfH / stripeCount
                         for (i in 0 until stripeCount) {
                             drawRect(
-                                color = if (i % 2 == 0) Color(0xFF134B30) else Color(0xFF0F3F27),
-                                topLeft = Offset(0f, i * stripeH),
-                                size = Size(w, stripeH)
+                                color = if (i % 2 == 0) Color(0xFF237A43) else Color(0xFF1D6938),
+                                topLeft = Offset(0f, topY + i * stripeH),
+                                size = Size(w, stripeH + 1f)
                             )
                         }
-
-                        val lineColor = Color.White.copy(alpha = 0.28f)
-                        val stroke = Stroke(width = 2.dp.toPx())
-                        drawRect(
-                            color = lineColor,
-                            topLeft = Offset(8.dp.toPx(), 8.dp.toPx()),
-                            size = Size(w - 16.dp.toPx(), h - 16.dp.toPx()),
-                            style = stroke
-                        )
-                        val centerY = h / 2f
-                        drawLine(
-                            color = lineColor,
-                            start = Offset(8.dp.toPx(), centerY),
-                            end = Offset(w - 8.dp.toPx(), centerY),
-                            strokeWidth = 2.dp.toPx()
-                        )
-                        drawCircle(
-                            color = lineColor,
-                            radius = 44.dp.toPx(),
-                            center = Offset(w / 2f, centerY),
-                            style = stroke
-                        )
-                        val penBoxW = w * 0.56f
-                        val penBoxH = h * 0.14f
-                        drawRect(
-                            color = lineColor,
-                            topLeft = Offset((w - penBoxW) / 2f, 8.dp.toPx()),
-                            size = Size(penBoxW, penBoxH),
-                            style = stroke
-                        )
-                        drawRect(
-                            color = lineColor,
-                            topLeft = Offset((w - penBoxW) / 2f, h - 8.dp.toPx() - penBoxH),
-                            size = Size(penBoxW, penBoxH),
-                            style = stroke
-                        )
                     }
+
+                    val lineColor = Color.White.copy(alpha = 0.62f)
+                    val stroke = Stroke(width = 1.8.dp.toPx())
+
+                    drawPath(path = turfPath, color = lineColor, style = stroke)
+
+                    fun leftSideX(t: Float) = topLeftX + (bottomLeftX - topLeftX) * t
+                    fun rightSideX(t: Float) = topRightX + (bottomRightX - topRightX) * t
+                    fun yAt(t: Float) = topY + (bottomY - topY) * t
+
+                    val midT = 0.48f
+                    val midY = yAt(midT)
+                    drawLine(
+                        color = lineColor,
+                        start = Offset(leftSideX(midT), midY),
+                        end = Offset(rightSideX(midT), midY),
+                        strokeWidth = 1.8.dp.toPx()
+                    )
+                    drawOval(
+                        color = lineColor,
+                        topLeft = Offset(w * 0.36f, midY - h * 0.075f),
+                        size = Size(w * 0.28f, h * 0.15f),
+                        style = stroke
+                    )
+
+                    // Top attacking penalty box
+                    val topPenBottomT = 0.18f
+                    val topPenPath = Path().apply {
+                        moveTo(w * 0.30f, topY)
+                        lineTo(w * 0.70f, topY)
+                        lineTo(w * 0.72f, yAt(topPenBottomT))
+                        lineTo(w * 0.28f, yAt(topPenBottomT))
+                        close()
+                    }
+                    drawPath(topPenPath, color = lineColor, style = stroke)
+
+                    val topSixBottomT = 0.07f
+                    val topSixPath = Path().apply {
+                        moveTo(w * 0.40f, topY)
+                        lineTo(w * 0.60f, topY)
+                        lineTo(w * 0.61f, yAt(topSixBottomT))
+                        lineTo(w * 0.39f, yAt(topSixBottomT))
+                        close()
+                    }
+                    drawPath(topSixPath, color = lineColor, style = stroke)
+
+                    // Bottom Goalkeeper penalty box
+                    val botPenTopT = 0.79f
+                    val botPenPath = Path().apply {
+                        moveTo(w * 0.24f, yAt(botPenTopT))
+                        lineTo(w * 0.76f, yAt(botPenTopT))
+                        lineTo(w * 0.79f, bottomY)
+                        lineTo(w * 0.21f, bottomY)
+                        close()
+                    }
+                    drawPath(botPenPath, color = lineColor, style = stroke)
+
+                    val botSixTopT = 0.91f
+                    val botSixPath = Path().apply {
+                        moveTo(w * 0.36f, yAt(botSixTopT))
+                        lineTo(w * 0.64f, yAt(botSixTopT))
+                        lineTo(w * 0.66f, bottomY)
+                        lineTo(w * 0.34f, bottomY)
+                        close()
+                    }
+                    drawPath(botSixPath, color = lineColor, style = stroke)
 
                     // Optional Tactical Passing Network Lines
                     if (showPassingNetwork) {
-                        fun drawTeamPassingNetwork(players: List<PitchPlayerNode>, isHome: Boolean, netColor: Color) {
-                            val byRow = players.groupBy { it.rowIndex }
-                            val rows = byRow.keys.sorted()
-                            for (rIdx in 0 until rows.size) {
-                                val currentRowPlayers = byRow[rows[rIdx]].orEmpty()
-                                for (c in 0 until currentRowPlayers.size - 1) {
-                                    val (x1, y1) = computePlayerNormalizedCoords(currentRowPlayers[c], isHome)
-                                    val (x2, y2) = computePlayerNormalizedCoords(currentRowPlayers[c + 1], isHome)
-                                    drawLine(
-                                        color = netColor.copy(alpha = 0.25f),
-                                        start = Offset(w * x1, h * y1),
-                                        end = Offset(w * x2, h * y2),
-                                        strokeWidth = 1.6.dp.toPx()
-                                    )
-                                }
-                                if (rIdx + 1 < rows.size) {
-                                    val nextRowPlayers = byRow[rows[rIdx + 1]].orEmpty()
-                                    currentRowPlayers.forEach { p1 ->
-                                        val (x1, y1) = computePlayerNormalizedCoords(p1, isHome)
-                                        val closestNext = nextRowPlayers.minByOrNull { p2 ->
-                                            val (x2, _) = computePlayerNormalizedCoords(p2, isHome)
-                                            kotlin.math.abs(x1 - x2)
-                                        }
-                                        if (closestNext != null) {
-                                            val (x2, y2) = computePlayerNormalizedCoords(closestNext, isHome)
-                                            drawLine(
-                                                color = netColor.copy(alpha = 0.22f),
-                                                start = Offset(w * x1, h * y1),
-                                                end = Offset(w * x2, h * y2),
-                                                strokeWidth = 1.5.dp.toPx()
-                                            )
-                                        }
+                        val byRow = startingXI.groupBy { it.rowIndex }
+                        val rows = byRow.keys.sorted()
+                        for (rIdx in rows.indices) {
+                            val currentRowPlayers = byRow[rows[rIdx]].orEmpty()
+                            for (c in 0 until currentRowPlayers.size - 1) {
+                                val (x1, y1) = compute3DPlayerNormalizedCoords(currentRowPlayers[c])
+                                val (x2, y2) = compute3DPlayerNormalizedCoords(currentRowPlayers[c + 1])
+                                drawLine(
+                                    color = passingNetColor.copy(alpha = 0.28f),
+                                    start = Offset(w * x1, h * y1),
+                                    end = Offset(w * x2, h * y2),
+                                    strokeWidth = 1.6.dp.toPx()
+                                )
+                            }
+                            if (rIdx + 1 < rows.size) {
+                                val nextRowPlayers = byRow[rows[rIdx + 1]].orEmpty()
+                                currentRowPlayers.forEach { p1 ->
+                                    val (x1, y1) = compute3DPlayerNormalizedCoords(p1)
+                                    val closestNext = nextRowPlayers.minByOrNull { p2 ->
+                                        val (x2, _) = compute3DPlayerNormalizedCoords(p2)
+                                        kotlin.math.abs(x1 - x2)
+                                    }
+                                    if (closestNext != null) {
+                                        val (x2, y2) = compute3DPlayerNormalizedCoords(closestNext)
+                                        drawLine(
+                                            color = passingNetColor.copy(alpha = 0.24f),
+                                            start = Offset(w * x1, h * y1),
+                                            end = Offset(w * x2, h * y2),
+                                            strokeWidth = 1.5.dp.toPx()
+                                        )
                                     }
                                 }
                             }
                         }
-
-                        if (filterMode != PitchTeamFilterMode.AWAY_ONLY) {
-                            drawTeamPassingNetwork(lineups.homeStartingXI, isHome = true, netColor = Color(0xFF00E5FF))
-                        }
-                        if (filterMode != PitchTeamFilterMode.HOME_ONLY) {
-                            drawTeamPassingNetwork(lineups.awayStartingXI, isHome = false, netColor = Color(0xFFFFD166))
-                        }
                     }
                 }
 
-                // 2. 365Scores-Style Bottom Turf Apron: Brand Watermark + Floating Formation Pill (`4 - 2 - 3 - 1`)
-                if (isSingleTeam3D) {
-                    val activeFormation = if (filterMode == PitchTeamFilterMode.HOME_ONLY) {
-                        lineups.homeFormation
-                    } else {
-                        lineups.awayFormation
-                    }
-                    val formattedFormation = activeFormation.split("-").joinToString(" - ")
-
-                    Text(
-                        text = "SETPLAY ARENA",
-                        color = Color.White.copy(alpha = 0.30f),
-                        fontSize = 11.sp,
-                        fontWeight = FontWeight.ExtraBold,
-                        letterSpacing = 1.8.sp,
-                        modifier = Modifier
-                            .align(Alignment.BottomCenter)
-                            .padding(bottom = 12.dp)
-                    )
-
-                    Surface(
-                        color = Color(0xFF0D2818).copy(alpha = 0.88f),
-                        shape = RoundedCornerShape(50),
-                        border = BorderStroke(0.8.dp, Color.White.copy(alpha = 0.25f)),
-                        modifier = Modifier
-                            .align(Alignment.BottomEnd)
-                            .padding(end = 14.dp, bottom = 8.dp)
-                    ) {
-                        Text(
-                            text = formattedFormation,
-                            color = Color.White,
-                            fontSize = 12.sp,
-                            fontWeight = FontWeight.ExtraBold,
-                            modifier = Modifier.padding(horizontal = 14.dp, vertical = 4.dp)
-                        )
-                    }
-                }
-
-                // 3. Home Team Starting XI Nodes
-                if (filterMode != PitchTeamFilterMode.AWAY_ONLY) {
-                    lineups.homeStartingXI.forEach { player ->
-                        val (xFraction, yFraction) = computePlayerNormalizedCoords(player, isHome = true)
-                        PitchPlayerAvatarNode(
-                            player = player,
-                            xPos = pitchW * xFraction,
-                            yPos = pitchH * yFraction,
-                            shirtColor = if (player.positionCode == "GK") Color(0xFF29B6F6) else homeKitPrimary,
-                            ringColor = Color.White,
-                            isSingleTeamMode = isSingleTeam3D,
-                            isPlayedOrLive = isPlayedOrLive,
-                            isSelected = selectedPlayer?.playerId == player.playerId,
-                            onClick = { onSelectPlayer(player) }
-                        )
-                    }
-                }
-
-                // 4. Away Team Starting XI Nodes
-                if (filterMode != PitchTeamFilterMode.HOME_ONLY) {
-                    lineups.awayStartingXI.forEach { player ->
-                        val (xFraction, yFraction) = computePlayerNormalizedCoords(player, isHome = false)
-                        PitchPlayerAvatarNode(
-                            player = player,
-                            xPos = pitchW * xFraction,
-                            yPos = pitchH * yFraction,
-                            shirtColor = if (player.positionCode == "GK") Color(0xFF26A69A) else awayKitPrimary,
-                            ringColor = Color.White,
-                            isSingleTeamMode = isSingleTeam3D,
-                            isPlayedOrLive = isPlayedOrLive,
-                            isSelected = selectedPlayer?.playerId == player.playerId,
-                            onClick = { onSelectPlayer(player) }
-                        )
-                    }
-                }
-            }
-
-            if (!isSingleTeam3D) {
-                TacticalEndZoneTeamBar(
-                    teamName = match.awayTeamName,
-                    teamBadge = match.awayTeamBadge,
-                    formation = lineups.awayFormation,
-                    coachName = lineups.awayCoach,
-                    avgRating = lineups.awayAvgRating,
-                    accentColor = AmberGold,
-                    isTopBar = false
+                // 2. Bottom Turf Apron: Brand Watermark + Floating Formation Pill (`4 - 2 - 3 - 1`)
+                val formattedFormation = formation.split("-").joinToString(" - ")
+                Text(
+                    text = "${teamName.uppercase()} • 3D TACTICAL PITCH",
+                    color = Color.White.copy(alpha = 0.34f),
+                    fontSize = 10.sp,
+                    fontWeight = FontWeight.ExtraBold,
+                    letterSpacing = 1.2.sp,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier
+                        .align(Alignment.BottomStart)
+                        .padding(start = 14.dp, bottom = 12.dp)
                 )
+
+                Surface(
+                    color = Color(0xFF0D2818).copy(alpha = 0.90f),
+                    shape = RoundedCornerShape(50),
+                    border = BorderStroke(0.8.dp, accentColor.copy(alpha = 0.45f)),
+                    modifier = Modifier
+                        .align(Alignment.BottomEnd)
+                        .padding(end = 14.dp, bottom = 8.dp)
+                ) {
+                    Text(
+                        text = formattedFormation,
+                        color = Color.White,
+                        fontSize = 11.5.sp,
+                        fontWeight = FontWeight.ExtraBold,
+                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp)
+                    )
+                }
+
+                // 3. Starting XI 3D Pitch Player Nodes (42.dp Cutout Medallions + #Jersey + Rating Pill + Name Plate)
+                startingXI.forEach { player ->
+                    val (xFraction, yFraction) = compute3DPlayerNormalizedCoords(player)
+                    PitchPlayerAvatarNode(
+                        player = player,
+                        xPos = pitchW * xFraction,
+                        yPos = pitchH * yFraction,
+                        shirtColor = if (player.positionCode == "GK") gkColor else kitPrimaryColor,
+                        ringColor = Color.White,
+                        isSingleTeamMode = true,
+                        isPlayedOrLive = isPlayedOrLive,
+                        isSelected = selectedPlayer?.playerId == player.playerId,
+                        onClick = { onSelectPlayer(player) }
+                    )
+                }
             }
         }
     }
@@ -2485,6 +2415,23 @@ private fun PlayerCircularAvatarMedallion(
     ringColor: Color,
     sizeDp: Int
 ) {
+    val context = LocalContext.current
+    val imageRequest = remember(photoUrl, context) {
+        if (photoUrl.isNotBlank()) {
+            ImageRequest.Builder(context)
+                .data(photoUrl)
+                .addHeader(
+                    "User-Agent",
+                    "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 Chrome/126.0.0.0 Mobile Safari/537.36"
+                )
+                .addHeader("Referer", "https://www.sofascore.com/")
+                .crossfade(true)
+                .build()
+        } else {
+            null
+        }
+    }
+
     // 365Scores-style studio pearl circle background so transparent player headshots pop with crisp contrast
     Surface(
         color = Color(0xFFF2F5F8),
@@ -2492,9 +2439,9 @@ private fun PlayerCircularAvatarMedallion(
         border = BorderStroke(1.8.dp, ringColor),
         modifier = Modifier.size(sizeDp.dp)
     ) {
-        if (photoUrl.isNotBlank()) {
+        if (imageRequest != null) {
             SubcomposeAsyncImage(
-                model = photoUrl,
+                model = imageRequest,
                 contentDescription = playerName,
                 contentScale = ContentScale.Crop,
                 modifier = Modifier
@@ -2620,7 +2567,7 @@ private fun PitchPlayerAvatarNode(
     isSelected: Boolean,
     onClick: () -> Unit
 ) {
-    val avatarSizeDp = if (isSingleTeamMode) 44 else 32
+    val avatarSizeDp = if (isSingleTeamMode) 42 else 34
     val nodeW = if (isSingleTeamMode) 84.dp else 72.dp
     val nodeH = if (isSingleTeamMode) 68.dp else 52.dp
     val ratingColor = ratingBadgeColor(player.rating)
@@ -2646,7 +2593,7 @@ private fun PitchPlayerAvatarNode(
                 contentAlignment = Alignment.Center,
                 modifier = Modifier
                     .width(if (isSingleTeamMode) 64.dp else 56.dp)
-                    .height(if (isSingleTeamMode) 46.dp else 34.dp)
+                    .height(if (isSingleTeamMode) 44.dp else 36.dp)
             ) {
                 PlayerCircularAvatarMedallion(
                     photoUrl = player.photoUrl,
@@ -2657,7 +2604,7 @@ private fun PitchPlayerAvatarNode(
                     sizeDp = avatarSizeDp
                 )
 
-                // Top-Right 365Scores-style Circular White Jersey Number Badge (9, 70, 11, 17, 31)
+                // Top-Right 365Scores-style Circular White Jersey Number Badge (#10, #9, #11)
                 Surface(
                     color = Color.White,
                     shape = CircleShape,
@@ -2669,16 +2616,16 @@ private fun PitchPlayerAvatarNode(
                 ) {
                     Box(contentAlignment = Alignment.Center) {
                         Text(
-                            text = "${player.jerseyNumber}",
+                            text = "#${player.jerseyNumber}",
                             color = Color(0xFF0F172A),
-                            fontSize = if (isSingleTeamMode) 8.5.sp else 7.sp,
+                            fontSize = if (isSingleTeamMode) 7.5.sp else 6.5.sp,
                             fontWeight = FontWeight.ExtraBold
                         )
                     }
                 }
 
                 // Top-Left Badge:
-                // - When LIVE or FINISHED: Show Sofascore Real-Time Rating Badge (or Card/Sub indicator)
+                // - When LIVE or FINISHED: Show Sofascore Real-Time Rating Badge (or MVP badge)
                 // - When UPCOMING: Show sleek Position Badge (no fake live ratings, no fake cards, no fake sub arrows!)
                 if (isPlayedOrLive) {
                     Surface(
@@ -2690,10 +2637,10 @@ private fun PitchPlayerAvatarNode(
                             .offset(x = 0.dp, y = (-1).dp)
                     ) {
                         Text(
-                            text = if (player.isMvp) "★${String.format(Locale.US, "%.1f", player.rating)}"
+                            text = if (player.isMvp) "${String.format(Locale.US, "%.1f", player.rating)} ★ MVP"
                             else String.format(Locale.US, "%.1f", player.rating),
                             color = if (player.isMvp) DarkGraphite else Color.White,
-                            fontSize = 7.5.sp,
+                            fontSize = 7.sp,
                             fontWeight = FontWeight.ExtraBold,
                             modifier = Modifier.padding(horizontal = 3.5.dp, vertical = 0.5.dp)
                         )
@@ -3213,14 +3160,23 @@ private fun MatchH2HAndStandingsTabContent(
                         fontWeight = FontWeight.ExtraBold
                     )
                     Spacer(modifier = Modifier.height(8.dp))
-                    dossier.h2hMeetings.forEachIndexed { idx, h2h ->
-                        H2HMeetingRow(item = h2h)
-                        if (idx < dossier.h2hMeetings.size - 1) {
-                            HorizontalDivider(
-                                color = ChampagneSubtleBorder.copy(alpha = 0.4f),
-                                thickness = 0.5.dp,
-                                modifier = Modifier.padding(vertical = 6.dp)
-                            )
+                    if (dossier.h2hMeetings.isEmpty()) {
+                        Text(
+                            text = "No historical head-to-head meetings available from official feed for this fixture.",
+                            color = ChampagneMuted,
+                            fontSize = 11.5.sp,
+                            modifier = Modifier.padding(vertical = 6.dp)
+                        )
+                    } else {
+                        dossier.h2hMeetings.forEachIndexed { idx, h2h ->
+                            H2HMeetingRow(item = h2h)
+                            if (idx < dossier.h2hMeetings.size - 1) {
+                                HorizontalDivider(
+                                    color = ChampagneSubtleBorder.copy(alpha = 0.4f),
+                                    thickness = 0.5.dp,
+                                    modifier = Modifier.padding(vertical = 6.dp)
+                                )
+                            }
                         }
                     }
                 }
@@ -3244,25 +3200,34 @@ private fun MatchH2HAndStandingsTabContent(
                     )
                     Spacer(modifier = Modifier.height(8.dp))
 
-                    // Table Header
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(vertical = 4.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Text("#", color = ChampagneMuted, fontSize = 10.sp, fontWeight = FontWeight.Bold, modifier = Modifier.width(22.dp))
-                        Text("TEAM", color = ChampagneMuted, fontSize = 10.sp, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
-                        Text("P", color = ChampagneMuted, fontSize = 10.sp, fontWeight = FontWeight.Bold, modifier = Modifier.width(24.dp), textAlign = TextAlign.Center)
-                        Text("W-D-L", color = ChampagneMuted, fontSize = 10.sp, fontWeight = FontWeight.Bold, modifier = Modifier.width(46.dp), textAlign = TextAlign.Center)
-                        Text("GD", color = ChampagneMuted, fontSize = 10.sp, fontWeight = FontWeight.Bold, modifier = Modifier.width(30.dp), textAlign = TextAlign.Center)
-                        Text("PTS", color = AmberGold, fontSize = 10.sp, fontWeight = FontWeight.ExtraBold, modifier = Modifier.width(30.dp), textAlign = TextAlign.End)
-                    }
+                    if (dossier.standingsTable.isEmpty()) {
+                        Text(
+                            text = "Official live competition standings table is not available from the upstream feed right now.",
+                            color = ChampagneMuted,
+                            fontSize = 11.5.sp,
+                            modifier = Modifier.padding(vertical = 6.dp)
+                        )
+                    } else {
+                        // Table Header
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(vertical = 4.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text("#", color = ChampagneMuted, fontSize = 10.sp, fontWeight = FontWeight.Bold, modifier = Modifier.width(22.dp))
+                            Text("TEAM", color = ChampagneMuted, fontSize = 10.sp, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
+                            Text("P", color = ChampagneMuted, fontSize = 10.sp, fontWeight = FontWeight.Bold, modifier = Modifier.width(24.dp), textAlign = TextAlign.Center)
+                            Text("W-D-L", color = ChampagneMuted, fontSize = 10.sp, fontWeight = FontWeight.Bold, modifier = Modifier.width(46.dp), textAlign = TextAlign.Center)
+                            Text("GD", color = ChampagneMuted, fontSize = 10.sp, fontWeight = FontWeight.Bold, modifier = Modifier.width(30.dp), textAlign = TextAlign.Center)
+                            Text("PTS", color = AmberGold, fontSize = 10.sp, fontWeight = FontWeight.ExtraBold, modifier = Modifier.width(30.dp), textAlign = TextAlign.End)
+                        }
 
-                    HorizontalDivider(color = ChampagneSubtleBorder, thickness = 0.6.dp)
+                        HorizontalDivider(color = ChampagneSubtleBorder, thickness = 0.6.dp)
 
-                    dossier.standingsTable.forEach { row ->
-                        StandingsTableRow(row = row)
+                        dossier.standingsTable.forEach { row ->
+                            StandingsTableRow(row = row)
+                        }
                     }
                 }
             }

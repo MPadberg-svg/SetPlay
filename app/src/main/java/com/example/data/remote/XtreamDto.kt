@@ -80,5 +80,6 @@ data class SeriesDetails(
     val cast: String,
     val releaseDate: String,
     val rating: String,
-    val seasons: List<SeriesSeason>
+    val seasons: List<SeriesSeason>,
+    val tmdbOrImdbId: String = ""
 )

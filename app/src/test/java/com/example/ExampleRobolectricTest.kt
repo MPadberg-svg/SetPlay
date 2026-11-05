@@ -432,7 +432,8 @@ class ExampleRobolectricTest {
             awayTeamBadge = "",
             homeScore = 2,
             awayScore = 1,
-            sportsDbEventId = ""
+            sportsDbEventId = "",
+            goalScorersSummary = "Y. Bouzok 24', M. Niang 39', N. Zerhouni 61'"
         )
         val merged = footballRepository.mergeMatchRecords(primaryLive = sportApiLive, badgeAndTvSource = tsdbFixture)
         assertEquals(com.example.data.repository.MatchStatus.LIVE, merged.status)
@@ -623,7 +624,7 @@ class ExampleRobolectricTest {
         assertTrue(matchMissingBein3.favoriteMatches.isEmpty())
         assertEquals(listOf(8L), matchMissingBein3.livePlaylistCandidates.map { it.streamId })
 
-        // 6. Verify 5-Tab Match Center Dossier (Summary Timeline + HT/FT, 2D Pitch Lineups, Stats, H2H/Standings, MENA TV Guide)
+        // 6. Verify 5-Tab Match Center Dossier (Summary Timeline + HT/FT, 3D Pitch Lineups, Stats, Honest Empty H2H/Standings when offline, MENA TV Guide)
         val dossier = footballRepository.fetchMatchFullDossier(merged)
         assertEquals("HT 1 - 0", dossier.halfTimeScoreLabel)
         assertEquals(11, dossier.lineups.homeStartingXI.size)
@@ -632,17 +633,47 @@ class ExampleRobolectricTest {
         assertTrue(dossier.lineups.awayFormation.isNotBlank())
         assertTrue(dossier.lineups.homeBench.isNotEmpty())
         assertTrue(dossier.lineups.missingPlayers.isNotEmpty())
-        assertTrue(dossier.timelineEvents.isNotEmpty())
+        assertEquals(3, dossier.timelineEvents.size)
+        assertTrue(dossier.timelineEvents.all { it.eventType == com.example.data.repository.MatchEventType.GOAL })
+        assertEquals("TBA / Official Broadcast Feed", dossier.refereeName)
+        assertEquals("TBA / Official Broadcast Feed", dossier.attendanceLabel)
         assertTrue(dossier.stats.any { it.statLabel == "Ball Possession" })
         assertTrue(dossier.stats.any { it.statLabel == "Expected Goals (xG)" })
-        assertTrue(dossier.h2hMeetings.isNotEmpty())
-        assertTrue(dossier.standingsTable.any { it.isHomeTeam })
-        assertTrue(dossier.standingsTable.any { it.isAwayTeam })
         assertTrue(dossier.menaBroadcastGuide.isNotEmpty())
+
+        // Verify Single-Call Team Squad Cutout Matching & Honest Empty H2H/Standings when upstream JSON is absent
+        val enricher = com.example.data.repository.MatchCenterEnricher(okhttp3.OkHttpClient())
+        val offlineDossier = enricher.buildCompleteDossier(merged, raw = null)
+        assertTrue(offlineDossier.h2hMeetings.isEmpty())
+        assertTrue(offlineDossier.standingsTable.isEmpty())
+        assertEquals("TBA / Official Broadcast Feed", offlineDossier.refereeName)
+        assertEquals("TBA / Official Broadcast Feed", offlineDossier.attendanceLabel)
+        val mockSquad = listOf(
+            com.example.data.repository.MatchCenterEnricher.RawPlayerEntry(
+                name = "Vinicius Junior",
+                jersey = 7,
+                positionAbbr = "LW",
+                photoUrl = "https://r2.thesportsdb.com/images/media/player/cutout/vini_cutout.png"
+            ),
+            com.example.data.repository.MatchCenterEnricher.RawPlayerEntry(
+                name = "Kylian Mbappe",
+                jersey = 9,
+                positionAbbr = "ST",
+                photoUrl = "https://r2.thesportsdb.com/images/media/player/cutout/mbappe_cutout.png"
+            )
+        )
+        assertEquals(
+            "https://r2.thesportsdb.com/images/media/player/cutout/vini_cutout.png",
+            enricher.resolvePlayerPhotoFromSquad("Vinícius Júnior", mockSquad)
+        )
+        assertEquals(
+            "https://r2.thesportsdb.com/images/media/player/cutout/mbappe_cutout.png",
+            enricher.resolvePlayerPhotoFromSquad("K. Mbappé", mockSquad)
+        )
 
         // 6b. Verify Upcoming Match Lineups (Fenerbahce vs Liverpool):
         // - Official lineups expected 1 hour before kick-off
-        // - Real named Fenerbahce & Liverpool starters with avatar URLs (zero "#1" placeholders)
+        // - Real named Fenerbahce & Liverpool starters with avatar URLs (zero "#1" placeholders, zero dead espncdn /players/full/ URLs)
         // - No fabricated cards, goals, or substitution arrows before kick-off
         val upcomingFenerLiverpool = tsdbFixture.copy(
             matchId = "ucl_fener_liv",
@@ -661,6 +692,8 @@ class ExampleRobolectricTest {
         assertTrue(upcomingLineups.awayStartingXI.none { it.shortName.startsWith("#") })
         assertTrue(upcomingLineups.homeStartingXI.all { it.photoUrl.isNotBlank() })
         assertTrue(upcomingLineups.awayStartingXI.all { it.photoUrl.isNotBlank() })
+        assertTrue(upcomingLineups.homeStartingXI.none { it.photoUrl.contains("espncdn.com/i/headshots/soccer/players/full") })
+        assertTrue(upcomingLineups.awayStartingXI.none { it.photoUrl.contains("espncdn.com/i/headshots/soccer/players/full") })
         assertTrue(upcomingLineups.homeStartingXI.none { it.hasYellowCard || it.hasRedCard || it.subbedOffMinute != null })
         assertTrue(upcomingLineups.awayStartingXI.none { it.hasYellowCard || it.hasRedCard || it.subbedOffMinute != null })
 
@@ -1207,9 +1240,351 @@ class ExampleRobolectricTest {
         assertEquals(1, centerTriggeredCount)
         assertEquals(1, playPauseTriggeredCount)
     }
+
+    @Test
+    fun `test Sofascore country-channels TV parser, short-alias TV matching, playlist match-named channel resolution, and 30 req per min rate limit`() = runBlocking {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val footballRepository = com.example.data.repository.FootballRepository(
+            context = context,
+            favoriteTeamDao = database.favoriteTeamDao(),
+            tournamentPreferenceDao = database.tournamentPreferenceDao(),
+            streamDao = database.streamDao()
+        )
+
+        // 1. Verify THESPORTSDB_MAX_REQ_PER_MINUTE is set to 30
+        assertEquals(30, com.example.data.repository.FootballRepository.THESPORTSDB_MAX_REQ_PER_MINUTE)
+
+        // 2. Verify doesTvEntryMatchFixtureTeams matches short club aliases ("PSG", "Spurs", "Man Utd", "Inter", "Gladbach", "Raja", "Wydad", "AS FAR")
+        val entries = listOf(
+            com.example.data.repository.SportsDbTvBroadcastEntry(
+                eventId = "1",
+                eventTitleNormalized = footballRepository.normalizeTeamNameForMerge("PSG vs Inter"),
+                eventTitleRaw = "PSG vs Inter",
+                channelName = "beIN Sports 1 HD",
+                country = "Qatar"
+            ),
+            com.example.data.repository.SportsDbTvBroadcastEntry(
+                eventId = "2",
+                eventTitleNormalized = footballRepository.normalizeTeamNameForMerge("Spurs v Man Utd"),
+                eventTitleRaw = "Spurs v Man Utd",
+                channelName = "beIN Sports 2 HD",
+                country = "Qatar"
+            ),
+            com.example.data.repository.SportsDbTvBroadcastEntry(
+                eventId = "3",
+                eventTitleNormalized = footballRepository.normalizeTeamNameForMerge("Gladbach - Bayern Munich"),
+                eventTitleRaw = "Gladbach - Bayern Munich",
+                channelName = "beIN Sports 5 HD",
+                country = "MENA"
+            ),
+            com.example.data.repository.SportsDbTvBroadcastEntry(
+                eventId = "4",
+                eventTitleNormalized = footballRepository.normalizeTeamNameForMerge("Raja vs Wydad"),
+                eventTitleRaw = "Raja vs Wydad",
+                channelName = "Arryadia HD",
+                country = "Morocco"
+            ),
+            com.example.data.repository.SportsDbTvBroadcastEntry(
+                eventId = "5",
+                eventTitleNormalized = footballRepository.normalizeTeamNameForMerge("AS FAR vs RS Berkane"),
+                eventTitleRaw = "AS FAR vs RS Berkane",
+                channelName = "Tamazight HD",
+                country = "Morocco"
+            )
+        )
+        assertTrue(footballRepository.doesTvEntryMatchFixtureTeams(entries[0], "Paris Saint-Germain", "FC Internazionale Milano"))
+        assertTrue(footballRepository.doesTvEntryMatchFixtureTeams(entries[1], "Tottenham Hotspur", "Manchester United"))
+        assertTrue(footballRepository.doesTvEntryMatchFixtureTeams(entries[2], "Borussia Mönchengladbach", "FC Bayern München"))
+        assertTrue(footballRepository.doesTvEntryMatchFixtureTeams(entries[3], "Raja Club Athletic", "Wydad AC"))
+        assertTrue(footballRepository.doesTvEntryMatchFixtureTeams(entries[4], "AS FAR Rabat", "RSB Berkane"))
+
+        // 3. Verify Sofascore country-channels JSON parser resolves channels for user's selected UserCountryZone
+        val sampleSofascoreTvJson = """
+            {
+              "countryChannels": {
+                "MA": [
+                  { "name": "beIN Sports HD 1" },
+                  { "name": "beIN 4K" }
+                ],
+                "FR": [
+                  { "name": "Canal+ Foot" }
+                ],
+                "ES": [
+                  { "name": "Movistar Liga de Campeones" }
+                ]
+              }
+            }
+        """.trimIndent()
+        val maZone = com.example.data.repository.UserZoneRegistry.getZoneByCode("MA")
+        val frZone = com.example.data.repository.UserZoneRegistry.getZoneByCode("FR")
+        val maChannels = com.example.data.repository.FootballRepository.parseSofascoreCountryChannelsJson(sampleSofascoreTvJson, maZone)
+        val frChannels = com.example.data.repository.FootballRepository.parseSofascoreCountryChannelsJson(sampleSofascoreTvJson, frZone)
+        assertTrue(maChannels.any { it.contains("beIN Sports", ignoreCase = true) })
+        assertTrue(frChannels.any { it.contains("Canal+", ignoreCase = true) })
+
+        // 4. Verify resolveDayMatchesTvChannelsWithMenaPriority prioritizes live playlist channels that explicitly name the fixture
+        val playlistId = database.playlistDao().insertPlaylist(
+            PlaylistEntity(
+                name = "MENA Sports Vault",
+                serverUrl = "https://iptv.setplay.io",
+                username = "sports_user",
+                password = "secret",
+                isActive = true
+            )
+        )
+        database.streamDao().insertStreamsBatch(
+            listOf(
+                StreamEntity(
+                    playlistId = playlistId,
+                    streamId = 7701L,
+                    categoryId = "cat_bein",
+                    name = "beIN Sports 2 HD : Real Madrid vs Milan",
+                    streamType = "live"
+                )
+            )
+        )
+
+        val realMilanMatch = com.example.data.repository.FootballMatch(
+            matchId = "ucl_rm_mil",
+            tournamentId = "uefa_cl",
+            tournamentName = "UEFA Champions League",
+            tournamentRegion = "Europe",
+            dayTab = com.example.data.repository.MatchDayTab.TODAY,
+            kickoffTimeFormatted = "21:00",
+            kickoffDateFormatted = "Today • GMT+1",
+            status = com.example.data.repository.MatchStatus.UPCOMING,
+            liveMinuteOrBadge = "21:00",
+            homeTeamId = "real_madrid",
+            homeTeamName = "Real Madrid",
+            homeTeamBadge = "",
+            homeScore = null,
+            awayTeamId = "ac_milan",
+            awayTeamName = "AC Milan",
+            awayTeamBadge = "",
+            awayScore = null,
+            stadiumName = "Santiago Bernabéu",
+            cityName = "Madrid",
+            beinChannel = "beIN Sports 1 HD",
+            beinChannelNumberHint = "beIN 1",
+            fallbackMenaChannels = listOf("beIN Sports 1 HD"),
+            menaProviderName = "beIN Sports MENA"
+        )
+
+        val resolvedMatches = footballRepository.resolveDayMatchesTvChannelsWithMenaPriority(
+            listOf(realMilanMatch),
+            emptyList(),
+            maZone
+        )
+        assertEquals("beIN Sports 2 HD", resolvedMatches.first().beinChannel)
+    }
+
+    @Test
+    fun testPhase3SubtitlesAutoPromptOpenSubtitlesFallbackAndTitleCleaning() = runBlocking {
+        val subtitleService = com.example.data.remote.WyzieSubtitleService()
+
+        // 1. Verify cleanMediaTitle() strips 2-4 letter IPTV tags with | or ┃ or brackets,
+        //    and NEVER strips real movie title words before a colon or hyphen!
+        assertEquals(
+            "Saw X: Jigsaw" to 2023,
+            subtitleService.cleanMediaTitle("AR| Saw X: Jigsaw (2023) [4K]")
+        )
+        assertEquals(
+            "Mission: Impossible - Dead Reckoning" to null,
+            subtitleService.cleanMediaTitle("[VIP] EN ┃ Mission: Impossible - Dead Reckoning 1080p")
+        )
+        assertEquals(
+            "Spider-Man: Across the Spider-Verse" to 2023,
+            subtitleService.cleanMediaTitle("Spider-Man: Across the Spider-Verse (2023)")
+        )
+
+        // 2. Verify OpenSubtitles v3 JSON parser and 3-letter ISO-639-2 mapping
+        val sampleOpenSubtitlesV3Json = """
+            {
+              "subtitles": [
+                {
+                  "id": "os_ar_1",
+                  "url": "https://subs.strem.io/ar_1.srt",
+                  "lang": "ara"
+                },
+                {
+                  "id": "os_en_1",
+                  "url": "https://subs.strem.io/en_1.srt",
+                  "lang": "eng"
+                },
+                {
+                  "id": "os_fr_1",
+                  "url": "https://subs.strem.io/fr_1.srt",
+                  "lang": "fre"
+                },
+                {
+                  "id": "os_es_1",
+                  "url": "https://subs.strem.io/es_1.srt",
+                  "lang": "spa"
+                },
+                {
+                  "id": "os_tr_1",
+                  "url": "https://subs.strem.io/tr_1.srt",
+                  "lang": "tur"
+                }
+              ]
+            }
+        """.trimIndent()
+
+        val parsedOptions = subtitleService.parseOpenSubtitlesV3Json(sampleOpenSubtitlesV3Json, "Dune: Part Two")
+        assertEquals(5, parsedOptions.size)
+        assertEquals(listOf("ar", "en", "fr", "es", "tr"), parsedOptions.map { it.languageCode })
+        assertEquals("UTF-8", parsedOptions.first().encoding)
+
+        assertEquals("de", subtitleService.mapIso6392ToLanguageCode("ger"))
+        assertEquals("it", subtitleService.mapIso6392ToLanguageCode("ita"))
+        assertEquals("pt", subtitleService.mapIso6392ToLanguageCode("pob"))
+        assertEquals("ru", subtitleService.mapIso6392ToLanguageCode("rus"))
+        assertEquals("nl", subtitleService.mapIso6392ToLanguageCode("dut"))
+        assertEquals("hi", subtitleService.mapIso6392ToLanguageCode("hin"))
+        assertEquals("fa", subtitleService.mapIso6392ToLanguageCode("per"))
+
+        // 3. Verify PlayerViewModel sets showSubtitleLanguagePrompt = true on Movie/Series playback start,
+        //    false on Live TV playback start, and dismisses when choosing Off
+        val app = ApplicationProvider.getApplicationContext<Context>() as Application
+        val playerViewModel = com.example.ui.player.PlayerViewModel(app)
+        val dummyPlaylist = PlaylistEntity(
+            id = 1L,
+            name = "Cinema Vault",
+            serverUrl = "https://iptv.setplay.io",
+            username = "user",
+            password = "pw",
+            isActive = true
+        )
+        val movieStream = StreamEntity(
+            id = 101L,
+            playlistId = 1L,
+            streamId = 5001L,
+            categoryId = "vod_4k",
+            name = "EN| Dune: Part Two (2024)",
+            streamType = "movie",
+            containerExtension = "mkv",
+            epgChannelId = "tt15239678"
+        )
+        playerViewModel.playStream(movieStream, dummyPlaylist)
+        assertTrue(playerViewModel.uiState.value.showSubtitleLanguagePrompt)
+
+        playerViewModel.chooseSubtitleLanguageFromPrompt(null)
+        assertFalse(playerViewModel.uiState.value.showSubtitleLanguagePrompt)
+
+        val liveStream = StreamEntity(
+            id = 102L,
+            playlistId = 1L,
+            streamId = 6001L,
+            categoryId = "live_sports",
+            name = "beIN Sports 1 HD",
+            streamType = "live"
+        )
+        playerViewModel.playStream(liveStream, dummyPlaylist)
+        assertFalse(playerViewModel.uiState.value.showSubtitleLanguagePrompt)
+        playerViewModel.stopAndClosePlayer()
+    }
+
+    @Test
+    fun testPhase4MultiFeedQualityGroupingHalftimeTimerAndGoalAlertDetection() = runBlocking {
+        val app = ApplicationProvider.getApplicationContext<Context>() as Application
+        val playerViewModel = com.example.ui.player.PlayerViewModel(app)
+        val mainViewModel = com.example.ui.viewmodel.MainViewModel(app)
+
+        val dummyPlaylist = PlaylistEntity(
+            id = 99L,
+            name = "MENA 4K Sports Vault",
+            serverUrl = "https://iptv.setplay.io",
+            username = "vip_user",
+            password = "pw",
+            isActive = true
+        )
+
+        // 1. Verify normalizeChannelIdentityForFeedGrouping & resolveAlternateQualityFeeds (4K -> FHD -> HD -> SD)
+        val bein1Hd = StreamEntity(id = 1L, playlistId = 99L, streamId = 101L, categoryId = "sports", name = "AR| beIN Sports 1 HD", streamType = "live")
+        val bein14k = StreamEntity(id = 2L, playlistId = 99L, streamId = 102L, categoryId = "sports", name = "AR| beIN Sports 01 4K UHD", streamType = "live")
+        val bein1Fhd = StreamEntity(id = 3L, playlistId = 99L, streamId = 103L, categoryId = "sports", name = "[VIP] beIN Sports 1 FHD HEVC", streamType = "live")
+        val bein1Sd = StreamEntity(id = 4L, playlistId = 99L, streamId = 104L, categoryId = "sports", name = "beIN Sports 1 SD", streamType = "live")
+        val bein2Hd = StreamEntity(id = 5L, playlistId = 99L, streamId = 105L, categoryId = "sports", name = "AR| beIN Sports 2 HD", streamType = "live")
+
+        assertEquals(
+            playerViewModel.normalizeChannelIdentityForFeedGrouping(bein1Hd.name),
+            playerViewModel.normalizeChannelIdentityForFeedGrouping(bein14k.name)
+        )
+        assertEquals(
+            playerViewModel.normalizeChannelIdentityForFeedGrouping(bein1Hd.name),
+            playerViewModel.normalizeChannelIdentityForFeedGrouping(bein1Fhd.name)
+        )
+
+        val feeds = playerViewModel.resolveAlternateQualityFeeds(
+            current = bein1Hd,
+            candidates = listOf(bein1Sd, bein1Hd, bein2Hd, bein14k, bein1Fhd)
+        )
+        assertEquals(listOf(2L, 3L, 1L, 4L), feeds.map { it.id })
+
+        // 2. Verify 15-Minute Halftime Explorer Timer remembers match channel across zapping and restores on return
+        playerViewModel.playStream(bein14k, dummyPlaylist)
+        playerViewModel.startOrToggleHalftimeTimer(durationSeconds = 900)
+        assertEquals(900, playerViewModel.uiState.value.halftimeTimerRemainingSeconds)
+        assertEquals(bein14k.id, playerViewModel.uiState.value.halftimeSavedStream?.id)
+
+        // User zaps to another channel during halftime
+        playerViewModel.playStream(bein2Hd, dummyPlaylist)
+        assertEquals(bein2Hd.id, playerViewModel.uiState.value.currentStream?.id)
+        assertEquals(bein14k.id, playerViewModel.uiState.value.halftimeSavedStream?.id)
+
+        // User taps Return to Halftime Channel
+        playerViewModel.returnToHalftimeChannel()
+        assertEquals(bein14k.id, playerViewModel.uiState.value.currentStream?.id)
+        playerViewModel.stopAndClosePlayer()
+
+        // 3. Verify In-Player Live Goal Alert detection when TODAY match increments score
+        val initialMatch = com.example.data.repository.FootballMatch(
+            matchId = "ucl_rm_bar",
+            tournamentId = "laliga",
+            tournamentName = "LaLiga",
+            tournamentRegion = "Spain",
+            dayTab = com.example.data.repository.MatchDayTab.TODAY,
+            kickoffTimeFormatted = "21:00",
+            kickoffDateFormatted = "Today • GMT+1",
+            status = com.example.data.repository.MatchStatus.LIVE,
+            liveMinuteOrBadge = "2H • 64'",
+            homeTeamId = "real_madrid",
+            homeTeamName = "Real Madrid",
+            homeTeamBadge = "",
+            homeScore = 1,
+            awayTeamId = "barcelona",
+            awayTeamName = "Barcelona",
+            awayTeamBadge = "",
+            awayScore = 1,
+            stadiumName = "Bernabéu",
+            cityName = "Madrid",
+            beinChannel = "beIN Sports 1 HD",
+            beinChannelNumberHint = "beIN 1",
+            fallbackMenaChannels = listOf("beIN Sports 1 HD"),
+            menaProviderName = "beIN Sports MENA"
+        )
+
+        // Same score produces null alert
+        assertNull(
+            mainViewModel.detectGoalScoredAlert(
+                previousMatches = listOf(initialMatch),
+                updatedMatches = listOf(initialMatch),
+                favoriteTeamIds = setOf("real_madrid")
+            )
+        )
+
+        // Score increment from 1 -> 2 triggers LiveGoalAlertEvent
+        val goalScoredMatch = initialMatch.copy(homeScore = 2, liveMinuteOrBadge = "2H • 67'")
+        val alertEvent = mainViewModel.detectGoalScoredAlert(
+            previousMatches = listOf(initialMatch),
+            updatedMatches = listOf(goalScoredMatch),
+            favoriteTeamIds = setOf("real_madrid")
+        )
+        assertNotNull(alertEvent)
+        assertEquals("Real Madrid", alertEvent?.scoringTeamName)
+        assertEquals(2, alertEvent?.match?.homeScore)
+        assertEquals(1, alertEvent?.match?.awayScore)
+        assertTrue(alertEvent?.isFavoriteTeamGoal == true)
+    }
 }
-
-
-
-
 

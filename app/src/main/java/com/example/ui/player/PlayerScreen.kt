@@ -56,8 +56,10 @@ import androidx.compose.material.icons.automirrored.filled.VolumeOff
 import androidx.compose.material.icons.automirrored.filled.VolumeUp
 import androidx.compose.material.icons.filled.AspectRatio
 import androidx.compose.material.icons.filled.Bedtime
+import androidx.compose.material.icons.filled.Bolt
 import androidx.compose.material.icons.filled.BrightnessMedium
 import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.ClosedCaption
 import androidx.compose.material.icons.filled.ClosedCaptionDisabled
 import androidx.compose.material.icons.filled.FastForward
@@ -76,9 +78,11 @@ import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.SkipNext
 import androidx.compose.material.icons.filled.SkipPrevious
 import androidx.compose.material.icons.filled.Speed
+import androidx.compose.material.icons.filled.SportsSoccer
 import androidx.compose.material.icons.filled.Star
 import androidx.compose.material.icons.filled.StarBorder
 import androidx.compose.material.icons.filled.Subtitles
+import androidx.compose.material.icons.filled.Timer
 import androidx.compose.material.icons.filled.Tv
 import androidx.compose.material.icons.filled.ZoomOutMap
 import androidx.compose.material3.Button
@@ -101,6 +105,7 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -142,12 +147,15 @@ import coil.compose.AsyncImage
 import com.example.data.model.PlaylistEntity
 import com.example.data.model.StreamEntity
 import com.example.data.remote.WyzieSubtitleOption
+import com.example.data.repository.FootballMatch
 import com.example.ui.theme.AmberGold
 import com.example.ui.theme.DarkGraphite
 import com.example.ui.theme.LiveRed
 import com.example.ui.theme.PaleGold
 import com.example.ui.theme.TabularNumeralTextStyle
+import com.example.ui.viewmodel.LiveGoalAlertEvent
 import com.example.util.StreamMetadataParser
+import kotlinx.coroutines.delay
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -169,6 +177,9 @@ fun PlayerScreen(
     onBack: () -> Unit,
     onEnterInAppPip: () -> Unit = onBack,
     onToggleFavorite: (StreamEntity) -> Unit,
+    activeGoalAlert: LiveGoalAlertEvent? = null,
+    onWatchGoalMatch: ((FootballMatch) -> Unit)? = null,
+    onDismissGoalAlert: (() -> Unit)? = null,
     modifier: Modifier = Modifier
 ) {
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
@@ -240,6 +251,21 @@ fun PlayerScreen(
     var showCatchupSheet by remember { mutableStateOf(false) }
     var showBufferSheet by remember { mutableStateOf(false) }
     var showSleepTimerSheet by remember { mutableStateOf(false) }
+    var showFeedSwitcherSheet by remember { mutableStateOf(false) }
+
+    // Double-tap left/right VOD ripple state (-1 = left -10s, +1 = right +10s)
+    var doubleTapRippleSide by remember { mutableStateOf<Int?>(null) }
+    var doubleTapAccumulatedSec by remember { mutableIntStateOf(0) }
+    var doubleTapRippleTick by remember { mutableIntStateOf(0) }
+
+    LaunchedEffect(doubleTapRippleTick) {
+        if (doubleTapRippleSide != null) {
+            delay(650L)
+            doubleTapRippleSide = null
+            doubleTapAccumulatedSec = 0
+        }
+    }
+
     val playerFocusRequester = remember { FocusRequester() }
 
     LaunchedEffect(Unit) {
@@ -312,7 +338,7 @@ fun PlayerScreen(
                 )
         )
 
-        // 2. Gesture Layer (Tap to show/hide controls, Double-Tap +/-10s, Left Swipe Brightness, Right Swipe Volume, Pinch Zoom)
+        // 2. Gesture Layer (Tap to show/hide controls, Double-Tap +/-10s with ripple, Left Swipe Brightness, Right Swipe Volume, Pinch Zoom)
         Box(
             modifier = Modifier
                 .fillMaxSize()
@@ -329,8 +355,14 @@ fun PlayerScreen(
                             if (!uiState.isTouchLocked && !uiState.isLive) {
                                 if (offset.x < screenWidth / 2f) {
                                     viewModel.seekRelative(-10)
+                                    doubleTapAccumulatedSec = if (doubleTapRippleSide == -1) doubleTapAccumulatedSec + 10 else 10
+                                    doubleTapRippleSide = -1
+                                    doubleTapRippleTick++
                                 } else {
                                     viewModel.seekRelative(10)
+                                    doubleTapAccumulatedSec = if (doubleTapRippleSide == 1) doubleTapAccumulatedSec + 10 else 10
+                                    doubleTapRippleSide = 1
+                                    doubleTapRippleTick++
                                 }
                             } else if (!uiState.isTouchLocked && uiState.isLive) {
                                 viewModel.toggleAspectRatio()
@@ -391,6 +423,77 @@ fun PlayerScreen(
                 }
         )
 
+        // 2b. Double-Tap Left/Right Seek Ripple Indicator (-10s / +10s) on VOD Playback
+        AnimatedVisibility(
+            visible = !uiState.isLive && doubleTapRippleSide == -1,
+            enter = fadeIn(tween(120)),
+            exit = fadeOut(tween(220)),
+            modifier = Modifier
+                .align(Alignment.CenterStart)
+                .padding(start = 36.dp)
+                .testTag("player_double_tap_rewind_ripple")
+        ) {
+            Surface(
+                color = Color(0x990A0E17),
+                shape = CircleShape,
+                border = BorderStroke(1.dp, AmberGold.copy(alpha = 0.55f))
+            ) {
+                Column(
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    modifier = Modifier.padding(horizontal = 22.dp, vertical = 16.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.FastRewind,
+                        contentDescription = "Rewind",
+                        tint = AmberGold,
+                        modifier = Modifier.size(28.dp)
+                    )
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Text(
+                        text = "-${doubleTapAccumulatedSec.coerceAtLeast(10)}s",
+                        color = PlayerTextPrimary,
+                        fontSize = 13.sp,
+                        fontWeight = FontWeight.Bold
+                    )
+                }
+            }
+        }
+
+        AnimatedVisibility(
+            visible = !uiState.isLive && doubleTapRippleSide == 1,
+            enter = fadeIn(tween(120)),
+            exit = fadeOut(tween(220)),
+            modifier = Modifier
+                .align(Alignment.CenterEnd)
+                .padding(end = 36.dp)
+                .testTag("player_double_tap_forward_ripple")
+        ) {
+            Surface(
+                color = Color(0x990A0E17),
+                shape = CircleShape,
+                border = BorderStroke(1.dp, AmberGold.copy(alpha = 0.55f))
+            ) {
+                Column(
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    modifier = Modifier.padding(horizontal = 22.dp, vertical = 16.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.FastForward,
+                        contentDescription = "Forward",
+                        tint = AmberGold,
+                        modifier = Modifier.size(28.dp)
+                    )
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Text(
+                        text = "+${doubleTapAccumulatedSec.coerceAtLeast(10)}s",
+                        color = PlayerTextPrimary,
+                        fontSize = 13.sp,
+                        fontWeight = FontWeight.Bold
+                    )
+                }
+            }
+        }
+
         // 3. Clean Cinema Subtitle Overlay (Movies & Series)
         val subtitleBottomPad by animateDpAsState(
             targetValue = if (uiState.isControlsVisible && !uiState.isTouchLocked) 96.dp else 24.dp,
@@ -424,6 +527,331 @@ fun PlayerScreen(
                             )
                         ),
                         modifier = Modifier.padding(horizontal = 12.dp, vertical = 5.dp)
+                    )
+                }
+            }
+        }
+
+        // 3b. Floating Auto-Prompt: "Subtitles — Choose Your Language" (Movies & Series)
+        if (!uiState.isLive && uiState.showSubtitleLanguagePrompt) {
+            val coreLanguagePills = listOf(
+                Triple("ar", "🇸🇦", "Arabic"),
+                Triple("en", "🇬🇧", "English"),
+                Triple("fr", "🇫🇷", "Français"),
+                Triple("es", "🇪🇸", "Español"),
+                Triple("tr", "🇹🇷", "Türkçe")
+            )
+            val coreCodes = coreLanguagePills.map { it.first }.toSet()
+            val extraLanguagePills = uiState.wyzieLanguageGroups
+                .filter { it.languageCode.lowercase(Locale.ROOT) !in coreCodes }
+                .map { group ->
+                    Triple(
+                        group.languageCode,
+                        group.flagEmoji,
+                        group.languageDisplay.substringBefore(" (").trim().ifBlank { group.languageCode.uppercase(Locale.ROOT) }
+                    )
+                }
+            val allLanguagePills = coreLanguagePills + extraLanguagePills
+
+            Surface(
+                color = Color(0xEB0A0E17),
+                shape = RoundedCornerShape(18.dp),
+                border = BorderStroke(1.dp, AmberGold.copy(alpha = 0.45f)),
+                shadowElevation = 14.dp,
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .padding(
+                        start = 20.dp,
+                        end = 20.dp,
+                        bottom = if (uiState.isControlsVisible && !uiState.isTouchLocked) 96.dp else 28.dp
+                    )
+                    .widthIn(max = 560.dp)
+                    .testTag("subtitle_language_prompt_card")
+            ) {
+                Column(
+                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp),
+                    verticalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Subtitles,
+                                contentDescription = "Subtitles",
+                                tint = AmberGold,
+                                modifier = Modifier.size(18.dp)
+                            )
+                            Text(
+                                text = "Subtitles — Choose Your Language",
+                                color = PlayerTextPrimary,
+                                fontSize = 13.sp,
+                                fontWeight = FontWeight.Bold
+                            )
+                            if (uiState.isSearchingOnlineSubtitles) {
+                                CircularProgressIndicator(
+                                    color = AmberGold,
+                                    strokeWidth = 1.8.dp,
+                                    modifier = Modifier.size(13.dp)
+                                )
+                            }
+                        }
+
+                        Text(
+                            text = "All Options ›",
+                            color = AmberGold,
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(8.dp))
+                                .clickable {
+                                    viewModel.dismissSubtitleLanguagePrompt()
+                                    showSubtitleSheet = true
+                                    if (uiState.wyzieLanguageGroups.isEmpty() && !uiState.isSearchingOnlineSubtitles) {
+                                        viewModel.searchOnlineSubtitles()
+                                    }
+                                }
+                                .padding(horizontal = 6.dp, vertical = 2.dp)
+                        )
+                    }
+
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .horizontalScroll(rememberScrollState()),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        allLanguagePills.forEach { (code, flag, name) ->
+                            val matchingGroup = uiState.wyzieLanguageGroups.find {
+                                it.languageCode.equals(code, ignoreCase = true)
+                            }
+                            val countSuffix = matchingGroup?.options?.size?.takeIf { it > 0 }?.let { " ($it)" } ?: ""
+                            Surface(
+                                color = Color(0xFF141C2B),
+                                shape = RoundedCornerShape(50),
+                                border = BorderStroke(
+                                    1.dp,
+                                    if (matchingGroup != null) AmberGold.copy(alpha = 0.55f) else Color(0x26FFFFFF)
+                                ),
+                                modifier = Modifier
+                                    .clip(RoundedCornerShape(50))
+                                    .clickable { viewModel.chooseSubtitleLanguageFromPrompt(code) }
+                                    .testTag("subtitle_prompt_lang_$code")
+                            ) {
+                                Row(
+                                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 7.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(5.dp)
+                                ) {
+                                    Text(text = flag, fontSize = 13.sp)
+                                    Text(
+                                        text = "$name$countSuffix",
+                                        color = PlayerTextPrimary,
+                                        fontSize = 12.sp,
+                                        fontWeight = FontWeight.SemiBold
+                                    )
+                                }
+                            }
+                        }
+
+                        // Off Pill
+                        Surface(
+                            color = Color(0xFF1A1418),
+                            shape = RoundedCornerShape(50),
+                            border = BorderStroke(1.dp, Color(0x33FF6B6B)),
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(50))
+                                .clickable { viewModel.chooseSubtitleLanguageFromPrompt(null) }
+                                .testTag("subtitle_prompt_lang_off")
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(horizontal = 12.dp, vertical = 7.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(5.dp)
+                            ) {
+                                Text(text = "🚫", fontSize = 12.sp)
+                                Text(
+                                    text = "Off",
+                                    color = PlayerTextSecondary,
+                                    fontSize = 12.sp,
+                                    fontWeight = FontWeight.SemiBold
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // 3c. Brief Confirmation Pill When Online Subtitles Activate
+        if (!uiState.isLive && !uiState.subtitleActivationBannerMessage.isNullOrBlank()) {
+            Surface(
+                color = Color(0xD90A0E17),
+                shape = RoundedCornerShape(50),
+                border = BorderStroke(1.dp, AmberGold.copy(alpha = 0.55f)),
+                shadowElevation = 10.dp,
+                modifier = Modifier
+                    .align(Alignment.TopCenter)
+                    .padding(top = 64.dp, start = 20.dp, end = 20.dp)
+                    .clip(RoundedCornerShape(50))
+                    .clickable {
+                        showSubtitleSheet = true
+                    }
+                    .testTag("subtitle_active_confirmation_pill")
+            ) {
+                Row(
+                    modifier = Modifier.padding(horizontal = 14.dp, vertical = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.ClosedCaption,
+                        contentDescription = "Active Subtitles",
+                        tint = AmberGold,
+                        modifier = Modifier.size(16.dp)
+                    )
+                    Text(
+                        text = uiState.subtitleActivationBannerMessage!!,
+                        color = PlayerTextPrimary,
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                }
+            }
+        }
+
+        // 3d. Flagship In-Player Live Goal Alert Banner (5-second Frosted Glass at Top-Right)
+        AnimatedVisibility(
+            visible = activeGoalAlert != null,
+            enter = fadeIn(tween(200)) + slideInHorizontally(initialOffsetX = { it / 2 }),
+            exit = fadeOut(tween(200)) + slideOutHorizontally(targetOffsetX = { it / 2 }),
+            modifier = Modifier
+                .align(Alignment.TopEnd)
+                .displayCutoutPadding()
+                .padding(top = 64.dp, end = 20.dp, start = 20.dp)
+                .testTag("player_live_goal_alert_banner")
+        ) {
+            activeGoalAlert?.let { alert ->
+                Surface(
+                    color = Color(0xEB0A141E),
+                    shape = RoundedCornerShape(16.dp),
+                    border = BorderStroke(1.2.dp, AmberGold),
+                    shadowElevation = 14.dp
+                ) {
+                    Row(
+                        modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                        Column(modifier = Modifier.widthIn(max = 260.dp)) {
+                            Text(
+                                text = "⚽ GOAL! ${alert.homeTeamName} ${alert.homeScore} - ${alert.awayScore} ${alert.awayTeamName}",
+                                color = PlayerTextPrimary,
+                                fontSize = 12.5.sp,
+                                fontWeight = FontWeight.ExtraBold,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                            Text(
+                                text = "${alert.scoringTeamName} scored • ${alert.minuteLabel} • ${alert.match.beinChannel}",
+                                color = PaleGold,
+                                fontSize = 11.sp,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
+
+                        if (onWatchGoalMatch != null) {
+                            Surface(
+                                color = AmberGold,
+                                shape = RoundedCornerShape(50),
+                                modifier = Modifier
+                                    .clip(RoundedCornerShape(50))
+                                    .clickable {
+                                        onDismissGoalAlert?.invoke()
+                                        onWatchGoalMatch(alert.match)
+                                    }
+                                    .testTag("player_goal_alert_watch_button")
+                            ) {
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp)
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.PlayArrow,
+                                        contentDescription = "Watch",
+                                        tint = Color.Black,
+                                        modifier = Modifier.size(14.dp)
+                                    )
+                                    Spacer(modifier = Modifier.width(3.dp))
+                                    Text(
+                                        text = "Watch",
+                                        color = Color.Black,
+                                        fontSize = 11.sp,
+                                        fontWeight = FontWeight.ExtraBold
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // 3e. 15-Minute Halftime Explorer Timer Return Banner ("⚽ 2nd Half Starting — Return to [Channel]")
+        if (uiState.showHalftimeReturnPrompt && uiState.halftimeSavedStream != null) {
+            val savedChannelTitle = remember(uiState.halftimeSavedStream?.name) {
+                StreamMetadataParser.cleanDisplayTitle(uiState.halftimeSavedStream?.name.orEmpty())
+            }
+            Surface(
+                color = Color(0xF00B1622),
+                shape = RoundedCornerShape(50),
+                border = BorderStroke(1.2.dp, AmberGold),
+                shadowElevation = 14.dp,
+                modifier = Modifier
+                    .align(Alignment.TopCenter)
+                    .displayCutoutPadding()
+                    .padding(top = 64.dp, start = 20.dp, end = 20.dp)
+                    .clip(RoundedCornerShape(50))
+                    .clickable { viewModel.returnToHalftimeChannel() }
+                    .testTag("halftime_return_banner")
+            ) {
+                Row(
+                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 9.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    Text(
+                        text = "⚽ 2nd Half Starting — Return to $savedChannelTitle",
+                        color = PlayerTextPrimary,
+                        fontSize = 12.5.sp,
+                        fontWeight = FontWeight.ExtraBold
+                    )
+                    Surface(
+                        color = AmberGold,
+                        shape = RoundedCornerShape(50)
+                    ) {
+                        Text(
+                            text = "Switch Now",
+                            color = Color.Black,
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.ExtraBold,
+                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp)
+                        )
+                    }
+                    Icon(
+                        imageVector = Icons.Default.Close,
+                        contentDescription = "Dismiss",
+                        tint = PlayerTextSecondary,
+                        modifier = Modifier
+                            .size(16.dp)
+                            .clickable { viewModel.dismissHalftimeReturnPrompt() }
                     )
                 }
             }
@@ -687,6 +1115,41 @@ fun PlayerScreen(
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.spacedBy(4.dp)
                     ) {
+                        // Active 15m Halftime Explorer Countdown Badge (visible in Player Top Bar)
+                        val htSeconds = uiState.halftimeTimerRemainingSeconds
+                        if (htSeconds != null && htSeconds > 0) {
+                            val mm = htSeconds / 60
+                            val ss = htSeconds % 60
+                            val countdownFormatted = String.format(Locale.US, "%02d:%02d", mm, ss)
+                            Surface(
+                                color = AmberGold.copy(alpha = 0.20f),
+                                shape = RoundedCornerShape(50),
+                                border = BorderStroke(1.dp, AmberGold.copy(alpha = 0.65f)),
+                                modifier = Modifier
+                                    .clickable {
+                                        if (uiState.halftimeSavedStream != null && uiState.halftimeSavedStream?.id != uiState.currentStream?.id) {
+                                            viewModel.returnToHalftimeChannel()
+                                        } else {
+                                            viewModel.startOrToggleHalftimeTimer()
+                                        }
+                                    }
+                                    .testTag("halftime_timer_countdown_badge")
+                            ) {
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp)
+                                ) {
+                                    Text(
+                                        text = "⏱️ HT $countdownFormatted",
+                                        color = AmberGold,
+                                        fontSize = 11.sp,
+                                        fontWeight = FontWeight.ExtraBold,
+                                        style = TabularNumeralTextStyle
+                                    )
+                                }
+                            }
+                        }
+
                         // Previous Channel Recall (Live TV only)
                         if (uiState.previousStream != null) {
                             Surface(
@@ -729,23 +1192,6 @@ fun PlayerScreen(
                                     imageVector = Icons.AutoMirrored.Filled.FormatListBulleted,
                                     contentDescription = "Channels",
                                     tint = if (uiState.isChannelZapperOpen) AmberGold else PlayerTextPrimary,
-                                    modifier = Modifier.size(21.dp)
-                                )
-                            }
-                        }
-
-                        // Catchup Archive (Live TV only when supported)
-                        if (uiState.currentStream?.tvArchive == 1 || uiState.catchupPrograms.isNotEmpty()) {
-                            IconButton(
-                                onClick = { showCatchupSheet = true },
-                                modifier = Modifier
-                                    .size(40.dp)
-                                    .testTag("player_catchup_button")
-                            ) {
-                                Icon(
-                                    imageVector = Icons.Default.History,
-                                    contentDescription = "Catchup",
-                                    tint = PlayerTextPrimary,
                                     modifier = Modifier.size(21.dp)
                                 )
                             }
@@ -845,7 +1291,7 @@ fun PlayerScreen(
                 }
 
                 // =========================================================================
-                // C. CLEAN BOTTOM TIMELINE & ACTION ROW (No Heavy Boxed Container)
+                // C. CLEAN BOTTOM TIMELINE & 2-CLUSTER UTILITY BAR
                 // =========================================================================
                 Column(
                     modifier = Modifier
@@ -920,7 +1366,9 @@ fun PlayerScreen(
 
                     Spacer(modifier = Modifier.height(6.dp))
 
-                    // 2. Clean, Frameless Bottom Utility Bar
+                    // 2. Reorganized 2-Cluster Bottom Control Bar:
+                    //    - Left Cluster: Primary Labeled Pills (Subtitles, Audio & Boost, Live Multi-Feed Switcher, Catchup, 15m HT Timer)
+                    //    - Right Cluster: Compact Icon Pills (Aspect Ratio, Speed, Buffer, Sleep, Rotate, Lock)
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
@@ -928,108 +1376,160 @@ fun PlayerScreen(
                         horizontalArrangement = Arrangement.SpaceBetween,
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        // Subtitles (Movies & Series)
-                        if (!uiState.isLive) {
-                            val hasActiveSub = uiState.activeWyzieOption != null ||
-                                uiState.subtitleTracks.any { it.isSelected }
-                            val subLabel = when {
-                                uiState.activeWyzieOption != null ->
-                                    "Subtitles (${uiState.activeWyzieOption!!.languageCode.uppercase(Locale.ROOT)})"
-                                uiState.subtitleTracks.any { it.isSelected } -> "Subtitles (ON)"
-                                else -> "Subtitles"
+                        // LEFT PRIMARY LABELED PILLS CLUSTER
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            // Subtitles (Movies & Series)
+                            if (!uiState.isLive) {
+                                val hasActiveSub = uiState.activeWyzieOption != null ||
+                                    uiState.subtitleTracks.any { it.isSelected }
+                                val subLabel = when {
+                                    uiState.activeWyzieOption != null ->
+                                        "Subtitles (${uiState.activeWyzieOption!!.languageCode.uppercase(Locale.ROOT)})"
+                                    uiState.subtitleTracks.any { it.isSelected } -> "Subtitles (ON)"
+                                    else -> "Subtitles"
+                                }
+                                PrimaryLabeledHudPill(
+                                    icon = Icons.Default.ClosedCaption,
+                                    label = subLabel,
+                                    isActive = hasActiveSub,
+                                    onClick = {
+                                        viewModel.dismissSubtitleLanguagePrompt()
+                                        showSubtitleSheet = true
+                                        if (uiState.wyzieLanguageGroups.isEmpty() && !uiState.isSearchingOnlineSubtitles) {
+                                            viewModel.searchOnlineSubtitles()
+                                        }
+                                    },
+                                    modifier = Modifier.testTag("player_subtitle_tracks")
+                                )
                             }
-                            MinimalBottomBarAction(
-                                icon = Icons.Default.ClosedCaption,
-                                label = subLabel,
-                                isActive = hasActiveSub,
-                                onClick = {
-                                    showSubtitleSheet = true
-                                    if (uiState.wyzieLanguageGroups.isEmpty() && !uiState.isSearchingOnlineSubtitles) {
-                                        viewModel.searchOnlineSubtitles()
-                                    }
-                                },
-                                modifier = Modifier.testTag("player_subtitle_tracks")
+
+                            // Audio & Boost
+                            PrimaryLabeledHudPill(
+                                icon = Icons.AutoMirrored.Filled.VolumeUp,
+                                label = if (uiState.volumePercent > 100) "Audio & Boost (${uiState.volumePercent}%)" else "Audio & Boost",
+                                isActive = uiState.volumePercent > 100,
+                                onClick = { showAudioSheet = true },
+                                modifier = Modifier.testTag("player_audio_tracks")
+                            )
+
+                            // Live TV Specific Primary Pills: Multi-Feed Switcher, Catchup, 15m Halftime Timer
+                            if (uiState.isLive) {
+                                val feedCount = uiState.alternateQualityFeeds.size.coerceAtLeast(1)
+                                PrimaryLabeledHudPill(
+                                    icon = Icons.Default.Bolt,
+                                    label = "⚡ Feed ($feedCount)",
+                                    isActive = feedCount > 1,
+                                    onClick = { showFeedSwitcherSheet = true },
+                                    modifier = Modifier.testTag("player_feed_switcher_button")
+                                )
+
+                                PrimaryLabeledHudPill(
+                                    icon = Icons.Default.History,
+                                    label = "Catchup",
+                                    isActive = uiState.currentStream?.tvArchive == 1 || uiState.catchupPrograms.isNotEmpty(),
+                                    onClick = { showCatchupSheet = true },
+                                    modifier = Modifier.testTag("player_catchup_button")
+                                )
+
+                                val htRem = uiState.halftimeTimerRemainingSeconds
+                                val htLabel = if (htRem != null && htRem > 0) {
+                                    String.format(Locale.US, "⏱️ %02d:%02d HT", htRem / 60, htRem % 60)
+                                } else {
+                                    "⏱️ 15m HT Timer"
+                                }
+                                PrimaryLabeledHudPill(
+                                    icon = Icons.Default.Timer,
+                                    label = htLabel,
+                                    isActive = htRem != null && htRem > 0,
+                                    onClick = { viewModel.startOrToggleHalftimeTimer() },
+                                    modifier = Modifier.testTag("player_halftime_timer_button")
+                                )
+                            }
+                        }
+
+                        Spacer(modifier = Modifier.width(14.dp))
+
+                        // RIGHT COMPACT ICON PILLS CLUSTER
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            // Aspect Ratio
+                            val aspectBadge = when (uiState.aspectRatioMode) {
+                                AspectRatioMode.FIT -> null
+                                AspectRatioMode.FILL -> "FILL"
+                                AspectRatioMode.RATIO_16_9 -> "16:9"
+                                AspectRatioMode.ZOOM -> "ZOOM"
+                            }
+                            CompactIconHudPill(
+                                icon = Icons.Default.AspectRatio,
+                                contentDescription = "Aspect Ratio",
+                                badgeText = aspectBadge,
+                                isActive = uiState.aspectRatioMode != AspectRatioMode.FIT,
+                                onClick = { viewModel.toggleAspectRatio() },
+                                modifier = Modifier.testTag("player_aspect_ratio_button")
+                            )
+
+                            // Playback Speed (Movies & Series)
+                            if (!uiState.isLive) {
+                                CompactIconHudPill(
+                                    icon = Icons.Default.Speed,
+                                    contentDescription = "Playback Speed",
+                                    badgeText = if (uiState.playbackSpeed != 1.0f) "${uiState.playbackSpeed}x" else null,
+                                    isActive = uiState.playbackSpeed != 1.0f,
+                                    onClick = { showSpeedSheet = true },
+                                    modifier = Modifier.testTag("player_speed_button")
+                                )
+                            }
+
+                            // Buffer Mode
+                            val bufferBadge = when (uiState.bufferProfile) {
+                                BufferProfile.FAST_ZAP -> "FAST"
+                                BufferProfile.BALANCED -> null
+                                BufferProfile.STABLE_4K -> "4K"
+                            }
+                            CompactIconHudPill(
+                                icon = Icons.Default.Memory,
+                                contentDescription = "Stream Buffer",
+                                badgeText = bufferBadge,
+                                isActive = uiState.bufferProfile != BufferProfile.BALANCED,
+                                onClick = { showBufferSheet = true },
+                                modifier = Modifier.testTag("player_buffer_button")
+                            )
+
+                            // Sleep Timer
+                            CompactIconHudPill(
+                                icon = Icons.Default.Bedtime,
+                                contentDescription = "Sleep Timer",
+                                badgeText = uiState.sleepTimerRemainingMinutes?.let { "${it}m" },
+                                isActive = uiState.sleepTimerRemainingMinutes != null,
+                                onClick = { showSleepTimerSheet = true },
+                                modifier = Modifier.testTag("player_sleep_timer_button")
+                            )
+
+                            // Rotate
+                            CompactIconHudPill(
+                                icon = Icons.Default.ScreenRotation,
+                                contentDescription = "Rotate Screen",
+                                badgeText = null,
+                                isActive = uiState.isLandscapeLocked,
+                                onClick = { viewModel.toggleScreenOrientation(activity) },
+                                modifier = Modifier.testTag("player_rotate_button")
+                            )
+
+                            // Touch Lock
+                            CompactIconHudPill(
+                                icon = Icons.Default.LockOpen,
+                                contentDescription = "Lock Controls",
+                                badgeText = null,
+                                isActive = false,
+                                onClick = { viewModel.toggleTouchLock() },
+                                modifier = Modifier.testTag("player_touch_lock_button")
                             )
                         }
-
-                        // Audio & Volume Boost
-                        MinimalBottomBarAction(
-                            icon = Icons.AutoMirrored.Filled.VolumeUp,
-                            label = if (uiState.volumePercent > 100) "Audio (${uiState.volumePercent}%)" else "Audio",
-                            isActive = uiState.volumePercent > 100,
-                            onClick = { showAudioSheet = true },
-                            modifier = Modifier.testTag("player_audio_tracks")
-                        )
-
-                        // Playback Speed (Movies & Series)
-                        if (!uiState.isLive) {
-                            MinimalBottomBarAction(
-                                icon = Icons.Default.Speed,
-                                label = "Speed (${uiState.playbackSpeed}x)",
-                                isActive = uiState.playbackSpeed != 1.0f,
-                                onClick = { showSpeedSheet = true },
-                                modifier = Modifier.testTag("player_speed_button")
-                            )
-                        }
-
-                        // Aspect Ratio
-                        val aspectLabel = when (uiState.aspectRatioMode) {
-                            AspectRatioMode.FIT -> "Fit"
-                            AspectRatioMode.FILL -> "Fill"
-                            AspectRatioMode.RATIO_16_9 -> "16:9"
-                            AspectRatioMode.ZOOM -> "Zoom"
-                        }
-                        MinimalBottomBarAction(
-                            icon = Icons.Default.AspectRatio,
-                            label = aspectLabel,
-                            isActive = uiState.aspectRatioMode != AspectRatioMode.FIT,
-                            onClick = { viewModel.toggleAspectRatio() },
-                            modifier = Modifier.testTag("player_aspect_ratio_button")
-                        )
-
-                        // Screen Orientation
-                        MinimalBottomBarAction(
-                            icon = Icons.Default.ScreenRotation,
-                            label = if (uiState.isLandscapeLocked) "Landscape" else "Rotate",
-                            isActive = uiState.isLandscapeLocked,
-                            onClick = { viewModel.toggleScreenOrientation(activity) },
-                            modifier = Modifier.testTag("player_rotate_button")
-                        )
-
-                        // Buffer Mode
-                        MinimalBottomBarAction(
-                            icon = Icons.Default.Memory,
-                            label = when (uiState.bufferProfile) {
-                                BufferProfile.FAST_ZAP -> "Fast Zap"
-                                BufferProfile.BALANCED -> "Buffer"
-                                BufferProfile.STABLE_4K -> "4K Buffer"
-                            },
-                            isActive = uiState.bufferProfile != BufferProfile.BALANCED,
-                            onClick = { showBufferSheet = true },
-                            modifier = Modifier.testTag("player_buffer_button")
-                        )
-
-                        // Sleep Timer
-                        MinimalBottomBarAction(
-                            icon = Icons.Default.Bedtime,
-                            label = if (uiState.sleepTimerRemainingMinutes != null) {
-                                "${uiState.sleepTimerRemainingMinutes}m"
-                            } else {
-                                "Sleep"
-                            },
-                            isActive = uiState.sleepTimerRemainingMinutes != null,
-                            onClick = { showSleepTimerSheet = true },
-                            modifier = Modifier.testTag("player_sleep_timer_button")
-                        )
-
-                        // Touch Lock
-                        MinimalBottomBarAction(
-                            icon = Icons.Default.LockOpen,
-                            label = "Lock",
-                            isActive = false,
-                            onClick = { viewModel.toggleTouchLock() },
-                            modifier = Modifier.testTag("player_touch_lock_button")
-                        )
                     }
                 }
             }
@@ -1143,7 +1643,7 @@ fun PlayerScreen(
     }
 
     // =================================================================================
-    // MODAL SHEETS (AUDIO, WYZIE SUBTITLES, CATCHUP, BUFFER, SLEEP, SPEED)
+    // MODAL SHEETS (AUDIO, WYZIE SUBTITLES, CATCHUP, BUFFER, SLEEP, SPEED, MULTI-FEED)
     // =================================================================================
 
     // 1. Audio Tracks & Volume Boost Sheet
@@ -1406,7 +1906,7 @@ fun PlayerScreen(
         }
     }
 
-    // 5. Sleep Timer Sheet
+    // 5. Sleep Timer & 15m Halftime Explorer Sheet
     if (showSleepTimerSheet) {
         ModalBottomSheet(
             onDismissRequest = { showSleepTimerSheet = false },
@@ -1417,8 +1917,48 @@ fun PlayerScreen(
                     .padding(horizontal = 20.dp, vertical = 8.dp)
                     .navigationBarsPadding()
             ) {
-                Text("Sleep Timer", color = PlayerTextPrimary, fontSize = 17.sp, fontWeight = FontWeight.SemiBold)
+                Text("Sleep & Match Timers", color = PlayerTextPrimary, fontSize = 17.sp, fontWeight = FontWeight.SemiBold)
                 Spacer(modifier = Modifier.height(10.dp))
+
+                if (uiState.isLive) {
+                    val htRem = uiState.halftimeTimerRemainingSeconds
+                    val isHtActive = htRem != null && htRem > 0
+                    Surface(
+                        color = if (isHtActive) AmberGold.copy(alpha = 0.16f) else PlayerSheetCardBg,
+                        shape = RoundedCornerShape(10.dp),
+                        border = BorderStroke(1.dp, if (isHtActive) AmberGold else Color.White.copy(alpha = 0.10f)),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable {
+                                viewModel.startOrToggleHalftimeTimer()
+                                showSleepTimerSheet = false
+                            }
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(horizontal = 14.dp, vertical = 12.dp),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    text = if (isHtActive) "⏱️ Cancel 15m Halftime Timer" else "⏱️ Start 15m Halftime Explorer Timer",
+                                    color = AmberGold,
+                                    fontSize = 14.sp,
+                                    fontWeight = FontWeight.Bold
+                                )
+                                Text(
+                                    text = "Remembers ${uiState.currentStream?.name ?: "this channel"} while you zap or browse VOD, and alerts when 2nd Half starts.",
+                                    color = PlayerTextSecondary,
+                                    fontSize = 11.5.sp
+                                )
+                            }
+                        }
+                    }
+                    Spacer(modifier = Modifier.height(12.dp))
+                    HorizontalDivider(color = Color.White.copy(alpha = 0.10f))
+                    Spacer(modifier = Modifier.height(8.dp))
+                }
+
                 val options = listOf(null to "Off", 15 to "15 Minutes", 30 to "30 Minutes", 60 to "60 Minutes", 90 to "90 Minutes")
                 options.forEach { (mins, label) ->
                     val isSelected = uiState.sleepTimerRemainingMinutes == mins
@@ -1486,6 +2026,101 @@ fun PlayerScreen(
                     }
                 }
                 Spacer(modifier = Modifier.height(12.dp))
+            }
+        }
+    }
+
+    // 7. 1-Tap Multi-Feed Quality Switcher Sheet (Live TV 4K / FHD / HD / SD / Backup Streams)
+    if (showFeedSwitcherSheet && uiState.isLive) {
+        ModalBottomSheet(
+            onDismissRequest = { showFeedSwitcherSheet = false },
+            containerColor = PlayerSheetBg,
+            modifier = Modifier.testTag("player_feed_switcher_sheet")
+        ) {
+            val feeds = uiState.alternateQualityFeeds.ifEmpty {
+                listOfNotNull(uiState.currentStream)
+            }
+            Column(
+                modifier = Modifier
+                    .padding(horizontal = 20.dp, vertical = 8.dp)
+                    .navigationBarsPadding()
+            ) {
+                Text(
+                    text = "⚡ Multi-Feed Quality & Backup Switcher (${feeds.size})",
+                    color = PlayerTextPrimary,
+                    fontSize = 17.sp,
+                    fontWeight = FontWeight.Bold
+                )
+                Spacer(modifier = Modifier.height(4.dp))
+                Text(
+                    text = "Instant 1-tap switch between 4K, FHD, HD, SD, and backup servers for this channel.",
+                    color = PlayerTextSecondary,
+                    fontSize = 12.sp
+                )
+                Spacer(modifier = Modifier.height(12.dp))
+
+                LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    items(feeds, key = { it.id }) { feed ->
+                        val isCurrent = feed.id == uiState.currentStream?.id
+                        val upper = feed.name.uppercase(Locale.ROOT)
+                        val qualityBadge = when {
+                            upper.contains("4K") || upper.contains("UHD") || upper.contains("2160") -> "4K UHD"
+                            upper.contains("FHD") || upper.contains("1080") -> "FHD 1080p"
+                            upper.contains("HEVC") || upper.contains("H265") -> "HEVC"
+                            upper.contains("HD") || upper.contains("720") -> "HD 720p"
+                            upper.contains("SD") || upper.contains("480") || upper.contains("LOW") -> "SD"
+                            else -> "LIVE FEED"
+                        }
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(10.dp))
+                                .background(if (isCurrent) AmberGold.copy(alpha = 0.16f) else PlayerSheetCardBg)
+                                .border(
+                                    width = 1.dp,
+                                    color = if (isCurrent) AmberGold else Color.White.copy(alpha = 0.10f),
+                                    shape = RoundedCornerShape(10.dp)
+                                )
+                                .clickable {
+                                    viewModel.playStream(feed, playlist)
+                                    showFeedSwitcherSheet = false
+                                }
+                                .padding(horizontal = 14.dp, vertical = 12.dp),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    text = feed.name,
+                                    color = if (isCurrent) AmberGold else PlayerTextPrimary,
+                                    fontSize = 14.sp,
+                                    fontWeight = if (isCurrent) FontWeight.Bold else FontWeight.Medium,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                                Text(
+                                    text = if (isCurrent) "Currently Playing" else "Tap to switch stream immediately",
+                                    color = PlayerTextSecondary,
+                                    fontSize = 11.5.sp
+                                )
+                            }
+                            Spacer(modifier = Modifier.width(10.dp))
+                            Surface(
+                                color = if (isCurrent) AmberGold else Color.White.copy(alpha = 0.12f),
+                                shape = RoundedCornerShape(6.dp)
+                            ) {
+                                Text(
+                                    text = qualityBadge,
+                                    color = if (isCurrent) Color.Black else AmberGold,
+                                    fontSize = 11.sp,
+                                    fontWeight = FontWeight.ExtraBold,
+                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                                )
+                            }
+                        }
+                    }
+                }
+                Spacer(modifier = Modifier.height(14.dp))
             }
         }
     }
@@ -1618,10 +2253,10 @@ private fun CleanCenterCircleButton(
 }
 
 /**
- * Frameless, clean bottom utility action item (Icon + Text).
+ * Left Primary Labeled HUD Pill (Subtitles, Audio & Boost, Live Multi-Feed Switcher, Catchup, 15m HT Timer).
  */
 @Composable
-private fun MinimalBottomBarAction(
+private fun PrimaryLabeledHudPill(
     icon: ImageVector,
     label: String,
     isActive: Boolean,
@@ -1629,27 +2264,84 @@ private fun MinimalBottomBarAction(
     modifier: Modifier = Modifier
 ) {
     val tint = if (isActive) AmberGold else PlayerTextPrimary
-    Row(
-        verticalAlignment = Alignment.CenterVertically,
+    Surface(
+        color = if (isActive) AmberGold.copy(alpha = 0.16f) else Color.White.copy(alpha = 0.10f),
+        shape = RoundedCornerShape(50),
+        border = BorderStroke(
+            width = 1.dp,
+            color = if (isActive) AmberGold.copy(alpha = 0.60f) else Color.White.copy(alpha = 0.14f)
+        ),
         modifier = modifier
-            .clip(RoundedCornerShape(8.dp))
+            .clip(RoundedCornerShape(50))
             .clickable(onClick = onClick)
-            .padding(horizontal = 10.dp, vertical = 6.dp)
     ) {
-        Icon(
-            imageVector = icon,
-            contentDescription = label,
-            tint = tint,
-            modifier = Modifier.size(18.dp)
-        )
-        Spacer(modifier = Modifier.width(6.dp))
-        Text(
-            text = label,
-            color = tint,
-            fontSize = 12.5.sp,
-            fontWeight = if (isActive) FontWeight.SemiBold else FontWeight.Medium,
-            maxLines = 1
-        )
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            modifier = Modifier.padding(horizontal = 12.dp, vertical = 7.dp)
+        ) {
+            Icon(
+                imageVector = icon,
+                contentDescription = label,
+                tint = tint,
+                modifier = Modifier.size(16.dp)
+            )
+            Spacer(modifier = Modifier.width(6.dp))
+            Text(
+                text = label,
+                color = tint,
+                fontSize = 12.sp,
+                fontWeight = if (isActive) FontWeight.Bold else FontWeight.Medium,
+                maxLines = 1
+            )
+        }
+    }
+}
+
+/**
+ * Right Compact Icon HUD Pill (Aspect Ratio, Speed, Buffer, Sleep, Rotate, Lock).
+ */
+@Composable
+private fun CompactIconHudPill(
+    icon: ImageVector,
+    contentDescription: String,
+    badgeText: String? = null,
+    isActive: Boolean = false,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val tint = if (isActive) AmberGold else PlayerTextPrimary
+    Surface(
+        color = if (isActive) AmberGold.copy(alpha = 0.16f) else Color.White.copy(alpha = 0.09f),
+        shape = RoundedCornerShape(50),
+        border = BorderStroke(
+            width = 1.dp,
+            color = if (isActive) AmberGold.copy(alpha = 0.55f) else Color.White.copy(alpha = 0.12f)
+        ),
+        modifier = modifier
+            .clip(RoundedCornerShape(50))
+            .clickable(onClick = onClick)
+    ) {
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            modifier = Modifier.padding(horizontal = if (badgeText != null) 10.dp else 9.dp, vertical = 7.dp)
+        ) {
+            Icon(
+                imageVector = icon,
+                contentDescription = contentDescription,
+                tint = tint,
+                modifier = Modifier.size(17.dp)
+            )
+            if (!badgeText.isNullOrBlank()) {
+                Spacer(modifier = Modifier.width(4.dp))
+                Text(
+                    text = badgeText,
+                    color = tint,
+                    fontSize = 11.sp,
+                    fontWeight = FontWeight.Bold,
+                    maxLines = 1
+                )
+            }
+        }
     }
 }
 

@@ -246,15 +246,20 @@ class FootballRepository(
     private val sportApiDailyCounter = AtomicInteger(0)
 
     // 2. TheSportsDB v1/json/123: 30 requests/minute sliding window + per-day cache
-    private val sportsDbRequestTimestamps = ConcurrentLinkedDeque<Long>()
     private val sportsDbEventsCache = ConcurrentHashMap<String, Pair<Long, List<FootballMatch>>>()
     private val sportsDbTvCache = ConcurrentHashMap<String, Pair<Long, List<SportsDbTvBroadcastEntry>>>()
+    private val sofascoreDayTvCache = ConcurrentHashMap<String, Pair<Long, List<SportsDbTvBroadcastEntry>>>()
+    private val sofascoreEventTvCache = ConcurrentHashMap<String, Pair<Long, List<String>>>()
+    private val sofascoreChannelNameCache = ConcurrentHashMap<Long, String>()
 
     // 3. Optional API-Football cache (15-min TTL)
     private val apiFootballDayCache = ConcurrentHashMap<String, Pair<Long, List<FootballMatch>>>()
 
     // 4. 5-Tab Match Center Enricher (Lineups, 2D Pitch, Timeline, Stats, H2H/Standings, MENA TV Guide)
-    private val matchCenterEnricher = MatchCenterEnricher(httpClient)
+    private val matchCenterEnricher = MatchCenterEnricher(
+        httpClient = httpClient,
+        canAcquireSportsDbPermit = ::canAcquireSportsDbPermit
+    )
 
     suspend fun fetchMatchFullDossier(
         match: FootballMatch,
@@ -483,24 +488,9 @@ class FootballRepository(
     }
 
     /**
-     * Enforces TheSportsDB Free v1 rate limit of 30 requests/minute.
+     * Enforces TheSportsDB Free v1 rate limit of 30 requests/minute across both FootballRepository and MatchCenterEnricher.
      */
-    private fun canAcquireSportsDbPermit(): Boolean {
-        val now = System.currentTimeMillis()
-        while (true) {
-            val oldest = sportsDbRequestTimestamps.peekFirst() ?: break
-            if (now - oldest > 60_000L) {
-                sportsDbRequestTimestamps.pollFirst()
-            } else {
-                break
-            }
-        }
-        if (sportsDbRequestTimestamps.size >= THESPORTSDB_MAX_REQ_PER_MINUTE) {
-            return false
-        }
-        sportsDbRequestTimestamps.addLast(now)
-        return true
-    }
+    internal fun canAcquireSportsDbPermit(): Boolean = Companion.tryAcquireSharedSportsDbPermit()
 
     /**
      * Appends `/tiny` to TheSportsDB badge URLs (`strBadge`, `strHomeTeamBadge`, `strAwayTeamBadge`)
@@ -773,7 +763,24 @@ class FootballRepository(
         homeTeamName: String,
         awayTeamName: String
     ): Boolean {
-        val normEvent = entry.eventTitleNormalized
+        val rawTitle = entry.eventTitleRaw.ifBlank { entry.eventTitleNormalized }.trim()
+        if (rawTitle.isNotBlank()) {
+            val splitParts = rawTitle.split(
+                Regex("""\s+(?:vs\.?|v\.?|-|–|—)\s+""", RegexOption.IGNORE_CASE),
+                limit = 2
+            )
+            if (splitParts.size == 2) {
+                val sideA = splitParts[0].trim()
+                val sideB = splitParts[1].trim()
+                if ((areSameClubNames(sideA, homeTeamName) && areSameClubNames(sideB, awayTeamName)) ||
+                    (areSameClubNames(sideA, awayTeamName) && areSameClubNames(sideB, homeTeamName))
+                ) {
+                    return true
+                }
+            }
+        }
+
+        val normEvent = entry.eventTitleNormalized.ifBlank { normalizeTeamNameForMerge(rawTitle) }
         if (normEvent.isBlank()) return false
         val homeAliases = canonicalizeClubForTvMatch(homeTeamName)
         val awayAliases = canonicalizeClubForTvMatch(awayTeamName)
@@ -1036,6 +1043,10 @@ class FootballRepository(
                 runCatching { fetchTheSportsDbTvListings(isoDateStr) }
                     .getOrDefault(emptyList())
             }
+            val sofascoreTvDeferred = async {
+                runCatching { fetchSofascoreDayTvListings(isoDateStr, getSelectedCountryZone()) }
+                    .getOrDefault(emptyList())
+            }
             val espnJobs = ALL_TOURNAMENTS.filter { it.espnSlug.isNotBlank() }.map { tournament ->
                 async {
                     runCatching { fetchEspnLeagueScoreboard(tournament, espnDateStr, isoDateStr, dayTab) }
@@ -1050,7 +1061,7 @@ class FootballRepository(
             HybridParallelPayload(
                 sportApiMatches = sportApiDeferred.await(),
                 sportsDbMatches = sportsDbAllSoccerDeferred.await() + sportsDbLeagueJobs.awaitAll().flatten(),
-                tvBroadcasts = sportsDbTvDeferred.await(),
+                tvBroadcasts = sofascoreTvDeferred.await() + sportsDbTvDeferred.await(),
                 espnMatches = espnJobs.awaitAll().flatten(),
                 apiFootballMatches = apiFootballDeferred.await()
             )
@@ -1268,13 +1279,23 @@ class FootballRepository(
 
             val claimedSet = claimedBeinChannelsByTime.getOrPut(match.kickoffTimeFormatted) { mutableSetOf() }
 
+            val playlistFixtureChannels = findPlaylistLiveChannelsNamingFixture(match)
+            val matchWithPlaylistSource = if (playlistFixtureChannels.isNotEmpty()) {
+                match.copy(
+                    sourceTvChannels = (playlistFixtureChannels + match.sourceTvChannels).distinct()
+                )
+            } else {
+                match
+            }
+
             val resolvedMatch = resolveMatchTvChannelsWithMenaPriority(
-                match = match,
+                match = matchWithPlaylistSource,
                 tvBroadcasts = tvBroadcasts,
                 slotIndex = currentSlotIdx,
                 claimedChannelsAtKickoff = claimedSet,
                 zone = zone,
-                seasonTimeMode = seasonTimeMode
+                seasonTimeMode = seasonTimeMode,
+                playlistExplicitChannels = playlistFixtureChannels
             )
 
             if (isBeinTournament && resolvedMatch.beinChannel.isNotBlank()) {
@@ -1288,6 +1309,103 @@ class FootballRepository(
         }
 
         return resolvedByOriginalIndex.filterNotNull()
+    }
+
+    /**
+     * Scans the user's synced Live TV playlist via `streamDao.searchLiveStreamsByKeyword()` for live channel names
+     * that explicitly contain both clubs of the fixture (e.g. `"beIN Sports 2 HD : Real Madrid vs Milan"`),
+     * extracting the prioritized broadcast channel name.
+     */
+    internal fun findPlaylistLiveChannelsNamingFixture(
+        match: FootballMatch,
+        playlistId: Long = 0L
+    ): List<String> {
+        return runCatching {
+            val keywords = extractClubSearchKeywordsForPlaylist(match.homeTeamName, match.awayTeamName)
+            if (keywords.isEmpty()) return@runCatching emptyList()
+
+            val candidateStreams = kotlinx.coroutines.runBlocking {
+                val resolvedPlaylistId = if (playlistId > 0L) playlistId else streamDao.getActiveOrLatestPlaylistIdOnce()
+                keywords
+                    .flatMap { kw -> streamDao.searchLiveStreamsByKeyword(resolvedPlaylistId, kw) }
+                    .distinctBy { it.id }
+            }
+            if (candidateStreams.isEmpty()) return@runCatching emptyList()
+
+            val matchedChannels = mutableListOf<String>()
+            for (stream in candidateStreams) {
+                if (doesLiveStreamExplicitlyNameFixture(stream.name, match.homeTeamName, match.awayTeamName)) {
+                    val extractedBroadcaster = extractBroadcasterChannelFromFixtureStream(stream.name)
+                    if (extractedBroadcaster.isNotBlank()) {
+                        matchedChannels.add(extractedBroadcaster)
+                    }
+                    matchedChannels.add(stream.name.trim())
+                }
+            }
+            matchedChannels.distinct()
+        }.getOrDefault(emptyList())
+    }
+
+    internal fun extractClubSearchKeywordsForPlaylist(homeTeamName: String, awayTeamName: String): List<String> {
+        val keywords = mutableListOf<String>()
+        for (raw in listOf(homeTeamName, awayTeamName)) {
+            val norm = normalizeTeamNameForMerge(raw)
+            val tokens = norm.split(" ").filter { it.length >= 3 && it !in setOf("real", "club", "city", "united") }
+            tokens.firstOrNull()?.let { keywords.add(it) }
+            val rawTokens = raw.trim().split(Regex("\\s+")).map { it.replace(Regex("[^A-Za-z0-9]"), "") }.filter { it.length >= 3 }
+            rawTokens.firstOrNull()?.let { keywords.add(it) }
+        }
+        return keywords.distinct().take(3)
+    }
+
+    internal fun doesLiveStreamExplicitlyNameFixture(
+        streamName: String,
+        homeTeamName: String,
+        awayTeamName: String
+    ): Boolean {
+        val raw = streamName.trim()
+        if (raw.isBlank()) return false
+
+        // 1. Check if streamName contains a "Team A vs Team B" / "Team A v Team B" / "Team A - Team B" segment
+        val segments = raw.split(Regex("""[:|┃]""")).map { it.trim() }.filter { it.isNotBlank() }
+        for (seg in (segments + listOf(raw))) {
+            val vsParts = seg.split(Regex("""\s+(?:vs\.?|v\.?|-|–|—)\s+""", RegexOption.IGNORE_CASE), limit = 2)
+            if (vsParts.size == 2) {
+                val sideA = vsParts[0].trim()
+                val sideB = vsParts[1].trim()
+                if ((areSameClubNames(sideA, homeTeamName) && areSameClubNames(sideB, awayTeamName)) ||
+                    (areSameClubNames(sideA, awayTeamName) && areSameClubNames(sideB, homeTeamName))
+                ) {
+                    return true
+                }
+            }
+        }
+
+        // 2. Check normalized alias presence for both clubs inside the stream name
+        val normStream = normalizeTeamNameForMerge(raw)
+        if (normStream.isBlank()) return false
+        val homeAliases = canonicalizeClubForTvMatch(homeTeamName)
+        val awayAliases = canonicalizeClubForTvMatch(awayTeamName)
+        val hasHome = homeAliases.any { alias ->
+            alias.length >= 3 && Regex("""\b${Regex.escape(alias)}\b""").containsMatchIn(normStream)
+        }
+        val hasAway = awayAliases.any { alias ->
+            alias.length >= 3 && Regex("""\b${Regex.escape(alias)}\b""").containsMatchIn(normStream)
+        }
+        return hasHome && hasAway
+    }
+
+    internal fun extractBroadcasterChannelFromFixtureStream(streamName: String): String {
+        val segments = streamName.split(Regex("""[:|┃]""")).map { it.trim() }.filter { it.isNotBlank() }
+        if (segments.size >= 2) {
+            for (seg in segments) {
+                val hasVs = Regex("""\s+(?:vs\.?|v\.?)\s+""", RegexOption.IGNORE_CASE).containsMatchIn(seg)
+                if (!hasVs && BROADCASTER_START_REGEX.containsMatchIn(seg.lowercase(Locale.ROOT))) {
+                    return formatCanonicalMenaChannelName(seg)
+                }
+            }
+        }
+        return streamName.trim()
     }
 
     /**
@@ -1307,7 +1425,8 @@ class FootballRepository(
         val isoDateStr = SimpleDateFormat("yyyy-MM-dd", Locale.US).apply {
             timeZone = TimeZone.getTimeZone("Africa/Casablanca")
         }.format(cal.time)
-        val cachedTv = sportsDbTvCache[isoDateStr]?.second.orEmpty()
+        val cachedTv = sofascoreDayTvCache["${isoDateStr}_${zone.countryCode}"]?.second.orEmpty() +
+            sportsDbTvCache[isoDateStr]?.second.orEmpty()
         return resolveDayMatchesTvChannelsWithMenaPriority(matches, cachedTv, zone, seasonTimeMode)
     }
 
@@ -1339,7 +1458,8 @@ class FootballRepository(
         slotIndex: Int = 0,
         claimedChannelsAtKickoff: Set<String> = emptySet(),
         zone: UserCountryZone = getSelectedCountryZone(),
-        seasonTimeMode: SeasonTimeMode = getSelectedSeasonTimeMode()
+        seasonTimeMode: SeasonTimeMode = getSelectedSeasonTimeMode(),
+        playlistExplicitChannels: List<String> = emptyList()
     ): FootballMatch {
         val isMarquee = isMarqueeMenaMatch(match.homeTeamName, match.awayTeamName)
 
@@ -1389,7 +1509,24 @@ class FootballRepository(
         val defaultChannelNum = extractChannelNumberOrDefault(defaultSlotPrimary, (slotIndex % 9) + 1)
         val defaultBeinTier = extractBeinTierOrDefault(defaultSlotPrimary, "HD")
 
-        // 1. Channels from TheSportsDB `eventstv.php`
+        // 0. Live channels from user's synced IPTV playlist that explicitly name this fixture (highest priority)
+        val formattedPlaylistChannels = playlistExplicitChannels
+            .map { it.trim() }
+            .filter { it.isNotBlank() && !isGenericPlaceholderMenaChannel(it) }
+            .map { rawCh ->
+                if (zone.macroRegion == BroadcastMacroRegion.MENA && isMenaBroadcasterChannel(rawCh)) {
+                    formatCanonicalMenaChannelName(
+                        rawChannel = rawCh,
+                        defaultChannelNum = defaultChannelNum,
+                        defaultBeinTier = defaultBeinTier
+                    )
+                } else {
+                    rawCh
+                }
+            }
+            .distinct()
+
+        // 1. Channels from Sofascore `country-channels` & TheSportsDB `eventstv.php`
         val menaChannelsFromTvDb = if (zone.macroRegion == BroadcastMacroRegion.MENA) {
             matchingTvEntries
                 .map { it.channelName.trim() }
@@ -1404,11 +1541,12 @@ class FootballRepository(
                 .distinct()
                 .sortedBy { menaBroadcasterPriorityRank(it, match.tournamentId) }
         } else {
-            // Filter TheSportsDB TV listings matching the user's selected European/American country
+            // Filter Sofascore / TheSportsDB TV listings matching the user's selected European/American country
             matchingTvEntries
                 .filter { entry ->
                     val countryLower = entry.country.trim().lowercase(Locale.ROOT)
-                    zone.sportsDbCountryMatchers.any { matcher -> countryLower.contains(matcher) }
+                    countryLower.equals(zone.countryCode, ignoreCase = true) ||
+                        zone.sportsDbCountryMatchers.any { matcher -> countryLower.contains(matcher) }
                 }
                 .map { it.channelName.trim() }
                 .filter { it.isNotBlank() && !isGenericPlaceholderMenaChannel(it) }
@@ -1419,16 +1557,20 @@ class FootballRepository(
         val upstreamSourceChannels = if (zone.macroRegion == BroadcastMacroRegion.MENA) {
             match.sourceTvChannels
                 .map { it.trim() }
-                .filter { it.isNotBlank() && isMenaBroadcasterChannel(it) && !isGenericPlaceholderMenaChannel(it) }
+                .filter { it.isNotBlank() && (isMenaBroadcasterChannel(it) || it in playlistExplicitChannels) && !isGenericPlaceholderMenaChannel(it) }
                 .map { rawCh ->
-                    formatCanonicalMenaChannelName(
-                        rawChannel = rawCh,
-                        defaultChannelNum = defaultChannelNum,
-                        defaultBeinTier = defaultBeinTier
-                    )
+                    if (isMenaBroadcasterChannel(rawCh)) {
+                        formatCanonicalMenaChannelName(
+                            rawChannel = rawCh,
+                            defaultChannelNum = defaultChannelNum,
+                            defaultBeinTier = defaultBeinTier
+                        )
+                    } else {
+                        rawCh
+                    }
                 }
         } else {
-            emptyList()
+            formattedPlaylistChannels
         }
 
         val existingSpecificChannels = if (zone.macroRegion == BroadcastMacroRegion.MENA) {
@@ -1455,6 +1597,7 @@ class FootballRepository(
             match.beinChannel.trim() !in DEFAULT_GENERATED_POOL_CHANNELS
 
         val prioritizedSourceChannels = buildList {
+            addAll(formattedPlaylistChannels)
             addAll(menaChannelsFromTvDb)
             addAll(upstreamSourceChannels)
             if (isCustomExplicitBein) {
@@ -2756,6 +2899,134 @@ class FootballRepository(
         }
     }
 
+    /**
+     * Live Sofascore TV Broadcast Lookup:
+     * Queries `https://api.sofascore.com/api/v1/sport/football/scheduled-events/{YYYY-MM-DD}`
+     * and `https://api.sofascore.com/api/v1/tv/event/{sofascoreEventId}/country-channels`
+     * with browser headers (`User-Agent: Mozilla/5.0...`, `Referer: https://www.sofascore.com/`)
+     * to resolve the exact official broadcast channel for the user's selected `UserCountryZone`.
+     */
+    internal fun fetchSofascoreDayTvListings(
+        isoDate: String,
+        zone: UserCountryZone = getSelectedCountryZone()
+    ): List<SportsDbTvBroadcastEntry> {
+        val cacheKey = "${isoDate}_${zone.countryCode}"
+        val now = System.currentTimeMillis()
+        val cached = sofascoreDayTvCache[cacheKey]
+        if (cached != null && (now - cached.first) < 10 * 60_000L) {
+            return cached.second
+        }
+
+        return try {
+            val scheduleUrl = "https://api.sofascore.com/api/v1/sport/football/scheduled-events/$isoDate"
+            val scheduleJson = fetchSofascoreJsonWithBrowserHeaders(scheduleUrl) ?: return cached?.second ?: emptyList()
+            val events = scheduleJson.optJSONArray("events") ?: return cached?.second ?: emptyList()
+            val entries = mutableListOf<SportsDbTvBroadcastEntry>()
+
+            for (i in 0 until events.length()) {
+                val ev = events.optJSONObject(i) ?: continue
+                val eventId = ev.optLong("id", 0L)
+                if (eventId <= 0L) continue
+
+                val tournamentObj = ev.optJSONObject("tournament")
+                val uniqueTournamentName = tournamentObj?.optJSONObject("uniqueTournament")?.optString("name", "").orEmpty()
+                val tournamentName = tournamentObj?.optString("name", "").orEmpty()
+                val homeName = ev.optJSONObject("homeTeam")?.optString("name", "").orEmpty().trim()
+                val awayName = ev.optJSONObject("awayTeam")?.optString("name", "").orEmpty().trim()
+                if (homeName.isBlank() || awayName.isBlank()) continue
+
+                val isTrackedLeague = matchTournamentCatalog("$uniqueTournamentName $tournamentName") != null
+                if (!isTrackedLeague && !isMarqueeMenaMatch(homeName, awayName)) continue
+
+                val channels = fetchSofascoreEventTvChannels(eventId, zone)
+                val rawEventTitle = "$homeName vs $awayName"
+                for (chName in channels) {
+                    entries.add(
+                        SportsDbTvBroadcastEntry(
+                            eventId = "sofa_$eventId",
+                            eventTitleNormalized = normalizeTeamNameForMerge(rawEventTitle),
+                            channelName = chName,
+                            country = zone.countryCode,
+                            eventTitleRaw = rawEventTitle
+                        )
+                    )
+                }
+            }
+            if (entries.isNotEmpty()) {
+                sofascoreDayTvCache[cacheKey] = now to entries
+            }
+            entries
+        } catch (_: Exception) {
+            cached?.second ?: emptyList()
+        }
+    }
+
+    /**
+     * Fetches official TV broadcast channels for a single Sofascore event ID from:
+     * `https://api.sofascore.com/api/v1/tv/event/{sofascoreEventId}/country-channels`
+     * using browser headers (`User-Agent: Mozilla/5.0...`, `Referer: https://www.sofascore.com/`).
+     */
+    internal fun fetchSofascoreEventTvChannels(
+        sofascoreEventId: Long,
+        zone: UserCountryZone = getSelectedCountryZone()
+    ): List<String> {
+        if (sofascoreEventId <= 0L) return emptyList()
+        val cacheKey = "${sofascoreEventId}_${zone.countryCode}"
+        val now = System.currentTimeMillis()
+        val cached = sofascoreEventTvCache[cacheKey]
+        if (cached != null && (now - cached.first) < 15 * 60_000L) {
+            return cached.second
+        }
+
+        return try {
+            val url = "https://api.sofascore.com/api/v1/tv/event/$sofascoreEventId/country-channels"
+            val root = fetchSofascoreJsonWithBrowserHeaders(url) ?: return emptyList()
+            val resolved = parseSofascoreCountryChannelsJson(root, zone) { stationId ->
+                resolveSofascoreTvChannelName(stationId)
+            }
+            if (resolved.isNotEmpty()) {
+                sofascoreEventTvCache[cacheKey] = now to resolved
+            }
+            resolved
+        } catch (_: Exception) {
+            emptyList()
+        }
+    }
+
+    private fun resolveSofascoreTvChannelName(stationId: Long): String {
+        if (stationId <= 0L) return ""
+        SOFASCORE_KNOWN_TV_CHANNELS[stationId]?.let { return it }
+        sofascoreChannelNameCache[stationId]?.let { return it }
+
+        return try {
+            val url = "https://api.sofascore.com/api/v1/tv/channel/$stationId/schedule"
+            val json = fetchSofascoreJsonWithBrowserHeaders(url)
+            val name = json?.optJSONObject("channel")?.optString("name", "")?.trim().orEmpty()
+            if (name.isNotBlank()) {
+                sofascoreChannelNameCache[stationId] = name
+            }
+            name
+        } catch (_: Exception) {
+            ""
+        }
+    }
+
+    internal fun fetchSofascoreJsonWithBrowserHeaders(urlStr: String): JSONObject? {
+        val url = urlStr.toHttpUrlOrNull() ?: return null
+        val request = Request.Builder()
+            .url(url)
+            .header("User-Agent", SOFASCORE_BROWSER_USER_AGENT)
+            .header("Referer", SOFASCORE_REFERER)
+            .header("Accept", "application/json")
+            .build()
+        httpClient.newCall(request).execute().use { response ->
+            if (!response.isSuccessful) return null
+            val body = response.body?.string() ?: return null
+            if (body.isBlank()) return null
+            return JSONObject(body)
+        }
+    }
+
     private fun fetchEspnLeagueScoreboard(
         tournament: TournamentCatalogItem,
         espnDate: String,
@@ -3296,11 +3567,18 @@ class FootballRepository(
 
         // Locate the start of the MENA broadcaster name so leading playlist numbers ("[01] VIP | ") are discarded
         val providerStartMatch = BROADCASTER_START_REGEX.find(lowerFull)
-        val relevantSubstring = if (providerStartMatch != null) {
+        val rawRelevantSubstring = if (providerStartMatch != null) {
             lowerFull.substring(providerStartMatch.range.first)
         } else {
             lowerFull
         }
+
+        // Strip trailing fixture match titles (e.g. ": Real Madrid vs Milan" or "- Mainz 05 vs Bayern")
+        // so numbers in club names never pollute channelNumbers
+        val relevantSubstring = rawRelevantSubstring.replace(
+            Regex("""[:|┃\-]\s*[^:|┃]+\b(?:vs\.?|v\.?)\b.*$"""),
+            " "
+        )
 
         // 1. Strip codecs, audio formats, server/backup suffixes, and resolution tags BEFORE splitting letter-digit tokens
         val step1 = relevantSubstring
@@ -3660,9 +3938,9 @@ class FootballRepository(
                 val parser = SimpleDateFormat(pattern, Locale.US).apply {
                     timeZone = TimeZone.getTimeZone("UTC")
                 }
-                 val parsed: Date = parser.parse(normalized) ?: continue
+                val parsed: Date = parser.parse(normalized) ?: continue
                 val formatter = SimpleDateFormat("HH:mm", Locale.US).apply {
-                    timeZone = TimeZone.getTimeZone("GMT+01:00")
+                    timeZone = TimeZone.getTimeZone("Africa/Casablanca")
                 }
                 return formatter.format(parsed)
             } catch (_: Exception) {
@@ -3769,10 +4047,141 @@ class FootballRepository(
         const val SPORTAPI_BASE_URL = "https://sportapi.ai/api"
         private const val SPORTAPI_MAX_REQ_PER_DAY = 2000
 
-        // API #2: TheSportsDB Free v1 API with shared public key 123 & 60 req/min ceiling
+        // API #2: TheSportsDB Free v1 API with shared public key 123 & 30 req/min ceiling
         const val THESPORTSDB_BASE_URL = "https://www.thesportsdb.com/api/v1/json/123"
         const val BOTOLA_PRO_SPORTSDB_LEAGUE_ID = "4520"
-        private const val THESPORTSDB_MAX_REQ_PER_MINUTE = 60
+        internal const val THESPORTSDB_MAX_REQ_PER_MINUTE = 30
+
+        const val SOFASCORE_BROWSER_USER_AGENT =
+            "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Mobile Safari/537.36"
+        const val SOFASCORE_REFERER = "https://www.sofascore.com/"
+
+        private val sharedSportsDbRequestTimestamps = ConcurrentLinkedDeque<Long>()
+
+        @Synchronized
+        internal fun tryAcquireSharedSportsDbPermit(): Boolean {
+            val now = System.currentTimeMillis()
+            while (true) {
+                val oldest = sharedSportsDbRequestTimestamps.peekFirst() ?: break
+                if (now - oldest > 60_000L) {
+                    sharedSportsDbRequestTimestamps.pollFirst()
+                } else {
+                    break
+                }
+            }
+            if (sharedSportsDbRequestTimestamps.size >= THESPORTSDB_MAX_REQ_PER_MINUTE) {
+                return false
+            }
+            sharedSportsDbRequestTimestamps.addLast(now)
+            return true
+        }
+
+        @Synchronized
+        internal fun resetSharedSportsDbRateLimiterForTests() {
+            sharedSportsDbRequestTimestamps.clear()
+        }
+
+        internal val SOFASCORE_KNOWN_TV_CHANNELS = mapOf(
+            1320L to "beIN Sports 1 HD",
+            1321L to "beIN Sports 2 HD",
+            1322L to "beIN Sports 3 HD",
+            1323L to "beIN Sports 4 HD",
+            1324L to "beIN Sports 5 HD",
+            1325L to "beIN Sports 6 HD",
+            1326L to "beIN Sports 7 HD",
+            1327L to "beIN Sports 8 HD",
+            1328L to "beIN Sports 9 HD",
+            1329L to "beIN Sports 1 English",
+            1330L to "beIN Sports 1 French",
+            2801L to "Arryadia HD",
+            2802L to "Arryadia TNT",
+            3101L to "SSC 1 HD",
+            3102L to "SSC Extra 1",
+            3201L to "AD Sports Premium 1",
+            3202L to "AD Sports Premium 2"
+        )
+
+        internal fun parseSofascoreCountryChannelsJson(
+            rawJson: String,
+            zone: UserCountryZone,
+            stationNameResolver: (Long) -> String = { SOFASCORE_KNOWN_TV_CHANNELS[it].orEmpty() }
+        ): List<String> {
+            val root = runCatching { JSONObject(rawJson) }.getOrNull() ?: return emptyList()
+            return parseSofascoreCountryChannelsJson(root, zone, stationNameResolver)
+        }
+
+        internal fun parseSofascoreCountryChannelsJson(
+            root: JSONObject?,
+            zone: UserCountryZone,
+            stationNameResolver: (Long) -> String = { SOFASCORE_KNOWN_TV_CHANNELS[it].orEmpty() }
+        ): List<String> {
+            if (root == null) return emptyList()
+            val countryChannelsObj = root.optJSONObject("countryChannels")
+                ?: root.optJSONObject("channels")
+                ?: return emptyList()
+
+            val candidateCodes = buildList {
+                add(zone.countryCode.uppercase(Locale.ROOT))
+                if (zone.countryCode.equals("GB", ignoreCase = true)) {
+                    add("UK")
+                    add("EN")
+                }
+                if (zone.macroRegion == BroadcastMacroRegion.MENA) {
+                    addAll(listOf("MA", "QA", "SA", "AE", "EG", "DZ", "TN", "KW"))
+                }
+            }.distinct()
+
+            val resolvedChannels = mutableListOf<String>()
+            for (code in candidateCodes) {
+                val arr = countryChannelsObj.optJSONArray(code)
+                    ?: countryChannelsObj.optJSONArray(code.lowercase(Locale.ROOT))
+                    ?: continue
+                for (i in 0 until arr.length()) {
+                    val objItem = arr.optJSONObject(i)
+                    if (objItem != null) {
+                        val name = objItem.optString(
+                            "name",
+                            objItem.optString(
+                                "channelName",
+                                objItem.optString(
+                                    "strChannel",
+                                    objItem.optJSONObject("channel")?.optString("name", "").orEmpty()
+                                )
+                            )
+                        ).trim()
+                        if (name.isNotBlank()) {
+                            resolvedChannels.add(name)
+                            continue
+                        }
+                        val id = objItem.optLong("id", objItem.optLong("channelId", 0L))
+                        if (id > 0L) {
+                            val stationName = stationNameResolver(id).trim()
+                            if (stationName.isNotBlank()) {
+                                resolvedChannels.add(stationName)
+                            }
+                        }
+                        continue
+                    }
+
+                    val rawStr = arr.optString(i, "").trim()
+                    if (rawStr.isBlank()) continue
+                    val asId = rawStr.toLongOrNull()
+                    if (asId != null) {
+                        val stationName = stationNameResolver(asId).trim()
+                        if (stationName.isNotBlank()) {
+                            resolvedChannels.add(stationName)
+                        }
+                    } else {
+                        resolvedChannels.add(rawStr)
+                    }
+                }
+                // If non-MENA zone found explicit channels for its exact country, stop early
+                if (zone.macroRegion != BroadcastMacroRegion.MENA && resolvedChannels.isNotEmpty()) {
+                    break
+                }
+            }
+            return resolvedChannels.distinct()
+        }
 
         private val IGNORED_TEAM_TOKENS = setOf(
             "fc", "ac", "ca", "club", "cf", "sc", "as", "rs", "de", "al", "el",

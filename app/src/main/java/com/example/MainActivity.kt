@@ -259,6 +259,7 @@ fun MainAppContent(
     val activePlaylist by mainViewModel.activePlaylist.collectAsStateWithLifecycle()
     val isParentalUnlocked by mainViewModel.isParentalUnlockedThisSession.collectAsStateWithLifecycle()
     val playerUiState by playerViewModel.uiState.collectAsStateWithLifecycle()
+    val activeGoalAlert by mainViewModel.activeGoalAlert.collectAsStateWithLifecycle()
 
     val selectedMatchDay by mainViewModel.selectedMatchDay.collectAsStateWithLifecycle()
     val matchesByDay by mainViewModel.matchesByDay.collectAsStateWithLifecycle()
@@ -423,6 +424,19 @@ fun MainAppContent(
                 scope.launch {
                     mainViewModel.repository.toggleFavorite(stream.id, !stream.isFavorite)
                 }
+            },
+            activeGoalAlert = activeGoalAlert,
+            onWatchGoalMatch = { match ->
+                mainViewModel.dismissGoalAlert()
+                mainViewModel.onWatchMatchOnBeinClicked(
+                    match = match,
+                    onAutoPlaySingleStream = { stream ->
+                        requestPlayStream(stream)
+                    }
+                )
+            },
+            onDismissGoalAlert = {
+                mainViewModel.dismissGoalAlert()
             }
         )
     } else {
@@ -448,6 +462,11 @@ fun MainAppContent(
                     activePlaylist = activePlaylist,
                     sectionDetailSummary = topSectionDetailText,
                     liveMatchesCount = liveMatchesCount,
+                    halftimeRemainingSeconds = playerUiState.halftimeTimerRemainingSeconds,
+                    onReturnToHalftimeMatch = {
+                        playerViewModel.returnToHalftimeChannel()
+                        isFullScreenPlayer = true
+                    },
                     onDrawerMenuClick = { showNavigationMenuSheet = true },
                     onCastOrAccountsClick = { mainViewModel.setScreen(AppScreen.PLAYLISTS) },
                     onSearchClick = { mainViewModel.setScreen(AppScreen.GLOBAL_SEARCH) }
@@ -549,6 +568,64 @@ fun MainAppContent(
                             viewModel = mainViewModel,
                             activePlaylist = activePlaylist
                         )
+                    }
+                }
+
+                // 15-Minute Halftime Return Banner when browsing VOD/Live TV outside fullscreen player
+                if (playerUiState.showHalftimeReturnPrompt && playerUiState.halftimeSavedStream != null) {
+                    val savedChannelTitle = playerUiState.halftimeSavedStream?.name ?: "Match Channel"
+                    Surface(
+                        color = Color(0xF0101622),
+                        shape = RoundedCornerShape(16.dp),
+                        border = BorderStroke(1.5.dp, AmberGold),
+                        modifier = Modifier
+                            .align(Alignment.TopCenter)
+                            .padding(top = 12.dp, start = 16.dp, end = 16.dp)
+                            .testTag("halftime_return_banner")
+                    ) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(10.dp),
+                            modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp)
+                        ) {
+                            Text(
+                                text = "⚽ 2nd Half Starting — Return to $savedChannelTitle",
+                                color = Color.White,
+                                fontSize = 13.sp,
+                                fontWeight = FontWeight.Bold,
+                                maxLines = 1,
+                                modifier = Modifier.weight(1f, fill = false)
+                            )
+                            Surface(
+                                color = AmberGold,
+                                shape = RoundedCornerShape(50),
+                                modifier = Modifier
+                                    .clickable {
+                                        playerViewModel.returnToHalftimeChannel()
+                                        isFullScreenPlayer = true
+                                    }
+                                    .testTag("halftime_return_confirm_button")
+                            ) {
+                                Text(
+                                    text = "Return Now",
+                                    color = Color.Black,
+                                    fontSize = 11.5.sp,
+                                    fontWeight = FontWeight.ExtraBold,
+                                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp)
+                                )
+                            }
+                            IconButton(
+                                onClick = { playerViewModel.dismissHalftimeReturnPrompt() },
+                                modifier = Modifier.size(26.dp)
+                            ) {
+                                Icon(
+                                    Icons.Default.Close,
+                                    contentDescription = "Dismiss",
+                                    tint = Color.White.copy(alpha = 0.7f),
+                                    modifier = Modifier.size(16.dp)
+                                )
+                            }
+                        }
                     }
                 }
 
@@ -1029,6 +1106,8 @@ fun TopStreamingBar(
     activePlaylist: PlaylistEntity?,
     sectionDetailSummary: String = "",
     liveMatchesCount: Int = 0,
+    halftimeRemainingSeconds: Int? = null,
+    onReturnToHalftimeMatch: () -> Unit = {},
     onDrawerMenuClick: () -> Unit,
     onCastOrAccountsClick: () -> Unit,
     onSearchClick: () -> Unit
@@ -1167,6 +1246,28 @@ fun TopStreamingBar(
             }
 
             Spacer(modifier = Modifier.weight(1f))
+
+            if (halftimeRemainingSeconds != null && halftimeRemainingSeconds > 0) {
+                val mm = halftimeRemainingSeconds / 60
+                val ss = halftimeRemainingSeconds % 60
+                Surface(
+                    color = AmberGold.copy(alpha = 0.20f),
+                    shape = RoundedCornerShape(50),
+                    border = BorderStroke(1.dp, AmberGold),
+                    modifier = Modifier
+                        .clickable { onReturnToHalftimeMatch() }
+                        .testTag("top_bar_halftime_countdown_badge")
+                ) {
+                    Text(
+                        text = String.format(java.util.Locale.US, "⏱️ HT %02d:%02d", mm, ss),
+                        color = AmberGold,
+                        fontSize = 10.5.sp,
+                        fontWeight = FontWeight.ExtraBold,
+                        modifier = Modifier.padding(horizontal = 9.dp, vertical = 5.dp)
+                    )
+                }
+                Spacer(modifier = Modifier.width(6.dp))
+            }
 
             GhostTopBarIconButton(
                 icon = Icons.Default.Cast,

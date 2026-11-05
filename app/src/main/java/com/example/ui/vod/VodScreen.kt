@@ -184,6 +184,12 @@ fun VodScreen(
                     playlistId = activePlaylist.id,
                     episodeId = episode.episodeId
                 )
+                val seriesMediaId = seriesDetails?.tmdbOrImdbId?.trim().orEmpty()
+                val encodedEpgChannelId = if (seriesMediaId.isNotBlank()) {
+                    "${selectedSeriesStream!!.streamId}:${episode.seasonNumber}:${episode.episodeNumber}:$seriesMediaId"
+                } else {
+                    "${selectedSeriesStream!!.streamId}:${episode.seasonNumber}:${episode.episodeNumber}"
+                }
                 val playableEpisodeStream = StreamEntity(
                     id = selectedSeriesStream!!.id,
                     playlistId = activePlaylist.id,
@@ -191,7 +197,7 @@ fun VodScreen(
                     name = "${selectedSeriesStream!!.name} • S${episode.seasonNumber}E${episode.episodeNumber} - ${episode.title}",
                     streamType = "series",
                     streamIcon = episode.thumbnail.ifBlank { selectedSeriesStream!!.streamIcon },
-                    epgChannelId = "${selectedSeriesStream!!.streamId}:${episode.seasonNumber}:${episode.episodeNumber}",
+                    epgChannelId = encodedEpgChannelId,
                     categoryId = selectedSeriesStream!!.categoryId,
                     containerExtension = episode.containerExtension.ifBlank { "mp4" },
                     isFavorite = selectedSeriesStream!!.isFavorite,

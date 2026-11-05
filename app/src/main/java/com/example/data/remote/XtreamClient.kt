@@ -389,6 +389,8 @@ class XtreamClient(
         var cast = ""
         var releaseDate = ""
         var rating = fallbackRating
+        var imdbId = ""
+        var tmdbId = ""
         val episodesBySeason = linkedMapOf<Int, MutableList<SeriesEpisode>>()
 
         if (targetUrl != null) {
@@ -425,6 +427,22 @@ class XtreamClient(
                                                     "rating", "rating_5based" -> {
                                                         val r = readSafeString(reader)
                                                         if (r.isNotBlank()) rating = r
+                                                    }
+                                                    "imdb_id", "imdb" -> {
+                                                        val v = readSafeString(reader).trim()
+                                                        if (v.startsWith("tt", ignoreCase = true)) {
+                                                            imdbId = v
+                                                        }
+                                                    }
+                                                    "tmdb_id", "tmdb" -> {
+                                                        val v = readSafeString(reader).trim()
+                                                        if (v.isNotEmpty() && v != "0" && v != "null") {
+                                                            if (v.startsWith("tt", ignoreCase = true)) {
+                                                                imdbId = v
+                                                            } else {
+                                                                tmdbId = v
+                                                            }
+                                                        }
                                                     }
                                                     else -> reader.skipValue()
                                                 }
@@ -509,6 +527,7 @@ class XtreamClient(
             )
         }
 
+        val resolvedTmdbOrImdbId = imdbId.ifBlank { tmdbId }
         SeriesDetails(
             seriesId = seriesId,
             title = title,
@@ -518,7 +537,8 @@ class XtreamClient(
             cast = cast,
             releaseDate = releaseDate,
             rating = rating,
-            seasons = seasons
+            seasons = seasons,
+            tmdbOrImdbId = resolvedTmdbOrImdbId
         )
     }
 

@@ -140,6 +140,30 @@ class WyzieSubtitleService(
             }
         }
 
+        // Zero-Key OpenSubtitles v3 REST Fallback whenever Wyzie returns empty or fails
+        if (options.isEmpty()) {
+            val imdbCandidate = resolved.imdbId?.takeIf { it.startsWith("tt", ignoreCase = true) }
+                ?: candidateIds.firstOrNull { it.startsWith("tt", ignoreCase = true) }
+                ?: queryImdbSuggestionId(
+                    cleanTitle = resolved.cleanTitle,
+                    expectedYear = resolved.year,
+                    isSeries = resolved.isSeries
+                )
+            if (!imdbCandidate.isNullOrBlank()) {
+                val openSubsOptions = queryOpenSubtitlesV3Fallback(
+                    imdbId = imdbCandidate,
+                    isSeries = resolved.isSeries,
+                    season = if (resolved.isSeries) resolved.season else null,
+                    episode = if (resolved.isSeries) resolved.episode else null,
+                    fallbackTitle = resolved.cleanTitle
+                )
+                if (openSubsOptions.isNotEmpty()) {
+                    options = openSubsOptions
+                    lastError = null
+                }
+            }
+        }
+
         val grouped = groupSubtitlesByLanguage(options)
         val statusMsg = when {
             grouped.isNotEmpty() -> null
@@ -356,6 +380,162 @@ class WyzieSubtitleService(
         return list
     }
 
+    /**
+     * Queries the public, zero-key OpenSubtitles v3 JSON endpoint:
+     * - Movies: `https://opensubtitles-v3.strem.io/subtitles/movie/{imdbId}.json`
+     * - Series: `https://opensubtitles-v3.strem.io/subtitles/series/{imdbId}:{season}:{episode}.json`
+     */
+    internal fun queryOpenSubtitlesV3Fallback(
+        imdbId: String,
+        isSeries: Boolean,
+        season: Int?,
+        episode: Int?,
+        fallbackTitle: String
+    ): List<WyzieSubtitleOption> {
+        val cleanImdb = imdbId.trim().lowercase(Locale.ROOT)
+        if (!cleanImdb.startsWith("tt")) return emptyList()
+
+        val targetUrl = if (isSeries && season != null && season > 0 && episode != null && episode > 0) {
+            "https://opensubtitles-v3.strem.io/subtitles/series/${cleanImdb}:${season}:${episode}.json"
+        } else {
+            "https://opensubtitles-v3.strem.io/subtitles/movie/${cleanImdb}.json"
+        }
+
+        return try {
+            val request = Request.Builder()
+                .url(targetUrl)
+                .header("User-Agent", USER_AGENT)
+                .header("Accept", "application/json")
+                .build()
+
+            okHttpClient.newCall(request).execute().use { response ->
+                if (!response.isSuccessful || response.body == null) return emptyList()
+                val bodyStr = response.body!!.string()
+                if (bodyStr.isBlank()) return emptyList()
+                parseOpenSubtitlesV3Json(
+                    json = bodyStr,
+                    fallbackTitle = fallbackTitle,
+                    season = season,
+                    episode = episode
+                )
+            }
+        } catch (e: Exception) {
+            Log.w("WyzieSubtitleService", "OpenSubtitles v3 fallback failed: ${e.message}")
+            emptyList()
+        }
+    }
+
+    internal fun parseOpenSubtitlesV3Json(
+        json: String,
+        fallbackTitle: String,
+        season: Int? = null,
+        episode: Int? = null
+    ): List<WyzieSubtitleOption> {
+        val list = mutableListOf<WyzieSubtitleOption>()
+        try {
+            val buffer = Buffer().writeUtf8(json.trim())
+            val reader = JsonReader.of(buffer)
+            if (reader.peek() == JsonReader.Token.BEGIN_OBJECT) {
+                reader.beginObject()
+                while (reader.hasNext()) {
+                    when (reader.nextName()) {
+                        "subtitles" -> {
+                            if (reader.peek() == JsonReader.Token.BEGIN_ARRAY) {
+                                reader.beginArray()
+                                var index = 1
+                                while (reader.hasNext()) {
+                                    if (reader.peek() == JsonReader.Token.BEGIN_OBJECT) {
+                                        var id = ""
+                                        var url = ""
+                                        var rawLang = ""
+                                        var encoding = "UTF-8"
+                                        reader.beginObject()
+                                        while (reader.hasNext()) {
+                                            when (reader.nextName()) {
+                                                "id" -> id = readSafeString(reader)
+                                                "url" -> url = readSafeString(reader)
+                                                "lang", "language" -> rawLang = readSafeString(reader)
+                                                "SubEncoding", "encoding" -> {
+                                                    val enc = readSafeString(reader)
+                                                    if (enc.isNotBlank()) encoding = enc
+                                                }
+                                                else -> reader.skipValue()
+                                            }
+                                        }
+                                        reader.endObject()
+
+                                        if (url.isNotBlank()) {
+                                            val normLang = mapIso6392ToLanguageCode(rawLang)
+                                            val display = languageCodeToDisplayName(normLang)
+                                            val flag = languageCodeToFlag(normLang)
+                                            list.add(
+                                                WyzieSubtitleOption(
+                                                    id = id.ifBlank { "opensub_$index" },
+                                                    url = url,
+                                                    languageCode = normLang,
+                                                    languageDisplay = display,
+                                                    flagEmoji = flag,
+                                                    mediaName = "$fallbackTitle • #${index}",
+                                                    format = "SRT",
+                                                    source = "OpenSubtitles",
+                                                    encoding = encoding,
+                                                    isHearingImpaired = false,
+                                                    season = season,
+                                                    episode = episode
+                                                )
+                                            )
+                                            index++
+                                        }
+                                    } else {
+                                        reader.skipValue()
+                                    }
+                                }
+                                reader.endArray()
+                            } else {
+                                reader.skipValue()
+                            }
+                        }
+                        else -> reader.skipValue()
+                    }
+                }
+                reader.endObject()
+            }
+        } catch (e: Exception) {
+            Log.w("WyzieSubtitleService", "Error parsing OpenSubtitles v3 JSON: ${e.message}")
+        }
+        return list
+    }
+
+    internal fun mapIso6392ToLanguageCode(rawLang: String): String {
+        val code = rawLang.trim().lowercase(Locale.ROOT)
+        if (code.isBlank()) return "en"
+        return when (code) {
+            "ara", "ar" -> "ar"
+            "eng", "en" -> "en"
+            "fre", "fra", "fr" -> "fr"
+            "spa", "es", "spn" -> "es"
+            "tur", "tr" -> "tr"
+            "ger", "deu", "de" -> "de"
+            "ita", "it" -> "it"
+            "por", "pob", "pt", "pb", "spl" -> "pt"
+            "rus", "ru" -> "ru"
+            "dut", "nld", "nl" -> "nl"
+            "hin", "hi" -> "hi"
+            "fas", "per", "fa" -> "fa"
+            "urd", "ur" -> "ur"
+            "kur", "ku" -> "ku"
+            "jpn", "ja" -> "ja"
+            "kor", "ko" -> "ko"
+            "chi", "zho", "zht", "zhs", "zh" -> "zh"
+            "pol", "pl" -> "pl"
+            "rum", "ron", "ro" -> "ro"
+            "gre", "ell", "el" -> "el"
+            "swe", "sv" -> "sv"
+            "ind", "id" -> "id"
+            else -> if (code.length > 2) code.take(2) else code
+        }
+    }
+
     private fun groupSubtitlesByLanguage(options: List<WyzieSubtitleOption>): List<WyzieLanguageGroup> {
         if (options.isEmpty()) return emptyList()
         val priorityOrder = listOf(
@@ -389,7 +569,7 @@ class WyzieSubtitleService(
     ): ResolvedMediaQuery {
         val isSeries = stream.streamType.equals("series", ignoreCase = true)
 
-        // Parse encoded seriesId:season:episode from stream.epgChannelId if available
+        // Parse encoded seriesId:season:episode[:tmdbOrImdbId] from stream.epgChannelId if available
         val encodedParts = stream.epgChannelId.split(":")
         val parentSeriesId = if (isSeries && encodedParts.size >= 3) {
             encodedParts[0].toLongOrNull() ?: stream.streamId
@@ -398,6 +578,11 @@ class WyzieSubtitleService(
         }
         val parsedSeasonFromChannelId = if (isSeries && encodedParts.size >= 3) encodedParts[1].toIntOrNull() else null
         val parsedEpisodeFromChannelId = if (isSeries && encodedParts.size >= 3) encodedParts[2].toIntOrNull() else null
+        val encodedSeriesMediaId = if (isSeries && encodedParts.size >= 4) {
+            encodedParts[3].trim().takeIf { it.isNotEmpty() && it != "0" && it != "null" }
+        } else {
+            null
+        }
 
         // Also check S01E02 pattern in stream.name
         val seRegex = Regex("""(?i)\bS(\d{1,2})\s*E(\d{1,3})\b""")
@@ -431,17 +616,26 @@ class WyzieSubtitleService(
 
         val (cleanTitle, extractedYear) = cleanMediaTitle(rawInput)
 
-        // 1. If no custom query override, check Xtream get_vod_info / get_series_info first
+        // 1. If no custom query override, check pre-encoded series media ID first (avoiding duplicate get_series_info network call!),
+        // or query Xtream get_vod_info / get_series_info only when not already encoded
         var xtreamImdbId: String? = null
         var xtreamTmdbId: String? = null
-        if (customSearchQuery.isNullOrBlank() && playlist != null) {
-            val ids = fetchXtreamMediaIds(
-                playlist = playlist,
-                isSeries = isSeries,
-                targetId = if (isSeries) parentSeriesId else stream.streamId
-            )
-            xtreamImdbId = ids.first
-            xtreamTmdbId = ids.second
+        if (customSearchQuery.isNullOrBlank()) {
+            if (!encodedSeriesMediaId.isNullOrBlank()) {
+                if (encodedSeriesMediaId.startsWith("tt", ignoreCase = true)) {
+                    xtreamImdbId = encodedSeriesMediaId
+                } else {
+                    xtreamTmdbId = encodedSeriesMediaId
+                }
+            } else if (playlist != null) {
+                val ids = fetchXtreamMediaIds(
+                    playlist = playlist,
+                    isSeries = isSeries,
+                    targetId = if (isSeries) parentSeriesId else stream.streamId
+                )
+                xtreamImdbId = ids.first
+                xtreamTmdbId = ids.second
+            }
         }
 
         // 2. Resolve IMDb ID via public IMDb instant suggestion endpoint if still needed
@@ -624,8 +818,9 @@ class WyzieSubtitleService(
     }
 
     /**
-     * Cleans IPTV VOD / Series titles by stripping provider prefixes ("AR|", "EN -", "[4K]"),
-     * episode suffixes ("• S1E1 - ..."), and extracting the 4-digit release year if present.
+     * Cleans IPTV VOD / Series titles by stripping provider prefixes ("AR|", "EN ┃", "[4K]"),
+     * episode suffixes ("• S1E1 - ..."), and extracting the 4-digit release year if present,
+     * while preserving real title colons/hyphens like "Saw X: ..." or "Mission: Impossible".
      */
     internal fun cleanMediaTitle(rawName: String): Pair<String, Int?> {
         var working = rawName.trim()
@@ -635,8 +830,18 @@ class WyzieSubtitleService(
         working = working.replace(Regex("""(?i)\bS\d{1,2}\s*E\d{1,3}\b.*$"""), "").trim()
         working = working.replace(Regex("""(?i)\bSeason\s*\d+.*$"""), "").trim()
 
-        // Strip leading IPTV country/category tags like "AR|", "EN - ", "[NF]", "|VIP|"
-        working = working.replace(Regex("""^(?:\[[^\]]+\]\s*|\([^\)]+\)\s*|[A-Z0-9]{2,6}\s*[\|:\-]\s*)+"""), "").trim()
+        // Strip leading 2-4 letter IPTV tags followed by | or ┃ or bracketed prefixes —
+        // NEVER strip real movie title words before a colon or hyphen (e.g. "Saw X: ...", "Mission: Impossible")
+        working = working.replace(
+            Regex("""^(\[[^\]]+\]\s*|\([^\)]+\)\s*|[A-Za-z0-9]{2,4}\s*[\|┃]\s*)+"""),
+            ""
+        ).trim()
+
+        // Remove quality tags like [4K], 4K, UHD, FHD, 1080p, BluRay, WEB-DL first so trailing (2023) is exposed
+        working = working.replace(
+            Regex("""(?i)[\[\(]?\b(4K|UHD|FHD|HD|1080p|720p|2160p|BluRay|WEB-DL|WEBRip|x264|x265|HEVC|MULTI|VOSTFR|SUB|DUB)\b[\]\)]?"""),
+            ""
+        ).trim()
 
         // Extract 4-digit year (1950..2030)
         val yearRegex = Regex("""[\(\[\-\s](19\d{2}|20[0-3]\d)[\)\]\s]*$""")
@@ -646,12 +851,7 @@ class WyzieSubtitleService(
             working = working.removeRange(yearMatch.range).trim()
         }
 
-        // Remove quality tags like 4K, UHD, FHD, 1080p, BluRay, WEB-DL
-        working = working.replace(
-            Regex("""(?i)\b(4K|UHD|FHD|HD|1080p|720p|2160p|BluRay|WEB-DL|WEBRip|x264|x265|HEVC|MULTI|VOSTFR|SUB|DUB)\b"""),
-            ""
-        )
-        working = working.replace(Regex("""[\[\]\(\)\|]"""), " ")
+        working = working.replace(Regex("""[\[\]\(\)\|┃]"""), " ")
         working = working.replace(Regex("""\s{2,}"""), " ").trim(' ', '-', ':', '.')
 
         return working.ifBlank { rawName.trim() } to year

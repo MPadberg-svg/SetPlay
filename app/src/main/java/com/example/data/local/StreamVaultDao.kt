@@ -236,12 +236,15 @@ interface StreamDao {
     @Query("SELECT COUNT(*) FROM streams WHERE playlistId = :playlistId AND streamType = :type")
     suspend fun countStreams(playlistId: Long, type: String): Int
 
+    @Query("SELECT COALESCE((SELECT id FROM playlists WHERE isActive = 1 LIMIT 1), (SELECT id FROM playlists ORDER BY id DESC LIMIT 1), 0)")
+    suspend fun getActiveOrLatestPlaylistIdOnce(): Long
+
     @Query("""
         SELECT * FROM streams
-        WHERE playlistId = :playlistId
+        WHERE (:playlistId <= 0 OR playlistId = :playlistId)
           AND streamType = 'live'
           AND name LIKE '%' || :keyword || '%'
-        ORDER BY name ASC
+        ORDER BY isFavorite DESC, name ASC
         LIMIT 200
     """)
     suspend fun searchLiveStreamsByKeyword(playlistId: Long, keyword: String): List<StreamEntity>

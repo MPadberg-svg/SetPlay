@@ -74,6 +74,7 @@ data class PlayerUiState(
     val currentStream: StreamEntity? = null,
     val previousStream: StreamEntity? = null,
     val siblingChannels: List<StreamEntity> = emptyList(),
+    val alternateQualityFeeds: List<StreamEntity> = emptyList(),
     val isPlaying: Boolean = false,
     val isBuffering: Boolean = false,
     val currentPositionMs: Long = 0L,
@@ -119,7 +120,15 @@ data class PlayerUiState(
     val onlineSubtitleStatusMessage: String? = null,
     val resolvedMediaQuery: ResolvedMediaQuery? = null,
     val subtitleSyncOffsetMs: Long = 0L,
-    val subtitleScaleFactor: Float = 1.0f
+    val subtitleScaleFactor: Float = 1.0f,
+    val showSubtitleLanguagePrompt: Boolean = false,
+    val pendingPreferredSubtitleLanguageCode: String? = null,
+    val subtitleActivationBannerMessage: String? = null,
+    // 15-Minute Halftime Explorer Timer
+    val halftimeTimerRemainingSeconds: Int? = null,
+    val halftimeSavedStream: StreamEntity? = null,
+    val halftimeSavedPlaylist: PlaylistEntity? = null,
+    val showHalftimeReturnPrompt: Boolean = false
 )
 
 @OptIn(UnstableApi::class)
@@ -141,6 +150,10 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application) 
     private var brightnessFloatAccumulator: Float = 65f
     private var subtitleSearchJob: Job? = null
     private var subtitleDownloadJob: Job? = null
+    private var subtitleBannerFadeJob: Job? = null
+    private var liveAutoReconnectJob: Job? = null
+    private var halftimeTimerJob: Job? = null
+    private var hasAutoRetriedCurrentLiveStream: Boolean = false
 
     val player: ExoPlayer by lazy {
         val okHttpClient = OkHttpClient.Builder()
@@ -203,6 +216,7 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application) 
                     _uiState.value = _uiState.value.copy(isBuffering = true, error = null)
                 }
                 Player.STATE_READY -> {
+                    hasAutoRetriedCurrentLiveStream = false
                     val duration = if (player.duration > 0 && player.duration != C.TIME_UNSET) player.duration else 0L
                     _uiState.value = _uiState.value.copy(
                         isBuffering = false,
@@ -245,6 +259,23 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application) 
         }
 
         override fun onPlayerError(error: PlaybackException) {
+            if (_uiState.value.isLive && !hasAutoRetriedCurrentLiveStream) {
+                hasAutoRetriedCurrentLiveStream = true
+                _uiState.value = _uiState.value.copy(
+                    isBuffering = true,
+                    error = null
+                )
+                liveAutoReconnectJob?.cancel()
+                liveAutoReconnectJob = viewModelScope.launch {
+                    delay(1500L)
+                    try {
+                        player.prepare()
+                        player.play()
+                    } catch (_: Exception) {}
+                }
+                return
+            }
+
             _uiState.value = _uiState.value.copy(
                 isBuffering = false,
                 error = "Stream interrupted: ${error.localizedMessage ?: "Tap Retry to reconnect"}"
@@ -291,6 +322,8 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application) 
         catchupDurationMin: Int? = null
     ) {
         activePlaylistCache = playlist
+        hasAutoRetriedCurrentLiveStream = false
+        liveAutoReconnectJob?.cancel()
         val previous = _uiState.value.currentStream?.takeIf { it.id != stream.id } ?: _uiState.value.previousStream
 
         val streamUrl = if (catchupStartEpoch != null && catchupDurationMin != null) {
@@ -363,10 +396,13 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application) 
             )
         }
 
+        val isReturningToHalftimeStream = _uiState.value.halftimeSavedStream?.streamId == stream.streamId
+        subtitleBannerFadeJob?.cancel()
         _uiState.value = _uiState.value.copy(
             currentStream = effectiveStream,
             previousStream = previous,
             isLive = isLiveStream,
+            alternateQualityFeeds = if (isLiveStream) listOf(effectiveStream) else emptyList(),
             currentPositionMs = if (!isLiveStream && resolvedResumePositionMs > 5000L) resolvedResumePositionMs else 0L,
             durationMs = resolvedDurationMs,
             playbackSpeed = if (isLiveStream) 1.0f else _uiState.value.playbackSpeed,
@@ -389,7 +425,11 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application) 
             isDownloadingSubtitle = false,
             onlineSubtitleStatusMessage = null,
             resolvedMediaQuery = null,
-            subtitleSyncOffsetMs = 0L
+            subtitleSyncOffsetMs = 0L,
+            showSubtitleLanguagePrompt = !isLiveStream,
+            pendingPreferredSubtitleLanguageCode = null,
+            subtitleActivationBannerMessage = null,
+            showHalftimeReturnPrompt = if (isReturningToHalftimeStream) false else _uiState.value.showHalftimeReturnPrompt
         )
 
         player.setMediaItem(mediaItemBuilder.build())
@@ -399,7 +439,7 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application) 
         }
         player.play()
 
-        // Update watch history, sibling channels for fast zapping, or Wyzie VOD subtitles (no EPG network overhead)
+        // Update watch history, sibling channels & alternate quality feeds for fast zapping, or Wyzie VOD subtitles (no EPG network overhead)
         viewModelScope.launch {
             if (stream.id > 0L) {
                 repository.updateWatchHistory(stream.id)
@@ -411,8 +451,21 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application) 
                 } else {
                     emptyList()
                 }
+                val searchKeyword = extractPrimaryChannelSearchKeyword(stream.name)
+                val crossCategoryMatches = if (searchKeyword.length >= 2) {
+                    runCatching {
+                        database.streamDao().searchLiveStreamsByKeyword(playlist.id, searchKeyword)
+                    }.getOrDefault(emptyList())
+                } else {
+                    emptyList()
+                }
+                val feeds = resolveAlternateQualityFeeds(
+                    current = effectiveStream,
+                    candidates = (siblings + crossCategoryMatches)
+                )
                 _uiState.value = _uiState.value.copy(
                     siblingChannels = siblings,
+                    alternateQualityFeeds = feeds,
                     catchupPrograms = catchupList
                 )
             } else {
@@ -422,6 +475,126 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application) 
         }
 
         scheduleControlsFade()
+    }
+
+    internal fun normalizeChannelIdentityForFeedGrouping(rawName: String): String {
+        val cleaned = com.example.util.StreamMetadataParser.cleanDisplayTitle(rawName)
+            .lowercase(java.util.Locale.ROOT)
+        // Strip quality / codec / server / region suffixes while keeping channel brand & channel number (and max/premium distinction)
+        val withoutQuality = cleaned.replace(
+            Regex("""\b(4k|uhd|2160p?|fhd|1080[pi]?|hd|720p?|sd|hevc|h\.?265|h\.?264|aac|mp4a|latm|raw|vip|multi|50fps|60fps|server\s*\d+|backup|bk|feed\s*\d+)\b"""),
+            " "
+        )
+        // Normalize leading zeros on channel numbers ("01" -> "1", "02" -> "2")
+        val normalizedDigits = withoutQuality.replace(Regex("""\b0+(\d+)\b"""), "$1")
+        return normalizedDigits
+            .replace(Regex("""[^a-z0-9]+"""), " ")
+            .trim()
+    }
+
+    private fun extractPrimaryChannelSearchKeyword(rawName: String): String {
+        val norm = normalizeChannelIdentityForFeedGrouping(rawName)
+        val tokens = norm.split(" ").filter { it.isNotBlank() }
+        return when {
+            tokens.isEmpty() -> ""
+            tokens.first() == "bein" -> "bein"
+            tokens.size >= 2 -> "${tokens[0]} ${tokens[1]}"
+            else -> tokens.first()
+        }
+    }
+
+    internal fun resolveAlternateQualityFeeds(
+        current: StreamEntity,
+        candidates: List<StreamEntity>
+    ): List<StreamEntity> {
+        val targetIdentity = normalizeChannelIdentityForFeedGrouping(current.name)
+        if (targetIdentity.isBlank()) return listOf(current)
+
+        val matched = (listOf(current) + candidates)
+            .distinctBy { it.streamId }
+            .filter { candidate ->
+                candidate.streamId == current.streamId ||
+                    normalizeChannelIdentityForFeedGrouping(candidate.name) == targetIdentity
+            }
+
+        return matched.sortedWith(
+            compareByDescending<StreamEntity> { stream ->
+                val badge = com.example.util.StreamMetadataParser.extractQualityBadge(stream.name).orEmpty().uppercase(java.util.Locale.ROOT)
+                when {
+                    badge.contains("4K") || badge.contains("UHD") -> 4
+                    badge.contains("FHD") || badge.contains("1080") -> 3
+                    badge.contains("HD") || badge.contains("720") -> 2
+                    badge.contains("SD") -> 1
+                    else -> 0
+                }
+            }.thenByDescending { it.isFavorite }
+                .thenBy { it.name }
+        )
+    }
+
+    /**
+     * Starts or cancels the 15-Minute Halftime Explorer Timer on Live TV.
+     * Remembers the current match channel while the user zaps to other channels or browses VOD,
+     * and shows a 1-tap "⚽ 2nd Half Starting — Return to [Channel]" banner when finished.
+     */
+    fun startOrToggleHalftimeTimer(durationSeconds: Int = 15 * 60) {
+        if (_uiState.value.halftimeTimerRemainingSeconds != null) {
+            halftimeTimerJob?.cancel()
+            _uiState.value = _uiState.value.copy(
+                halftimeTimerRemainingSeconds = null,
+                halftimeSavedStream = null,
+                halftimeSavedPlaylist = null,
+                showHalftimeReturnPrompt = false
+            )
+            return
+        }
+
+        val currentStream = _uiState.value.currentStream ?: return
+        val currentPlaylist = activePlaylistCache
+        halftimeTimerJob?.cancel()
+        val safeSeconds = durationSeconds.coerceAtLeast(1)
+        _uiState.value = _uiState.value.copy(
+            halftimeTimerRemainingSeconds = safeSeconds,
+            halftimeSavedStream = currentStream,
+            halftimeSavedPlaylist = currentPlaylist,
+            showHalftimeReturnPrompt = false
+        )
+
+        halftimeTimerJob = viewModelScope.launch {
+            var remaining = safeSeconds
+            while (remaining > 0 && isActive) {
+                delay(1000L)
+                remaining--
+                _uiState.value = _uiState.value.copy(halftimeTimerRemainingSeconds = remaining)
+            }
+            if (remaining <= 0) {
+                _uiState.value = _uiState.value.copy(
+                    halftimeTimerRemainingSeconds = null,
+                    showHalftimeReturnPrompt = true
+                )
+            }
+        }
+    }
+
+    fun returnToHalftimeChannel() {
+        val savedStream = _uiState.value.halftimeSavedStream ?: return
+        val savedPlaylist = _uiState.value.halftimeSavedPlaylist ?: activePlaylistCache ?: return
+        halftimeTimerJob?.cancel()
+        _uiState.value = _uiState.value.copy(
+            halftimeTimerRemainingSeconds = null,
+            showHalftimeReturnPrompt = false
+        )
+        playStream(savedStream, savedPlaylist)
+    }
+
+    fun dismissHalftimeReturnPrompt() {
+        halftimeTimerJob?.cancel()
+        _uiState.value = _uiState.value.copy(
+            halftimeTimerRemainingSeconds = null,
+            halftimeSavedStream = null,
+            halftimeSavedPlaylist = null,
+            showHalftimeReturnPrompt = false
+        )
     }
 
     /**
@@ -434,6 +607,10 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application) 
         gestureFadeJob?.cancel()
         subtitleSearchJob?.cancel()
         subtitleDownloadJob?.cancel()
+        subtitleBannerFadeJob?.cancel()
+        liveAutoReconnectJob?.cancel()
+        halftimeTimerJob?.cancel()
+        hasAutoRetriedCurrentLiveStream = false
         try {
             loudnessEnhancer?.enabled = false
         } catch (_: Exception) {}
@@ -441,6 +618,7 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application) 
         player.clearMediaItems()
         _uiState.value = _uiState.value.copy(
             currentStream = null,
+            alternateQualityFeeds = emptyList(),
             isPlaying = false,
             isBuffering = false,
             error = null,
@@ -457,7 +635,14 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application) 
             currentSubtitleText = null,
             isSearchingOnlineSubtitles = false,
             isDownloadingSubtitle = false,
-            onlineSubtitleStatusMessage = null
+            onlineSubtitleStatusMessage = null,
+            showSubtitleLanguagePrompt = false,
+            pendingPreferredSubtitleLanguageCode = null,
+            subtitleActivationBannerMessage = null,
+            halftimeTimerRemainingSeconds = null,
+            halftimeSavedStream = null,
+            halftimeSavedPlaylist = null,
+            showHalftimeReturnPrompt = false
         )
     }
 
@@ -658,7 +843,7 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     /**
-     * Searches Wyzie Subs API for the current Movie or Series stream (or a custom title / IMDb ID / S/E).
+     * Searches Wyzie Subs API (with OpenSubtitles v3 zero-key fallback) for the current Movie or Series stream.
      */
     fun searchOnlineSubtitles(
         customQuery: String? = null,
@@ -683,9 +868,10 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application) 
                 overrideEpisode = episode
             )
 
-            val currentSelectedLang = _uiState.value.selectedWyzieLanguageCode
+            val pendingLang = _uiState.value.pendingPreferredSubtitleLanguageCode
+            val currentSelectedLang = pendingLang ?: _uiState.value.selectedWyzieLanguageCode
             val resolvedSelectedLang = when {
-                currentSelectedLang != null && response.languageGroups.any { it.languageCode == currentSelectedLang } -> {
+                currentSelectedLang != null && response.languageGroups.any { it.languageCode.equals(currentSelectedLang, ignoreCase = true) } -> {
                     currentSelectedLang
                 }
                 else -> response.languageGroups.firstOrNull()?.languageCode
@@ -696,8 +882,68 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application) 
                 resolvedMediaQuery = response.resolvedQuery,
                 wyzieLanguageGroups = response.languageGroups,
                 selectedWyzieLanguageCode = resolvedSelectedLang,
-                onlineSubtitleStatusMessage = response.statusMessage
+                onlineSubtitleStatusMessage = response.statusMessage,
+                pendingPreferredSubtitleLanguageCode = null
             )
+
+            // If the user already tapped a language on the auto-prompt while search was completing,
+            // automatically download and activate the #1 top-ranked option for that language!
+            if (pendingLang != null) {
+                val matchingGroup = response.languageGroups.find {
+                    it.languageCode.equals(pendingLang, ignoreCase = true)
+                }
+                val topOption = matchingGroup?.options?.firstOrNull()
+                if (topOption != null) {
+                    applyOnlineSubtitleOption(topOption)
+                }
+            }
+        }
+    }
+
+    fun dismissSubtitleLanguagePrompt() {
+        _uiState.value = _uiState.value.copy(
+            showSubtitleLanguagePrompt = false,
+            pendingPreferredSubtitleLanguageCode = null
+        )
+    }
+
+    /**
+     * Handles 1-tap language selection from the floating "Choose Subtitle Language" glass prompt.
+     * Pass `null` for `🚫 Off`.
+     */
+    fun chooseSubtitleLanguageFromPrompt(languageCode: String?) {
+        if (languageCode == null) {
+            selectSubtitleTrack(null)
+            clearOnlineSubtitles()
+            _uiState.value = _uiState.value.copy(
+                showSubtitleLanguagePrompt = false,
+                pendingPreferredSubtitleLanguageCode = null,
+                subtitleActivationBannerMessage = null
+            )
+            return
+        }
+
+        val existingGroup = _uiState.value.wyzieLanguageGroups.find {
+            it.languageCode.equals(languageCode, ignoreCase = true)
+        }
+        val topOption = existingGroup?.options?.firstOrNull()
+
+        if (topOption != null) {
+            _uiState.value = _uiState.value.copy(
+                selectedWyzieLanguageCode = existingGroup.languageCode,
+                showSubtitleLanguagePrompt = false,
+                pendingPreferredSubtitleLanguageCode = null
+            )
+            applyOnlineSubtitleOption(topOption)
+        } else {
+            _uiState.value = _uiState.value.copy(
+                selectedWyzieLanguageCode = languageCode,
+                showSubtitleLanguagePrompt = false,
+                pendingPreferredSubtitleLanguageCode = languageCode
+            )
+            if (!_uiState.value.isSearchingOnlineSubtitles) {
+                searchOnlineSubtitles()
+            }
         }
     }
 
@@ -731,13 +977,22 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application) 
 
                     val currentPos = player.currentPosition + _uiState.value.subtitleSyncOffsetMs
                     val immediateCue = findCueAtTime(cues, currentPos)
+                    val cleanLangName = option.languageDisplay.substringBefore(" (").trim().ifBlank { option.languageCode.uppercase() }
+                    val confirmMsg = "✓ $cleanLangName Subtitles Active — Tap Subtitles to change option or sync"
                     _uiState.value = _uiState.value.copy(
                         isDownloadingSubtitle = false,
                         activeWyzieOption = option,
                         activeWyzieCues = cues,
                         currentSubtitleText = immediateCue,
-                        onlineSubtitleStatusMessage = null
+                        onlineSubtitleStatusMessage = null,
+                        showSubtitleLanguagePrompt = false,
+                        subtitleActivationBannerMessage = confirmMsg
                     )
+                    subtitleBannerFadeJob?.cancel()
+                    subtitleBannerFadeJob = viewModelScope.launch {
+                        delay(4500L)
+                        _uiState.value = _uiState.value.copy(subtitleActivationBannerMessage = null)
+                    }
                     onReady()
                 },
                 onFailure = { err ->
@@ -751,10 +1006,12 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     fun clearOnlineSubtitles() {
+        subtitleBannerFadeJob?.cancel()
         _uiState.value = _uiState.value.copy(
             activeWyzieOption = null,
             activeWyzieCues = emptyList(),
-            currentSubtitleText = null
+            currentSubtitleText = null,
+            subtitleActivationBannerMessage = null
         )
     }
 
