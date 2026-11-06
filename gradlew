@@ -31,13 +31,49 @@ if [ ! -f ".env" ] && [ -f ".env.example" ]; then
   cp .env.example .env
 fi
 
-if [ -n "$SPORT_API_KEY_SECRET" ] && ! grep -q "^SPORT_API_KEY=" .env 2>/dev/null; then
-  echo "SPORT_API_KEY=$SPORT_API_KEY_SECRET" >> .env
+# Ensure every required BuildConfig key exists in .env with a non-empty value
+# (secrets-gradle-plugin 2.0.1 emits `public static final String KEY = ;` if a key has an empty value)
+sed -i 's/^[[:space:]]*//g' .env 2>/dev/null || true
+
+RESOLVED_SPORT_KEY="${SPORTAPI_AI_KEY_SECRET:-$SPORT_API_KEY_SECRET}"
+if [ -n "$RESOLVED_SPORT_KEY" ]; then
+  if grep -q "^SPORT_API_KEY=" .env 2>/dev/null; then
+    sed -i "s|^SPORT_API_KEY=.*|SPORT_API_KEY=${RESOLVED_SPORT_KEY}|g" .env 2>/dev/null || true
+  else
+    echo "SPORT_API_KEY=${RESOLVED_SPORT_KEY}" >> .env
+  fi
+  if grep -q "^SPORTAPI_AI_KEY=" .env 2>/dev/null; then
+    sed -i "s|^SPORTAPI_AI_KEY=.*|SPORTAPI_AI_KEY=${RESOLVED_SPORT_KEY}|g" .env 2>/dev/null || true
+  else
+    echo "SPORTAPI_AI_KEY=${RESOLVED_SPORT_KEY}" >> .env
+  fi
 fi
 
-if [ -n "$WYZIE_API_KEY_SECRET" ] && ! grep -q "^WYZIE_API_KEY=" .env 2>/dev/null; then
-  echo "WYZIE_API_KEY=$WYZIE_API_KEY_SECRET" >> .env
+if [ -n "$WYZIE_API_KEY_SECRET" ]; then
+  if grep -q "^WYZIE_API_KEY=" .env 2>/dev/null; then
+    sed -i "s|^WYZIE_API_KEY=.*|WYZIE_API_KEY=${WYZIE_API_KEY_SECRET}|g" .env 2>/dev/null || true
+  else
+    echo "WYZIE_API_KEY=${WYZIE_API_KEY_SECRET}" >> .env
+  fi
 fi
+
+if [ -n "$API_FOOTBALL_KEY_SECRET" ]; then
+  if grep -q "^API_FOOTBALL_KEY=" .env 2>/dev/null; then
+    sed -i "s|^API_FOOTBALL_KEY=.*|API_FOOTBALL_KEY=${API_FOOTBALL_KEY_SECRET}|g" .env 2>/dev/null || true
+  else
+    echo "API_FOOTBALL_KEY=${API_FOOTBALL_KEY_SECRET}" >> .env
+  fi
+fi
+
+grep -q "^API_FOOTBALL_KEY=" .env 2>/dev/null || echo "API_FOOTBALL_KEY=YOUR_API_FOOTBALL_KEY" >> .env
+grep -q "^SPORT_API_KEY=" .env 2>/dev/null || echo "SPORT_API_KEY=YOUR_SPORT_API_KEY" >> .env
+grep -q "^SPORTAPI_AI_KEY=" .env 2>/dev/null || echo "SPORTAPI_AI_KEY=YOUR_SPORTAPI_AI_KEY" >> .env
+grep -q "^WYZIE_API_KEY=" .env 2>/dev/null || echo "WYZIE_API_KEY=YOUR_WYZIE_API_KEY" >> .env
+
+sed -i 's|^API_FOOTBALL_KEY=[[:space:]]*$|API_FOOTBALL_KEY=YOUR_API_FOOTBALL_KEY|g' .env 2>/dev/null || true
+sed -i 's|^SPORT_API_KEY=[[:space:]]*$|SPORT_API_KEY=YOUR_SPORT_API_KEY|g' .env 2>/dev/null || true
+sed -i 's|^SPORTAPI_AI_KEY=[[:space:]]*$|SPORTAPI_AI_KEY=YOUR_SPORTAPI_AI_KEY|g' .env 2>/dev/null || true
+sed -i 's|^WYZIE_API_KEY=[[:space:]]*$|WYZIE_API_KEY=YOUR_WYZIE_API_KEY|g' .env 2>/dev/null || true
 
 # Accept Android SDK licenses if ANDROID_HOME is available
 if [ -n "$ANDROID_HOME" ] && [ -f "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" ]; then

@@ -15,6 +15,9 @@ on:
 permissions:
   contents: write
 
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+
 jobs:
   build-and-release-apk:
     name: Build & Publish Installable SetPlay APK
@@ -37,13 +40,21 @@ jobs:
           WYZIE_API_KEY_SECRET: ${{ secrets.WYZIE_API_KEY }}
           API_FOOTBALL_KEY_SECRET: ${{ secrets.API_FOOTBALL_KEY }}
         run: |
+          # Secrets Gradle Plugin 2.0.1 requires every key in .env to have a non-empty value;
+          # an empty `KEY=` generates invalid Java (`public static final String KEY = ;`).
+          # Fall back to non-empty `YOUR_*` placeholders whenever a GitHub Secret is not set.
           RESOLVED_SPORT_KEY="${SPORTAPI_AI_KEY_SECRET:-$SPORT_API_KEY_SECRET}"
+          RESOLVED_SPORT_KEY="${RESOLVED_SPORT_KEY:-YOUR_SPORTAPI_AI_KEY}"
+          RESOLVED_WYZIE_KEY="${WYZIE_API_KEY_SECRET:-YOUR_WYZIE_API_KEY}"
+          RESOLVED_FOOTBALL_KEY="${API_FOOTBALL_KEY_SECRET:-YOUR_API_FOOTBALL_KEY}"
+
           cat <<EOF > .env
-          SPORTAPI_AI_KEY=${RESOLVED_SPORT_KEY}
+          API_FOOTBALL_KEY=${RESOLVED_FOOTBALL_KEY}
           SPORT_API_KEY=${RESOLVED_SPORT_KEY}
-          WYZIE_API_KEY=${WYZIE_API_KEY_SECRET}
-          API_FOOTBALL_KEY=${API_FOOTBALL_KEY_SECRET}
+          SPORTAPI_AI_KEY=${RESOLVED_SPORT_KEY}
+          WYZIE_API_KEY=${RESOLVED_WYZIE_KEY}
           EOF
+          sed -i 's/^[[:space:]]*//g' .env
 
           chmod +x ./gradlew
           ./gradlew :app:assembleDebug --no-daemon --stacktrace
@@ -72,9 +83,9 @@ jobs:
           fi
 
           cat << 'EOF' > release-notes.md
-          ## ⚽🎬 Set ▶ Play — Official Android APK (Latest Build)
+          ## ⚽🎬 Set ▶ Play — Official Dual-Mode Android & Android TV APK (Latest Build)
 
-          Download and install **`SetPlay.apk`** below on any Android phone, tablet, or Android TV box (**Android 7.0+ / API 24+**).
+          Download and install **`SetPlay.apk`** below on any Android phone, tablet, foldable, or Android TV / Google TV box (**Android 7.0+ / API 24+**).
 
           ### 📥 Direct 1-Click Download Link
           - **[📲 Download `SetPlay.apk` (1-Click Install)](https://github.com/MPadberg-svg/SetPlay/releases/latest/download/SetPlay.apk)**
@@ -82,18 +93,19 @@ jobs:
           ---
 
           ### ✨ What's Inside This Build
-          - **⚽ KickOff Arena (MENA Live Hub)**: Real-time live scores & match minute auto-sync (`SportAPI.ai` + `TheSportsDB`), Sticky 3-Tier Matchday Broadcast Scrubber Deck, Featured Clash spotlight with Dual-Club Ambient Stadium Lighting & 5-Match Form Guide (`W • D • L`), and Dual-Stage Broadcast Launch Deck (`beIN Sports`, `AD Sports`, `SSC`, `Arryadia`) with animated 3-bar live equalizer.
-          - **📋 Match Center Dossier 2.0**: 5-tab interactive match modal (Chronological Summary, 2D Tactical Pitch Lineups, Match Stats, H2H & Standings, and Official MENA TV Guide).
-          - **📺 Broadcast Control Room Live TV**: Instant zap across 56,000+ live channels with `4K`/`FHD` quality tags, `ON AIR` EPG progress bar, and illuminated `(▶) WATCH` capsules.
-          - **🎬 IMAX Glass Movies & Series Vaults**: Edge-lit poster cards, floating `★ Gold Rating` + `4K UHD` / `SERIES` micro-badges, and multi-season episode browser.
+          - **⚽ KickOff Arena (MENA & Global Live Hub)**: Real-time live scores & match minute auto-sync (`SportAPI.ai`, `TheSportsDB`, `ESPN`), official TV broadcast resolution (`Sofascore` + `TheSportsDB` + playlist match-channel detection), Country & Timezone Zone selector, and 2-Zone Flashscore Match Cards with 1-tap `Watch` launch.
+          - **📋 Match Center Dossier 2.0**: 5-tab interactive match modal with chronological match events, interactive **2D Tactical Pitch** with real player cutout photos & jersey badges, match stats, H2H & standings, and official TV guide.
+          - **📺 Broadcast Control Room Live TV**: Progressive infinite-scroll across 56,000+ live channels with authentic `4K UHD` / `FHD` / `HD` quality badges, 1-tap Multi-Feed Quality Switcher, 15-Minute Halftime Explorer Timer, and In-Player Live Goal Alerts.
+          - **🎬 IMAX Glass Movies & Series Vaults**: Progressive infinite-scroll across 230,000+ VOD titles, IMAX Movie Dossier (`get_vod_info`), independent per-episode Series resume tracking, `"Continue Watching"` rail, and auto-prompt **Wyzie + OpenSubtitles v3** multi-language subtitle studio.
+          - **📺 Dual-Mode Phone + Android TV (10-Foot UI)**: Native Leanback launcher support, D-Pad focus rings (`AmberGold` border + `1.04f` scale lift), and hardware TV remote keybindings.
           EOF
 
           if gh release view "$TAG_NAME" >/dev/null 2>&1; then
             gh release upload "$TAG_NAME" release-apk/SetPlay.apk release-apk/SetPlay-latest.apk --clobber
-            gh release edit "$TAG_NAME" --title "Set ▶ Play — Official Android APK (Latest Build)" --notes-file release-notes.md --latest
+            gh release edit "$TAG_NAME" --title "Set ▶ Play — Official Android & TV APK (Latest Build)" --notes-file release-notes.md --latest
           else
             gh release create "$TAG_NAME" release-apk/SetPlay.apk release-apk/SetPlay-latest.apk \
-              --title "Set ▶ Play — Official Android APK (Latest Build)" \
+              --title "Set ▶ Play — Official Android & TV APK (Latest Build)" \
               --notes-file release-notes.md \
               --latest
           fi

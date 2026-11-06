@@ -463,16 +463,37 @@ class FootballRepository(
         combined.values.take(35).toList()
     }
 
-    fun isSportApiKeyConfigured(): Boolean {
-        val key = try {
-            BuildConfig.SPORTAPI_AI_KEY
+    internal fun resolveSportApiKey(): String {
+        val primary = try {
+            BuildConfig.SPORTAPI_AI_KEY.trim()
         } catch (_: Exception) {
             ""
         }
-        return key.isNotBlank() &&
-            key != "YOUR_SPORTAPI_AI_KEY" &&
-            !key.startsWith("MY_") &&
-            key != "null"
+        if (primary.isNotBlank() &&
+            !primary.startsWith("YOUR_", ignoreCase = true) &&
+            !primary.startsWith("MY_", ignoreCase = true) &&
+            primary != "null"
+        ) {
+            return primary
+        }
+        val fallback = try {
+            BuildConfig.SPORT_API_KEY.trim()
+        } catch (_: Exception) {
+            ""
+        }
+        return if (fallback.isNotBlank() &&
+            !fallback.startsWith("YOUR_", ignoreCase = true) &&
+            !fallback.startsWith("MY_", ignoreCase = true) &&
+            fallback != "null"
+        ) {
+            fallback
+        } else {
+            ""
+        }
+    }
+
+    fun isSportApiKeyConfigured(): Boolean {
+        return resolveSportApiKey().isNotEmpty()
     }
 
     private fun isApiFootballKeyConfigured(): Boolean {
@@ -856,7 +877,7 @@ class FootballRepository(
 
             val request = Request.Builder()
                 .url(url)
-                .header("X-Api-Key", BuildConfig.SPORTAPI_AI_KEY)
+                .header("X-Api-Key", resolveSportApiKey())
                 .header("Accept", "application/json")
                 .build()
 
@@ -2294,7 +2315,7 @@ class FootballRepository(
                 val url = endpoint.toHttpUrlOrNull() ?: continue
                 val request = Request.Builder()
                     .url(url)
-                    .header("X-Api-Key", BuildConfig.SPORTAPI_AI_KEY)
+                    .header("X-Api-Key", resolveSportApiKey())
                     .header("Accept", "application/json")
                     .header("Cache-Control", "no-cache")
                     .build()
@@ -2353,7 +2374,7 @@ class FootballRepository(
                 val url = endpoint.toHttpUrlOrNull() ?: continue
                 val requestBuilder = Request.Builder()
                     .url(url)
-                    .header("X-Api-Key", BuildConfig.SPORTAPI_AI_KEY)
+                    .header("X-Api-Key", resolveSportApiKey())
                     .header("Accept", "application/json")
                 if (forceLiveRefresh) {
                     requestBuilder.header("Cache-Control", "no-cache")

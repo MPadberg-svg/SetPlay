@@ -136,7 +136,6 @@ import androidx.media3.ui.AspectRatioFrameLayout
 import androidx.media3.ui.PlayerView
 import com.example.data.model.PlaylistEntity
 import com.example.data.model.StreamEntity
-import com.example.ui.epg.EpgGuideScreen
 import com.example.ui.favorites.FavoritesScreen
 import com.example.ui.home.HomeScreen
 import com.example.ui.livetv.LiveTvScreen
@@ -324,7 +323,6 @@ fun MainAppContent(
                 val liveFavs = favorites.count { it.streamType.equals("live", ignoreCase = true) }
                 "${favorites.size} Saved • $liveFavs Live TV"
             }
-            AppScreen.EPG -> "Live TV Program Guide"
             AppScreen.PLAYLISTS -> activePlaylist?.name ?: "Account Management"
             AppScreen.GLOBAL_SEARCH -> "Channels, Movies & Series"
             AppScreen.PARENTAL_SETTINGS -> "PIN & Category Locks"
@@ -550,11 +548,6 @@ fun MainAppContent(
                                     mainViewModel.repository.toggleFavorite(stream.id, !stream.isFavorite)
                                 }
                             }
-                        )
-                        AppScreen.EPG -> EpgGuideScreen(
-                            viewModel = mainViewModel,
-                            activePlaylist = activePlaylist,
-                            onChannelClick = requestPlayStream
                         )
                         AppScreen.GLOBAL_SEARCH -> GlobalSearchScreen(
                             viewModel = mainViewModel,
@@ -1118,7 +1111,6 @@ fun TopStreamingBar(
         AppScreen.MOVIES -> Triple(MoviesSapphireNavy, MoviesCyanTeal, "MOVIES")
         AppScreen.SERIES -> Triple(SeriesPineBase, SeriesMistTeal, "SERIES")
         AppScreen.FAVORITES -> Triple(FavoritesObsidianBase, FavoritesSagePrimary, "FAVORITES")
-        AppScreen.EPG -> Triple(TvMidnightSlate, AmberGold, "EPG GUIDE")
         AppScreen.PLAYLISTS -> Triple(DarkGraphite, AmberGold, "XTREAM SERVERS")
         AppScreen.GLOBAL_SEARCH -> Triple(DarkGraphite, KickoffTropicalTeal, "GLOBAL SEARCH")
         AppScreen.PARENTAL_SETTINGS -> Triple(DarkGraphite, AmberGold, "PARENTAL LOCK")

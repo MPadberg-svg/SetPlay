@@ -47,7 +47,6 @@ enum class AppScreen {
     MOVIES,
     SERIES,
     FAVORITES,
-    EPG,
     GLOBAL_SEARCH,
     PLAYLISTS,
     PARENTAL_SETTINGS

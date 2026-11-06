@@ -1718,16 +1718,37 @@ class ExampleRobolectricTest {
         assertTrue(proguardText.contains("com.example.data.model.**"))
         assertTrue(proguardText.contains("com.example.data.remote.**"))
 
-        // 2. Verify GitHub Actions workflow writes SPORT_API_KEY / SPORTAPI_AI_KEY, WYZIE_API_KEY, and API_FOOTBALL_KEY into .env
+        // 2. Verify GitHub Actions workflow writes non-empty fallback values for SPORT_API_KEY, SPORTAPI_AI_KEY, WYZIE_API_KEY, and API_FOOTBALL_KEY into .env
+        //    so secrets-gradle-plugin never generates `public static final String KEY = ;` when a GitHub Secret is unset
         val workflowFile = java.io.File("../.github/workflows/android-apk-release.yml").let {
             if (it.exists()) it else java.io.File(".github/workflows/android-apk-release.yml")
         }
         assertTrue(workflowFile.exists())
         val workflowText = workflowFile.readText()
-        assertTrue(workflowText.contains("cat <<EOF > .env"))
-        assertTrue(workflowText.contains("SPORTAPI_AI_KEY="))
-        assertTrue(workflowText.contains("WYZIE_API_KEY="))
-        assertTrue(workflowText.contains("API_FOOTBALL_KEY="))
+        assertTrue(workflowText.contains("RESOLVED_SPORT_KEY=\"\${RESOLVED_SPORT_KEY:-YOUR_SPORTAPI_AI_KEY}\""))
+        assertTrue(workflowText.contains("RESOLVED_WYZIE_KEY=\"\${WYZIE_API_KEY_SECRET:-YOUR_WYZIE_API_KEY}\""))
+        assertTrue(workflowText.contains("RESOLVED_FOOTBALL_KEY=\"\${API_FOOTBALL_KEY_SECRET:-YOUR_API_FOOTBALL_KEY}\""))
+        assertTrue(workflowText.contains("API_FOOTBALL_KEY=\${RESOLVED_FOOTBALL_KEY}"))
+        assertTrue(workflowText.contains("SPORT_API_KEY=\${RESOLVED_SPORT_KEY}"))
+        assertTrue(workflowText.contains("SPORTAPI_AI_KEY=\${RESOLVED_SPORT_KEY}"))
+        assertTrue(workflowText.contains("WYZIE_API_KEY=\${RESOLVED_WYZIE_KEY}"))
+
+        // Verify .env.example has non-empty values for all 4 keys
+        val envExampleFile = java.io.File("../.env.example").let {
+            if (it.exists()) it else java.io.File(".env.example")
+        }
+        assertTrue(envExampleFile.exists())
+        val envLines = envExampleFile.readLines()
+            .map { it.trim() }
+            .filter { it.isNotEmpty() && !it.startsWith("#") }
+        val envMap = envLines.associate {
+            val idx = it.indexOf('=')
+            it.substring(0, idx).trim() to it.substring(idx + 1).trim()
+        }
+        assertTrue(envMap["API_FOOTBALL_KEY"]?.isNotEmpty() == true)
+        assertTrue(envMap["SPORT_API_KEY"]?.isNotEmpty() == true)
+        assertTrue(envMap["SPORTAPI_AI_KEY"]?.isNotEmpty() == true)
+        assertTrue(envMap["WYZIE_API_KEY"]?.isNotEmpty() == true)
 
         // 3. Verify AndroidManifest.xml includes Leanback launcher and optional touchscreen features
         val manifestFile = java.io.File("src/main/AndroidManifest.xml").let {
