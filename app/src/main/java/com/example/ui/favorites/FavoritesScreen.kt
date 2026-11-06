@@ -155,18 +155,21 @@ fun FavoritesScreen(
         val movieFavCount = remember(favorites) { favorites.count { it.streamType.equals("movie", ignoreCase = true) } }
         val seriesFavCount = remember(favorites) { favorites.count { it.streamType.equals("series", ignoreCase = true) } }
 
-        Card(
-            shape = RoundedCornerShape(14.dp),
-            colors = CardDefaults.cardColors(containerColor = FavoritesEmeraldCard),
+        // Sleek 36.dp Single-Line Glass Telemetry Bar
+        Surface(
+            shape = RoundedCornerShape(12.dp),
+            color = FavoritesEmeraldCard.copy(alpha = 0.88f),
             border = BorderStroke(
                 width = 0.8.dp,
                 color = FavoritesSagePrimary.copy(alpha = 0.38f)
             ),
-            modifier = Modifier.fillMaxWidth()
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(36.dp)
         ) {
             Row(
                 modifier = Modifier
-                    .fillMaxWidth()
+                    .fillMaxSize()
                     .background(
                         Brush.horizontalGradient(
                             colors = listOf(
@@ -176,57 +179,41 @@ fun FavoritesScreen(
                             )
                         )
                     )
-                    .padding(horizontal = 12.dp, vertical = 9.dp),
+                    .padding(horizontal = 10.dp),
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(9.dp),
+                    horizontalArrangement = Arrangement.spacedBy(7.dp),
                     modifier = Modifier.weight(1f)
                 ) {
-                    Surface(
-                        color = FavoritesSagePrimary.copy(alpha = 0.16f),
-                        shape = RoundedCornerShape(10.dp),
-                        border = BorderStroke(0.7.dp, FavoritesSagePrimary.copy(alpha = 0.50f))
-                    ) {
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 5.dp)
-                        ) {
-                            Icon(
-                                imageVector = Icons.Default.Star,
-                                contentDescription = null,
-                                tint = FavoritesPaleMint,
-                                modifier = Modifier.size(13.dp)
-                            )
-                            Spacer(modifier = Modifier.width(5.dp))
-                            Text(
-                                text = "SAVED COLLECTION",
-                                color = Color.White,
-                                fontSize = 9.5.sp,
-                                fontWeight = FontWeight.ExtraBold,
-                                letterSpacing = 0.4.sp
-                            )
-                        }
-                    }
-
-                    Column(verticalArrangement = Arrangement.Center) {
-                        Text(
-                            text = "${favorites.size} Saved Items",
-                            color = Color.White,
-                            fontSize = 12.sp,
-                            fontWeight = FontWeight.ExtraBold,
-                            maxLines = 1
-                        )
-                        Text(
-                            text = "$liveFavCount Live TV • $movieFavCount Movies • $seriesFavCount Series",
-                            color = FavoritesSagePrimary.copy(alpha = 0.92f),
-                            fontSize = 10.sp,
-                            fontWeight = FontWeight.Medium,
-                            maxLines = 1
-                        )
-                    }
+                    Icon(
+                        imageVector = Icons.Default.Star,
+                        contentDescription = null,
+                        tint = FavoritesPaleMint,
+                        modifier = Modifier.size(14.dp)
+                    )
+                    Text(
+                        text = "FAVORITES",
+                        color = FavoritesPaleMint,
+                        fontSize = 10.sp,
+                        fontWeight = FontWeight.ExtraBold,
+                        letterSpacing = 0.4.sp
+                    )
+                    Text(
+                        text = "•",
+                        color = FavoritesSagePrimary.copy(alpha = 0.55f),
+                        fontSize = 10.sp
+                    )
+                    Text(
+                        text = "${favorites.size} Saved ($liveFavCount Live • $movieFavCount Movies • $seriesFavCount Series)",
+                        color = Color.White,
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
                 }
 
                 Surface(
@@ -235,17 +222,17 @@ fun FavoritesScreen(
                     border = BorderStroke(0.6.dp, FavoritesSagePrimary.copy(alpha = 0.35f))
                 ) {
                     Text(
-                        text = "$liveFavCount LIVE READY",
+                        text = "$liveFavCount LIVE",
                         color = FavoritesPaleMint,
-                        fontSize = 9.5.sp,
-                        fontWeight = FontWeight.Bold,
-                        modifier = Modifier.padding(horizontal = 9.dp, vertical = 4.dp)
+                        fontSize = 9.sp,
+                        fontWeight = FontWeight.ExtraBold,
+                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.5.dp)
                     )
                 }
             }
         }
 
-        Spacer(modifier = Modifier.height(8.dp))
+        Spacer(modifier = Modifier.height(6.dp))
 
         // Botanical Sage Search Bar
         OutlinedTextField(

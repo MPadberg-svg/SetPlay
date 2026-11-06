@@ -129,7 +129,7 @@ interface StreamDao {
     fun getStreamsInitial(playlistId: Long, streamType: String, limit: Int = 180): Flow<List<StreamEntity>>
 
     @Query("SELECT * FROM streams WHERE playlistId = :playlistId AND streamType = :streamType AND categoryId = :categoryId ORDER BY id ASC LIMIT :limit")
-    fun getStreamsByCategoryFast(playlistId: Long, streamType: String, categoryId: String, limit: Int = 200): Flow<List<StreamEntity>>
+    fun getStreamsByCategoryFast(playlistId: Long, streamType: String, categoryId: String, limit: Int = 180): Flow<List<StreamEntity>>
 
     @Query("""
         SELECT * FROM streams
@@ -139,7 +139,7 @@ interface StreamDao {
         ORDER BY id ASC
         LIMIT :limit
     """)
-    fun searchStreamsByTypeFast(playlistId: Long, streamType: String, query: String, limit: Int = 150): Flow<List<StreamEntity>>
+    fun searchStreamsByTypeFast(playlistId: Long, streamType: String, query: String, limit: Int = 180): Flow<List<StreamEntity>>
 
     @Query("""
         SELECT * FROM streams
@@ -155,7 +155,7 @@ interface StreamDao {
         streamType: String,
         categoryId: String,
         query: String,
-        limit: Int = 150
+        limit: Int = 180
     ): Flow<List<StreamEntity>>
 
     @Query("SELECT * FROM streams WHERE playlistId = :playlistId AND streamType = :type ORDER BY name ASC LIMIT :limit OFFSET :offset")

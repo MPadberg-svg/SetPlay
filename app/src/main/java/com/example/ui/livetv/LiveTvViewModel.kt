@@ -20,14 +20,7 @@ import kotlinx.coroutines.launch
 
 @OptIn(ExperimentalCoroutinesApi::class)
 class LiveTvViewModel(application: Application) : AndroidViewModel(application) {
-    private val database = StreamVaultDatabase.getInstance(application)
-    val repository = IptvRepository(
-        playlistDao = database.playlistDao(),
-        categoryDao = database.categoryDao(),
-        streamDao = database.streamDao(),
-        epgDao = database.epgDao(),
-        parentalDao = database.parentalSettingsDao()
-    )
+    val repository = IptvRepository.getInstance(application)
 
     // Stage 1: Category Search Query (searches Live TV categories by name)
     private val _categorySearchQuery = MutableStateFlow("")
@@ -45,6 +38,7 @@ class LiveTvViewModel(application: Application) : AndroidViewModel(application) 
     val pageSize: Int = PAGE_SIZE
     private val _currentLimit = MutableStateFlow(PAGE_SIZE)
     val currentLimit: StateFlow<Int> = _currentLimit.asStateFlow()
+    val limit: StateFlow<Int> = _currentLimit.asStateFlow()
 
     // Pre-warmed, persistent StateFlow of Live TV categories so switching tabs never recreates flows or flashes empty
     val categories: StateFlow<List<CategoryWithCount>> = combine(
@@ -114,8 +108,12 @@ class LiveTvViewModel(application: Application) : AndroidViewModel(application) 
         _currentLimit.value = pageSize
     }
 
-    fun loadNextPage() {
+    fun loadMore() {
         _currentLimit.value += pageSize
+    }
+
+    fun loadNextPage() {
+        loadMore()
     }
 
     fun toggleFavorite(streamId: Long, currentFav: Boolean) {

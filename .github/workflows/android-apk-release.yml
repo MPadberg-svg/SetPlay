@@ -33,7 +33,18 @@ jobs:
       - name: Build Installable SetPlay Debug APK via Self-Bootstrapping Gradle Wrapper
         env:
           SPORT_API_KEY_SECRET: ${{ secrets.SPORT_API_KEY }}
+          SPORTAPI_AI_KEY_SECRET: ${{ secrets.SPORTAPI_AI_KEY }}
+          WYZIE_API_KEY_SECRET: ${{ secrets.WYZIE_API_KEY }}
+          API_FOOTBALL_KEY_SECRET: ${{ secrets.API_FOOTBALL_KEY }}
         run: |
+          RESOLVED_SPORT_KEY="${SPORTAPI_AI_KEY_SECRET:-$SPORT_API_KEY_SECRET}"
+          cat <<EOF > .env
+          SPORTAPI_AI_KEY=${RESOLVED_SPORT_KEY}
+          SPORT_API_KEY=${RESOLVED_SPORT_KEY}
+          WYZIE_API_KEY=${WYZIE_API_KEY_SECRET}
+          API_FOOTBALL_KEY=${API_FOOTBALL_KEY_SECRET}
+          EOF
+
           chmod +x ./gradlew
           ./gradlew :app:assembleDebug --no-daemon --stacktrace
 

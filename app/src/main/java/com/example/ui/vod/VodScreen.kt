@@ -50,14 +50,19 @@ import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.FilterChipDefaults
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.derivedStateOf
@@ -80,6 +85,7 @@ import com.example.data.model.PlaylistEntity
 import com.example.data.model.StreamEntity
 import com.example.data.remote.SeriesDetails
 import com.example.data.remote.SeriesEpisode
+import com.example.data.remote.VodMovieDetails
 import com.example.data.repository.EpisodeResumeInfo
 import com.example.ui.theme.AmberGold
 import com.example.ui.theme.Champagne
@@ -107,6 +113,7 @@ fun VodScreen(
     viewModel: VodViewModel,
     activePlaylist: PlaylistEntity?,
     onItemClick: (StreamEntity) -> Unit,
+    isParentalUnlocked: Boolean = false,
     onRequestUnlockCategory: ((String, () -> Unit) -> Unit)? = null,
     recentlyWatched: List<StreamEntity>? = null,
     modifier: Modifier = Modifier
@@ -159,6 +166,9 @@ fun VodScreen(
     val seriesDetails by viewModel.seriesDetails.collectAsStateWithLifecycle()
     val isLoadingSeriesDetails by viewModel.isLoadingSeriesDetails.collectAsStateWithLifecycle()
     val selectedSeasonNumber by viewModel.selectedSeasonNumber.collectAsStateWithLifecycle()
+    val selectedMovieStream by viewModel.selectedMovieStream.collectAsStateWithLifecycle()
+    val movieDetails by viewModel.movieDetails.collectAsStateWithLifecycle()
+    val isLoadingMovieDetails by viewModel.isLoadingMovieDetails.collectAsStateWithLifecycle()
     val episodeResumeMap by viewModel.episodeResumeMap.collectAsStateWithLifecycle()
     val fallbackRecentlyWatched by viewModel.recentlyWatched.collectAsStateWithLifecycle()
     val currentLimit by viewModel.currentLimit.collectAsStateWithLifecycle()
@@ -231,6 +241,31 @@ fun VodScreen(
 
     val totalCount = if (isMovies) activePlaylist.vodCount else activePlaylist.seriesCount
 
+    // IMAX Movie Pre-Play Details ModalBottomSheet
+    if (isMovies && selectedMovieStream != null) {
+        ImaxMovieDossierModalSheet(
+            movieStream = selectedMovieStream!!,
+            movieDetails = movieDetails,
+            isLoading = isLoadingMovieDetails,
+            onDismiss = { viewModel.closeMovieDetails() },
+            onWatchMovie = {
+                val streamToPlay = selectedMovieStream!!
+                val extFromDetails = movieDetails?.containerExtension?.takeIf { it.isNotBlank() } ?: streamToPlay.containerExtension
+                val tmdbOrImdb = movieDetails?.tmdbOrImdbId?.takeIf { it.isNotBlank() } ?: streamToPlay.epgChannelId
+                viewModel.closeMovieDetails()
+                onItemClick(
+                    streamToPlay.copy(
+                        containerExtension = extFromDetails,
+                        epgChannelId = tmdbOrImdb
+                    )
+                )
+            },
+            onToggleFavorite = {
+                viewModel.toggleFavorite(selectedMovieStream!!.id, selectedMovieStream!!.isFavorite)
+            }
+        )
+    }
+
     Column(
         modifier = modifier
             .fillMaxSize()
@@ -245,95 +280,74 @@ fun VodScreen(
             )
             .testTag(if (isMovies) "movies_screen" else "series_screen")
     ) {
-        val activeCategoryLabel = categories.find { it.categoryId == selectedCatId }?.categoryName
-            ?: if (isMovies) "All Cinema Categories" else "All Series Categories"
+        val activeCategoryLabel = categories.find { it.categoryId == selectedCatId }?.categoryName?.let {
+            StreamMetadataParser.cleanDisplayTitle(it)
+        } ?: if (isMovies) "All Cinema" else "All Series"
 
-        // Streamlined Section Details Bar (Combined Badge + Helpful Library Counts, No Decorative Color Lines)
-        Card(
-            shape = RoundedCornerShape(14.dp),
-            colors = CardDefaults.cardColors(
-                containerColor = if (isMovies) MoviesAtlanticTeal else SeriesCypressCard
-            ),
+        // Sleek 36.dp Single-Line Glass Telemetry Bar (Reclaims 35% of Vertical Screen Space)
+        Surface(
+            shape = RoundedCornerShape(12.dp),
+            color = (if (isMovies) MoviesAtlanticTeal else SeriesCypressCard).copy(alpha = 0.86f),
             border = BorderStroke(
                 width = 0.8.dp,
-                color = sectionHighlight.copy(alpha = 0.35f)
+                color = sectionHighlight.copy(alpha = 0.32f)
             ),
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 16.dp, vertical = 5.dp)
+                .padding(horizontal = 16.dp, vertical = 4.dp)
+                .height(36.dp)
         ) {
             Row(
                 modifier = Modifier
-                    .fillMaxWidth()
+                    .fillMaxSize()
                     .background(
                         Brush.horizontalGradient(
                             colors = if (isMovies) {
-                                listOf(MoviesSapphireNavy, MoviesAtlanticTeal, MoviesOceanTeal.copy(alpha = 0.85f))
+                                listOf(MoviesSapphireNavy, MoviesAtlanticTeal, MoviesOceanTeal.copy(alpha = 0.78f))
                             } else {
                                 listOf(SeriesPineBase, SeriesForestSurface, SeriesCypressCard)
                             }
                         )
                     )
-                    .padding(horizontal = 12.dp, vertical = 9.dp),
+                    .padding(horizontal = 10.dp),
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(9.dp),
+                    horizontalArrangement = Arrangement.spacedBy(7.dp),
                     modifier = Modifier.weight(1f)
                 ) {
-                    Surface(
-                        color = sectionHighlight.copy(alpha = 0.16f),
-                        shape = RoundedCornerShape(10.dp),
-                        border = BorderStroke(0.7.dp, sectionHighlight.copy(alpha = 0.50f))
-                    ) {
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 5.dp)
-                        ) {
-                            Icon(
-                                imageVector = if (isMovies) Icons.Default.LocalMovies else Icons.Default.Layers,
-                                contentDescription = null,
-                                tint = sectionHighlight,
-                                modifier = Modifier.size(13.dp)
-                            )
-                            Spacer(modifier = Modifier.width(5.dp))
-                            Text(
-                                text = if (isMovies) "CINEMA VOD" else "SERIES ARCHIVE",
-                                color = Color.White,
-                                fontSize = 9.5.sp,
-                                fontWeight = FontWeight.ExtraBold,
-                                letterSpacing = 0.4.sp
-                            )
-                        }
-                    }
-
-                    Column(
-                        verticalArrangement = Arrangement.Center,
-                        modifier = Modifier.weight(1f, fill = false)
-                    ) {
-                        Text(
-                            text = if (isMovies) {
-                                "%,d Movies Available".format(totalCount)
-                            } else {
-                                "%,d Series Available".format(totalCount)
-                            },
-                            color = Color.White,
-                            fontSize = 12.sp,
-                            fontWeight = FontWeight.ExtraBold,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis
-                        )
-                        Text(
-                            text = "${categories.size} Genres • $activeCategoryLabel",
-                            color = sectionSecondaryAccent.copy(alpha = 0.90f),
-                            fontSize = 10.sp,
-                            fontWeight = FontWeight.Medium,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis
-                        )
-                    }
+                    Icon(
+                        imageVector = if (isMovies) Icons.Default.LocalMovies else Icons.Default.Layers,
+                        contentDescription = null,
+                        tint = sectionHighlight,
+                        modifier = Modifier.size(14.dp)
+                    )
+                    Text(
+                        text = if (isMovies) "CINEMA" else "SERIES",
+                        color = sectionHighlight,
+                        fontSize = 10.sp,
+                        fontWeight = FontWeight.ExtraBold,
+                        letterSpacing = 0.4.sp
+                    )
+                    Text(
+                        text = "•",
+                        color = Champagne.copy(alpha = 0.45f),
+                        fontSize = 10.sp
+                    )
+                    Text(
+                        text = if (isMovies) {
+                            "%,d Movies • %s".format(totalCount, activeCategoryLabel)
+                        } else {
+                            "%,d Series • %s".format(totalCount, activeCategoryLabel)
+                        },
+                        color = Color.White,
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
                 }
 
                 Surface(
@@ -344,9 +358,9 @@ fun VodScreen(
                     Text(
                         text = "${categories.size} GENRES",
                         color = sectionHighlight,
-                        fontSize = 9.5.sp,
-                        fontWeight = FontWeight.Bold,
-                        modifier = Modifier.padding(horizontal = 9.dp, vertical = 4.dp)
+                        fontSize = 9.sp,
+                        fontWeight = FontWeight.ExtraBold,
+                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.5.dp)
                     )
                 }
             }
@@ -473,8 +487,8 @@ fun VodScreen(
                         .clickable {
                             if (isSelected) {
                                 onSelectCategory(null)
-                            } else if (cat.isLocked && onRequestUnlockCategory != null) {
-                                onRequestUnlockCategory(cat.categoryId) {
+                            } else if (cat.isLocked && !isParentalUnlocked) {
+                                onRequestUnlockCategory?.invoke(cat.categoryId) {
                                     onSelectCategory(cat.categoryId)
                                 }
                             } else {
@@ -572,7 +586,7 @@ fun VodScreen(
             }
             LaunchedEffect(shouldLoadMore) {
                 if (shouldLoadMore) {
-                    viewModel.loadNextPage()
+                    viewModel.loadMore()
                 }
             }
 
@@ -588,9 +602,10 @@ fun VodScreen(
             ) {
                 items(items, key = { it.id }) { item ->
                     if (isMovies) {
-                        MovieCinemaPosterCard(
+                        MoviePosterCard(
                             item = item,
-                            onClick = { onItemClick(item) },
+                            onClick = { viewModel.openMovieDetails(item, activePlaylist) },
+                            onPlayImmediately = { onItemClick(item) },
                             onToggleFavorite = { viewModel.toggleFavorite(item.id, item.isFavorite) }
                         )
                     } else {
@@ -799,21 +814,40 @@ private fun ContinueWatchingVodRail(
 
 /**
  * IMAX Glass Movie Poster Card — Sapphire, Cyan-Teal & Electric Mint Premiere Design
- * Features edge-lit specular gradient border, floating ★ Gold Rating + 4K UHD micro-badge,
- * and a sculpted backlit circular Play Medallion.
+ * Features edge-lit specular gradient border, authentic parsed quality/language micro-badges,
+ * and a sculpted backlit circular Play Medallion that plays immediately while tapping the card body
+ * opens the IMAX Movie Dossier ModalBottomSheet.
  */
+@Composable
+fun MoviePosterCard(
+    item: StreamEntity,
+    onClick: () -> Unit,
+    onPlayImmediately: () -> Unit = onClick,
+    onToggleFavorite: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    MovieCinemaPosterCard(
+        item = item,
+        onClick = onClick,
+        onPlayImmediately = onPlayImmediately,
+        onToggleFavorite = onToggleFavorite,
+        modifier = modifier
+    )
+}
+
 @Composable
 fun MovieCinemaPosterCard(
     item: StreamEntity,
     onClick: () -> Unit,
+    onPlayImmediately: () -> Unit = onClick,
     onToggleFavorite: () -> Unit,
     modifier: Modifier = Modifier
 ) {
     val cleanTitle = remember(item.name) {
         StreamMetadataParser.cleanDisplayTitle(item.name)
     }
-    val regionBadge = remember(item.name) {
-        StreamMetadataParser.extractRegionOrLangBadge(item.name)
+    val languageBadge = remember(item.name) {
+        StreamMetadataParser.extractLanguageBadge(item.name)
     }
     val qualityBadge = remember(item.name) {
         StreamMetadataParser.extractQualityBadge(item.name)
@@ -822,7 +856,7 @@ fun MovieCinemaPosterCard(
         StreamMetadataParser.extractCompactQualityBadge(item.name)
     }
     val containerLabel = remember(item.containerExtension) {
-        item.containerExtension.ifBlank { "VOD" }.uppercase()
+        item.containerExtension.ifBlank { "MP4" }.uppercase()
     }
 
     Card(
@@ -888,7 +922,7 @@ fun MovieCinemaPosterCard(
                         )
                 )
 
-                // Top-Start Floating Frosted Glass Rating + Authentic Region & Quality Micro-Badge Row
+                // Top-Start Floating Frosted Glass Rating + Authentic Language & Quality Micro-Badge Row
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(4.dp),
@@ -939,14 +973,14 @@ fun MovieCinemaPosterCard(
                         }
                     }
 
-                    if (regionBadge != null) {
+                    if (languageBadge != null) {
                         Surface(
                             color = MoviesSapphireNavy.copy(alpha = 0.82f),
                             shape = RoundedCornerShape(5.dp),
                             border = BorderStroke(0.6.dp, MoviesCyanTeal.copy(alpha = 0.55f))
                         ) {
                             Text(
-                                text = regionBadge,
+                                text = languageBadge,
                                 color = Champagne,
                                 fontSize = 8.sp,
                                 fontWeight = FontWeight.ExtraBold,
@@ -974,7 +1008,7 @@ fun MovieCinemaPosterCard(
                     )
                 }
 
-                // Bottom-End Sculpted Backlit IMAX Play Medallion
+                // Bottom-End Sculpted Backlit IMAX Play Medallion (Plays Immediately)
                 Box(
                     modifier = Modifier
                         .align(Alignment.BottomEnd)
@@ -986,7 +1020,9 @@ fun MovieCinemaPosterCard(
                                 listOf(MoviesMintSpring, MoviesCyanTeal)
                             )
                         )
-                        .border(1.dp, Color.White.copy(alpha = 0.55f), CircleShape),
+                        .border(1.dp, Color.White.copy(alpha = 0.55f), CircleShape)
+                        .clickable { onPlayImmediately() }
+                        .testTag("movie_poster_play_medallion_${item.streamId}"),
                     contentAlignment = Alignment.Center
                 ) {
                     Box(
@@ -998,7 +1034,7 @@ fun MovieCinemaPosterCard(
                     ) {
                         Icon(
                             Icons.Default.PlayArrow,
-                            contentDescription = "Play Movie",
+                            contentDescription = "Play Movie Immediately",
                             tint = MoviesMintSpring,
                             modifier = Modifier.size(15.dp)
                         )
@@ -1006,7 +1042,7 @@ fun MovieCinemaPosterCard(
                 }
             }
 
-            // Cleaned Movie Title & Authentic Format Footer
+            // Cleaned Movie Title & Authentic Format Footer (Falls back to "CINEMA" and containerExtension.uppercase())
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -1032,7 +1068,7 @@ fun MovieCinemaPosterCard(
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Text(
-                        text = qualityBadge ?: "CINEMA VOD",
+                        text = qualityBadge ?: languageBadge ?: "CINEMA",
                         color = MoviesMintSpring.copy(alpha = 0.90f),
                         fontSize = 9.5.sp,
                         fontWeight = FontWeight.Bold
@@ -1043,6 +1079,381 @@ fun MovieCinemaPosterCard(
                         fontSize = 9.sp,
                         fontWeight = FontWeight.ExtraBold
                     )
+                }
+            }
+        }
+    }
+}
+
+/**
+ * Luxury IMAX Movie Pre-Play Details ModalBottomSheet.
+ * Fetches plot, cast, director, release year, duration, and ★ rating asynchronously from Xtream `get_vod_info`,
+ * with instant fallback to `StreamEntity` metadata, plus `[ ▶ Watch Movie ]` and `[ ★ Favorite ]` CTAs.
+ */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun ImaxMovieDossierModalSheet(
+    movieStream: StreamEntity,
+    movieDetails: VodMovieDetails?,
+    isLoading: Boolean,
+    onDismiss: () -> Unit,
+    onWatchMovie: () -> Unit,
+    onToggleFavorite: () -> Unit
+) {
+    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+    val rawTitle = movieDetails?.title?.takeIf { it.isNotBlank() } ?: movieStream.name
+    val cleanTitle = remember(rawTitle) { StreamMetadataParser.cleanDisplayTitle(rawTitle) }
+    val qualityBadge = remember(movieStream.name) { StreamMetadataParser.extractQualityBadge(movieStream.name) ?: "CINEMA" }
+    val languageBadge = remember(movieStream.name) { StreamMetadataParser.extractLanguageBadge(movieStream.name) }
+    val containerBadge = (movieDetails?.containerExtension?.takeIf { it.isNotBlank() } ?: movieStream.containerExtension)
+        .ifBlank { "MP4" }.uppercase()
+    val ratingText = (movieDetails?.rating?.takeIf { it.isNotBlank() && it != "0" } ?: movieStream.rating)
+        .takeIf { it.isNotBlank() && it != "0" && it != "0.0" }
+    val releaseYear = remember(movieDetails?.releaseDate, movieStream.name) {
+        val rawDate = movieDetails?.releaseDate?.trim().orEmpty()
+        val yearFromDate = Regex("""\b(19\d{2}|20\d{2})\b""").find(rawDate)?.value
+        yearFromDate ?: Regex("""\((19\d{2}|20\d{2})\)""").find(movieStream.name)?.groupValues?.getOrNull(1).orEmpty()
+    }
+    val durationText = movieDetails?.duration?.trim().orEmpty()
+    val genreText = movieDetails?.genre?.trim().orEmpty()
+    val directorText = movieDetails?.director?.trim().orEmpty()
+    val castText = movieDetails?.cast?.trim().orEmpty()
+    val plotText = movieDetails?.plot?.trim().orEmpty()
+    val posterUrl = movieDetails?.coverUrl?.takeIf { it.isNotBlank() } ?: movieStream.streamIcon
+    val backdropUrl = movieDetails?.backdropUrl?.takeIf { it.isNotBlank() } ?: posterUrl
+
+    ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        sheetState = sheetState,
+        containerColor = MoviesSapphireNavy,
+        contentColor = Color.White,
+        scrimColor = Color.Black.copy(alpha = 0.76f),
+        modifier = Modifier.testTag("movie_dossier_sheet")
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(bottom = 24.dp)
+        ) {
+            // 1. Hero Backdrop + Poster Header
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(210.dp)
+                    .background(MoviesAtlanticTeal)
+            ) {
+                if (backdropUrl.isNotEmpty()) {
+                    AsyncImage(
+                        model = backdropUrl,
+                        contentDescription = cleanTitle,
+                        contentScale = ContentScale.Crop,
+                        modifier = Modifier.fillMaxSize()
+                    )
+                }
+
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .background(
+                            Brush.verticalGradient(
+                                listOf(
+                                    MoviesSapphireNavy.copy(alpha = 0.30f),
+                                    MoviesSapphireNavy.copy(alpha = 0.85f),
+                                    MoviesSapphireNavy
+                                )
+                            )
+                        )
+                )
+
+                Row(
+                    modifier = Modifier
+                        .align(Alignment.BottomStart)
+                        .fillMaxWidth()
+                        .padding(horizontal = 18.dp, vertical = 12.dp),
+                    verticalAlignment = Alignment.Bottom
+                ) {
+                    // Framed Movie Poster Thumbnail
+                    Card(
+                        shape = RoundedCornerShape(12.dp),
+                        colors = CardDefaults.cardColors(containerColor = MoviesAtlanticTeal),
+                        border = BorderStroke(1.dp, MoviesMintSpring.copy(alpha = 0.55f)),
+                        modifier = Modifier
+                            .width(92.dp)
+                            .height(134.dp)
+                    ) {
+                        if (posterUrl.isNotEmpty()) {
+                            AsyncImage(
+                                model = posterUrl,
+                                contentDescription = cleanTitle,
+                                contentScale = ContentScale.Crop,
+                                modifier = Modifier.fillMaxSize()
+                            )
+                        } else {
+                            Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                                Icon(
+                                    imageVector = Icons.Default.Movie,
+                                    contentDescription = null,
+                                    tint = MoviesMintSpring,
+                                    modifier = Modifier.size(34.dp)
+                                )
+                            }
+                        }
+                    }
+
+                    Spacer(modifier = Modifier.width(14.dp))
+
+                    Column(modifier = Modifier.weight(1f)) {
+                        // Badges Row: Quality + Language + Container + Rating
+                        Row(
+                            horizontalArrangement = Arrangement.spacedBy(6.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Surface(
+                                color = MoviesMintSpring.copy(alpha = 0.16f),
+                                shape = RoundedCornerShape(6.dp),
+                                border = BorderStroke(0.7.dp, MoviesMintSpring.copy(alpha = 0.65f))
+                            ) {
+                                Text(
+                                    text = qualityBadge,
+                                    color = MoviesMintSpring,
+                                    fontSize = 9.5.sp,
+                                    fontWeight = FontWeight.ExtraBold,
+                                    modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                                )
+                            }
+
+                            if (languageBadge != null) {
+                                Surface(
+                                    color = MoviesCyanTeal.copy(alpha = 0.20f),
+                                    shape = RoundedCornerShape(6.dp),
+                                    border = BorderStroke(0.7.dp, MoviesCyanTeal.copy(alpha = 0.55f))
+                                ) {
+                                    Text(
+                                        text = languageBadge,
+                                        color = Champagne,
+                                        fontSize = 9.5.sp,
+                                        fontWeight = FontWeight.ExtraBold,
+                                        modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                                    )
+                                }
+                            }
+
+                            Surface(
+                                color = Color.White.copy(alpha = 0.08f),
+                                shape = RoundedCornerShape(6.dp),
+                                border = BorderStroke(0.6.dp, Color.White.copy(alpha = 0.20f))
+                            ) {
+                                Text(
+                                    text = containerBadge,
+                                    color = Champagne,
+                                    fontSize = 9.5.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                                )
+                            }
+
+                            if (ratingText != null) {
+                                Surface(
+                                    color = AmberGold.copy(alpha = 0.18f),
+                                    shape = RoundedCornerShape(6.dp),
+                                    border = BorderStroke(0.7.dp, AmberGold.copy(alpha = 0.65f))
+                                ) {
+                                    Row(
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Default.Star,
+                                            contentDescription = null,
+                                            tint = AmberGold,
+                                            modifier = Modifier.size(10.dp)
+                                        )
+                                        Spacer(modifier = Modifier.width(3.dp))
+                                        Text(
+                                            text = ratingText.take(3),
+                                            color = PaleGold,
+                                            fontSize = 9.5.sp,
+                                            fontWeight = FontWeight.ExtraBold
+                                        )
+                                    }
+                                }
+                            }
+                        }
+
+                        Spacer(modifier = Modifier.height(7.dp))
+
+                        Text(
+                            text = cleanTitle,
+                            color = Color.White,
+                            fontSize = 19.sp,
+                            fontWeight = FontWeight.ExtraBold,
+                            maxLines = 2,
+                            overflow = TextOverflow.Ellipsis
+                        )
+
+                        val metaSubline = buildList {
+                            if (releaseYear.isNotBlank()) add(releaseYear)
+                            if (durationText.isNotBlank()) add(durationText)
+                            if (genreText.isNotBlank()) add(genreText)
+                        }.joinToString(" • ")
+
+                        if (metaSubline.isNotBlank()) {
+                            Spacer(modifier = Modifier.height(4.dp))
+                            Text(
+                                text = metaSubline,
+                                color = MoviesAquamarine,
+                                fontSize = 11.5.sp,
+                                fontWeight = FontWeight.SemiBold,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
+                    }
+                }
+            }
+
+            // 2. Primary Action Deck: [ ▶ Watch Movie ] CTA + [ ★ Favorite ] Button
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 18.dp, vertical = 10.dp),
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Button(
+                    onClick = onWatchMovie,
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = MoviesMintSpring,
+                        contentColor = MoviesSapphireNavy
+                    ),
+                    shape = RoundedCornerShape(14.dp),
+                    modifier = Modifier
+                        .weight(1f)
+                        .height(48.dp)
+                        .testTag("movie_dossier_watch_button")
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.PlayArrow,
+                        contentDescription = null,
+                        modifier = Modifier.size(20.dp)
+                    )
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text(
+                        text = if (movieStream.lastPositionMs > 60_000L) {
+                            "Resume Movie (${movieStream.lastPositionMs / 60_000L}m)"
+                        } else {
+                            "Watch Movie"
+                        },
+                        fontSize = 14.sp,
+                        fontWeight = FontWeight.ExtraBold
+                    )
+                }
+
+                OutlinedButton(
+                    onClick = onToggleFavorite,
+                    shape = RoundedCornerShape(14.dp),
+                    border = BorderStroke(
+                        1.dp,
+                        if (movieStream.isFavorite) AmberGold else MoviesCyanTeal.copy(alpha = 0.65f)
+                    ),
+                    colors = ButtonDefaults.outlinedButtonColors(
+                        containerColor = MoviesAtlanticTeal.copy(alpha = 0.55f),
+                        contentColor = if (movieStream.isFavorite) AmberGold else Color.White
+                    ),
+                    modifier = Modifier
+                        .height(48.dp)
+                        .testTag("movie_dossier_favorite_button")
+                ) {
+                    Icon(
+                        imageVector = if (movieStream.isFavorite) Icons.Default.Star else Icons.Default.StarBorder,
+                        contentDescription = "Favorite",
+                        tint = if (movieStream.isFavorite) AmberGold else MoviesMintSpring,
+                        modifier = Modifier.size(18.dp)
+                    )
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text(
+                        text = if (movieStream.isFavorite) "Favorited" else "Favorite",
+                        fontSize = 13.sp,
+                        fontWeight = FontWeight.Bold
+                    )
+                }
+            }
+
+            // 3. Plot, Director, and Cast Dossier Metadata
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 18.dp, vertical = 4.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                if (isLoading && plotText.isBlank()) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(10.dp),
+                        modifier = Modifier.padding(vertical = 6.dp)
+                    ) {
+                        CircularProgressIndicator(
+                            color = MoviesMintSpring,
+                            strokeWidth = 2.dp,
+                            modifier = Modifier.size(16.dp)
+                        )
+                        Text(
+                            text = "Fetching synopsis, cast & director from Xtream server…",
+                            color = Champagne.copy(alpha = 0.85f),
+                            fontSize = 12.sp
+                        )
+                    }
+                } else {
+                    Text(
+                        text = plotText.ifBlank {
+                            "Stream $cleanTitle in $qualityBadge ($containerBadge) directly from your active Xtream Cinema library with instant multi-language subtitle lookup."
+                        },
+                        color = Champagne.copy(alpha = 0.92f),
+                        fontSize = 13.sp,
+                        lineHeight = 18.sp,
+                        maxLines = 4,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+
+                if (directorText.isNotBlank() || castText.isNotBlank()) {
+                    HorizontalDivider(color = Color.White.copy(alpha = 0.08f))
+                }
+
+                if (directorText.isNotBlank()) {
+                    Row(verticalAlignment = Alignment.Top) {
+                        Text(
+                            text = "Director: ",
+                            color = MoviesMintSpring,
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.ExtraBold
+                        )
+                        Text(
+                            text = directorText,
+                            color = Color.White,
+                            fontSize = 12.sp,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+                }
+
+                if (castText.isNotBlank()) {
+                    Row(verticalAlignment = Alignment.Top) {
+                        Text(
+                            text = "Cast: ",
+                            color = MoviesMintSpring,
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.ExtraBold
+                        )
+                        Text(
+                            text = castText,
+                            color = Champagne,
+                            fontSize = 12.sp,
+                            maxLines = 2,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
                 }
             }
         }

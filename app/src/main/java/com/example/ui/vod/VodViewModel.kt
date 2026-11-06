@@ -28,19 +28,13 @@ enum class VodTab {
 
 @OptIn(ExperimentalCoroutinesApi::class)
 class VodViewModel(application: Application) : AndroidViewModel(application) {
-    private val database = StreamVaultDatabase.getInstance(application)
-    val repository = IptvRepository(
-        playlistDao = database.playlistDao(),
-        categoryDao = database.categoryDao(),
-        streamDao = database.streamDao(),
-        epgDao = database.epgDao(),
-        parentalDao = database.parentalSettingsDao()
-    )
+    val repository = IptvRepository.getInstance(application)
 
     // Progressive paging limit (starts at 180, resets on category/query change, increments by +180 on scroll)
     val pageSize: Int = PAGE_SIZE
     private val _currentLimit = MutableStateFlow(PAGE_SIZE)
     val currentLimit: StateFlow<Int> = _currentLimit.asStateFlow()
+    val limit: StateFlow<Int> = _currentLimit.asStateFlow()
 
     // Recently watched streams for Continue Watching rail
     val recentlyWatched: StateFlow<List<StreamEntity>> = repository.activePlaylist
@@ -133,6 +127,16 @@ class VodViewModel(application: Application) : AndroidViewModel(application) {
     private val _selectedSeasonNumber = MutableStateFlow(1)
     val selectedSeasonNumber: StateFlow<Int> = _selectedSeasonNumber.asStateFlow()
 
+    // IMAX Movie Dossier State (Xtream get_vod_info with instant StreamEntity fallback)
+    private val _selectedMovieStream = MutableStateFlow<StreamEntity?>(null)
+    val selectedMovieStream: StateFlow<StreamEntity?> = _selectedMovieStream.asStateFlow()
+
+    private val _movieDetails = MutableStateFlow<com.example.data.remote.VodMovieDetails?>(null)
+    val movieDetails: StateFlow<com.example.data.remote.VodMovieDetails?> = _movieDetails.asStateFlow()
+
+    private val _isLoadingMovieDetails = MutableStateFlow(false)
+    val isLoadingMovieDetails: StateFlow<Boolean> = _isLoadingMovieDetails.asStateFlow()
+
     fun selectMovieCategory(categoryId: String?) {
         _selectedMovieCategoryId.value = categoryId
         _currentLimit.value = pageSize
@@ -153,8 +157,44 @@ class VodViewModel(application: Application) : AndroidViewModel(application) {
         _currentLimit.value = pageSize
     }
 
-    fun loadNextPage() {
+    fun loadMore() {
         _currentLimit.value += pageSize
+    }
+
+    fun loadNextPage() {
+        loadMore()
+    }
+
+    fun openMovieDetails(movieStream: StreamEntity, playlist: PlaylistEntity?) {
+        _selectedMovieStream.value = movieStream
+        // Provide instant fallback from StreamEntity metadata immediately
+        val instantFallback = com.example.data.remote.VodMovieDetails(
+            vodId = movieStream.streamId,
+            title = movieStream.name,
+            coverUrl = movieStream.streamIcon,
+            backdropUrl = movieStream.streamIcon,
+            rating = movieStream.rating,
+            containerExtension = movieStream.containerExtension.ifBlank { "mp4" }
+        )
+        _movieDetails.value = instantFallback
+        if (playlist == null) {
+            _isLoadingMovieDetails.value = false
+            return
+        }
+        _isLoadingMovieDetails.value = true
+        viewModelScope.launch {
+            val details = repository.fetchVodMovieDetails(playlist, movieStream)
+            if (_selectedMovieStream.value?.id == movieStream.id) {
+                _movieDetails.value = details
+                _isLoadingMovieDetails.value = false
+            }
+        }
+    }
+
+    fun closeMovieDetails() {
+        _selectedMovieStream.value = null
+        _movieDetails.value = null
+        _isLoadingMovieDetails.value = false
     }
 
     fun openSeriesDetails(seriesStream: StreamEntity, playlist: PlaylistEntity) {
@@ -182,10 +222,15 @@ class VodViewModel(application: Application) : AndroidViewModel(application) {
     fun toggleFavorite(streamId: Long, currentFav: Boolean) {
         viewModelScope.launch {
             repository.toggleFavorite(streamId, !currentFav)
-            // Keep selectedSeriesStream favorite flag in sync
+            // Keep selectedSeriesStream and selectedMovieStream favorite flags in sync
             _selectedSeriesStream.value?.let { current ->
                 if (current.id == streamId) {
                     _selectedSeriesStream.value = current.copy(isFavorite = !currentFav)
+                }
+            }
+            _selectedMovieStream.value?.let { current ->
+                if (current.id == streamId) {
+                    _selectedMovieStream.value = current.copy(isFavorite = !currentFav)
                 }
             }
         }

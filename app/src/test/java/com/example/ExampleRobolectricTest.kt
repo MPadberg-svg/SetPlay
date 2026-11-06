@@ -1586,5 +1586,159 @@ class ExampleRobolectricTest {
         assertEquals(1, alertEvent?.match?.awayScore)
         assertTrue(alertEvent?.isFavoriteTeamGoal == true)
     }
+
+    @Test
+    fun testPhase5MetadataParserVodDossierAndTabularNumerals() = runBlocking {
+        // 1. StreamMetadataParser: VIP prefix, extractLanguageBadge, and extractQualityBadge
+        assertEquals("Oppenheimer (2023)", com.example.util.StreamMetadataParser.cleanDisplayTitle("VIP : Oppenheimer (2023) 4K UHD"))
+        assertEquals("AR", com.example.util.StreamMetadataParser.extractLanguageBadge("[01] AR | beIN Sports 1 HD"))
+        assertEquals("FR", com.example.util.StreamMetadataParser.extractLanguageBadge("┃FR┃ Dune: Part Two [4K UHD]"))
+        assertEquals("TR", com.example.util.StreamMetadataParser.extractLanguageBadge("TR| Ezel S01E01"))
+        assertEquals("MA", com.example.util.StreamMetadataParser.extractLanguageBadge("MA: Arryadia HD"))
+
+        // 2. Tabular numerals ("tnum") configured in Type.kt
+        assertEquals("tnum", com.example.ui.theme.TabularNumeralTextStyle.fontFeatureSettings)
+        assertEquals("tnum", com.example.ui.theme.Typography.labelLarge.fontFeatureSettings)
+        assertEquals("tnum", com.example.ui.theme.Typography.labelSmall.fontFeatureSettings)
+
+        // 3. XtreamClient get_vod_info JSON streaming parser
+        val sampleVodJson = """
+            {
+              "info": {
+                "name": "Dune: Part Two",
+                "movie_image": "https://image.tmdb.org/t/p/w500/dune2.jpg",
+                "backdrop_path": ["https://image.tmdb.org/t/p/original/dune2_bg.jpg"],
+                "plot": "Paul Atreides unites with Chani and the Fremen while on a warpath of revenge.",
+                "cast": "Timothée Chalamet, Zendaya, Rebecca Ferguson",
+                "director": "Denis Villeneuve",
+                "genre": "Sci-Fi, Adventure",
+                "releasedate": "2024-02-28",
+                "duration": "02:46:00",
+                "rating": "8.8",
+                "tmdb_id": "693134"
+              },
+              "movie_data": {
+                "stream_id": 778899,
+                "name": "FR| Dune: Part Two [4K UHD]",
+                "container_extension": "mkv"
+              }
+            }
+        """.trimIndent()
+
+        val client = XtreamClient()
+        val buffer = okio.Buffer().writeUtf8(sampleVodJson)
+        val parsedDetails = client.parseVodMovieDetailsJson(
+            reader = com.squareup.moshi.JsonReader.of(buffer),
+            vodId = 778899L,
+            fallbackTitle = "FR| Dune: Part Two [4K UHD]",
+            fallbackCover = "",
+            fallbackRating = "8.0",
+            fallbackExtension = "mp4"
+        )
+        assertEquals("Dune: Part Two", parsedDetails.title)
+        assertEquals("Denis Villeneuve", parsedDetails.director)
+        assertTrue(parsedDetails.cast.contains("Timothée Chalamet"))
+        assertEquals("2024-02-28", parsedDetails.releaseDate)
+        assertEquals("02:46:00", parsedDetails.duration)
+        assertEquals("8.8", parsedDetails.rating)
+        assertEquals("mkv", parsedDetails.containerExtension)
+        assertEquals("693134", parsedDetails.tmdbOrImdbId)
+
+        // 4. VodViewModel instant fallback when opening IMAX Movie Dossier
+        val app = ApplicationProvider.getApplicationContext<Context>() as Application
+        val vodViewModel = com.example.ui.vod.VodViewModel(app)
+        val movieEntity = StreamEntity(
+            id = 500L,
+            playlistId = 1L,
+            streamId = 778899L,
+            name = "FR| Dune: Part Two [4K UHD]",
+            streamType = "movie",
+            streamIcon = "https://image.tmdb.org/t/p/w500/dune2.jpg",
+            categoryId = "vod_4k",
+            containerExtension = "mkv",
+            rating = "8.8"
+        )
+        vodViewModel.openMovieDetails(movieEntity, playlist = null)
+        assertEquals(778899L, vodViewModel.selectedMovieStream.value?.streamId)
+        assertEquals("FR| Dune: Part Two [4K UHD]", vodViewModel.movieDetails.value?.title)
+        assertEquals("mkv", vodViewModel.movieDetails.value?.containerExtension)
+        vodViewModel.closeMovieDetails()
+        assertNull(vodViewModel.selectedMovieStream.value)
+    }
+
+    @Test
+    fun testPhase6SingletonRepositorySharedOkHttpPoolAndLoadMorePagination() = runBlocking {
+        val app = ApplicationProvider.getApplicationContext<Context>() as Application
+        val singletonRepo = IptvRepository.getInstance(app)
+
+        val mainVm = com.example.ui.viewmodel.MainViewModel(app)
+        val liveTvVm = com.example.ui.livetv.LiveTvViewModel(app)
+        val vodVm = com.example.ui.vod.VodViewModel(app)
+        val playerVm = com.example.ui.player.PlayerViewModel(app)
+
+        // 1. Verify all 4 ViewModels share the exact same singleton IptvRepository instance and shared OkHttpClient pool
+        assertTrue(singletonRepo === mainVm.repository)
+        assertTrue(singletonRepo === liveTvVm.repository)
+        assertTrue(singletonRepo === vodVm.repository)
+        assertTrue(singletonRepo === playerVm.repository)
+        assertNotNull(IptvRepository.sharedOkHttpClient.connectionPool)
+
+        // 2. Verify loadMore() and limit StateFlow progressive pagination in LiveTvViewModel & VodViewModel
+        assertEquals(180, liveTvVm.limit.value)
+        liveTvVm.loadMore()
+        assertEquals(360, liveTvVm.limit.value)
+        liveTvVm.loadMore()
+        assertEquals(540, liveTvVm.limit.value)
+        liveTvVm.selectCategory(null)
+        assertEquals(180, liveTvVm.limit.value)
+
+        assertEquals(180, vodVm.limit.value)
+        vodVm.loadMore()
+        assertEquals(360, vodVm.limit.value)
+        vodVm.selectSeriesCategory("cat_series_drama")
+        assertEquals(180, vodVm.limit.value)
+        vodVm.loadMore()
+        assertEquals(360, vodVm.limit.value)
+        vodVm.onSeriesSearchQueryChanged("Breaking")
+        assertEquals(180, vodVm.limit.value)
+
+        playerVm.stopAndClosePlayer()
+    }
+
+    @Test
+    fun testPhase7SecurityTvLeanbackAndDevOpsWorkflow() = runBlocking {
+        // 1. Verify ProGuard rules contain Moshi (@JsonClass), Room (@Entity / @Dao), and DTO keep rules
+        val proguardFile = java.io.File("proguard-rules.pro").let {
+            if (it.exists()) it else java.io.File("app/proguard-rules.pro")
+        }
+        assertTrue(proguardFile.exists())
+        val proguardText = proguardFile.readText()
+        assertTrue(proguardText.contains("@com.squareup.moshi.JsonClass"))
+        assertTrue(proguardText.contains("@androidx.room.Entity"))
+        assertTrue(proguardText.contains("com.example.data.model.**"))
+        assertTrue(proguardText.contains("com.example.data.remote.**"))
+
+        // 2. Verify GitHub Actions workflow writes SPORT_API_KEY / SPORTAPI_AI_KEY, WYZIE_API_KEY, and API_FOOTBALL_KEY into .env
+        val workflowFile = java.io.File("../.github/workflows/android-apk-release.yml").let {
+            if (it.exists()) it else java.io.File(".github/workflows/android-apk-release.yml")
+        }
+        assertTrue(workflowFile.exists())
+        val workflowText = workflowFile.readText()
+        assertTrue(workflowText.contains("cat <<EOF > .env"))
+        assertTrue(workflowText.contains("SPORTAPI_AI_KEY="))
+        assertTrue(workflowText.contains("WYZIE_API_KEY="))
+        assertTrue(workflowText.contains("API_FOOTBALL_KEY="))
+
+        // 3. Verify AndroidManifest.xml includes Leanback launcher and optional touchscreen features
+        val manifestFile = java.io.File("src/main/AndroidManifest.xml").let {
+            if (it.exists()) it else java.io.File("app/src/main/AndroidManifest.xml")
+        }
+        assertTrue(manifestFile.exists())
+        val manifestText = manifestFile.readText()
+        assertTrue(manifestText.contains("android.hardware.touchscreen"))
+        assertTrue(manifestText.contains("android.software.leanback"))
+        assertTrue(manifestText.contains("android.intent.category.LEANBACK_LAUNCHER"))
+    }
 }
+
 

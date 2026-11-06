@@ -8,6 +8,7 @@ import com.example.data.local.EpgDao
 import com.example.data.local.ParentalSettingsDao
 import com.example.data.local.PlaylistDao
 import com.example.data.local.StreamDao
+import com.example.data.local.StreamVaultDatabase
 import com.example.data.model.CategoryEntity
 import com.example.data.model.CategoryWithCount
 import com.example.data.model.EpgProgramEntity
@@ -26,8 +27,11 @@ import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.onStart
 import kotlinx.coroutines.withContext
+import okhttp3.ConnectionPool
+import okhttp3.OkHttpClient
 import org.json.JSONArray
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 
 data class SyncProgress(
@@ -49,7 +53,7 @@ class IptvRepository(
     private val streamDao: StreamDao,
     private val epgDao: EpgDao,
     private val parentalDao: ParentalSettingsDao,
-    private val xtreamClient: XtreamClient = XtreamClient()
+    private val xtreamClient: XtreamClient = XtreamClient(sharedOkHttpClient)
 ) {
     private val _syncProgress = MutableStateFlow(SyncProgress())
     val syncProgress = _syncProgress.asStateFlow()
@@ -349,6 +353,22 @@ class IptvRepository(
         )
     }
 
+    suspend fun fetchVodMovieDetails(
+        playlist: PlaylistEntity,
+        movieStream: StreamEntity
+    ): com.example.data.remote.VodMovieDetails {
+        return xtreamClient.fetchVodMovieDetails(
+            serverUrl = playlist.serverUrl,
+            username = playlist.username,
+            password = SecurityManager.decryptCredential(playlist.password),
+            vodId = movieStream.streamId,
+            fallbackTitle = movieStream.name,
+            fallbackCover = movieStream.streamIcon,
+            fallbackRating = movieStream.rating,
+            fallbackExtension = movieStream.containerExtension
+        )
+    }
+
     // Parental Controls (Salted SHA-256 PIN Hashing + Rate Limiting)
     val parentalSettings: Flow<ParentalSettingsEntity?> = parentalDao.getSettings()
 
@@ -488,7 +508,18 @@ class IptvRepository(
             val allCats = liveCats + vodCats + seriesCats
             if (allCats.isNotEmpty()) {
                 categoryDao.insertCategories(allCats)
-                restoreLockedCategories(playlist.id)
+                val lockedCategoriesJson = getParentalSettingsOnce().lockedCategoriesJson
+                val lockedCategoryIds = try {
+                    val arr = JSONArray(lockedCategoriesJson)
+                    buildList {
+                        for (i in 0 until arr.length()) add(arr.getString(i))
+                    }
+                } catch (_: Exception) {
+                    emptyList()
+                }
+                lockedCategoryIds.forEach { catId ->
+                    categoryDao.setCategoryLocked(playlist.id, catId, true)
+                }
             }
 
             // Snapshot existing favorite streamIds before replace so user favorites survive re-sync
@@ -595,6 +626,42 @@ class IptvRepository(
     companion object {
         const val DEFAULT_PAGE_SIZE = 180
         private const val EPISODE_RESUME_PREFS_NAME = "setplay_episode_resume_prefs"
+
+        /**
+         * Globally shared OkHttpClient with HTTP/2 multiplexing & connection pool
+         * shared across Xtream catalog sync, VOD/Series metadata, and ExoPlayer media transport.
+         */
+        val sharedOkHttpClient: OkHttpClient by lazy {
+            OkHttpClient.Builder()
+                .connectionPool(ConnectionPool(10, 5, TimeUnit.MINUTES))
+                .connectTimeout(20, TimeUnit.SECONDS)
+                .readTimeout(60, TimeUnit.SECONDS)
+                .writeTimeout(30, TimeUnit.SECONDS)
+                .followRedirects(true)
+                .followSslRedirects(true)
+                .build()
+        }
+
+        @Volatile
+        private var INSTANCE: IptvRepository? = null
+
+        fun getInstance(context: Context): IptvRepository {
+            val appContext = context.applicationContext
+            initEpisodePreferences(appContext)
+            return INSTANCE ?: synchronized(this) {
+                INSTANCE ?: run {
+                    val db = StreamVaultDatabase.getInstance(appContext)
+                    IptvRepository(
+                        playlistDao = db.playlistDao(),
+                        categoryDao = db.categoryDao(),
+                        streamDao = db.streamDao(),
+                        epgDao = db.epgDao(),
+                        parentalDao = db.parentalSettingsDao(),
+                        xtreamClient = XtreamClient(sharedOkHttpClient)
+                    ).also { INSTANCE = it }
+                }
+            }
+        }
 
         @Volatile
         private var episodePrefs: SharedPreferences? = null

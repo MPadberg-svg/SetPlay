@@ -396,16 +396,13 @@ fun MainAppContent(
     }
 
     // Function to gate browsing a locked category behind Parental PIN when Parental Lock is active
-    val requestUnlockCategory: (String, () -> Unit) -> Unit = { categoryId, onUnlocked ->
-        scope.launch {
-            val isLocked = mainViewModel.repository.isCategoryLocked(categoryId)
-            if (isLocked && !isParentalUnlocked) {
-                pendingStreamToPlay = null
-                pendingUnlockCallback = onUnlocked
-                showPinDialog = true
-            } else {
-                onUnlocked()
-            }
+    val requestUnlockCategory: (String, () -> Unit) -> Unit = { _, onUnlocked ->
+        if (!isParentalUnlocked) {
+            pendingStreamToPlay = null
+            pendingUnlockCallback = onUnlocked
+            showPinDialog = true
+        } else {
+            onUnlocked()
         }
     }
 
@@ -521,6 +518,7 @@ fun MainAppContent(
                             viewModel = liveTvViewModel,
                             activePlaylist = activePlaylist,
                             onChannelClick = requestPlayStream,
+                            isParentalUnlocked = isParentalUnlocked,
                             onRequestUnlockCategory = { category, onUnlocked ->
                                 requestUnlockCategory(category.categoryId, onUnlocked)
                             }
@@ -530,6 +528,7 @@ fun MainAppContent(
                             viewModel = vodViewModel,
                             activePlaylist = activePlaylist,
                             onItemClick = requestPlayStream,
+                            isParentalUnlocked = isParentalUnlocked,
                             onRequestUnlockCategory = requestUnlockCategory,
                             recentlyWatched = recentlyWatched
                         )
@@ -538,6 +537,7 @@ fun MainAppContent(
                             viewModel = vodViewModel,
                             activePlaylist = activePlaylist,
                             onItemClick = requestPlayStream,
+                            isParentalUnlocked = isParentalUnlocked,
                             onRequestUnlockCategory = requestUnlockCategory,
                             recentlyWatched = recentlyWatched
                         )

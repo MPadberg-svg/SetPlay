@@ -83,3 +83,20 @@ data class SeriesDetails(
     val seasons: List<SeriesSeason>,
     val tmdbOrImdbId: String = ""
 )
+
+data class VodMovieDetails(
+    val vodId: Long,
+    val title: String,
+    val coverUrl: String,
+    val backdropUrl: String = "",
+    val plot: String = "",
+    val cast: String = "",
+    val director: String = "",
+    val genre: String = "",
+    val releaseDate: String = "",
+    val duration: String = "",
+    val rating: String = "",
+    val containerExtension: String = "mp4",
+    val tmdbOrImdbId: String = ""
+)
+

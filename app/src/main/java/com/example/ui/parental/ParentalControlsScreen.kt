@@ -88,7 +88,7 @@ fun ParentalControlsScreen(
 
     val isGateLocked = parentalSettings?.isEnabled == true && !isSessionUnlocked
 
-    var showPinDialog by remember { mutableStateOf(!isSessionUnlocked) }
+    var showPinDialog by remember { mutableStateOf(true) }
     var pinInput by remember { mutableStateOf("") }
     var pinError by remember { mutableStateOf<String?>(null) }
 
@@ -96,11 +96,7 @@ fun ParentalControlsScreen(
     var selectedCategoryType by remember { mutableStateOf("LIVE") }
 
     LaunchedEffect(parentalSettings?.isEnabled, isSessionUnlocked) {
-        if (parentalSettings?.isEnabled == true && !isSessionUnlocked) {
-            showPinDialog = true
-        } else if (isSessionUnlocked) {
-            showPinDialog = false
-        }
+        showPinDialog = parentalSettings?.isEnabled == true && !isSessionUnlocked
     }
 
     val categoriesFlow = remember(activePlaylist?.id, selectedCategoryType) {
@@ -402,11 +398,10 @@ fun ParentalControlsScreen(
         }
     }
 
-    // PIN Verification Gate Dialog when Parental Controls are enabled and session is locked
-    if (showPinDialog && isGateLocked) {
+    // PIN Verification Gate Dialog whenever Parental Controls are enabled and session is not unlocked
+    if (parentalSettings?.isEnabled == true && !isSessionUnlocked) {
         AlertDialog(
             onDismissRequest = {
-                showPinDialog = false
                 pinInput = ""
                 pinError = null
             },
@@ -482,12 +477,11 @@ fun ParentalControlsScreen(
             dismissButton = {
                 TextButton(
                     onClick = {
-                        showPinDialog = false
                         pinInput = ""
                         pinError = null
                     }
                 ) {
-                    Text("Cancel", color = Champagne)
+                    Text("Clear", color = Champagne)
                 }
             },
             containerColor = MetalCharcoal

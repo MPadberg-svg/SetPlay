@@ -224,6 +224,12 @@ object StreamMetadataParser {
     }
 
     /**
+     * Extracts the language or region prefix tag (`"AR"`, `"FR"`, `"EN"`, `"ES"`, `"MA"`, `"TR"`, etc.)
+     * when present in [rawName], or `null` if none is present.
+     */
+    fun extractLanguageBadge(rawName: String): String? = extractRegionOrLangBadge(rawName)
+
+    /**
      * Short compact version of the quality badge for tight poster corners (`"4K"`, `"FHD"`, `"HD"`).
      */
     fun extractCompactQualityBadge(rawName: String): String? {

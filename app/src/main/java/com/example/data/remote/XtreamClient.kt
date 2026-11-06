@@ -542,6 +542,216 @@ class XtreamClient(
         )
     }
 
+    /**
+     * Fetches full Movie metadata (plot, cast, director, release year, duration, rating, backdrop)
+     * from Xtream `get_vod_info`, with instant fallback to [StreamEntity] metadata.
+     */
+    suspend fun fetchVodMovieDetails(
+        serverUrl: String,
+        username: String,
+        password: String,
+        vodId: Long,
+        fallbackTitle: String,
+        fallbackCover: String,
+        fallbackRating: String,
+        fallbackExtension: String = "mp4"
+    ): VodMovieDetails = withContext(Dispatchers.IO) {
+        val plainPassword = SecurityManager.decryptCredential(password)
+        val targetUrl = buildPlayerApiUrl(
+            serverUrl = serverUrl,
+            username = username,
+            password = plainPassword,
+            queryParams = mapOf(
+                "action" to "get_vod_info",
+                "vod_id" to vodId.toString()
+            )
+        )
+
+        if (targetUrl != null) {
+            try {
+                val request = Request.Builder()
+                    .url(targetUrl)
+                    .header("User-Agent", USER_AGENT)
+                    .build()
+
+                okHttpClient.newCall(request).execute().use { response ->
+                    if (response.isSuccessful && response.body != null) {
+                        val reader = JsonReader.of(response.body!!.source())
+                        return@withContext parseVodMovieDetailsJson(
+                            reader = reader,
+                            vodId = vodId,
+                            fallbackTitle = fallbackTitle,
+                            fallbackCover = fallbackCover,
+                            fallbackRating = fallbackRating,
+                            fallbackExtension = fallbackExtension
+                        )
+                    }
+                }
+            } catch (e: Exception) {
+                val safeMsg = SecurityManager.redactSensitiveText(e.message, username, plainPassword)
+                Log.w("XtreamClient", "Failed to fetch VOD movie details for $vodId: $safeMsg")
+            }
+        }
+
+        VodMovieDetails(
+            vodId = vodId,
+            title = fallbackTitle,
+            coverUrl = fallbackCover,
+            backdropUrl = fallbackCover,
+            rating = fallbackRating,
+            containerExtension = fallbackExtension.ifBlank { "mp4" }
+        )
+    }
+
+    internal fun parseVodMovieDetailsJson(
+        reader: JsonReader,
+        vodId: Long,
+        fallbackTitle: String,
+        fallbackCover: String,
+        fallbackRating: String,
+        fallbackExtension: String = "mp4"
+    ): VodMovieDetails {
+        var title = fallbackTitle
+        var cover = fallbackCover
+        var backdrop = ""
+        var plot = ""
+        var cast = ""
+        var director = ""
+        var genre = ""
+        var releaseDate = ""
+        var duration = ""
+        var rating = fallbackRating
+        var ext = fallbackExtension.ifBlank { "mp4" }
+        var imdbId = ""
+        var tmdbId = ""
+
+        try {
+            if (reader.peek() == JsonReader.Token.BEGIN_OBJECT) {
+                reader.beginObject()
+                while (reader.hasNext()) {
+                    when (reader.nextName()) {
+                        "info" -> {
+                            if (reader.peek() == JsonReader.Token.BEGIN_OBJECT) {
+                                reader.beginObject()
+                                while (reader.hasNext()) {
+                                    when (reader.nextName()) {
+                                        "name", "title", "o_name" -> {
+                                            val s = readSafeString(reader).trim()
+                                            if (s.isNotBlank()) title = s
+                                        }
+                                        "movie_image", "cover_big" -> {
+                                            val s = readSafeString(reader).trim()
+                                            if (s.isNotBlank()) cover = s
+                                        }
+                                        "backdrop_path" -> {
+                                            when (reader.peek()) {
+                                                JsonReader.Token.BEGIN_ARRAY -> {
+                                                    reader.beginArray()
+                                                    while (reader.hasNext()) {
+                                                        val b = readSafeString(reader).trim()
+                                                        if (backdrop.isBlank() && b.isNotBlank()) backdrop = b
+                                                    }
+                                                    reader.endArray()
+                                                }
+                                                else -> {
+                                                    val b = readSafeString(reader).trim()
+                                                    if (b.isNotBlank()) backdrop = b
+                                                }
+                                            }
+                                        }
+                                        "plot", "description" -> {
+                                            val p = readSafeString(reader).trim()
+                                            if (p.isNotBlank()) plot = p
+                                        }
+                                        "cast", "actors" -> {
+                                            val c = readSafeString(reader).trim()
+                                            if (c.isNotBlank()) cast = c
+                                        }
+                                        "director" -> {
+                                            val d = readSafeString(reader).trim()
+                                            if (d.isNotBlank()) director = d
+                                        }
+                                        "genre" -> {
+                                            val g = readSafeString(reader).trim()
+                                            if (g.isNotBlank()) genre = g
+                                        }
+                                        "releasedate", "release_date", "releaseDate" -> {
+                                            val r = readSafeString(reader).trim()
+                                            if (r.isNotBlank()) releaseDate = r
+                                        }
+                                        "duration" -> {
+                                            val dur = readSafeString(reader).trim()
+                                            if (dur.isNotBlank()) duration = dur
+                                        }
+                                        "rating", "rating_5based" -> {
+                                            val rt = readSafeString(reader).trim()
+                                            if (rt.isNotBlank() && rt != "0") rating = rt
+                                        }
+                                        "imdb_id", "imdb" -> {
+                                            val v = readSafeString(reader).trim()
+                                            if (v.startsWith("tt", ignoreCase = true)) imdbId = v
+                                        }
+                                        "tmdb_id", "tmdb" -> {
+                                            val v = readSafeString(reader).trim()
+                                            if (v.isNotEmpty() && v != "0" && v != "null") {
+                                                if (v.startsWith("tt", ignoreCase = true)) imdbId = v else tmdbId = v
+                                            }
+                                        }
+                                        else -> reader.skipValue()
+                                    }
+                                }
+                                reader.endObject()
+                            } else {
+                                reader.skipValue()
+                            }
+                        }
+                        "movie_data" -> {
+                            if (reader.peek() == JsonReader.Token.BEGIN_OBJECT) {
+                                reader.beginObject()
+                                while (reader.hasNext()) {
+                                    when (reader.nextName()) {
+                                        "name" -> {
+                                            val n = readSafeString(reader).trim()
+                                            if (title.isBlank() && n.isNotBlank()) title = n
+                                        }
+                                        "container_extension" -> {
+                                            val e = readSafeString(reader).trim()
+                                            if (e.isNotEmpty()) ext = SecurityManager.sanitizeContainerExtension(e, ext)
+                                        }
+                                        else -> reader.skipValue()
+                                    }
+                                }
+                                reader.endObject()
+                            } else {
+                                reader.skipValue()
+                            }
+                        }
+                        else -> reader.skipValue()
+                    }
+                }
+                reader.endObject()
+            }
+        } catch (_: Exception) {
+            // Preserve partial fields on malformed JSON
+        }
+
+        return VodMovieDetails(
+            vodId = vodId,
+            title = title.ifBlank { fallbackTitle },
+            coverUrl = cover.ifBlank { fallbackCover },
+            backdropUrl = backdrop.ifBlank { cover.ifBlank { fallbackCover } },
+            plot = plot,
+            cast = cast,
+            director = director,
+            genre = genre,
+            releaseDate = releaseDate,
+            duration = duration,
+            rating = rating.ifBlank { fallbackRating },
+            containerExtension = ext,
+            tmdbOrImdbId = imdbId.ifBlank { tmdbId }
+        )
+    }
+
     private fun parseEpisodesArray(
         reader: JsonReader,
         defaultSeasonNum: Int,

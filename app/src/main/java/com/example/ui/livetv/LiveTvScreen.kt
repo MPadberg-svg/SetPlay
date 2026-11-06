@@ -93,6 +93,7 @@ fun LiveTvScreen(
     viewModel: LiveTvViewModel,
     activePlaylist: PlaylistEntity?,
     onChannelClick: (StreamEntity) -> Unit,
+    isParentalUnlocked: Boolean = false,
     onRequestUnlockCategory: ((CategoryWithCount, () -> Unit) -> Unit)? = null,
     modifier: Modifier = Modifier
 ) {
@@ -178,20 +179,23 @@ fun LiveTvScreen(
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(horizontal = 16.dp, vertical = 10.dp)
+                    .padding(horizontal = 16.dp, vertical = 6.dp)
             ) {
-                Card(
-                    shape = RoundedCornerShape(14.dp),
-                    colors = CardDefaults.cardColors(containerColor = TvTwilightIndigo),
+                // Sleek 36.dp Single-Line Glass Telemetry Bar (Reclaims 35% of Vertical Screen Space)
+                Surface(
+                    shape = RoundedCornerShape(12.dp),
+                    color = TvTwilightIndigo.copy(alpha = 0.88f),
                     border = BorderStroke(
                         width = 0.8.dp,
                         color = TvBroadcastScarlet.copy(alpha = 0.35f)
                     ),
-                    modifier = Modifier.fillMaxWidth()
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(36.dp)
                 ) {
                     Row(
                         modifier = Modifier
-                            .fillMaxWidth()
+                            .fillMaxSize()
                             .background(
                                 Brush.horizontalGradient(
                                     colors = listOf(
@@ -201,57 +205,41 @@ fun LiveTvScreen(
                                     )
                                 )
                             )
-                            .padding(horizontal = 12.dp, vertical = 9.dp),
+                            .padding(horizontal = 10.dp),
                         horizontalArrangement = Arrangement.SpaceBetween,
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         Row(
                             verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(9.dp),
+                            horizontalArrangement = Arrangement.spacedBy(7.dp),
                             modifier = Modifier.weight(1f)
                         ) {
-                            Surface(
-                                color = TvBroadcastScarlet.copy(alpha = 0.18f),
-                                shape = RoundedCornerShape(10.dp),
-                                border = BorderStroke(0.7.dp, TvBroadcastScarlet.copy(alpha = 0.55f))
-                            ) {
-                                Row(
-                                    verticalAlignment = Alignment.CenterVertically,
-                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 5.dp)
-                                ) {
-                                    Box(
-                                        modifier = Modifier
-                                            .size(6.dp)
-                                            .alpha(livePulseAlpha)
-                                            .background(TvBroadcastScarlet, CircleShape)
-                                    )
-                                    Spacer(modifier = Modifier.width(5.dp))
-                                    Text(
-                                        text = "LIVE DIRECTORY",
-                                        color = Color.White,
-                                        fontSize = 9.5.sp,
-                                        fontWeight = FontWeight.ExtraBold,
-                                        letterSpacing = 0.4.sp
-                                    )
-                                }
-                            }
-
-                            Column(verticalArrangement = Arrangement.Center) {
-                                Text(
-                                    text = "%,d Live Channels".format(activePlaylist.channelCount),
-                                    color = Color.White,
-                                    fontSize = 12.sp,
-                                    fontWeight = FontWeight.ExtraBold,
-                                    maxLines = 1
-                                )
-                                Text(
-                                    text = "${categories.size} Categories • Instant Zap Ready",
-                                    color = Champagne.copy(alpha = 0.85f),
-                                    fontSize = 10.sp,
-                                    fontWeight = FontWeight.Medium,
-                                    maxLines = 1
-                                )
-                            }
+                            Box(
+                                modifier = Modifier
+                                    .size(7.dp)
+                                    .alpha(livePulseAlpha)
+                                    .background(TvBroadcastScarlet, CircleShape)
+                            )
+                            Text(
+                                text = "LIVE TV",
+                                color = TvCrimsonRose,
+                                fontSize = 10.sp,
+                                fontWeight = FontWeight.ExtraBold,
+                                letterSpacing = 0.4.sp
+                            )
+                            Text(
+                                text = "•",
+                                color = Champagne.copy(alpha = 0.45f),
+                                fontSize = 10.sp
+                            )
+                            Text(
+                                text = "%,d Channels • Instant Zap".format(activePlaylist.channelCount),
+                                color = Color.White,
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.SemiBold,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
                         }
 
                         Surface(
@@ -262,15 +250,15 @@ fun LiveTvScreen(
                             Text(
                                 text = "${categories.size} BOUQUETS",
                                 color = PaleGold,
-                                fontSize = 9.5.sp,
-                                fontWeight = FontWeight.Bold,
-                                modifier = Modifier.padding(horizontal = 9.dp, vertical = 4.dp)
+                                fontSize = 9.sp,
+                                fontWeight = FontWeight.ExtraBold,
+                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.5.dp)
                             )
                         }
                     }
                 }
 
-                Spacer(modifier = Modifier.height(8.dp))
+                Spacer(modifier = Modifier.height(6.dp))
 
                 // Twilight Indigo & Broadcast Scarlet Category Search Bar
                 OutlinedTextField(
@@ -391,8 +379,8 @@ fun LiveTvScreen(
                             category = category,
                             isAllChannelsCard = false,
                             onClick = {
-                                if (category.isLocked && onRequestUnlockCategory != null) {
-                                    onRequestUnlockCategory(category) {
+                                if (category.isLocked && !isParentalUnlocked) {
+                                    onRequestUnlockCategory?.invoke(category) {
                                         viewModel.selectCategory(category)
                                     }
                                 } else {
@@ -550,7 +538,7 @@ fun LiveTvScreen(
                 }
                 LaunchedEffect(shouldLoadMore) {
                     if (shouldLoadMore) {
-                        viewModel.loadNextPage()
+                        viewModel.loadMore()
                     }
                 }
 

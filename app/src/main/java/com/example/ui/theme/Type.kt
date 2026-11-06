@@ -60,14 +60,16 @@ val Typography = Typography(
         fontWeight = FontWeight.ExtraBold,
         fontSize = 12.sp,
         lineHeight = 16.sp,
-        letterSpacing = 0.35.sp
+        letterSpacing = 0.35.sp,
+        fontFeatureSettings = "tnum"
     ),
     labelSmall = TextStyle(
         fontFamily = FontFamily.SansSerif,
         fontWeight = FontWeight.Bold,
         fontSize = 10.sp,
         lineHeight = 13.sp,
-        letterSpacing = 0.45.sp
+        letterSpacing = 0.45.sp,
+        fontFeatureSettings = "tnum"
     )
 )
 

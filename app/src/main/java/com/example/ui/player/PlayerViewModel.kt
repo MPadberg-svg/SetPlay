@@ -134,14 +134,8 @@ data class PlayerUiState(
 @OptIn(UnstableApi::class)
 class PlayerViewModel(application: Application) : AndroidViewModel(application) {
     private val database = StreamVaultDatabase.getInstance(application)
-    private val repository = IptvRepository(
-        playlistDao = database.playlistDao(),
-        categoryDao = database.categoryDao(),
-        streamDao = database.streamDao(),
-        epgDao = database.epgDao(),
-        parentalDao = database.parentalSettingsDao()
-    )
-    private val wyzieSubtitleService = WyzieSubtitleService()
+    val repository = IptvRepository.getInstance(application)
+    private val wyzieSubtitleService = WyzieSubtitleService(IptvRepository.sharedOkHttpClient)
 
     private val audioManager = application.getSystemService(Context.AUDIO_SERVICE) as AudioManager
     private var activePlaylistCache: PlaylistEntity? = null
@@ -156,13 +150,7 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application) 
     private var hasAutoRetriedCurrentLiveStream: Boolean = false
 
     val player: ExoPlayer by lazy {
-        val okHttpClient = OkHttpClient.Builder()
-            .connectTimeout(15, TimeUnit.SECONDS)
-            .readTimeout(30, TimeUnit.SECONDS)
-            .followRedirects(true)
-            .build()
-
-        val okHttpDataSourceFactory = OkHttpDataSource.Factory(okHttpClient)
+        val okHttpDataSourceFactory = OkHttpDataSource.Factory(IptvRepository.sharedOkHttpClient)
             .setUserAgent("SetPlay-IPTV/3.0")
 
         val dataSourceFactory = DefaultDataSource.Factory(application, okHttpDataSourceFactory)

@@ -98,13 +98,7 @@ data class LiveGoalAlertEvent(
 @OptIn(ExperimentalCoroutinesApi::class)
 class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val database = StreamVaultDatabase.getInstance(application)
-    val repository = IptvRepository(
-        playlistDao = database.playlistDao(),
-        categoryDao = database.categoryDao(),
-        streamDao = database.streamDao(),
-        epgDao = database.epgDao(),
-        parentalDao = database.parentalSettingsDao()
-    )
+    val repository = IptvRepository.getInstance(application)
 
     val footballRepository = FootballRepository(
         context = application,
