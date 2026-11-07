@@ -183,6 +183,8 @@ fun PlayerScreen(
     activeGoalAlert: LiveGoalAlertEvent? = null,
     onWatchGoalMatch: ((FootballMatch) -> Unit)? = null,
     onDismissGoalAlert: (() -> Unit)? = null,
+    canSendToTv: Boolean = false,
+    onSendToTv: (() -> Unit)? = null,
     modifier: Modifier = Modifier
 ) {
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
@@ -553,16 +555,23 @@ fun PlayerScreen(
 
         // 3b. Floating Auto-Prompt: "Subtitles — Choose Your Language" (Movies & Series)
         var promptRemainingSeconds by remember(uiState.showSubtitleLanguagePrompt, uiState.currentStream?.id) {
-            mutableIntStateOf(12)
+            mutableIntStateOf(uiState.subtitlePromptRemainingSeconds.coerceAtLeast(1))
+        }
+        LaunchedEffect(uiState.subtitlePromptRemainingSeconds) {
+            if (uiState.subtitlePromptRemainingSeconds in 0..12) {
+                promptRemainingSeconds = uiState.subtitlePromptRemainingSeconds
+            }
         }
         LaunchedEffect(uiState.showSubtitleLanguagePrompt, uiState.currentStream?.id) {
             if (!uiState.isLive && uiState.showSubtitleLanguagePrompt) {
-                promptRemainingSeconds = 12
-                while (promptRemainingSeconds > 0) {
+                promptRemainingSeconds = uiState.subtitlePromptRemainingSeconds.coerceIn(1, 12)
+                while (promptRemainingSeconds > 0 && uiState.showSubtitleLanguagePrompt) {
                     delay(1_000L)
                     promptRemainingSeconds--
                 }
-                viewModel.dismissSubtitleLanguagePrompt()
+                if (promptRemainingSeconds <= 0 && uiState.showSubtitleLanguagePrompt) {
+                    viewModel.dismissSubtitleLanguagePrompt()
+                }
             }
         }
 
@@ -609,72 +618,82 @@ fun PlayerScreen(
                     }
                     .testTag("subtitle_language_prompt_card")
             ) {
-                Column(
-                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp),
-                    verticalArrangement = Arrangement.spacedBy(10.dp)
-                ) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
+                Column(modifier = Modifier.fillMaxWidth()) {
+                    Column(
+                        modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp),
+                        verticalArrangement = Arrangement.spacedBy(10.dp)
                     ) {
                         Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
                         ) {
-                            Icon(
-                                imageVector = Icons.Default.Subtitles,
-                                contentDescription = "Subtitles",
-                                tint = AmberGold,
-                                modifier = Modifier.size(18.dp)
-                            )
-                            Text(
-                                text = "Subtitles — Choose Your Language",
-                                color = PlayerTextPrimary,
-                                fontSize = 13.sp,
-                                fontWeight = FontWeight.Bold
-                            )
-                            if (uiState.isSearchingOnlineSubtitles) {
-                                CircularProgressIndicator(
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.Subtitles,
+                                    contentDescription = "Subtitles",
+                                    tint = AmberGold,
+                                    modifier = Modifier.size(18.dp)
+                                )
+                                Text(
+                                    text = "Subtitles — Choose Your Language",
+                                    color = PlayerTextPrimary,
+                                    fontSize = 13.sp,
+                                    fontWeight = FontWeight.Bold
+                                )
+                                if (uiState.isSearchingOnlineSubtitles) {
+                                    CircularProgressIndicator(
+                                        color = AmberGold,
+                                        strokeWidth = 1.8.dp,
+                                        modifier = Modifier.size(13.dp)
+                                    )
+                                }
+                            }
+
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                Surface(
+                                    color = Color.White.copy(alpha = 0.08f),
+                                    shape = RoundedCornerShape(50),
+                                    border = BorderStroke(0.6.dp, AmberGold.copy(alpha = 0.35f)),
+                                    modifier = Modifier.testTag("subtitle_prompt_countdown_badge")
+                                ) {
+                                    Text(
+                                        text = "${promptRemainingSeconds}s",
+                                        color = PaleGold,
+                                        fontSize = 10.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        style = TabularNumeralTextStyle,
+                                        modifier = Modifier.padding(horizontal = 7.dp, vertical = 2.dp)
+                                    )
+                                }
+                                Text(
+                                    text = "All Options ›",
                                     color = AmberGold,
-                                    strokeWidth = 1.8.dp,
-                                    modifier = Modifier.size(13.dp)
+                                    fontSize = 11.sp,
+                                    fontWeight = FontWeight.SemiBold,
+                                    modifier = Modifier
+                                        .clip(RoundedCornerShape(8.dp))
+                                        .tvFocusablePill(
+                                            accentColor = AmberGold,
+                                            shape = RoundedCornerShape(8.dp),
+                                            onClick = {
+                                                viewModel.dismissSubtitleLanguagePrompt()
+                                                showSubtitleSheet = true
+                                                if (uiState.wyzieLanguageGroups.isEmpty() && !uiState.isSearchingOnlineSubtitles) {
+                                                    viewModel.searchOnlineSubtitles()
+                                                }
+                                            }
+                                        )
+                                        .padding(horizontal = 6.dp, vertical = 2.dp)
                                 )
                             }
                         }
-
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(8.dp)
-                        ) {
-                            Text(
-                                text = "${promptRemainingSeconds}s",
-                                color = PlayerTextSecondary,
-                                fontSize = 10.5.sp,
-                                fontWeight = FontWeight.Medium
-                            )
-                            Text(
-                                text = "All Options ›",
-                                color = AmberGold,
-                                fontSize = 11.sp,
-                                fontWeight = FontWeight.SemiBold,
-                                modifier = Modifier
-                                    .clip(RoundedCornerShape(8.dp))
-                                    .tvFocusablePill(
-                                        accentColor = AmberGold,
-                                        shape = RoundedCornerShape(8.dp),
-                                        onClick = {
-                                            viewModel.dismissSubtitleLanguagePrompt()
-                                            showSubtitleSheet = true
-                                            if (uiState.wyzieLanguageGroups.isEmpty() && !uiState.isSearchingOnlineSubtitles) {
-                                                viewModel.searchOnlineSubtitles()
-                                            }
-                                        }
-                                    )
-                                    .padding(horizontal = 6.dp, vertical = 2.dp)
-                            )
-                        }
-                    }
 
                     Row(
                         modifier = Modifier
@@ -762,6 +781,17 @@ fun PlayerScreen(
                             }
                         }
                     }
+                    }
+
+                    // 12-Second Countdown Progress Bar along bottom edge of prompt card
+                    LinearProgressIndicator(
+                        progress = { (promptRemainingSeconds.toFloat() / 12f).coerceIn(0f, 1f) },
+                        color = AmberGold,
+                        trackColor = Color.White.copy(alpha = 0.08f),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(2.5.dp)
+                    )
                 }
             }
         }
@@ -850,10 +880,14 @@ fun PlayerScreen(
                                 shape = RoundedCornerShape(50),
                                 modifier = Modifier
                                     .clip(RoundedCornerShape(50))
-                                    .clickable {
-                                        onDismissGoalAlert?.invoke()
-                                        onWatchGoalMatch(alert.match)
-                                    }
+                                    .tvFocusablePill(
+                                        accentColor = AmberGold,
+                                        shape = RoundedCornerShape(50),
+                                        onClick = {
+                                            onDismissGoalAlert?.invoke()
+                                            onWatchGoalMatch(alert.match)
+                                        }
+                                    )
                                     .testTag("player_goal_alert_watch_button")
                             ) {
                                 Row(
@@ -896,7 +930,11 @@ fun PlayerScreen(
                     .displayCutoutPadding()
                     .padding(top = 64.dp, start = 20.dp, end = 20.dp)
                     .clip(RoundedCornerShape(50))
-                    .clickable { viewModel.returnToHalftimeChannel() }
+                    .tvFocusablePill(
+                        accentColor = AmberGold,
+                        shape = RoundedCornerShape(50),
+                        onClick = { viewModel.returnToHalftimeChannel() }
+                    )
                     .testTag("halftime_return_banner")
             ) {
                 Row(
@@ -1033,7 +1071,11 @@ fun PlayerScreen(
                         color = AmberGold,
                         shape = RoundedCornerShape(6.dp),
                         modifier = Modifier
-                            .clickable { viewModel.retryCurrentStream() }
+                            .tvFocusablePill(
+                                accentColor = AmberGold,
+                                shape = RoundedCornerShape(6.dp),
+                                onClick = { viewModel.retryCurrentStream() }
+                            )
                             .testTag("player_retry_button")
                     ) {
                         Row(
@@ -1200,6 +1242,40 @@ fun PlayerScreen(
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.spacedBy(4.dp)
                     ) {
+                        // 1-Tap "📺 Send to TV" Handover Pill when a TV is paired or Sync Mode is available
+                        if (canSendToTv && onSendToTv != null) {
+                            Surface(
+                                color = AmberGold.copy(alpha = 0.22f),
+                                shape = RoundedCornerShape(50),
+                                border = BorderStroke(1.dp, AmberGold),
+                                modifier = Modifier
+                                    .tvFocusablePill(
+                                        accentColor = AmberGold,
+                                        shape = RoundedCornerShape(50),
+                                        onClick = onSendToTv
+                                    )
+                                    .testTag("player_send_to_tv_button")
+                            ) {
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp)
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.Tv,
+                                        contentDescription = "Send to TV",
+                                        tint = AmberGold,
+                                        modifier = Modifier.size(14.dp)
+                                    )
+                                    Spacer(modifier = Modifier.width(4.dp))
+                                    Text(
+                                        text = "📺 Send to TV",
+                                        color = AmberGold,
+                                        fontSize = 11.sp,
+                                        fontWeight = FontWeight.ExtraBold
+                                    )
+                                }
+                            }
+                        }
                         // Active 15m Halftime Explorer Countdown Badge (visible in Player Top Bar)
                         val htSeconds = uiState.halftimeTimerRemainingSeconds
                         if (htSeconds != null && htSeconds > 0) {
@@ -1705,10 +1781,14 @@ fun PlayerScreen(
                                         color = if (isCurrent) AmberGold else Color.Transparent,
                                         shape = RoundedCornerShape(8.dp)
                                     )
-                                    .clickable {
-                                        viewModel.playStream(ch, playlist)
-                                        viewModel.toggleChannelZapper(false)
-                                    }
+                                    .tvFocusableControl(
+                                        accentColor = AmberGold,
+                                        shape = RoundedCornerShape(8.dp),
+                                        onClick = {
+                                            viewModel.playStream(ch, playlist)
+                                            viewModel.toggleChannelZapper(false)
+                                        }
+                                    )
                                     .padding(horizontal = 10.dp, vertical = 8.dp),
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
@@ -2189,10 +2269,14 @@ fun PlayerScreen(
                                     color = if (isCurrent) AmberGold else Color.White.copy(alpha = 0.10f),
                                     shape = RoundedCornerShape(10.dp)
                                 )
-                                .clickable {
-                                    viewModel.playStream(feed, playlist)
-                                    showFeedSwitcherSheet = false
-                                }
+                                .tvFocusableControl(
+                                    accentColor = AmberGold,
+                                    shape = RoundedCornerShape(10.dp),
+                                    onClick = {
+                                        viewModel.playStream(feed, playlist)
+                                        showFeedSwitcherSheet = false
+                                    }
+                                )
                                 .padding(horizontal = 14.dp, vertical = 12.dp),
                             horizontalArrangement = Arrangement.SpaceBetween,
                             verticalAlignment = Alignment.CenterVertically
@@ -2595,7 +2679,11 @@ private fun WyzieSubtitleStudioSheet(
                     shape = RoundedCornerShape(50),
                     border = BorderStroke(0.8.dp, if (allOff) AmberGold else Color.White.copy(alpha = 0.15f)),
                     modifier = Modifier
-                        .clickable { onTurnSubtitlesOff() }
+                        .tvFocusablePill(
+                            accentColor = AmberGold,
+                            shape = RoundedCornerShape(50),
+                            onClick = { onTurnSubtitlesOff() }
+                        )
                         .testTag("subtitle_off_button")
                 ) {
                     Row(
@@ -2798,7 +2886,11 @@ private fun WyzieSubtitleStudioSheet(
                                 color = if (isSelected) AmberGold else Color.White.copy(alpha = 0.12f)
                             ),
                             modifier = Modifier
-                                .clickable { onSelectLanguage(group.languageCode) }
+                                .tvFocusablePill(
+                                    accentColor = AmberGold,
+                                    shape = RoundedCornerShape(50),
+                                    onClick = { onSelectLanguage(group.languageCode) }
+                                )
                                 .testTag("wyzie_lang_${group.languageCode}")
                         ) {
                             Row(
@@ -2859,19 +2951,70 @@ private fun WyzieSubtitleStudioSheet(
                                         color = if (isOptionActive) AmberGold else Color.White.copy(alpha = 0.08f),
                                         shape = RoundedCornerShape(10.dp)
                                     )
-                                    .clickable { onSelectWyzieOption(option) }
+                                    .tvFocusableControl(
+                                        accentColor = AmberGold,
+                                        shape = RoundedCornerShape(10.dp),
+                                        onClick = { onSelectWyzieOption(option) }
+                                    )
                                     .padding(horizontal = 14.dp, vertical = 11.dp)
                                     .testTag("wyzie_option_${idx + 1}"),
                                 verticalAlignment = Alignment.CenterVertically,
                                 horizontalArrangement = Arrangement.SpaceBetween
                             ) {
                                 Column(modifier = Modifier.weight(1f)) {
-                                    Text(
-                                        text = "${option.languageDisplay} #${idx + 1}  •  ${option.format}",
-                                        color = if (isOptionActive) AmberGold else PlayerTextPrimary,
-                                        fontSize = 13.5.sp,
-                                        fontWeight = FontWeight.Medium
-                                    )
+                                    Row(
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                    ) {
+                                        Text(
+                                            text = "${option.languageDisplay} #${idx + 1}  •  ${option.format}",
+                                            color = if (isOptionActive) AmberGold else PlayerTextPrimary,
+                                            fontSize = 13.5.sp,
+                                            fontWeight = FontWeight.Medium
+                                        )
+                                        Surface(
+                                            color = when {
+                                                option.source.equals("SubDL", ignoreCase = true) -> Color(0x2629D9C2)
+                                                option.source.equals("OpenSubtitles", ignoreCase = true) -> Color(0x2663B3ED)
+                                                else -> AmberGold.copy(alpha = 0.18f)
+                                            },
+                                            shape = RoundedCornerShape(4.dp),
+                                            border = BorderStroke(
+                                                width = 0.6.dp,
+                                                color = when {
+                                                    option.source.equals("SubDL", ignoreCase = true) -> Color(0x8829D9C2)
+                                                    option.source.equals("OpenSubtitles", ignoreCase = true) -> Color(0x8863B3ED)
+                                                    else -> AmberGold.copy(alpha = 0.55f)
+                                                }
+                                            )
+                                        ) {
+                                            Text(
+                                                text = option.source.ifBlank { "Wyzie" },
+                                                color = when {
+                                                    option.source.equals("SubDL", ignoreCase = true) -> Color(0xFF5EEAD4)
+                                                    option.source.equals("OpenSubtitles", ignoreCase = true) -> Color(0xFF90CDF4)
+                                                    else -> PaleGold
+                                                },
+                                                fontSize = 9.5.sp,
+                                                fontWeight = FontWeight.Bold,
+                                                modifier = Modifier.padding(horizontal = 5.dp, vertical = 1.5.dp)
+                                            )
+                                        }
+                                        if (option.isHearingImpaired) {
+                                            Surface(
+                                                color = Color.White.copy(alpha = 0.12f),
+                                                shape = RoundedCornerShape(4.dp)
+                                            ) {
+                                                Text(
+                                                    text = "HI",
+                                                    color = PlayerTextSecondary,
+                                                    fontSize = 9.sp,
+                                                    fontWeight = FontWeight.Bold,
+                                                    modifier = Modifier.padding(horizontal = 4.dp, vertical = 1.dp)
+                                                )
+                                            }
+                                        }
+                                    }
                                     Spacer(modifier = Modifier.height(2.dp))
                                     Text(
                                         text = option.mediaName,

@@ -122,6 +122,7 @@ data class PlayerUiState(
     val subtitleSyncOffsetMs: Long = 0L,
     val subtitleScaleFactor: Float = 1.0f,
     val showSubtitleLanguagePrompt: Boolean = false,
+    val subtitlePromptRemainingSeconds: Int = 12,
     val lastSelectedSubtitleLanguageCode: String? = null,
     val pendingPreferredSubtitleLanguageCode: String? = null,
     val subtitleActivationBannerMessage: String? = null,
@@ -147,6 +148,7 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application) 
     private var subtitleSearchJob: Job? = null
     private var subtitleDownloadJob: Job? = null
     private var subtitleBannerFadeJob: Job? = null
+    private var subtitlePromptCountdownJob: Job? = null
     private var liveAutoReconnectJob: Job? = null
     private var halftimeTimerJob: Job? = null
     private var hasAutoRetriedCurrentLiveStream: Boolean = false
@@ -400,6 +402,7 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application) 
 
         val isReturningToHalftimeStream = _uiState.value.halftimeSavedStream?.streamId == stream.streamId
         subtitleBannerFadeJob?.cancel()
+        subtitlePromptCountdownJob?.cancel()
         _uiState.value = _uiState.value.copy(
             currentStream = effectiveStream,
             previousStream = previous,
@@ -429,12 +432,16 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application) 
             resolvedMediaQuery = null,
             subtitleSyncOffsetMs = 0L,
             showSubtitleLanguagePrompt = !isLiveStream,
+            subtitlePromptRemainingSeconds = SUBTITLE_PROMPT_AUTO_HIDE_SECONDS,
             lastSelectedSubtitleLanguageCode = _uiState.value.lastSelectedSubtitleLanguageCode
                 ?: subtitlePrefs.getString(KEY_LAST_SUBTITLE_LANG, null)?.trim()?.takeIf { it.isNotEmpty() },
             pendingPreferredSubtitleLanguageCode = null,
             subtitleActivationBannerMessage = null,
             showHalftimeReturnPrompt = if (isReturningToHalftimeStream) false else _uiState.value.showHalftimeReturnPrompt
         )
+        if (!isLiveStream) {
+            startSubtitleLanguagePromptCountdown()
+        }
 
         player.setMediaItem(mediaItemBuilder.build())
         player.prepare()
@@ -612,6 +619,7 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application) 
         subtitleSearchJob?.cancel()
         subtitleDownloadJob?.cancel()
         subtitleBannerFadeJob?.cancel()
+        subtitlePromptCountdownJob?.cancel()
         liveAutoReconnectJob?.cancel()
         halftimeTimerJob?.cancel()
         hasAutoRetriedCurrentLiveStream = false
@@ -641,6 +649,7 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application) 
             isDownloadingSubtitle = false,
             onlineSubtitleStatusMessage = null,
             showSubtitleLanguagePrompt = false,
+            subtitlePromptRemainingSeconds = SUBTITLE_PROMPT_AUTO_HIDE_SECONDS,
             pendingPreferredSubtitleLanguageCode = null,
             subtitleActivationBannerMessage = null,
             halftimeTimerRemainingSeconds = null,
@@ -873,10 +882,13 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application) 
             )
 
             val pendingLang = _uiState.value.pendingPreferredSubtitleLanguageCode
-            val currentSelectedLang = pendingLang ?: _uiState.value.selectedWyzieLanguageCode
+            val preferredLang = _uiState.value.lastSelectedSubtitleLanguageCode
+            val currentSelectedLang = pendingLang
+                ?: _uiState.value.selectedWyzieLanguageCode
+                ?: preferredLang
             val resolvedSelectedLang = when {
                 currentSelectedLang != null && response.languageGroups.any { it.languageCode.equals(currentSelectedLang, ignoreCase = true) } -> {
-                    currentSelectedLang
+                    response.languageGroups.first { it.languageCode.equals(currentSelectedLang, ignoreCase = true) }.languageCode
                 }
                 else -> response.languageGroups.firstOrNull()?.languageCode
             }
@@ -904,7 +916,30 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application) 
         }
     }
 
+    internal fun startSubtitleLanguagePromptCountdown(durationSeconds: Int = SUBTITLE_PROMPT_AUTO_HIDE_SECONDS) {
+        subtitlePromptCountdownJob?.cancel()
+        val safeSeconds = durationSeconds.coerceAtLeast(1)
+        _uiState.value = _uiState.value.copy(
+            showSubtitleLanguagePrompt = true,
+            subtitlePromptRemainingSeconds = safeSeconds
+        )
+        subtitlePromptCountdownJob = viewModelScope.launch {
+            var remaining = safeSeconds
+            while (remaining > 0 && isActive && _uiState.value.showSubtitleLanguagePrompt) {
+                delay(1000L)
+                remaining--
+                if (_uiState.value.showSubtitleLanguagePrompt) {
+                    _uiState.value = _uiState.value.copy(subtitlePromptRemainingSeconds = remaining)
+                }
+            }
+            if (remaining <= 0 && _uiState.value.showSubtitleLanguagePrompt) {
+                dismissSubtitleLanguagePrompt()
+            }
+        }
+    }
+
     fun dismissSubtitleLanguagePrompt() {
+        subtitlePromptCountdownJob?.cancel()
         _uiState.value = _uiState.value.copy(
             showSubtitleLanguagePrompt = false,
             pendingPreferredSubtitleLanguageCode = null
@@ -916,6 +951,7 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application) 
      * Pass `null` for `🚫 Off`.
      */
     fun chooseSubtitleLanguageFromPrompt(languageCode: String?) {
+        subtitlePromptCountdownJob?.cancel()
         if (languageCode == null) {
             selectSubtitleTrack(null)
             clearOnlineSubtitles()
@@ -1348,6 +1384,8 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application) 
         sleepTimerJob?.cancel()
         subtitleSearchJob?.cancel()
         subtitleDownloadJob?.cancel()
+        subtitleBannerFadeJob?.cancel()
+        subtitlePromptCountdownJob?.cancel()
         try {
             loudnessEnhancer?.release()
         } catch (_: Exception) {}
@@ -1358,6 +1396,7 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application) 
     companion object {
         internal const val SUBTITLE_PREFS_NAME = "setplay_subtitle_prefs"
         internal const val KEY_LAST_SUBTITLE_LANG = "last_selected_subtitle_lang"
+        internal const val SUBTITLE_PROMPT_AUTO_HIDE_SECONDS = 12
     }
 }
 

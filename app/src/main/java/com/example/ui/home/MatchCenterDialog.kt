@@ -609,7 +609,11 @@ private fun MatchCenterScoreboardHeader(
                                     )
                                 )
                             )
-                            .clickable { onWatchPrimaryChannel() }
+                            .tvFocusablePill(
+                                accentColor = AmberGold,
+                                shape = RoundedCornerShape(50),
+                                onClick = onWatchPrimaryChannel
+                            )
                             .testTag("match_center_header_watch_btn")
                     ) {
                         Row(
@@ -820,7 +824,11 @@ private fun MatchSummaryTabContent(
                                 color = ArenaTurfElevated,
                                 shape = RoundedCornerShape(8.dp),
                                 border = BorderStroke(0.9.dp, ArenaPitchGreen),
-                                modifier = Modifier.clickable { onWatchChannel(item.channelName) }
+                                modifier = Modifier.tvFocusablePill(
+                                    accentColor = ArenaFloodlightLime,
+                                    shape = RoundedCornerShape(8.dp),
+                                    onClick = { onWatchChannel(item.channelName) }
+                                )
                             ) {
                                 Row(
                                     verticalAlignment = Alignment.CenterVertically,
@@ -3475,7 +3483,11 @@ private fun MenaBroadcastChannelCard(
         ),
         modifier = Modifier
             .fillMaxWidth()
-            .clickable { onWatchClicked() }
+            .tvFocusableControl(
+                accentColor = ArenaFloodlightLime,
+                shape = RoundedCornerShape(14.dp),
+                onClick = onWatchClicked
+            )
     ) {
         Row(
             modifier = Modifier

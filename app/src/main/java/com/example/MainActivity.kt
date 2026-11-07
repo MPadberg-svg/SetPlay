@@ -99,6 +99,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
@@ -356,6 +357,19 @@ fun MainAppContent(
     val activity = context as? Activity
     val scope = rememberCoroutineScope()
 
+    val lifecycleOwner = androidx.lifecycle.compose.LocalLifecycleOwner.current
+    DisposableEffect(lifecycleOwner) {
+        val observer = androidx.lifecycle.LifecycleEventObserver { _, event ->
+            if (event == androidx.lifecycle.Lifecycle.Event.ON_RESUME) {
+                mainViewModel.refreshTvSyncStatusOnResume()
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose {
+            lifecycleOwner.lifecycle.removeObserver(observer)
+        }
+    }
+
     LaunchedEffect(isFullScreenPlayer) {
         mainViewModel.isTvInFullScreenPlayback = isFullScreenPlayer
     }
@@ -364,6 +378,7 @@ fun MainAppContent(
         playerUiState.currentStream?.name,
         playerUiState.currentStream?.streamId,
         playerUiState.currentStream?.streamType,
+        playerUiState.currentPositionMs,
         playerUiState.isPlaying,
         playerUiState.selectedWyzieLanguageCode,
         playerUiState.lastSelectedSubtitleLanguageCode
@@ -373,6 +388,7 @@ fun MainAppContent(
                 tvNowPlayingTitle = playerUiState.currentStream?.name.orEmpty(),
                 tvNowPlayingStreamId = playerUiState.currentStream?.streamId?.toString().orEmpty(),
                 tvNowPlayingType = playerUiState.currentStream?.streamType.orEmpty(),
+                tvNowPlayingPositionMs = playerUiState.currentPositionMs,
                 tvIsPlaying = playerUiState.isPlaying,
                 tvActiveSubtitleLang = (playerUiState.selectedWyzieLanguageCode ?: playerUiState.lastSelectedSubtitleLanguageCode).orEmpty()
             )
@@ -463,9 +479,13 @@ fun MainAppContent(
                 pendingStreamToPlay = stream
                 showPinDialog = true
             } else if (tvSyncState.role == SyncRole.PHONE_CONTROLLER && tvSyncState.isSyncActive) {
-                // Single-Connection Safe: stop local phone player BEFORE delegating stream to TV Host
+                // Single-Connection Safe: stop local phone player and wait 300ms for socket release BEFORE delegating stream to TV Host
+                val wasLocalPlayerActive = playerUiState.currentStream != null
                 playerViewModel.stopAndClosePlayer()
                 isFullScreenPlayer = false
+                if (wasLocalPlayerActive) {
+                    kotlinx.coroutines.delay(300L)
+                }
                 mainViewModel.playStreamOnSyncedTv(stream, activePlaylist)
             } else {
                 isFullScreenPlayer = true
@@ -515,6 +535,29 @@ fun MainAppContent(
             },
             onDismissGoalAlert = {
                 mainViewModel.dismissGoalAlert()
+            },
+            canSendToTv = tvSyncState.isSyncActive || mainViewModel.tvSyncManager.hasSavedTvHost(),
+            onSendToTv = {
+                val streamToHandover = playerUiState.currentStream?.copy(
+                    lastPositionMs = playerUiState.currentPositionMs
+                )
+                playerViewModel.stopAndClosePlayer()
+                isFullScreenPlayer = false
+                if (streamToHandover != null) {
+                    scope.launch {
+                        // Strict 300ms socket release mutex before TV connects to IPTV server
+                        kotlinx.coroutines.delay(300L)
+                        if (tvSyncState.role == SyncRole.PHONE_CONTROLLER && tvSyncState.isSyncActive) {
+                            mainViewModel.playStreamOnSyncedTv(streamToHandover, activePlaylist)
+                        } else if (mainViewModel.tvSyncManager.hasSavedTvHost()) {
+                            mainViewModel.reconnectToLastTv {
+                                mainViewModel.playStreamOnSyncedTv(streamToHandover, activePlaylist)
+                            }
+                        } else {
+                            showTvSyncSheet = true
+                        }
+                    }
+                }
             }
         )
     } else {
@@ -560,11 +603,11 @@ fun MainAppContent(
                             onTogglePlayPauseOnTv = {
                                 mainViewModel.sendControlToSyncedTv(action = "TOGGLE_PLAY_PAUSE")
                             },
-                            onSelectSubtitleLangOnTv = { langCode ->
-                                mainViewModel.sendControlToSyncedTv(
-                                    action = "SET_SUBTITLE_LANG",
-                                    value = langCode
-                                )
+                            onPullStreamToPhone = {
+                                mainViewModel.pullStreamFromTvToPhone { pulledStream, playlist ->
+                                    isFullScreenPlayer = true
+                                    playerViewModel.playStream(pulledStream, playlist)
+                                }
                             },
                             onLeaveSyncMode = {
                                 mainViewModel.leaveTvSyncMode()

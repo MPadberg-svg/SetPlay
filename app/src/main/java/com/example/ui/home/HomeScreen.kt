@@ -175,6 +175,8 @@ import com.example.ui.theme.MenaSscTeal
 import com.example.ui.theme.MetalCharcoal
 import com.example.ui.theme.TabularNumeralTextStyle
 import com.example.ui.theme.luxuryFocusableCard
+import com.example.ui.theme.tvFocusableControl
+import com.example.ui.theme.tvFocusablePill
 import com.example.ui.theme.MetalCharcoalElevated
 import com.example.ui.theme.PaleGold
 import com.example.ui.viewmodel.AppScreen
@@ -1870,9 +1872,9 @@ private fun LuxuryLeagueCapsule(
                     )
                 }
             )
-            .clickable(
-                interactionSource = interactionSource,
-                indication = null,
+            .tvFocusablePill(
+                accentColor = accentColor,
+                shape = RoundedCornerShape(50),
                 onClick = onClick
             )
     ) {
@@ -2138,7 +2140,16 @@ private fun FlashscoreTournamentHeader(
                     )
                 )
             )
-            .clickable { onToggleCollapse() }
+            .tvFocusableControl(
+                accentColor = leagueAccentColor,
+                shape = RoundedCornerShape(
+                    topStart = 14.dp,
+                    topEnd = 14.dp,
+                    bottomStart = if (isCollapsed) 14.dp else 0.dp,
+                    bottomEnd = if (isCollapsed) 14.dp else 0.dp
+                ),
+                onClick = onToggleCollapse
+            )
             .testTag("tournament_header_$tournamentId")
     ) {
         Row(
@@ -3084,7 +3095,11 @@ private fun FlashscoreMatchCard(
                             .weight(1f, fill = false)
                             .height(28.dp)
                             .clip(RoundedCornerShape(50))
-                            .clickable { onWatchBeinClicked(match.beinChannel) }
+                            .tvFocusablePill(
+                                accentColor = KickoffTropicalTeal,
+                                shape = RoundedCornerShape(50),
+                                onClick = { onWatchBeinClicked(match.beinChannel) }
+                            )
                             .testTag("open_match_center_${match.matchId}")
                     ) {
                         Row(
@@ -3167,13 +3182,17 @@ private fun FlashscoreMatchCard(
                                     )
                                 }
                             )
-                            .clickable {
-                                if (isFinishedStatus) {
-                                    onOpenDossier()
-                                } else {
-                                    onWatchBeinClicked(match.beinChannel)
+                            .tvFocusablePill(
+                                accentColor = AmberGold,
+                                shape = RoundedCornerShape(50),
+                                onClick = {
+                                    if (isFinishedStatus) {
+                                        onOpenDossier()
+                                    } else {
+                                        onWatchBeinClicked(match.beinChannel)
+                                    }
                                 }
-                            }
+                            )
                             .testTag("watch_bein_btn_${match.matchId}")
                     ) {
                         Row(

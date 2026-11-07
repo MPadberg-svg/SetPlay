@@ -1007,6 +1007,13 @@ class WyzieSubtitleService(
         } else {
             null
         }
+        val preResolvedMovieMediaId = if (!isSeries) {
+            stream.epgChannelId.trim().takeIf {
+                it.matches(Regex("""^(tt\d{5,10}|\d{2,9})$""", RegexOption.IGNORE_CASE))
+            }
+        } else {
+            null
+        }
 
         // Also check S01E02 pattern in stream.name
         val seRegex = Regex("""(?i)\bS(\d{1,2})\s*E(\d{1,3})\b""")
@@ -1040,16 +1047,17 @@ class WyzieSubtitleService(
 
         val (cleanTitle, extractedYear) = cleanMediaTitle(rawInput)
 
-        // 1. If no custom query override, check pre-encoded series media ID first (avoiding duplicate get_series_info network call!),
+        // 1. If no custom query override, check pre-encoded series or movie media ID first (avoiding duplicate get_series_info / get_vod_info network call!),
         // or query Xtream get_vod_info / get_series_info only when not already encoded
         var xtreamImdbId: String? = null
         var xtreamTmdbId: String? = null
+        val preEncodedMediaId = encodedSeriesMediaId ?: preResolvedMovieMediaId
         if (customSearchQuery.isNullOrBlank()) {
-            if (!encodedSeriesMediaId.isNullOrBlank()) {
-                if (encodedSeriesMediaId.startsWith("tt", ignoreCase = true)) {
-                    xtreamImdbId = encodedSeriesMediaId
+            if (!preEncodedMediaId.isNullOrBlank()) {
+                if (preEncodedMediaId.startsWith("tt", ignoreCase = true)) {
+                    xtreamImdbId = preEncodedMediaId
                 } else {
-                    xtreamTmdbId = encodedSeriesMediaId
+                    xtreamTmdbId = preEncodedMediaId
                 }
             } else if (playlist != null) {
                 val ids = fetchXtreamMediaIds(

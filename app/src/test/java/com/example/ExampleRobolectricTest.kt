@@ -632,7 +632,7 @@ class ExampleRobolectricTest {
         assertTrue(dossier.lineups.homeFormation.isNotBlank())
         assertTrue(dossier.lineups.awayFormation.isNotBlank())
         assertTrue(dossier.lineups.homeBench.isNotEmpty())
-        assertTrue(dossier.lineups.missingPlayers.isNotEmpty())
+        assertTrue(dossier.lineups.missingPlayers.isEmpty())
         assertEquals(3, dossier.timelineEvents.size)
         assertTrue(dossier.timelineEvents.all { it.eventType == com.example.data.repository.MatchEventType.GOAL })
         assertEquals("TBA / Official Broadcast Feed", dossier.refereeName)
@@ -1974,6 +1974,24 @@ class ExampleRobolectricTest {
 
         assertTrue(dossier.stats.any { it.statLabel == "Ball Possession" && it.homeValueText == "54%" && it.awayValueText == "46%" })
         assertTrue(dossier.stats.any { it.statLabel == "Expected Goals (xG)" && it.homeValueText == "2.41" && it.awayValueText == "1.65" })
+        assertTrue(dossier.lineups.missingPlayers.isEmpty())
+
+        // Verify x-ratelimit-requests-remaining header tracking reserves final 15 calls for Match Center
+        com.example.data.repository.FootballRepository.updateApiFootballRemainingQuota("12")
+        assertEquals(12, footballRepository.apiFootballRemainingQuota.get())
+        assertFalse(com.example.data.repository.FootballRepository.tryAcquireSharedApiFootballPermit(isMatchCenterDossier = false))
+        assertTrue(com.example.data.repository.FootballRepository.tryAcquireSharedApiFootballPermit(isMatchCenterDossier = true))
+        com.example.data.repository.FootballRepository.resetSharedSportsDbRateLimiterForTests()
+
+        // Verify empty stats and 0.0 pre-match rating when no upstream stats exist
+        val emptyUpcomingDossier = enricher.buildCompleteDossier(
+            match = clasico.copy(status = com.example.data.repository.MatchStatus.UPCOMING),
+            raw = com.example.data.repository.MatchCenterEnricher.LiveDossierRawPayload()
+        )
+        assertTrue(emptyUpcomingDossier.stats.isEmpty())
+        assertTrue(emptyUpcomingDossier.lineups.missingPlayers.isEmpty())
+        assertTrue(emptyUpcomingDossier.lineups.homeStartingXI.all { it.rating == 0.0 })
+        assertTrue(emptyUpcomingDossier.lineups.awayStartingXI.all { it.rating == 0.0 })
     }
 
     @Test
@@ -2195,15 +2213,25 @@ class ExampleRobolectricTest {
         assertEquals("OpenSubtitles", mergedGroups.first { it.languageCode == "es" }.options.first().source)
 
         // 4. Verify PlayerViewModel remembers lastSelectedSubtitleLanguageCode in SharedPreferences & PlayerUiState
+        // and manages the 12-second subtitle language prompt countdown
         val app = ApplicationProvider.getApplicationContext<android.app.Application>()
         val playerVm = com.example.ui.player.PlayerViewModel(app)
+        playerVm.startSubtitleLanguagePromptCountdown(12)
+        assertTrue(playerVm.uiState.value.showSubtitleLanguagePrompt)
+        assertEquals(12, playerVm.uiState.value.subtitlePromptRemainingSeconds)
+
         playerVm.chooseSubtitleLanguageFromPrompt("ar")
+        assertFalse(playerVm.uiState.value.showSubtitleLanguagePrompt)
         assertEquals("ar", playerVm.uiState.value.lastSelectedSubtitleLanguageCode)
         val savedPrefsLang = app.getSharedPreferences(
             com.example.ui.player.PlayerViewModel.SUBTITLE_PREFS_NAME,
             Context.MODE_PRIVATE
         ).getString(com.example.ui.player.PlayerViewModel.KEY_LAST_SUBTITLE_LANG, null)
         assertEquals("ar", savedPrefsLang)
+
+        // Verify a newly instantiated PlayerViewModel restores lastSelectedSubtitleLanguageCode on init
+        val playerVmReloaded = com.example.ui.player.PlayerViewModel(app)
+        assertEquals("ar", playerVmReloaded.uiState.value.lastSelectedSubtitleLanguageCode)
     }
 
     @Test
@@ -2425,15 +2453,43 @@ class ExampleRobolectricTest {
             assertEquals("ar", phoneControllerManager.sessionState.value.tvActiveSubtitleLang)
 
             // 5. Verify WhatsApp / ON_RESUME Status Refresh (`GET /api/sync/status`)
+            tvHostManager.tvPlaybackStatusProvider = {
+                tvHostManager.sessionState.value.copy(
+                    tvNowPlayingTitle = "Oppenheimer 4K IMAX",
+                    tvNowPlayingStreamId = "90909",
+                    tvNowPlayingType = "movie",
+                    tvNowPlayingPositionMs = 1_845_000L,
+                    tvIsPlaying = true
+                )
+            }
             val statusResult = phoneControllerManager.refreshTvStatus()
             assertTrue(statusResult.isSuccess)
-            assertEquals("AR| beIN Sports 1 HD", phoneControllerManager.sessionState.value.tvNowPlayingTitle)
+            assertEquals("Oppenheimer 4K IMAX", phoneControllerManager.sessionState.value.tvNowPlayingTitle)
+            assertEquals(1_845_000L, phoneControllerManager.sessionState.value.tvNowPlayingPositionMs)
 
-            // 6. Verify Leave Sync Mode & 1-Tap Rejoin (`rejoinLastTvHost`)
+            // 6. Verify 1-Tap "📱 Watch Here" (`pullTvStreamToPhone`) stops TV player first and returns exact resumePositionMs
+            var tvReceivedStopCommand = false
+            tvHostManager.onControlCommandReceived = { ctrlCmd ->
+                if (ctrlCmd.action.equals("STOP", ignoreCase = true)) {
+                    tvReceivedStopCommand = true
+                }
+            }
+            val pulledResult = phoneControllerManager.pullTvStreamToPhone()
+            assertTrue(pulledResult.isSuccess)
+            assertTrue(tvReceivedStopCommand)
+            val pulledCmd = pulledResult.getOrThrow()
+            assertEquals("90909", pulledCmd.streamId)
+            assertEquals("Oppenheimer 4K IMAX", pulledCmd.streamName)
+            assertEquals(1_845_000L, pulledCmd.resumePositionMs)
+            assertFalse(phoneControllerManager.sessionState.value.tvIsPlaying)
+            assertEquals("", phoneControllerManager.sessionState.value.tvNowPlayingTitle)
+
+            // 7. Verify Leave Sync Mode & 1-Tap Rejoin (`rejoinLastTvHost`)
             assertTrue(phoneControllerManager.hasSavedTvHost())
             phoneControllerManager.leaveSyncMode()
             assertEquals(com.example.data.sync.SyncRole.STANDALONE, phoneControllerManager.sessionState.value.role)
             assertFalse(phoneControllerManager.sessionState.value.isSyncActive)
+            assertEquals("127.0.0.1", phoneControllerManager.sessionState.value.savedTvHostIp)
 
             val rejoinResult = phoneControllerManager.rejoinLastTvHost(localVault = phoneLocalVault)
             assertTrue(rejoinResult.isSuccess)
@@ -2444,5 +2500,79 @@ class ExampleRobolectricTest {
             tvHostManager.leaveSyncMode()
         }
     }
+
+    @Test
+    fun `test Phase 4 persistent TV Host PIN and QR payload round-trip`() = kotlinx.coroutines.runBlocking {
+        val app = ApplicationProvider.getApplicationContext<Application>()
+        val tvHost1 = com.example.data.sync.TvSyncManager(app)
+        try {
+            val state1 = tvHost1.startTvHostServer()
+            val pin1 = state1.pairingPin
+            assertEquals(6, pin1.length)
+
+            val qrPayload = "setplay://sync?ip=${state1.localIpAddress}&port=${state1.serverPort}&pin=$pin1"
+            val parsedQr = com.example.data.sync.TvSyncManager.parseQrPairingPayload(qrPayload)
+            assertNotNull(parsedQr)
+            assertEquals(state1.localIpAddress, parsedQr!!.first)
+            assertEquals(state1.serverPort, parsedQr.second)
+            assertEquals(pin1, parsedQr.third)
+
+            tvHost1.leaveSyncMode()
+
+            // Starting a new TV Host instance on the same device reuses the persisted 6-digit PIN
+            val tvHost2 = com.example.data.sync.TvSyncManager(app)
+            val state2 = tvHost2.startTvHostServer()
+            assertEquals(pin1, state2.pairingPin)
+            tvHost2.leaveSyncMode()
+        } finally {
+            tvHost1.leaveSyncMode()
+        }
+    }
+
+    @Test
+    fun `test Phase 4_1 Silent Browse Mode prevents phone navigation from interrupting fullscreen TV playback`() = kotlinx.coroutines.runBlocking {
+        val app = ApplicationProvider.getApplicationContext<Application>()
+        val tvMainVm = com.example.ui.viewmodel.MainViewModel(app)
+        val phoneController = com.example.data.sync.TvSyncManager(app)
+        try {
+            tvMainVm.startTvHostMode()
+            val tvState = tvMainVm.tvSyncState.value
+            assertEquals(com.example.data.sync.SyncRole.TV_HOST, tvState.role)
+
+            val pairRes = phoneController.connectToTvHost(
+                hostIp = "127.0.0.1",
+                port = tvState.serverPort,
+                pin = tvState.pairingPin,
+                localVault = com.example.data.sync.VaultSyncPayload(
+                    playlistName = "Phone Vault",
+                    serverUrl = "https://setplay.io",
+                    username = "u",
+                    password = "p"
+                )
+            )
+            assertTrue(pairRes.isSuccess)
+
+            // 1. When TV is idle (isTvInFullScreenPlayback == false), phone navigation mirrors to TV
+            tvMainVm.isTvInFullScreenPlayback = false
+            phoneController.sendNavMirror(
+                com.example.data.sync.RemoteNavMirrorCommand(screenName = "MOVIES")
+            )
+            kotlinx.coroutines.delay(180L)
+            assertEquals(com.example.ui.viewmodel.AppScreen.MOVIES, tvMainVm.currentScreen.value)
+
+            // 2. When TV is playing fullscreen video (isTvInFullScreenPlayback == true), phone navigation does NOT interrupt TV
+            tvMainVm.isTvInFullScreenPlayback = true
+            phoneController.sendNavMirror(
+                com.example.data.sync.RemoteNavMirrorCommand(screenName = "SERIES")
+            )
+            kotlinx.coroutines.delay(180L)
+            assertEquals(com.example.ui.viewmodel.AppScreen.MOVIES, tvMainVm.currentScreen.value)
+        } finally {
+            phoneController.leaveSyncMode()
+            tvMainVm.leaveTvSyncMode()
+        }
+    }
 }
+
+
 

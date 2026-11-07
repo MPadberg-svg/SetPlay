@@ -60,9 +60,15 @@ data class TvSyncSessionState(
     val tvNowPlayingTitle: String = "",
     val tvNowPlayingStreamId: String = "",
     val tvNowPlayingType: String = "",
+    val tvNowPlayingUrl: String = "",
+    val tvNowPlayingPositionMs: Long = 0L,
     val tvIsPlaying: Boolean = false,
     val tvActiveSubtitleLang: String = "",
     val discoveredTvHosts: List<DiscoveredTvHost> = emptyList(),
+    val savedTvHostIp: String = "",
+    val savedTvHostPort: Int = 8765,
+    val savedTvHostPin: String = "",
+    val savedTvHostName: String = "",
     val lastSyncStatusMessage: String = ""
 )
 
@@ -253,7 +259,11 @@ class TvSyncManager(
 
     private val _sessionState = MutableStateFlow(
         TvSyncSessionState(
-            localIpAddress = detectLocalLanIpv4()
+            localIpAddress = detectLocalLanIpv4(),
+            savedTvHostIp = prefs.getString(KEY_LAST_TV_IP, "").orEmpty(),
+            savedTvHostPort = prefs.getInt(KEY_LAST_TV_PORT, DEFAULT_PORT),
+            savedTvHostPin = prefs.getString(KEY_LAST_TV_PIN, "").orEmpty(),
+            savedTvHostName = prefs.getString(KEY_LAST_TV_NAME, "").orEmpty()
         )
     )
     val sessionState: StateFlow<TvSyncSessionState> = _sessionState.asStateFlow()
@@ -300,12 +310,17 @@ class TvSyncManager(
         }
         stopServerInternal()
 
+        val persistedPin = prefs.getString(KEY_PERSISTENT_TV_PIN, "").orEmpty()
+            .takeIf { it.length == 6 && it.all(Char::isDigit) }
         val pin = customPin?.takeIf { it.length == 6 && it.all(Char::isDigit) }
-            ?: String.format(Locale.US, "%06d", Random().nextInt(900_000) + 100_000)
+            ?: persistedPin
+            ?: String.format(Locale.US, "%06d", Random().nextInt(900_000) + 100_000).also { generated ->
+                prefs.edit().putString(KEY_PERSISTENT_TV_PIN, generated).apply()
+            }
 
         var boundSocket: ServerSocket? = null
         var boundPort = preferredPort
-        for (candidate in preferredPort..(preferredPort + 20)) {
+        for (candidate in preferredPort..(preferredPort + 10)) {
             try {
                 boundSocket = ServerSocket().apply {
                     reuseAddress = true
@@ -412,6 +427,8 @@ class TvSyncManager(
                     tvNowPlayingTitle = liveStatus.tvNowPlayingTitle,
                     tvNowPlayingStreamId = liveStatus.tvNowPlayingStreamId,
                     tvNowPlayingType = liveStatus.tvNowPlayingType,
+                    tvNowPlayingUrl = liveStatus.tvNowPlayingUrl,
+                    tvNowPlayingPositionMs = liveStatus.tvNowPlayingPositionMs,
                     tvIsPlaying = liveStatus.tvIsPlaying,
                     tvActiveSubtitleLang = liveStatus.tvActiveSubtitleLang
                 )
@@ -462,6 +479,8 @@ class TvSyncManager(
                     tvNowPlayingTitle = cmd.streamName,
                     tvNowPlayingStreamId = cmd.streamId,
                     tvNowPlayingType = cmd.streamType,
+                    tvNowPlayingUrl = cmd.streamUrl,
+                    tvNowPlayingPositionMs = cmd.resumePositionMs,
                     tvIsPlaying = true,
                     tvActiveSubtitleLang = cmd.preferredSubtitleLang,
                     lastSyncStatusMessage = "Playing ${cmd.streamName} on TV"
@@ -475,6 +494,7 @@ class TvSyncManager(
                 val reqJson = runCatching { JSONObject(bodyText) }.getOrNull()
                     ?: return 400 to JSONObject().put("error", "Invalid JSON")
                 val cmd = RemoteControlCommand.fromJson(reqJson)
+                val preControlSnapshot = tvPlaybackStatusProvider?.invoke() ?: _sessionState.value
                 when (cmd.action.uppercase(Locale.ROOT)) {
                     "TOGGLE_PLAY_PAUSE" -> {
                         _sessionState.value = _sessionState.value.copy(
@@ -485,6 +505,8 @@ class TvSyncManager(
                         _sessionState.value = _sessionState.value.copy(
                             tvNowPlayingTitle = "",
                             tvNowPlayingStreamId = "",
+                            tvNowPlayingUrl = "",
+                            tvNowPlayingPositionMs = 0L,
                             tvIsPlaying = false
                         )
                     }
@@ -496,8 +518,22 @@ class TvSyncManager(
                 }
                 _incomingControlCommands.tryEmit(cmd)
                 onControlCommandReceived?.invoke(cmd)
-                val updated = tvPlaybackStatusProvider?.invoke() ?: _sessionState.value
-                200 to buildStatusJson(updated).put("status", "control_applied")
+                val updated = if (cmd.action.equals("STOP", ignoreCase = true)) {
+                    _sessionState.value
+                } else {
+                    tvPlaybackStatusProvider?.invoke() ?: _sessionState.value
+                }
+                val resp = buildStatusJson(updated).apply {
+                    put("status", "control_applied")
+                    if (cmd.action.equals("STOP", ignoreCase = true)) {
+                        put("stoppedStreamId", preControlSnapshot.tvNowPlayingStreamId)
+                        put("stoppedTitle", preControlSnapshot.tvNowPlayingTitle)
+                        put("stoppedType", preControlSnapshot.tvNowPlayingType)
+                        put("stoppedUrl", preControlSnapshot.tvNowPlayingUrl)
+                        put("stoppedPositionMs", preControlSnapshot.tvNowPlayingPositionMs)
+                    }
+                }
+                200 to resp
             }
 
             else -> 400 to JSONObject().put("error", "Unknown endpoint: $cleanPath")
@@ -509,6 +545,8 @@ class TvSyncManager(
             put("tvNowPlayingTitle", state.tvNowPlayingTitle)
             put("tvNowPlayingStreamId", state.tvNowPlayingStreamId)
             put("tvNowPlayingType", state.tvNowPlayingType)
+            put("tvNowPlayingUrl", state.tvNowPlayingUrl)
+            put("tvNowPlayingPositionMs", state.tvNowPlayingPositionMs)
             put("tvIsPlaying", state.tvIsPlaying)
             put("tvActiveSubtitleLang", state.tvActiveSubtitleLang)
             put("connectedPeerName", state.connectedPeerName)
@@ -573,8 +611,14 @@ class TvSyncManager(
                     tvNowPlayingTitle = respJson.optString("tvNowPlayingTitle", ""),
                     tvNowPlayingStreamId = respJson.optString("tvNowPlayingStreamId", ""),
                     tvNowPlayingType = respJson.optString("tvNowPlayingType", ""),
+                    tvNowPlayingUrl = respJson.optString("tvNowPlayingUrl", ""),
+                    tvNowPlayingPositionMs = respJson.optLong("tvNowPlayingPositionMs", 0L),
                     tvIsPlaying = respJson.optBoolean("tvIsPlaying", false),
                     tvActiveSubtitleLang = respJson.optString("tvActiveSubtitleLang", ""),
+                    savedTvHostIp = cleanIp,
+                    savedTvHostPort = port,
+                    savedTvHostPin = cleanPin,
+                    savedTvHostName = remoteHostName,
                     lastSyncStatusMessage = "Connected to $remoteHostName ($cleanIp)"
                 )
                 _sessionState.value = newState
@@ -616,6 +660,8 @@ class TvSyncManager(
             tvNowPlayingTitle = command.streamName,
             tvNowPlayingStreamId = command.streamId,
             tvNowPlayingType = command.streamType,
+            tvNowPlayingUrl = command.streamUrl,
+            tvNowPlayingPositionMs = command.resumePositionMs,
             tvIsPlaying = true,
             tvActiveSubtitleLang = command.preferredSubtitleLang,
             lastSyncStatusMessage = "Broadcasting \"${command.streamName}\" on ${state.connectedPeerName}"
@@ -686,6 +732,69 @@ class TvSyncManager(
     }
 
     /**
+     * Pulls the currently playing TV stream back to the Phone ("📱 Watch Here"):
+     * 1. Sends `POST /api/sync/control` (`action = "STOP"`) to the TV Host first and waits for confirmation
+     *    so the TV closes its stream connection before the phone opens one (`max_connections = 1` safe).
+     * 2. Returns a `RemotePlayCommand` with the TV's `stoppedPositionMs` so the phone can resume seamlessly.
+     */
+    suspend fun pullTvStreamToPhone(): Result<RemotePlayCommand> = withContext(Dispatchers.IO) {
+        val state = _sessionState.value
+        if (state.role != SyncRole.PHONE_CONTROLLER || !state.isSyncActive || activeTargetHostIp.isBlank()) {
+            return@withContext Result.failure(IllegalStateException("Not in Phone Controller Sync Mode"))
+        }
+        val fallbackStreamId = state.tvNowPlayingStreamId
+        val fallbackTitle = state.tvNowPlayingTitle
+        val fallbackType = state.tvNowPlayingType.ifBlank { "live" }
+        val fallbackUrl = state.tvNowPlayingUrl
+        val fallbackPos = state.tvNowPlayingPositionMs
+
+        try {
+            val stopCmd = RemoteControlCommand(action = "STOP")
+            val request = Request.Builder()
+                .url("http://$activeTargetHostIp:$activeTargetPort/api/sync/control")
+                .post(stopCmd.toJson().toString().toRequestBody(JSON_MEDIA_TYPE))
+                .build()
+            httpClient.newCall(request).execute().use { response ->
+                val bodyStr = response.body?.string().orEmpty()
+                val respJson = runCatching { JSONObject(bodyStr) }.getOrNull()
+                if (!response.isSuccessful) {
+                    return@withContext Result.failure(IllegalStateException("Failed to stop TV playback (${response.code})"))
+                }
+                val streamId = respJson?.optString("stoppedStreamId")?.takeIf { it.isNotEmpty() } ?: fallbackStreamId
+                val title = respJson?.optString("stoppedTitle")?.takeIf { it.isNotEmpty() } ?: fallbackTitle
+                val type = respJson?.optString("stoppedType")?.takeIf { it.isNotEmpty() } ?: fallbackType
+                val url = respJson?.optString("stoppedUrl")?.takeIf { it.isNotEmpty() } ?: fallbackUrl
+                val posMs = respJson?.optLong("stoppedPositionMs", fallbackPos) ?: fallbackPos
+
+                _sessionState.value = _sessionState.value.copy(
+                    tvNowPlayingTitle = "",
+                    tvNowPlayingStreamId = "",
+                    tvNowPlayingType = "",
+                    tvNowPlayingUrl = "",
+                    tvNowPlayingPositionMs = 0L,
+                    tvIsPlaying = false,
+                    lastSyncStatusMessage = "Pulled \"$title\" to phone"
+                )
+
+                if (streamId.isEmpty() && title.isEmpty()) {
+                    return@withContext Result.failure(IllegalStateException("No active stream on TV to pull"))
+                }
+                Result.success(
+                    RemotePlayCommand(
+                        streamId = streamId,
+                        streamName = title,
+                        streamType = type,
+                        streamUrl = url,
+                        resumePositionMs = posMs
+                    )
+                )
+            }
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    /**
      * Queries `GET /api/sync/status` on the TV Host (called automatically when the user returns to
      * the phone app from WhatsApp or other apps) so the Companion Bar reflects live TV playback state.
      */
@@ -719,6 +828,8 @@ class TvSyncManager(
             tvNowPlayingTitle = respJson.optString("tvNowPlayingTitle", _sessionState.value.tvNowPlayingTitle),
             tvNowPlayingStreamId = respJson.optString("tvNowPlayingStreamId", _sessionState.value.tvNowPlayingStreamId),
             tvNowPlayingType = respJson.optString("tvNowPlayingType", _sessionState.value.tvNowPlayingType),
+            tvNowPlayingUrl = respJson.optString("tvNowPlayingUrl", _sessionState.value.tvNowPlayingUrl),
+            tvNowPlayingPositionMs = respJson.optLong("tvNowPlayingPositionMs", _sessionState.value.tvNowPlayingPositionMs),
             tvIsPlaying = respJson.optBoolean("tvIsPlaying", _sessionState.value.tvIsPlaying),
             tvActiveSubtitleLang = respJson.optString("tvActiveSubtitleLang", _sessionState.value.tvActiveSubtitleLang)
         )
@@ -736,6 +847,10 @@ class TvSyncManager(
             isSyncActive = false,
             localIpAddress = detectLocalLanIpv4(),
             discoveredTvHosts = _sessionState.value.discoveredTvHosts,
+            savedTvHostIp = prefs.getString(KEY_LAST_TV_IP, "").orEmpty(),
+            savedTvHostPort = prefs.getInt(KEY_LAST_TV_PORT, DEFAULT_PORT),
+            savedTvHostPin = prefs.getString(KEY_LAST_TV_PIN, "").orEmpty(),
+            savedTvHostName = prefs.getString(KEY_LAST_TV_NAME, "").orEmpty(),
             lastSyncStatusMessage = "Disconnected from TV Sync Mode"
         )
     }
@@ -872,6 +987,7 @@ class TvSyncManager(
         const val DEFAULT_PORT = 8765
         const val NSD_SERVICE_TYPE = "_setplay._tcp."
         private const val PREFS_NAME = "setplay_tv_sync_prefs"
+        private const val KEY_PERSISTENT_TV_PIN = "persistent_tv_host_pin"
         private const val KEY_LAST_TV_IP = "last_tv_ip"
         private const val KEY_LAST_TV_PORT = "last_tv_port"
         private const val KEY_LAST_TV_PIN = "last_tv_pin"

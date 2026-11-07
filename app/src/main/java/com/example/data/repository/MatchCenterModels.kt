@@ -639,12 +639,42 @@ class MatchCenterEnricher(
             .build()
 
         httpClient.newCall(req).execute().use { resp ->
+            FootballRepository.updateApiFootballRemainingQuota(resp.header("x-ratelimit-requests-remaining"))
             if (!resp.isSuccessful) return null
             val body = resp.body?.string() ?: return null
             val root = JSONObject(body)
             val item = root.optJSONArray("response")?.optJSONObject(0) ?: return null
+            val existingLineups = item.optJSONArray("lineups")
+            if (existingLineups == null || existingLineups.length() < 2) {
+                fetchApiFootballFixtureLineups(fixtureId, apiKey)?.let { lineupsArr ->
+                    item.put("lineups", lineupsArr)
+                }
+            }
             apiFootballFixtureCache[fixtureId] = item
             return item
+        }
+    }
+
+    internal fun fetchApiFootballFixtureLineups(fixtureId: String, apiKey: String = FootballRepository.resolveApiFootballKey()): org.json.JSONArray? {
+        if (fixtureId.isBlank() || apiKey.isBlank()) return null
+        if (!FootballRepository.tryAcquireSharedApiFootballPermit(isMatchCenterDossier = true)) return null
+        val url = "${FootballRepository.API_FOOTBALL_BASE_URL}/fixtures/lineups".toHttpUrlOrNull()
+            ?.newBuilder()
+            ?.addQueryParameter("fixture", fixtureId)
+            ?.build() ?: return null
+        val req = Request.Builder()
+            .url(url)
+            .header("x-apisports-key", apiKey)
+            .build()
+        return try {
+            httpClient.newCall(req).execute().use { resp ->
+                FootballRepository.updateApiFootballRemainingQuota(resp.header("x-ratelimit-requests-remaining"))
+                if (!resp.isSuccessful) return null
+                val body = resp.body?.string() ?: return null
+                JSONObject(body).optJSONArray("response")?.takeIf { it.length() >= 2 }
+            }
+        } catch (_: Exception) {
+            null
         }
     }
 
@@ -670,6 +700,7 @@ class MatchCenterEnricher(
                 .header("x-apisports-key", apiKey)
                 .build()
             httpClient.newCall(req).execute().use { resp ->
+                FootballRepository.updateApiFootballRemainingQuota(resp.header("x-ratelimit-requests-remaining"))
                 if (!resp.isSuccessful) return ""
                 val body = resp.body?.string() ?: return ""
                 val arr = JSONObject(body).optJSONArray("response") ?: return ""
@@ -1151,7 +1182,7 @@ class MatchCenterEnricher(
                             rowIndex = 5,
                             colIndex = idx,
                             colCountInRow = sofaHomeBench.size.coerceAtMost(9),
-                            rating = entry.sofascoreRating ?: 6.7,
+                            rating = entry.sofascoreRating ?: if (isPlayedOrLive) 6.7 else 0.0,
                             goals = if (isPlayedOrLive) entry.goals else 0,
                             assists = if (isPlayedOrLive) entry.assists else 0,
                             photoUrl = benchPhoto
@@ -1171,16 +1202,13 @@ class MatchCenterEnricher(
                             rowIndex = 5,
                             colIndex = idx,
                             colCountInRow = sofaAwayBench.size.coerceAtMost(9),
-                            rating = entry.sofascoreRating ?: 6.7,
+                            rating = entry.sofascoreRating ?: if (isPlayedOrLive) 6.7 else 0.0,
                             goals = if (isPlayedOrLive) entry.goals else 0,
                             assists = if (isPlayedOrLive) entry.assists else 0,
                             photoUrl = benchPhoto
                         )
                     },
-                    missingPlayers = listOf(
-                        MissingPlayerItem(homeProfile.missingPlayerName, MatchTeamSide.HOME, "CM", "Squad Rotation / Fitness", "OUT"),
-                        MissingPlayerItem(awayProfile.missingPlayerName, MatchTeamSide.AWAY, "CB", "Squad Rotation / Fitness", "OUT")
-                    ),
+                    missingPlayers = emptyList(),
                     homeAvgRating = homeAvg,
                     awayAvgRating = awayAvg,
                     lineupStatusHeadline = headline,
@@ -1254,7 +1282,7 @@ class MatchCenterEnricher(
                         rowIndex = 5,
                         colIndex = idx,
                         colCountInRow = espnHomeBench.size.coerceAtMost(9),
-                        rating = if (isPlayedOrLive && entry.goals > 0) 7.6 else if (isPlayedOrLive && entry.subbedOnMin != null) 6.9 else 6.6,
+                        rating = if (!isPlayedOrLive) 0.0 else if (entry.goals > 0) 7.6 else if (entry.subbedOnMin != null) 6.9 else 6.6,
                         goals = if (isPlayedOrLive) entry.goals else 0,
                         assists = if (isPlayedOrLive) entry.assists else 0,
                         hasYellowCard = isPlayedOrLive && entry.yellowCard,
@@ -1277,7 +1305,7 @@ class MatchCenterEnricher(
                         rowIndex = 5,
                         colIndex = idx,
                         colCountInRow = espnAwayBench.size.coerceAtMost(9),
-                        rating = if (isPlayedOrLive && entry.goals > 0) 7.6 else if (isPlayedOrLive && entry.subbedOnMin != null) 6.9 else 6.6,
+                        rating = if (!isPlayedOrLive) 0.0 else if (entry.goals > 0) 7.6 else if (entry.subbedOnMin != null) 6.9 else 6.6,
                         goals = if (isPlayedOrLive) entry.goals else 0,
                         assists = if (isPlayedOrLive) entry.assists else 0,
                         hasYellowCard = isPlayedOrLive && entry.yellowCard,
@@ -1316,7 +1344,7 @@ class MatchCenterEnricher(
                                 rowIndex = 5,
                                 colIndex = idx,
                                 colCountInRow = homeProfile.bench.size,
-                                rating = 6.5,
+                                rating = if (isPlayedOrLive) 6.5 else 0.0,
                                 photoUrl = photo
                             )
                         }
@@ -1335,15 +1363,12 @@ class MatchCenterEnricher(
                                 rowIndex = 5,
                                 colIndex = idx,
                                 colCountInRow = awayProfile.bench.size,
-                                rating = 6.5,
+                                rating = if (isPlayedOrLive) 6.5 else 0.0,
                                 photoUrl = photo
                             )
                         }
                     },
-                    missingPlayers = listOf(
-                        MissingPlayerItem(homeProfile.missingPlayerName, MatchTeamSide.HOME, "CM", "Squad Rotation / Fitness", "OUT"),
-                        MissingPlayerItem(awayProfile.missingPlayerName, MatchTeamSide.AWAY, "CB", "Squad Rotation / Fitness", "OUT")
-                    ),
+                    missingPlayers = emptyList(),
                     homeAvgRating = homeAvg,
                     awayAvgRating = awayAvg,
                     lineupStatusHeadline = headline,
@@ -1462,7 +1487,7 @@ class MatchCenterEnricher(
                     rowIndex = 5,
                     colIndex = idx,
                     colCountInRow = squadHomeBench.size,
-                    rating = 6.6,
+                    rating = if (isPlayedOrLive) 6.6 else 0.0,
                     subbedOnMinute = if (isPlayedOrLive) entry.subbedOnMin else null,
                     photoUrl = photo
                 )
@@ -1481,7 +1506,7 @@ class MatchCenterEnricher(
                     rowIndex = 5,
                     colIndex = idx,
                     colCountInRow = homeProfile.bench.size,
-                    rating = 6.6,
+                    rating = if (isPlayedOrLive) 6.6 else 0.0,
                     subbedOnMinute = null,
                     photoUrl = photo
                 )
@@ -1503,7 +1528,7 @@ class MatchCenterEnricher(
                     rowIndex = 5,
                     colIndex = idx,
                     colCountInRow = squadAwayBench.size,
-                    rating = 6.6,
+                    rating = if (isPlayedOrLive) 6.6 else 0.0,
                     subbedOnMinute = if (isPlayedOrLive) entry.subbedOnMin else null,
                     photoUrl = photo
                 )
@@ -1522,29 +1547,14 @@ class MatchCenterEnricher(
                     rowIndex = 5,
                     colIndex = idx,
                     colCountInRow = awayProfile.bench.size,
-                    rating = 6.6,
+                    rating = if (isPlayedOrLive) 6.6 else 0.0,
                     subbedOnMinute = null,
                     photoUrl = photo
                 )
             }
         }
 
-        val missing = listOf(
-            MissingPlayerItem(
-                playerName = homeProfile.missingPlayerName,
-                teamSide = MatchTeamSide.HOME,
-                positionCode = "CM",
-                reason = "Muscle Injury / Fitness",
-                statusBadge = "OUT"
-            ),
-            MissingPlayerItem(
-                playerName = awayProfile.missingPlayerName,
-                teamSide = MatchTeamSide.AWAY,
-                positionCode = "CB",
-                reason = "Suspended / Squad Fitness",
-                statusBadge = "OUT"
-            )
-        )
+        val missing = emptyList<MissingPlayerItem>()
 
         val isConfirmed = tsdbHomeEntries.size >= 11 || isPlayedOrLive
         val (headline, subtext, ratingSource) = buildLineupStatusMetadata(
@@ -1601,12 +1611,14 @@ class MatchCenterEnricher(
                 isCaptain = node.isCaptain || (idx == 6 && awayXI.none { it.isCaptain })
             )
         }
-        val homeAvg = if (updatedHome.isNotEmpty()) {
-            Math.round(updatedHome.map { it.rating }.average() * 10.0) / 10.0
-        } else 7.0
-        val awayAvg = if (updatedAway.isNotEmpty()) {
-            Math.round(updatedAway.map { it.rating }.average() * 10.0) / 10.0
-        } else 7.0
+        val ratedHome = updatedHome.filter { it.rating > 0.0 }
+        val ratedAway = updatedAway.filter { it.rating > 0.0 }
+        val homeAvg = if (ratedHome.isNotEmpty()) {
+            Math.round(ratedHome.map { it.rating }.average() * 10.0) / 10.0
+        } else 0.0
+        val awayAvg = if (ratedAway.isNotEmpty()) {
+            Math.round(ratedAway.map { it.rating }.average() * 10.0) / 10.0
+        } else 0.0
         return FinalizedLineupRatings(updatedHome, updatedAway, homeAvg, awayAvg)
     }
 
@@ -1658,9 +1670,11 @@ class MatchCenterEnricher(
                 val yellowCard = isPlayedOrLive && entry.yellowCard
                 val subbedOffMin = if (isPlayedOrLive) entry.subbedOffMin else null
 
-                val baseRating = entry.sofascoreRating
-                    ?: (6.8 + ((seed + playerCursor * 7) % 12) * 0.1 + (playerGoals * 0.8) + (playerAssists * 0.4))
-                val clampedRating = baseRating.coerceIn(6.3, 9.6)
+                val clampedRating = when {
+                    entry.sofascoreRating != null -> entry.sofascoreRating.coerceIn(6.0, 9.8)
+                    isPlayedOrLive -> (6.8 + ((seed + playerCursor * 7) % 12) * 0.1 + (playerGoals * 0.8) + (playerAssists * 0.4)).coerceIn(6.3, 9.6)
+                    else -> 0.0
+                }
 
                 val resolvedPhoto = resolvePlayerPhotoFromSquad(entry.name, teamSquad)
                     .ifBlank { entry.photoUrl }

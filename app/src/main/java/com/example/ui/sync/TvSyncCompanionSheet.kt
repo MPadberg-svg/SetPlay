@@ -88,10 +88,10 @@ import com.example.ui.theme.tvFocusablePill
 import java.security.MessageDigest
 
 /**
- * Sleek, non-intrusive 52.dp "📺 Broadcasting on TV" Companion Bar (`testTag("tv_sync_companion_bar")`).
+ * Sleek, non-intrusive 52.dp "📺 On TV" Companion Bar (`testTag("tv_sync_companion_bar")`).
  * Docks cleanly above `BottomStreamingNav` on the phone when `syncState.role == SyncRole.PHONE_CONTROLLER && syncState.isSyncActive`:
  * - Never traps the user in a full-screen player or remote.
- * - Shows what is currently playing on the TV + 1-tap `[ 💬 Subtitles ]`, `[ ⏯ ]`, and `[ Leave Sync ]` pills.
+ * - Shows what is currently playing on the TV + 3 streamlined 1-tap controls (`[ ⏯ ]`, `[ 📱 Watch Here ]`, `[ Leave Sync ]`).
  * - Because the TV streams directly from the IPTV server, the user can leave the app for WhatsApp anytime
  *   or pick up the physical TV remote.
  */
@@ -99,87 +99,20 @@ import java.security.MessageDigest
 fun TvSyncCompanionBar(
     syncState: TvSyncSessionState,
     onTogglePlayPauseOnTv: () -> Unit,
-    onSelectSubtitleLangOnTv: (String) -> Unit,
+    onPullStreamToPhone: () -> Unit = {},
     onLeaveSyncMode: () -> Unit,
     onOpenSyncSheet: () -> Unit,
     modifier: Modifier = Modifier
 ) {
-    var showQuickSubtitlesRow by remember { mutableStateOf(false) }
+    val hasActiveTvStream = syncState.tvNowPlayingStreamId.isNotBlank() || syncState.tvNowPlayingTitle.isNotBlank()
+    val peerLabel = syncState.connectedPeerName.ifBlank { "Smart TV" }
 
-    Column(
+    Box(
         modifier = modifier
             .fillMaxWidth()
             .padding(horizontal = 10.dp, vertical = 2.dp)
             .testTag("tv_sync_companion_bar")
     ) {
-        // Optional Quick Subtitle Language Selector Pill Row for the TV
-        AnimatedVisibility(visible = showQuickSubtitlesRow) {
-            Surface(
-                color = Color(0xF2081520),
-                shape = RoundedCornerShape(14.dp),
-                border = BorderStroke(1.dp, AmberGold.copy(alpha = 0.55f)),
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(bottom = 4.dp)
-                    .testTag("tv_sync_subtitle_picker_row")
-            ) {
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .horizontalScroll(rememberScrollState())
-                        .padding(horizontal = 10.dp, vertical = 7.dp),
-                    horizontalArrangement = Arrangement.spacedBy(6.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Text(
-                        text = "TV Subtitles:",
-                        color = PaleGold,
-                        fontSize = 11.sp,
-                        fontWeight = FontWeight.Bold
-                    )
-                    val langs = listOf(
-                        "ar" to "🇸🇦 AR",
-                        "en" to "🇬🇧 EN",
-                        "fr" to "🇫🇷 FR",
-                        "es" to "🇪🇸 ES",
-                        "tr" to "🇹🇷 TR",
-                        "off" to "🚫 Off"
-                    )
-                    langs.forEach { (code, label) ->
-                        val isSelected = syncState.tvActiveSubtitleLang.equals(code, ignoreCase = true)
-                        Surface(
-                            color = if (isSelected) AmberGold else Color.White.copy(alpha = 0.10f),
-                            shape = RoundedCornerShape(50),
-                            border = BorderStroke(
-                                0.8.dp,
-                                if (isSelected) AmberGold else Color.White.copy(alpha = 0.22f)
-                            ),
-                            modifier = Modifier
-                                .clip(RoundedCornerShape(50))
-                                .tvFocusablePill(
-                                    accentColor = AmberGold,
-                                    shape = RoundedCornerShape(50),
-                                    onClick = {
-                                        onSelectSubtitleLangOnTv(code)
-                                        showQuickSubtitlesRow = false
-                                    }
-                                )
-                                .testTag("tv_sync_sub_lang_$code")
-                        ) {
-                            Text(
-                                text = label,
-                                color = if (isSelected) DarkGraphite else Color.White,
-                                fontSize = 11.sp,
-                                fontWeight = FontWeight.ExtraBold,
-                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp)
-                            )
-                        }
-                    }
-                }
-            }
-        }
-
-        // Main 52.dp Companion Bar
         Surface(
             color = Color(0xF5071722),
             shape = RoundedCornerShape(18.dp),
@@ -201,7 +134,7 @@ fun TvSyncCompanionBar(
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.SpaceBetween
             ) {
-                // Left: Live Green TV Dot + Now Playing on TV Title
+                // Left: Live Green TV Dot + Status & Now Playing Title
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
                     modifier = Modifier
@@ -229,21 +162,26 @@ fun TvSyncCompanionBar(
                     Spacer(modifier = Modifier.width(8.dp))
 
                     Column(modifier = Modifier.weight(1f)) {
-                        val peerLabel = syncState.connectedPeerName.ifBlank { "Smart TV" }
                         Text(
-                            text = "📺 On $peerLabel • Direct TV Stream",
-                            color = ArenaFloodlightLime,
-                            fontSize = 9.5.sp,
+                            text = if (hasActiveTvStream) {
+                                "📺 On TV: ${syncState.tvNowPlayingTitle}"
+                            } else {
+                                "📺 Synced with $peerLabel — Tap any item to play on TV"
+                            },
+                            color = Color.White,
+                            fontSize = 11.5.sp,
                             fontWeight = FontWeight.ExtraBold,
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis
                         )
                         Text(
-                            text = syncState.tvNowPlayingTitle.ifBlank {
+                            text = if (hasActiveTvStream) {
+                                "Direct TV Stream on $peerLabel • WhatsApp & TV Remote Ready"
+                            } else {
                                 "Ready — Tap any channel, movie or match to play on TV"
                             },
-                            color = Color.White,
-                            fontSize = 11.5.sp,
+                            color = ArenaFloodlightLime,
+                            fontSize = 9.5.sp,
                             fontWeight = FontWeight.SemiBold,
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis
@@ -253,53 +191,15 @@ fun TvSyncCompanionBar(
 
                 Spacer(modifier = Modifier.width(6.dp))
 
-                // Right: 1-Tap Controls: [ 💬 Subtitles ] | [ ⏯ ] | [ Leave Sync ]
+                // Right: Streamlined Action Pills (No Audio or Subtitle Menus on the Companion Bar):
+                // 1. [ ⏯ ] (tv_sync_play_pause_btn)
+                // 2. [ 📱 Watch Here ] (tv_sync_pull_to_phone_btn)
+                // 3. [ Leave Sync ] (tv_sync_leave_btn)
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(6.dp)
                 ) {
-                    // 1. Subtitles Pill
-                    Surface(
-                        color = if (showQuickSubtitlesRow || syncState.tvActiveSubtitleLang.isNotBlank()) {
-                            AmberGold.copy(alpha = 0.22f)
-                        } else {
-                            Color.White.copy(alpha = 0.10f)
-                        },
-                        shape = RoundedCornerShape(50),
-                        border = BorderStroke(
-                            0.8.dp,
-                            if (showQuickSubtitlesRow) AmberGold else Color.White.copy(alpha = 0.20f)
-                        ),
-                        modifier = Modifier
-                            .clip(RoundedCornerShape(50))
-                            .tvFocusablePill(
-                                accentColor = AmberGold,
-                                shape = RoundedCornerShape(50),
-                                onClick = { showQuickSubtitlesRow = !showQuickSubtitlesRow }
-                            )
-                            .testTag("tv_sync_subtitles_btn")
-                    ) {
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            modifier = Modifier.padding(horizontal = 9.dp, vertical = 6.dp)
-                        ) {
-                            Icon(
-                                imageVector = Icons.Default.Subtitles,
-                                contentDescription = "TV Subtitles",
-                                tint = AmberGold,
-                                modifier = Modifier.size(14.dp)
-                            )
-                            Spacer(modifier = Modifier.width(4.dp))
-                            Text(
-                                text = syncState.tvActiveSubtitleLang.uppercase().ifBlank { "CC" },
-                                color = PaleGold,
-                                fontSize = 10.5.sp,
-                                fontWeight = FontWeight.ExtraBold
-                            )
-                        }
-                    }
-
-                    // 2. Play / Pause on TV Pill
+                    // 1. Play / Pause on TV Pill
                     Surface(
                         color = AmberGold,
                         shape = CircleShape,
@@ -319,6 +219,40 @@ fun TvSyncCompanionBar(
                                 contentDescription = if (syncState.tvIsPlaying) "Pause TV" else "Play TV",
                                 tint = DarkGraphite,
                                 modifier = Modifier.size(17.dp)
+                            )
+                        }
+                    }
+
+                    // 2. Pull Stream from TV to Phone ("[ 📱 Watch Here ]")
+                    Surface(
+                        color = KickoffTropicalTeal.copy(alpha = if (hasActiveTvStream) 0.22f else 0.12f),
+                        shape = RoundedCornerShape(50),
+                        border = BorderStroke(0.9.dp, KickoffTropicalTeal.copy(alpha = if (hasActiveTvStream) 1f else 0.55f)),
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(50))
+                            .tvFocusablePill(
+                                accentColor = KickoffTropicalTeal,
+                                shape = RoundedCornerShape(50),
+                                onClick = onPullStreamToPhone
+                            )
+                            .testTag("tv_sync_pull_to_phone_btn")
+                    ) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier.padding(horizontal = 9.dp, vertical = 6.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Smartphone,
+                                contentDescription = "Watch Here on Phone",
+                                tint = KickoffTropicalTeal,
+                                modifier = Modifier.size(13.dp)
+                            )
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text(
+                                text = "Watch Here",
+                                color = Color.White,
+                                fontSize = 10.sp,
+                                fontWeight = FontWeight.ExtraBold
                             )
                         }
                     }

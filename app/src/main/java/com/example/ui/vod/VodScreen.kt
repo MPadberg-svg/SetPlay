@@ -450,7 +450,11 @@ fun VodScreen(
                                 Modifier
                             }
                         )
-                        .clickable { onSelectCategory(null) }
+                        .tvFocusablePill(
+                            accentColor = sectionHighlight,
+                            shape = RoundedCornerShape(50),
+                            onClick = { onSelectCategory(null) }
+                        )
                 ) {
                     Text(
                         text = if (isMovies) "All Movies" else "All Series",
@@ -1288,6 +1292,28 @@ fun ImaxMovieDossierModalSheet(
                                     }
                                 }
                             }
+
+                            val resolvedMediaBadge = movieDetails?.tmdbOrImdbId?.trim()
+                                ?.takeIf { it.isNotEmpty() && it != "0" && it != "null" }
+                            if (resolvedMediaBadge != null) {
+                                Surface(
+                                    color = MoviesMintSpring.copy(alpha = 0.14f),
+                                    shape = RoundedCornerShape(6.dp),
+                                    border = BorderStroke(0.6.dp, MoviesMintSpring.copy(alpha = 0.45f))
+                                ) {
+                                    Text(
+                                        text = if (resolvedMediaBadge.startsWith("tt", ignoreCase = true)) {
+                                            "IMDb ${resolvedMediaBadge.lowercase()}"
+                                        } else {
+                                            "TMDb #$resolvedMediaBadge"
+                                        },
+                                        color = MoviesMintSpring,
+                                        fontSize = 9.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                                    )
+                                }
+                            }
                         }
 
                         Spacer(modifier = Modifier.height(7.dp))
@@ -1468,6 +1494,25 @@ fun ImaxMovieDossierModalSheet(
             }
         }
     }
+}
+
+@Composable
+fun MovieDossierBottomSheet(
+    movieStream: StreamEntity,
+    movieDetails: VodMovieDetails?,
+    isLoading: Boolean,
+    onDismiss: () -> Unit,
+    onWatchMovie: () -> Unit,
+    onToggleFavorite: () -> Unit
+) {
+    ImaxMovieDossierModalSheet(
+        movieStream = movieStream,
+        movieDetails = movieDetails,
+        isLoading = isLoading,
+        onDismiss = onDismiss,
+        onWatchMovie = onWatchMovie,
+        onToggleFavorite = onToggleFavorite
+    )
 }
 
 /**

@@ -530,7 +530,17 @@ class XtreamClient(
             )
         }
 
-        val resolvedTmdbOrImdbId = imdbId.ifBlank { tmdbId }
+        var resolvedTmdbOrImdbId = imdbId.ifBlank { tmdbId }
+        if (resolvedTmdbOrImdbId.isBlank()) {
+            val subtitleHelper = WyzieSubtitleService(okHttpClient)
+            val (cleanSeriesTitle, seriesYear) = subtitleHelper.cleanMediaTitle(title.ifBlank { fallbackTitle })
+            val (tmdbImdb, tmdbNum) = subtitleHelper.resolveMediaIdsViaTmdb(
+                cleanTitle = cleanSeriesTitle,
+                year = seriesYear?.toString(),
+                isSeries = true
+            )
+            resolvedTmdbOrImdbId = tmdbImdb ?: tmdbNum.orEmpty()
+        }
         SeriesDetails(
             seriesId = seriesId,
             title = title,

@@ -278,17 +278,22 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             applyIncomingVaultPayload(incomingVault)
             buildCurrentVaultSyncPayload()
         }
-        viewModelScope.launch {
-            tvSyncManager.incomingNavCommands.collect { cmd ->
-                if (tvSyncState.value.role == SyncRole.TV_HOST && !isTvInFullScreenPlayback) {
-                    runCatching { AppScreen.valueOf(cmd.screenName) }.getOrNull()?.let { screen ->
-                        _currentScreen.value = screen
-                    }
-                    cmd.matchDayName?.let { dayName ->
-                        runCatching { MatchDayTab.valueOf(dayName) }.getOrNull()?.let { tab ->
-                            if (_selectedMatchDay.value != tab) {
-                                _selectedMatchDay.value = tab
-                            }
+        // Auto-Ready on Android TV Boot: automatically start TvSyncManager host server on Android TV devices
+        runCatching {
+            val uiModeManager = application.getSystemService(android.content.Context.UI_MODE_SERVICE) as? android.app.UiModeManager
+            if (uiModeManager?.currentModeType == android.content.res.Configuration.UI_MODE_TYPE_TELEVISION) {
+                tvSyncManager.startTvHostServer()
+            }
+        }
+        tvSyncManager.onNavMirrorReceived = { cmd ->
+            if (tvSyncState.value.role == SyncRole.TV_HOST && !isTvInFullScreenPlayback) {
+                runCatching { AppScreen.valueOf(cmd.screenName) }.getOrNull()?.let { screen ->
+                    _currentScreen.value = screen
+                }
+                cmd.matchDayName?.let { dayName ->
+                    runCatching { MatchDayTab.valueOf(dayName) }.getOrNull()?.let { tab ->
+                        if (_selectedMatchDay.value != tab) {
+                            _selectedMatchDay.value = tab
                         }
                     }
                 }
@@ -1129,7 +1134,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         tvSyncManager.sendControlToTv(action = action, value = value, seekSeconds = seekSeconds)
     }
 
-    fun refreshSyncedTvStatusOnResume() {
+    fun refreshTvSyncStatusOnResume() {
         if (tvSyncState.value.role == SyncRole.PHONE_CONTROLLER && tvSyncState.value.isSyncActive) {
             viewModelScope.launch {
                 tvSyncManager.refreshTvStatus()
@@ -1137,9 +1142,27 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    fun refreshSyncedTvStatusOnResume() {
+        refreshTvSyncStatusOnResume()
+    }
+
+    fun pullStreamFromTvToPhone(onPlayLocally: (StreamEntity, PlaylistEntity) -> Unit) {
+        viewModelScope.launch {
+            val result = tvSyncManager.pullTvStreamToPhone()
+            val cmd = result.getOrNull() ?: return@launch
+            // 300ms Single-Connection Guard: wait for the TV to release its IPTV socket before starting phone playback
+            delay(300L)
+            val resolved = resolveOrBuildStreamForTvCommand(cmd) ?: return@launch
+            onPlayLocally(resolved.first, resolved.second)
+        }
+    }
+
     suspend fun resolveOrBuildStreamForTvCommand(cmd: RemotePlayCommand): Pair<StreamEntity, PlaylistEntity>? {
         val playlist = activePlaylist.value ?: repository.getActivePlaylistOnce() ?: return null
         val providerStreamId = cmd.streamId.toLongOrNull() ?: 0L
+        if (cmd.streamType.equals("series", ignoreCase = true) && cmd.resumePositionMs > 0L && providerStreamId > 0L) {
+            repository.saveEpisodePositionMs(playlist.id, providerStreamId, cmd.resumePositionMs)
+        }
         val existing = if (providerStreamId > 0L) {
             database.streamDao().getStreamByProviderId(playlist.id, providerStreamId)
         } else {

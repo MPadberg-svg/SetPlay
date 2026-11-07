@@ -253,10 +253,12 @@ class FootballRepository(
     private val sofascoreEventTvCache = ConcurrentHashMap<String, Pair<Long, List<String>>>()
     private val sofascoreChannelNameCache = ConcurrentHashMap<Long, String>()
 
-    // 3. API-Football cache (smart TTL: 90s for live TODAY polling, 15m otherwise; reserves quota for Match Center)
+    // 3. API-Football cache (30m TTL for TODAY, 3h for non-today tabs; reserves final 15 req/day for Match Center)
     private val apiFootballDayCache = ConcurrentHashMap<String, Pair<Long, List<FootballMatch>>>()
+    internal val apiFootballRemainingQuota: AtomicInteger
+        get() = sharedApiFootballRemainingQuota
 
-    // 4. Football-Data.org v4 cache (10 req/min sliding window + per-day cache)
+    // 4. Football-Data.org v4 cache (10 req/min sliding window + 30m per-day cache)
     private val footballDataDayCache = ConcurrentHashMap<String, Pair<Long, List<FootballMatch>>>()
 
     // 5. 5-Tab Match Center Enricher (Lineups, 2D Pitch, Timeline, Stats, H2H/Standings, MENA TV Guide)
@@ -947,6 +949,7 @@ class FootballRepository(
                 .build()
 
             httpClient.newCall(request).execute().use { response ->
+                updateApiFootballRemainingQuota(response.header("x-ratelimit-requests-remaining"))
                 if (!response.isSuccessful) return emptyList()
                 val body = response.body?.string() ?: return emptyList()
                 val root = JSONObject(body)
@@ -1188,6 +1191,11 @@ class FootballRepository(
         if (existing.matchId.startsWith("tsdb_") && candidate.espnEventId.isNotBlank()) return true
         return false
     }
+
+    internal fun mergeDayFixtures(
+        primaryLive: FootballMatch,
+        badgeAndTvSource: FootballMatch
+    ): FootballMatch = mergeMatchRecords(primaryLive, badgeAndTvSource)
 
     /**
      * Merges a live-authoritative match record (SportAPI.ai / ESPN Live) with a badge/TV-authoritative match record (TheSportsDB).
@@ -3305,6 +3313,12 @@ class FootballRepository(
         }
     }
 
+    internal fun fetchDayFixturesFromApiFootball(
+        isoDate: String,
+        dayTab: MatchDayTab,
+        forceLiveRefresh: Boolean = false
+    ): List<FootballMatch> = fetchApiFootballDayMatches(isoDate, dayTab, forceLiveRefresh)
+
     private fun fetchApiFootballDayMatches(
         isoDate: String,
         dayTab: MatchDayTab,
@@ -3314,20 +3328,22 @@ class FootballRepository(
 
         val now = System.currentTimeMillis()
         val cached = apiFootballDayCache[isoDate]
-        if (cached != null && cached.second.isNotEmpty()) {
-            val hasLiveInCache = cached.second.any { it.status == MatchStatus.LIVE || it.status == MatchStatus.HALFTIME }
-            val ttlMs = if (dayTab == MatchDayTab.TODAY && (forceLiveRefresh || hasLiveInCache)) {
-                90_000L // 90s TTL during active live TODAY polling to conserve 100 req/day free tier
+        if (cached != null && cached.second.isNotEmpty() && !forceLiveRefresh) {
+            val ttlMs = if (dayTab == MatchDayTab.TODAY) {
+                30 * 60 * 1000L // 30-min TTL for TODAY
             } else {
-                15 * 60 * 1000L // 15-min TTL for non-live days
+                3 * 60 * 60 * 1000L // 3-hour TTL for non-today tabs
             }
             if ((now - cached.first) < ttlMs) {
                 return cached.second
             }
         }
 
-        // Smart Quota Management: reserve 15 of the 100 daily requests for Match Center 1-call dossier lookups
-        if (!Companion.tryAcquireSharedApiFootballPermit(isMatchCenterDossier = false)) {
+        // Smart Quota Guard (100 req/day): if remaining quota <= 15, skip background day-schedule fetches
+        // so the final 15 calls are reserved strictly for on-demand Match Center Dossier opens.
+        if (apiFootballRemainingQuota.get() <= 15 ||
+            !Companion.tryAcquireSharedApiFootballPermit(isMatchCenterDossier = false)
+        ) {
             return cached?.second ?: emptyList()
         }
 
@@ -3344,6 +3360,7 @@ class FootballRepository(
                 .build()
 
             httpClient.newCall(request).execute().use { response ->
+                updateApiFootballRemainingQuota(response.header("x-ratelimit-requests-remaining"))
                 if (!response.isSuccessful) return cached?.second ?: emptyList()
                 val body = response.body?.string() ?: return cached?.second ?: emptyList()
                 val root = JSONObject(body)
@@ -3454,6 +3471,12 @@ class FootballRepository(
      * Fetches European flagship competitions (`CL`, `PL`, `PD`, `SA`, `BL1`, `FL1`) with header `X-Auth-Token: BuildConfig.FOOTBALL_DATA_KEY`,
      * rate-limited to 10 requests/minute on the free tier.
      */
+    internal fun fetchDayFixturesFromFootballDataOrg(
+        dayTab: MatchDayTab,
+        isoDate: String,
+        forceLiveRefresh: Boolean = false
+    ): List<FootballMatch> = fetchFootballDataOrgDayMatches(isoDate, dayTab, forceLiveRefresh)
+
     private fun fetchFootballDataOrgDayMatches(
         isoDate: String,
         dayTab: MatchDayTab,
@@ -3463,9 +3486,8 @@ class FootballRepository(
 
         val now = System.currentTimeMillis()
         val cached = footballDataDayCache[isoDate]
-        if (cached != null && cached.second.isNotEmpty()) {
-            val hasLive = cached.second.any { it.status == MatchStatus.LIVE || it.status == MatchStatus.HALFTIME }
-            val ttlMs = if (dayTab == MatchDayTab.TODAY && (forceLiveRefresh || hasLive)) 60_000L else 15 * 60 * 1000L
+        if (cached != null && cached.second.isNotEmpty() && !forceLiveRefresh) {
+            val ttlMs = 30 * 60 * 1000L // 30-min cache TTL
             if ((now - cached.first) < ttlMs) {
                 return cached.second
             }
@@ -4310,6 +4332,7 @@ class FootballRepository(
         internal const val API_FOOTBALL_MAX_DAILY_TOTAL = 95
         internal const val API_FOOTBALL_MAX_DAILY_BACKGROUND = 80
         private val sharedApiFootballDailyCounter = AtomicInteger(0)
+        internal val sharedApiFootballRemainingQuota = AtomicInteger(100)
 
         // API #4: Football-Data.org v4 (10 req/min free tier)
         const val FOOTBALL_DATA_BASE_URL = "https://api.football-data.org/v4"
@@ -4341,12 +4364,23 @@ class FootballRepository(
 
         internal fun isApiFootballKeyConfigured(): Boolean = resolveApiFootballKey().isNotEmpty()
 
+        internal fun updateApiFootballRemainingQuota(remainingHeader: String?) {
+            val parsed = remainingHeader?.trim()?.toIntOrNull()
+            if (parsed != null && parsed >= 0) {
+                sharedApiFootballRemainingQuota.set(parsed)
+            }
+        }
+
         @Synchronized
         internal fun tryAcquireSharedApiFootballPermit(isMatchCenterDossier: Boolean = false): Boolean {
+            val remaining = sharedApiFootballRemainingQuota.get()
+            if (!isMatchCenterDossier && remaining <= 15) return false
+            if (isMatchCenterDossier && remaining <= 0) return false
             val current = sharedApiFootballDailyCounter.get()
             val limit = if (isMatchCenterDossier) API_FOOTBALL_MAX_DAILY_TOTAL else API_FOOTBALL_MAX_DAILY_BACKGROUND
             if (current >= limit) return false
             sharedApiFootballDailyCounter.incrementAndGet()
+            sharedApiFootballRemainingQuota.updateAndGet { (it - 1).coerceAtLeast(0) }
             return true
         }
 
@@ -4391,6 +4425,7 @@ class FootballRepository(
             sharedSportsDbRequestTimestamps.clear()
             sharedFootballDataRequestTimestamps.clear()
             sharedApiFootballDailyCounter.set(0)
+            sharedApiFootballRemainingQuota.set(100)
         }
 
         internal val SOFASCORE_KNOWN_TV_CHANNELS = mapOf(
