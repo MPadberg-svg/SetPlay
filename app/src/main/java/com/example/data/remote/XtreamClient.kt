@@ -2,6 +2,7 @@ package com.example.data.remote
 
 import android.util.Base64
 import android.util.Log
+import com.example.BuildConfig
 import com.example.data.model.CategoryEntity
 import com.example.data.model.EpgProgramEntity
 import com.example.data.model.StreamEntity
@@ -15,7 +16,9 @@ import okhttp3.HttpUrl
 import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import okhttp3.OkHttpClient
 import okhttp3.Request
+import org.json.JSONObject
 import java.io.IOException
+import java.net.URLEncoder
 import java.text.SimpleDateFormat
 import java.util.Locale
 import java.util.concurrent.TimeUnit
@@ -567,6 +570,15 @@ class XtreamClient(
             )
         )
 
+        var details = VodMovieDetails(
+            vodId = vodId,
+            title = fallbackTitle,
+            coverUrl = fallbackCover,
+            backdropUrl = "",
+            rating = fallbackRating,
+            containerExtension = fallbackExtension.ifBlank { "mp4" }
+        )
+
         if (targetUrl != null) {
             try {
                 val request = Request.Builder()
@@ -577,7 +589,7 @@ class XtreamClient(
                 okHttpClient.newCall(request).execute().use { response ->
                     if (response.isSuccessful && response.body != null) {
                         val reader = JsonReader.of(response.body!!.source())
-                        return@withContext parseVodMovieDetailsJson(
+                        details = parseVodMovieDetailsJson(
                             reader = reader,
                             vodId = vodId,
                             fallbackTitle = fallbackTitle,
@@ -593,14 +605,163 @@ class XtreamClient(
             }
         }
 
-        VodMovieDetails(
-            vodId = vodId,
-            title = fallbackTitle,
-            coverUrl = fallbackCover,
-            backdropUrl = fallbackCover,
-            rating = fallbackRating,
-            containerExtension = fallbackExtension.ifBlank { "mp4" }
-        )
+        // If Xtream returned blank plot, cast, or backdrop (or for M3U playlists), enrich from TMDb API v3
+        if (details.plot.isBlank() || details.cast.isBlank() || details.backdropUrl.isBlank() || details.backdropUrl == fallbackCover) {
+            details = enrichVodMovieDetailsWithTmdb(
+                baseDetails = details,
+                rawTitle = fallbackTitle
+            )
+        }
+
+        if (details.backdropUrl.isBlank()) {
+            details = details.copy(backdropUrl = details.coverUrl.ifBlank { fallbackCover })
+        }
+
+        details
+    }
+
+    /**
+     * Queries TMDb `/search/movie` + `/movie/{id}?append_to_response=credits` using `BuildConfig.TMDB_API_KEY`
+     * when configured, populating 4K `backdrop_path` (`w1280`), `poster_path` (`w780`), `overview` (plot),
+     * top 5 cast names, director name, `release_date`, `runtime`, and `vote_average` rating.
+     */
+    internal fun enrichVodMovieDetailsWithTmdb(
+        baseDetails: VodMovieDetails,
+        rawTitle: String
+    ): VodMovieDetails {
+        val tmdbKey = try {
+            BuildConfig.TMDB_API_KEY.trim()
+        } catch (_: Exception) {
+            ""
+        }
+        if (tmdbKey.isEmpty() || tmdbKey.startsWith("YOUR_", ignoreCase = true) || tmdbKey == "null") {
+            return baseDetails
+        }
+
+        return try {
+            val subtitleHelper = WyzieSubtitleService(okHttpClient)
+            val (cleanTitle, extractedYear) = subtitleHelper.cleanMediaTitle(rawTitle.ifBlank { baseDetails.title })
+            val existingNumericTmdbId = baseDetails.tmdbOrImdbId.trim()
+                .takeIf { it.isNotEmpty() && it.all { ch -> ch.isDigit() } && it != "0" }
+
+            val resolvedTmdbId = existingNumericTmdbId ?: run {
+                val encodedQuery = URLEncoder.encode(cleanTitle, "UTF-8")
+                val yearQuery = if (extractedYear != null) "&year=$extractedYear" else ""
+                val searchUrl = "https://api.themoviedb.org/3/search/movie?api_key=$tmdbKey&query=$encodedQuery$yearQuery"
+                val searchBody = okHttpClient.newCall(
+                    Request.Builder()
+                        .url(searchUrl)
+                        .header("User-Agent", USER_AGENT)
+                        .header("Accept", "application/json")
+                        .build()
+                ).execute().use { resp ->
+                    if (!resp.isSuccessful || resp.body == null) null else resp.body!!.string()
+                }
+                if (searchBody.isNullOrBlank()) null else subtitleHelper.parseTmdbSearchTopId(searchBody)
+            } ?: return baseDetails
+
+            val detailsUrl = "https://api.themoviedb.org/3/movie/$resolvedTmdbId?api_key=$tmdbKey&append_to_response=credits"
+            val detailsBody = okHttpClient.newCall(
+                Request.Builder()
+                    .url(detailsUrl)
+                    .header("User-Agent", USER_AGENT)
+                    .header("Accept", "application/json")
+                    .build()
+            ).execute().use { resp ->
+                if (!resp.isSuccessful || resp.body == null) return baseDetails
+                resp.body!!.string()
+            }
+
+            parseTmdbMovieDetailsWithCreditsJson(detailsBody, baseDetails)
+        } catch (e: Exception) {
+            Log.w("XtreamClient", "TMDb movie details enrichment failed: ${e.message}")
+            baseDetails
+        }
+    }
+
+    internal fun parseTmdbMovieDetailsWithCreditsJson(
+        json: String,
+        baseDetails: VodMovieDetails
+    ): VodMovieDetails {
+        return try {
+            val root = JSONObject(json.trim())
+            val backdropPath = root.optString("backdrop_path", "").trim()
+                .takeIf { it.isNotEmpty() && it != "null" }
+            val posterPath = root.optString("poster_path", "").trim()
+                .takeIf { it.isNotEmpty() && it != "null" }
+            val overview = root.optString("overview", "").trim()
+            val releaseDate = root.optString("release_date", "").trim()
+            val runtimeMins = root.optInt("runtime", 0)
+            val voteAvg = root.optDouble("vote_average", 0.0)
+            val imdbId = root.optString("imdb_id", "").trim()
+                .takeIf { it.startsWith("tt", ignoreCase = true) }
+            val tmdbId = root.optLong("id", 0L).takeIf { it > 0L }?.toString().orEmpty()
+
+            val genresArr = root.optJSONArray("genres")
+            val genresText = if (genresArr != null && genresArr.length() > 0) {
+                buildList {
+                    for (i in 0 until genresArr.length()) {
+                        val name = genresArr.optJSONObject(i)?.optString("name", "")?.trim().orEmpty()
+                        if (name.isNotBlank()) add(name)
+                    }
+                }.joinToString(", ")
+            } else ""
+
+            val creditsObj = root.optJSONObject("credits")
+            val castArr = creditsObj?.optJSONArray("cast")
+            val top5Cast = if (castArr != null && castArr.length() > 0) {
+                buildList {
+                    for (i in 0 until castArr.length().coerceAtMost(5)) {
+                        val actorName = castArr.optJSONObject(i)?.optString("name", "")?.trim().orEmpty()
+                        if (actorName.isNotBlank()) add(actorName)
+                    }
+                }.joinToString(", ")
+            } else ""
+
+            val crewArr = creditsObj?.optJSONArray("crew")
+            var directorName = ""
+            if (crewArr != null) {
+                for (i in 0 until crewArr.length()) {
+                    val member = crewArr.optJSONObject(i) ?: continue
+                    if (member.optString("job", "").equals("Director", ignoreCase = true)) {
+                        directorName = member.optString("name", "").trim()
+                        if (directorName.isNotBlank()) break
+                    }
+                }
+            }
+
+            val fullBackdropUrl = if (!backdropPath.isNullOrBlank()) {
+                "https://image.tmdb.org/t/p/w1280${if (backdropPath.startsWith("/")) backdropPath else "/$backdropPath"}"
+            } else ""
+            val fullPosterUrl = if (!posterPath.isNullOrBlank()) {
+                "https://image.tmdb.org/t/p/w780${if (posterPath.startsWith("/")) posterPath else "/$posterPath"}"
+            } else ""
+
+            baseDetails.copy(
+                coverUrl = baseDetails.coverUrl.ifBlank { fullPosterUrl },
+                backdropUrl = if (baseDetails.backdropUrl.isBlank() || baseDetails.backdropUrl == baseDetails.coverUrl) {
+                    fullBackdropUrl.ifBlank { baseDetails.backdropUrl.ifBlank { fullPosterUrl } }
+                } else {
+                    baseDetails.backdropUrl
+                },
+                plot = baseDetails.plot.ifBlank { overview },
+                cast = baseDetails.cast.ifBlank { top5Cast },
+                director = baseDetails.director.ifBlank { directorName },
+                genre = baseDetails.genre.ifBlank { genresText },
+                releaseDate = baseDetails.releaseDate.ifBlank { releaseDate },
+                duration = baseDetails.duration.ifBlank {
+                    if (runtimeMins > 0) "${runtimeMins}m" else ""
+                },
+                rating = if (baseDetails.rating.isBlank() || baseDetails.rating == "0" || baseDetails.rating == "0.0") {
+                    if (voteAvg > 0.0) String.format(Locale.US, "%.1f", voteAvg) else baseDetails.rating
+                } else {
+                    baseDetails.rating
+                },
+                tmdbOrImdbId = baseDetails.tmdbOrImdbId.ifBlank { imdbId ?: tmdbId }
+            )
+        } catch (_: Exception) {
+            baseDetails
+        }
     }
 
     internal fun parseVodMovieDetailsJson(

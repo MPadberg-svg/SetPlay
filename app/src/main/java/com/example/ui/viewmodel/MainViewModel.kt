@@ -20,6 +20,13 @@ import com.example.data.repository.SeasonTimeMode
 import com.example.data.repository.SyncProgress
 import com.example.data.repository.UserCountryZone
 import com.example.data.repository.UserZoneRegistry
+import com.example.data.sync.RemoteControlCommand
+import com.example.data.sync.RemoteNavMirrorCommand
+import com.example.data.sync.RemotePlayCommand
+import com.example.data.sync.SyncRole
+import com.example.data.sync.TvSyncManager
+import com.example.data.sync.TvSyncSessionState
+import com.example.data.sync.VaultSyncPayload
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.async
@@ -252,11 +259,41 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val _activeGoalAlert = MutableStateFlow<LiveGoalAlertEvent?>(null)
     val activeGoalAlert: StateFlow<LiveGoalAlertEvent?> = _activeGoalAlert.asStateFlow()
 
+    // Local Wi-Fi Phone ↔ TV QR Companion & Sync Engine
+    val tvSyncManager = TvSyncManager(application)
+    val tvSyncState: StateFlow<TvSyncSessionState> = tvSyncManager.sessionState
+
+    private val _tvSyncErrorMessage = MutableStateFlow<String?>(null)
+    val tvSyncErrorMessage: StateFlow<String?> = _tvSyncErrorMessage.asStateFlow()
+
+    @Volatile
+    var isTvInFullScreenPlayback: Boolean = false
+
     private var teamSearchJob: Job? = null
     private var livePollingJob: Job? = null
     private var goalAlertDismissJob: Job? = null
 
     init {
+        tvSyncManager.onVaultPayloadReceived = { incomingVault ->
+            applyIncomingVaultPayload(incomingVault)
+            buildCurrentVaultSyncPayload()
+        }
+        viewModelScope.launch {
+            tvSyncManager.incomingNavCommands.collect { cmd ->
+                if (tvSyncState.value.role == SyncRole.TV_HOST && !isTvInFullScreenPlayback) {
+                    runCatching { AppScreen.valueOf(cmd.screenName) }.getOrNull()?.let { screen ->
+                        _currentScreen.value = screen
+                    }
+                    cmd.matchDayName?.let { dayName ->
+                        runCatching { MatchDayTab.valueOf(dayName) }.getOrNull()?.let { tab ->
+                            if (_selectedMatchDay.value != tab) {
+                                _selectedMatchDay.value = tab
+                            }
+                        }
+                    }
+                }
+            }
+        }
         viewModelScope.launch {
             footballRepository.ensureDefaultTournamentsInitialized()
             refreshFootballSchedules()
@@ -612,6 +649,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun selectMatchDay(dayTab: MatchDayTab) {
         _selectedMatchDay.value = dayTab
+        if (tvSyncState.value.role == SyncRole.PHONE_CONTROLLER && tvSyncState.value.isSyncActive) {
+            tvSyncManager.sendNavMirror(
+                RemoteNavMirrorCommand(
+                    screenName = _currentScreen.value.name,
+                    matchDayName = dayTab.name
+                )
+            )
+        }
         if (_matchesByDay.value[dayTab].isNullOrEmpty()) {
             viewModelScope.launch {
                 val fetched = footballRepository.fetchMatchesForDay(dayTab)
@@ -892,6 +937,231 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun setScreen(screen: AppScreen) {
         _currentScreen.value = screen
+        if (tvSyncState.value.role == SyncRole.PHONE_CONTROLLER && tvSyncState.value.isSyncActive) {
+            tvSyncManager.sendNavMirror(
+                RemoteNavMirrorCommand(
+                    screenName = screen.name,
+                    matchDayName = _selectedMatchDay.value.name
+                )
+            )
+        }
+    }
+
+    // =========================================================================
+    // Local Wi-Fi Phone ↔ TV QR Companion & Sync Operations
+    // =========================================================================
+    suspend fun buildCurrentVaultSyncPayload(): VaultSyncPayload {
+        val playlist = activePlaylist.value ?: repository.getActivePlaylistOnce()
+        val favIds = if (playlist != null) {
+            val liveFavs = database.streamDao().getFavoriteProviderIds(playlist.id, "live").map { "live:$it" }
+            val movieFavs = database.streamDao().getFavoriteProviderIds(playlist.id, "movie").map { "movie:$it" }
+            val seriesFavs = database.streamDao().getFavoriteProviderIds(playlist.id, "series").map { "series:$it" }
+            liveFavs + movieFavs + seriesFavs
+        } else {
+            emptyList()
+        }
+        val app = getApplication<Application>()
+        val subPrefs = app.getSharedPreferences(com.example.ui.player.PlayerViewModel.SUBTITLE_PREFS_NAME, android.content.Context.MODE_PRIVATE)
+        val prefSubLang = subPrefs.getString(com.example.ui.player.PlayerViewModel.KEY_LAST_SUBTITLE_LANG, "").orEmpty()
+        val resumeMap = repository.episodeResumeMap.value.mapValues { it.value.positionMs }
+
+        return VaultSyncPayload(
+            playlistName = playlist?.name.orEmpty(),
+            serverUrl = playlist?.serverUrl.orEmpty(),
+            username = playlist?.username.orEmpty(),
+            password = playlist?.password.orEmpty(),
+            playlistType = "XTREAM",
+            favoriteStreamIds = favIds,
+            countryZoneCode = _selectedCountryZone.value.countryCode,
+            preferredSubtitleLang = prefSubLang,
+            episodeResumeMap = resumeMap
+        )
+    }
+
+    suspend fun applyIncomingVaultPayload(payload: VaultSyncPayload) {
+        if (payload.countryZoneCode.isNotBlank() &&
+            !payload.countryZoneCode.equals(_selectedCountryZone.value.countryCode, ignoreCase = true)
+        ) {
+            selectCountryZone(payload.countryZoneCode)
+        }
+
+        if (payload.preferredSubtitleLang.isNotBlank()) {
+            val app = getApplication<Application>()
+            app.getSharedPreferences(
+                com.example.ui.player.PlayerViewModel.SUBTITLE_PREFS_NAME,
+                android.content.Context.MODE_PRIVATE
+            ).edit()
+                .putString(com.example.ui.player.PlayerViewModel.KEY_LAST_SUBTITLE_LANG, payload.preferredSubtitleLang)
+                .apply()
+        }
+
+        var targetPlaylist = activePlaylist.value ?: repository.getActivePlaylistOnce()
+        if (payload.serverUrl.isNotBlank() && payload.username.isNotBlank()) {
+            val existing = allPlaylists.value.find {
+                it.serverUrl.equals(payload.serverUrl.trim(), ignoreCase = true) &&
+                    it.username.equals(payload.username.trim(), ignoreCase = true)
+            }
+            if (existing != null) {
+                repository.setActivePlaylist(existing.id)
+                targetPlaylist = existing
+            } else {
+                val newPlaylist = PlaylistEntity(
+                    name = payload.playlistName.ifBlank { "Synced Xtream Account" },
+                    serverUrl = payload.serverUrl.trim(),
+                    username = payload.username.trim(),
+                    password = payload.password.trim(),
+                    isActive = true
+                )
+                val newId = repository.addOrUpdatePlaylist(newPlaylist)
+                repository.setActivePlaylist(newId)
+                targetPlaylist = repository.getPlaylistById(newId)
+                if (targetPlaylist != null) {
+                    viewModelScope.launch {
+                        repository.syncPlaylist(targetPlaylist!!)
+                    }
+                }
+            }
+        }
+
+        val activeId = targetPlaylist?.id ?: return
+        val liveFavs = mutableListOf<Long>()
+        val movieFavs = mutableListOf<Long>()
+        val seriesFavs = mutableListOf<Long>()
+        payload.favoriteStreamIds.forEach { token ->
+            val type = token.substringBefore(":", "live").lowercase(Locale.ROOT)
+            val idLong = token.substringAfter(":", token).toLongOrNull() ?: return@forEach
+            when (type) {
+                "movie" -> movieFavs.add(idLong)
+                "series" -> seriesFavs.add(idLong)
+                else -> liveFavs.add(idLong)
+            }
+        }
+        if (liveFavs.isNotEmpty()) database.streamDao().restoreFavorites(activeId, "live", liveFavs)
+        if (movieFavs.isNotEmpty()) database.streamDao().restoreFavorites(activeId, "movie", movieFavs)
+        if (seriesFavs.isNotEmpty()) database.streamDao().restoreFavorites(activeId, "series", seriesFavs)
+
+        payload.episodeResumeMap.forEach { (rawKey, posMs) ->
+            val epId = rawKey.substringAfter("_ep_", "").toLongOrNull()
+            if (epId != null && posMs > 0L) {
+                repository.saveEpisodePositionMs(activeId, epId, posMs)
+            }
+        }
+    }
+
+    fun startTvHostMode() {
+        _tvSyncErrorMessage.value = null
+        tvSyncManager.startTvHostServer()
+    }
+
+    fun startPhoneSyncDiscovery() {
+        _tvSyncErrorMessage.value = null
+        tvSyncManager.startNsdDiscovery()
+    }
+
+    fun connectPhoneToTv(ip: String, port: Int, pin: String, onSuccess: () -> Unit = {}) {
+        viewModelScope.launch {
+            _tvSyncErrorMessage.value = null
+            val localVault = buildCurrentVaultSyncPayload()
+            val result = tvSyncManager.connectToTvHost(
+                hostIp = ip,
+                port = port,
+                pin = pin,
+                localVault = localVault,
+                onRemoteVaultReceived = { remoteVault ->
+                    applyIncomingVaultPayload(remoteVault)
+                }
+            )
+            if (result.isSuccess) {
+                onSuccess()
+            } else {
+                _tvSyncErrorMessage.value = result.exceptionOrNull()?.message ?: "Could not connect to TV"
+            }
+        }
+    }
+
+    fun reconnectToLastTv(onSuccess: () -> Unit = {}) {
+        viewModelScope.launch {
+            _tvSyncErrorMessage.value = null
+            val localVault = buildCurrentVaultSyncPayload()
+            val result = tvSyncManager.rejoinLastTvHost(
+                localVault = localVault,
+                onRemoteVaultReceived = { remoteVault ->
+                    applyIncomingVaultPayload(remoteVault)
+                }
+            )
+            if (result.isSuccess) {
+                onSuccess()
+            } else {
+                _tvSyncErrorMessage.value = result.exceptionOrNull()?.message ?: "Could not reconnect to saved TV"
+            }
+        }
+    }
+
+    fun leaveTvSyncMode() {
+        _tvSyncErrorMessage.value = null
+        tvSyncManager.leaveSyncMode()
+    }
+
+    fun playStreamOnSyncedTv(stream: StreamEntity, playlist: PlaylistEntity? = activePlaylist.value) {
+        viewModelScope.launch {
+            val app = getApplication<Application>()
+            val subPrefs = app.getSharedPreferences(
+                com.example.ui.player.PlayerViewModel.SUBTITLE_PREFS_NAME,
+                android.content.Context.MODE_PRIVATE
+            )
+            val preferredSub = subPrefs.getString(com.example.ui.player.PlayerViewModel.KEY_LAST_SUBTITLE_LANG, "").orEmpty()
+            val cmd = RemotePlayCommand(
+                streamId = stream.streamId.toString(),
+                streamName = stream.name,
+                streamType = stream.streamType,
+                categoryId = stream.categoryId,
+                streamIcon = stream.streamIcon,
+                epgChannelId = stream.epgChannelId,
+                containerExtension = stream.containerExtension,
+                resumePositionMs = stream.lastPositionMs,
+                preferredSubtitleLang = preferredSub
+            )
+            tvSyncManager.sendPlayOnTv(cmd)
+        }
+    }
+
+    fun sendControlToSyncedTv(action: String, value: String = "", seekSeconds: Int = 0) {
+        tvSyncManager.sendControlToTv(action = action, value = value, seekSeconds = seekSeconds)
+    }
+
+    fun refreshSyncedTvStatusOnResume() {
+        if (tvSyncState.value.role == SyncRole.PHONE_CONTROLLER && tvSyncState.value.isSyncActive) {
+            viewModelScope.launch {
+                tvSyncManager.refreshTvStatus()
+            }
+        }
+    }
+
+    suspend fun resolveOrBuildStreamForTvCommand(cmd: RemotePlayCommand): Pair<StreamEntity, PlaylistEntity>? {
+        val playlist = activePlaylist.value ?: repository.getActivePlaylistOnce() ?: return null
+        val providerStreamId = cmd.streamId.toLongOrNull() ?: 0L
+        val existing = if (providerStreamId > 0L) {
+            database.streamDao().getStreamByProviderId(playlist.id, providerStreamId)
+        } else {
+            null
+        }
+        val resolvedStream = existing?.copy(
+            lastPositionMs = if (cmd.resumePositionMs > 0L) cmd.resumePositionMs else existing.lastPositionMs
+        ) ?: StreamEntity(
+            id = providerStreamId.coerceAtLeast(1L),
+            playlistId = playlist.id,
+            streamId = providerStreamId,
+            categoryId = cmd.categoryId,
+            name = cmd.streamName.ifBlank { "TV Stream" },
+            streamType = cmd.streamType.ifBlank { "live" },
+            streamIcon = cmd.streamIcon,
+            epgChannelId = cmd.epgChannelId,
+            containerExtension = cmd.containerExtension.ifBlank {
+                if (cmd.streamType.equals("live", ignoreCase = true)) "ts" else "mp4"
+            },
+            lastPositionMs = cmd.resumePositionMs
+        )
+        return resolvedStream to playlist
     }
 
     fun unlockParentalSession() {

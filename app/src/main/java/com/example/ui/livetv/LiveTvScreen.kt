@@ -12,6 +12,7 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
@@ -23,6 +24,11 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.GridItemSpan
+import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
+import androidx.compose.foundation.lazy.grid.items
+import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -85,7 +91,9 @@ import com.example.ui.theme.TvDeepMaroon
 import com.example.ui.theme.TvMidnightSlate
 import com.example.ui.theme.TvPlumMagenta
 import com.example.ui.theme.TvTwilightIndigo
+import com.example.ui.theme.calculateLiveTvGridColumns
 import com.example.ui.theme.luxuryFocusableCard
+import com.example.ui.theme.tvFocusablePill
 import com.example.util.StreamMetadataParser
 
 @Composable
@@ -350,44 +358,52 @@ fun LiveTvScreen(
                     }
                 }
             } else {
-                LazyColumn(
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .testTag("live_categories_directory"),
-                    contentPadding = PaddingValues(horizontal = 16.dp, vertical = 6.dp),
-                    verticalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    if (categorySearchQuery.isBlank() && activePlaylist.channelCount > 0) {
-                        item(key = "__all_channels__") {
-                            val allCat = CategoryWithCount(
-                                categoryId = LiveTvViewModel.ALL_CHANNELS_CATEGORY_ID,
-                                categoryName = "All Live TV Channels",
-                                type = "LIVE",
-                                isLocked = false,
-                                streamCount = activePlaylist.channelCount
-                            )
-                            LiveCategoryDirectoryCard(
-                                category = allCat,
-                                isAllChannelsCard = true,
-                                onClick = { viewModel.selectCategory(allCat) }
-                            )
+                BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
+                    val columnCount = calculateLiveTvGridColumns(maxWidth.value.toInt())
+                    LazyVerticalGrid(
+                        columns = GridCells.Fixed(columnCount),
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .testTag("live_categories_directory"),
+                        contentPadding = PaddingValues(horizontal = 16.dp, vertical = 6.dp),
+                        horizontalArrangement = Arrangement.spacedBy(10.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        if (categorySearchQuery.isBlank() && activePlaylist.channelCount > 0) {
+                            item(
+                                key = "__all_channels__",
+                                span = { GridItemSpan(columnCount) }
+                            ) {
+                                val allCat = CategoryWithCount(
+                                    categoryId = LiveTvViewModel.ALL_CHANNELS_CATEGORY_ID,
+                                    categoryName = "All Live TV Channels",
+                                    type = "LIVE",
+                                    isLocked = false,
+                                    streamCount = activePlaylist.channelCount
+                                )
+                                LiveCategoryDirectoryCard(
+                                    category = allCat,
+                                    isAllChannelsCard = true,
+                                    onClick = { viewModel.selectCategory(allCat) }
+                                )
+                            }
                         }
-                    }
 
-                    items(categories, key = { it.categoryId }) { category ->
-                        LiveCategoryDirectoryCard(
-                            category = category,
-                            isAllChannelsCard = false,
-                            onClick = {
-                                if (category.isLocked && !isParentalUnlocked) {
-                                    onRequestUnlockCategory?.invoke(category) {
+                        items(categories, key = { it.categoryId }) { category ->
+                            LiveCategoryDirectoryCard(
+                                category = category,
+                                isAllChannelsCard = false,
+                                onClick = {
+                                    if (category.isLocked && !isParentalUnlocked) {
+                                        onRequestUnlockCategory?.invoke(category) {
+                                            viewModel.selectCategory(category)
+                                        }
+                                    } else {
                                         viewModel.selectCategory(category)
                                     }
-                                } else {
-                                    viewModel.selectCategory(category)
                                 }
-                            }
-                        )
+                            )
+                        }
                     }
                 }
             }
@@ -422,7 +438,11 @@ fun LiveTvScreen(
                             modifier = Modifier
                                 .height(32.dp)
                                 .clip(RoundedCornerShape(50))
-                                .clickable { viewModel.selectCategory(null) }
+                                .tvFocusablePill(
+                                    accentColor = TvBroadcastScarlet,
+                                    shape = RoundedCornerShape(50),
+                                    onClick = { viewModel.selectCategory(null) }
+                                )
                                 .testTag("back_to_categories_btn")
                         ) {
                             Row(
@@ -529,10 +549,10 @@ fun LiveTvScreen(
                     }
                 }
             } else {
-                val listState = rememberLazyListState()
+                val gridState = rememberLazyGridState()
                 val shouldLoadMore by remember(channels.size, currentLimit) {
                     derivedStateOf {
-                        val lastVisible = listState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: 0
+                        val lastVisible = gridState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: 0
                         channels.size >= currentLimit && lastVisible >= (channels.size - 24).coerceAtLeast(0)
                     }
                 }
@@ -542,21 +562,26 @@ fun LiveTvScreen(
                     }
                 }
 
-                LazyColumn(
-                    state = listState,
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .testTag("live_channels_list"),
-                    contentPadding = PaddingValues(horizontal = 16.dp, vertical = 10.dp),
-                    verticalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    items(channels, key = { it.id }) { channel ->
-                        ChannelCard(
-                            channel = channel,
-                            livePulseAlpha = livePulseAlpha,
-                            onClick = { onChannelClick(channel) },
-                            onToggleFavorite = { viewModel.toggleFavorite(channel.id, channel.isFavorite) }
-                        )
+                BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
+                    val columnCount = calculateLiveTvGridColumns(maxWidth.value.toInt())
+                    LazyVerticalGrid(
+                        state = gridState,
+                        columns = GridCells.Fixed(columnCount),
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .testTag("live_channels_list"),
+                        contentPadding = PaddingValues(horizontal = 16.dp, vertical = 10.dp),
+                        horizontalArrangement = Arrangement.spacedBy(10.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        items(channels, key = { it.id }) { channel ->
+                            ChannelCard(
+                                channel = channel,
+                                livePulseAlpha = livePulseAlpha,
+                                onClick = { onChannelClick(channel) },
+                                onToggleFavorite = { viewModel.toggleFavorite(channel.id, channel.isFavorite) }
+                            )
+                        }
                     }
                 }
             }

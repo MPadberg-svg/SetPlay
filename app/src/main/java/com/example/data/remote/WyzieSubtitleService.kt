@@ -6,15 +6,23 @@ import com.example.data.model.PlaylistEntity
 import com.example.data.model.StreamEntity
 import com.squareup.moshi.JsonReader
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.withContext
 import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okio.Buffer
+import org.json.JSONObject
+import java.io.ByteArrayInputStream
+import java.io.ByteArrayOutputStream
+import java.io.File
 import java.net.URLEncoder
 import java.nio.charset.Charset
 import java.util.Locale
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.TimeUnit
+import java.util.zip.ZipInputStream
 
 data class WyzieSubtitleOption(
     val id: String,
@@ -70,7 +78,7 @@ class WyzieSubtitleService(
 ) {
     /**
      * Resolves a Movie or Series stream (or custom user query) to its IMDb/TMDb ID
-     * and fetches all available online subtitles from Wyzie Subs API, grouped by language.
+     * and fetches all available online subtitles in parallel across Wyzie Subs, SubDL, and OpenSubtitles v3.
      */
     suspend fun fetchSubtitlesForStream(
         stream: StreamEntity,
@@ -86,142 +94,300 @@ class WyzieSubtitleService(
             overrideSeason = overrideSeason,
             overrideEpisode = overrideEpisode
         )
+        searchSubtitles(resolved)
+    }
 
+    /**
+     * Parallel 3-Engine Subtitle Aggregator:
+     * Runs Wyzie (`sub.wyzie.io`), SubDL (`api.subdl.com`), and OpenSubtitles v3 (`opensubtitles-v3.strem.io`)
+     * concurrently using `coroutineScope { async { ... } }`, deduplicates by download URL, and ranks results
+     * so 🇸🇦 Arabic, 🇬🇧 English, 🇫🇷 Français, 🇪🇸 Español, and 🇹🇷 Türkçe appear first with clear provider badges.
+     */
+    suspend fun searchSubtitles(
+        resolved: ResolvedMediaQuery,
+        languageFilter: String? = null
+    ): WyzieSearchResponse = withContext(Dispatchers.IO) {
         val candidateIds = buildList {
             if (!resolved.imdbId.isNullOrBlank()) add(resolved.imdbId)
             if (!resolved.tmdbId.isNullOrBlank() && resolved.tmdbId != resolved.imdbId) add(resolved.tmdbId)
         }
 
-        if (candidateIds.isEmpty()) {
-            return@withContext WyzieSearchResponse(
-                resolvedQuery = resolved,
-                languageGroups = emptyList(),
-                totalCount = 0,
-                statusMessage = "Could not match '${resolved.cleanTitle}' to an IMDb/TMDb ID. Try entering the movie title or IMDb ID (e.g. tt15398776) above."
-            )
-        }
+        val seasonParam = if (resolved.isSeries) resolved.season else null
+        val episodeParam = if (resolved.isSeries) resolved.episode else null
 
-        val apiKey = resolveWyzieApiKey()
-        var options = emptyList<WyzieSubtitleOption>()
-        var lastError: String? = null
-
-        for (mediaId in candidateIds) {
-            val result = queryWyzieEndpoints(
-                mediaId = mediaId,
-                apiKey = apiKey,
-                season = if (resolved.isSeries) resolved.season else null,
-                episode = if (resolved.isSeries) resolved.episode else null,
-                fallbackTitle = resolved.cleanTitle
-            )
-            if (result.first.isNotEmpty()) {
-                options = result.first
-                lastError = null
-                break
-            } else if (result.second != null) {
-                lastError = result.second
-            }
-        }
-
-        // If series search with season/episode returned 0, retry without episode filter as fallback
-        if (options.isEmpty() && resolved.isSeries && resolved.season != null) {
-            for (mediaId in candidateIds) {
-                val fallbackResult = queryWyzieEndpoints(
-                    mediaId = mediaId,
-                    apiKey = apiKey,
-                    season = null,
-                    episode = null,
-                    fallbackTitle = resolved.cleanTitle
-                )
-                if (fallbackResult.first.isNotEmpty()) {
-                    options = fallbackResult.first
-                    lastError = null
-                    break
+        val (wyziePair, subdlOptions, openSubsOptions) = coroutineScope {
+            val wyzieDeferred = async {
+                if (candidateIds.isEmpty()) {
+                    emptyList<WyzieSubtitleOption>() to null
+                } else {
+                    val apiKey = resolveWyzieApiKey()
+                    var wyzieFound = emptyList<WyzieSubtitleOption>()
+                    var wyzieErr: String? = null
+                    for (mediaId in candidateIds) {
+                        val res = queryWyzieEndpoints(
+                            mediaId = mediaId,
+                            apiKey = apiKey,
+                            season = seasonParam,
+                            episode = episodeParam,
+                            fallbackTitle = resolved.cleanTitle
+                        )
+                        if (res.first.isNotEmpty()) {
+                            wyzieFound = res.first
+                            wyzieErr = null
+                            break
+                        } else if (res.second != null) {
+                            wyzieErr = res.second
+                        }
+                    }
+                    if (wyzieFound.isEmpty() && resolved.isSeries && seasonParam != null) {
+                        for (mediaId in candidateIds) {
+                            val fallbackRes = queryWyzieEndpoints(
+                                mediaId = mediaId,
+                                apiKey = apiKey,
+                                season = null,
+                                episode = null,
+                                fallbackTitle = resolved.cleanTitle
+                            )
+                            if (fallbackRes.first.isNotEmpty()) {
+                                wyzieFound = fallbackRes.first
+                                wyzieErr = null
+                                break
+                            }
+                        }
+                    }
+                    wyzieFound to wyzieErr
                 }
             }
-        }
 
-        // Zero-Key OpenSubtitles v3 REST Fallback whenever Wyzie returns empty or fails
-        if (options.isEmpty()) {
-            val imdbCandidate = resolved.imdbId?.takeIf { it.startsWith("tt", ignoreCase = true) }
-                ?: candidateIds.firstOrNull { it.startsWith("tt", ignoreCase = true) }
-                ?: queryImdbSuggestionId(
+            val subdlDeferred = async {
+                querySubdlSubtitles(
+                    imdbId = resolved.imdbId,
+                    tmdbId = resolved.tmdbId,
                     cleanTitle = resolved.cleanTitle,
-                    expectedYear = resolved.year,
-                    isSeries = resolved.isSeries
+                    season = seasonParam,
+                    episode = episodeParam,
+                    languageFilter = languageFilter
                 )
-            if (!imdbCandidate.isNullOrBlank()) {
-                val openSubsOptions = queryOpenSubtitlesV3Fallback(
-                    imdbId = imdbCandidate,
-                    isSeries = resolved.isSeries,
-                    season = if (resolved.isSeries) resolved.season else null,
-                    episode = if (resolved.isSeries) resolved.episode else null,
-                    fallbackTitle = resolved.cleanTitle
-                )
-                if (openSubsOptions.isNotEmpty()) {
-                    options = openSubsOptions
-                    lastError = null
+            }
+
+            val openSubsDeferred = async {
+                val imdbCandidate = resolved.imdbId?.takeIf { it.startsWith("tt", ignoreCase = true) }
+                    ?: candidateIds.firstOrNull { it.startsWith("tt", ignoreCase = true) }
+                if (!imdbCandidate.isNullOrBlank()) {
+                    queryOpenSubtitlesV3Fallback(
+                        imdbId = imdbCandidate,
+                        isSeries = resolved.isSeries,
+                        season = seasonParam,
+                        episode = episodeParam,
+                        fallbackTitle = resolved.cleanTitle
+                    )
+                } else {
+                    emptyList()
                 }
             }
+
+            Triple(wyzieDeferred.await(), subdlDeferred.await(), openSubsDeferred.await())
         }
 
-        val grouped = groupSubtitlesByLanguage(options)
+        val grouped = mergeAndRankSubtitleOptions(
+            wyzieOptions = wyziePair.first,
+            subdlOptions = subdlOptions,
+            openSubsOptions = openSubsOptions
+        )
+        val totalCount = grouped.sumOf { it.options.size }
+
         val statusMsg = when {
             grouped.isNotEmpty() -> null
-            lastError != null -> lastError
+            candidateIds.isEmpty() -> {
+                "Could not match '${resolved.cleanTitle}' to an IMDb/TMDb ID. Try entering the movie title or IMDb ID (e.g. tt15398776) above."
+            }
+            wyziePair.second != null -> wyziePair.second
             else -> "No subtitles found for '${resolved.cleanTitle}' (${candidateIds.first()})."
         }
 
         WyzieSearchResponse(
             resolvedQuery = resolved,
             languageGroups = grouped,
-            totalCount = options.size,
+            totalCount = totalCount,
             statusMessage = statusMsg
         )
     }
 
     /**
-     * Downloads a subtitle file (.srt or .vtt) from Wyzie and parses it into timed [SubtitleCue] items.
+     * Downloads a subtitle file (.srt, .vtt, or a .zip archive containing an .srt/.vtt) to cache
+     * and returns the extracted raw subtitle text.
+     * Transparently detects PK zip magic bytes (`0x50, 0x4B`) and extracts the first `.srt`/`.vtt` entry.
+     */
+    suspend fun downloadSubtitleToCache(
+        option: WyzieSubtitleOption
+    ): Result<String> = withContext(Dispatchers.IO) {
+        try {
+            subtitleTextCache[option.url]?.let { cached ->
+                if (cached.isNotBlank()) return@withContext Result.success(cached)
+            }
+
+            val charset = try {
+                if (option.encoding.isNotBlank()) Charset.forName(option.encoding) else Charsets.UTF_8
+            } catch (_: Exception) {
+                Charsets.UTF_8
+            }
+
+            val bytes: ByteArray = if (option.url.startsWith("file://")) {
+                File(option.url.removePrefix("file://")).readBytes()
+            } else {
+                val request = Request.Builder()
+                    .url(option.url)
+                    .header("User-Agent", USER_AGENT)
+                    .header("Accept", "*/*")
+                    .build()
+
+                okHttpClient.newCall(request).execute().use { response ->
+                    if (!response.isSuccessful || response.body == null) {
+                        return@withContext Result.failure(
+                            IllegalStateException("Subtitle download failed (HTTP ${response.code})")
+                        )
+                    }
+                    response.body!!.bytes()
+                }
+            }
+
+            val extractedText = extractSubtitleTextFromBytes(bytes, charset)
+            if (extractedText.isBlank()) {
+                return@withContext Result.failure(
+                    IllegalStateException("Subtitle archive contained no readable text")
+                )
+            }
+            subtitleTextCache[option.url] = extractedText
+            Result.success(extractedText)
+        } catch (e: Exception) {
+            Log.w("WyzieSubtitleService", "Failed to download subtitle to cache: ${e.message}")
+            Result.failure(e)
+        }
+    }
+
+    /**
+     * Transparently extracts the first `.srt`/`.vtt` entry from a `ZipInputStream` if [bytes]
+     * start with PK zip magic bytes (`0x50, 0x4B`), or decodes [bytes] directly otherwise.
+     */
+    internal fun extractSubtitleTextFromBytes(
+        bytes: ByteArray,
+        charset: Charset = Charsets.UTF_8
+    ): String {
+        if (bytes.isEmpty()) return ""
+        val isPkZip = bytes.size >= 4 &&
+            bytes[0] == 0x50.toByte() &&
+            bytes[1] == 0x4B.toByte()
+
+        if (isPkZip) {
+            try {
+                var preferredSrtOrVttBytes: ByteArray? = null
+                var fallbackEntryBytes: ByteArray? = null
+                ZipInputStream(ByteArrayInputStream(bytes)).use { zis ->
+                    var entry = zis.nextEntry
+                    while (entry != null) {
+                        val nameLower = entry.name.lowercase(Locale.ROOT)
+                        if (!entry.isDirectory && !nameLower.contains("__macosx")) {
+                            val isPreferred = nameLower.endsWith(".srt") || nameLower.endsWith(".vtt")
+                            val isFallbackSub = nameLower.endsWith(".sub") || nameLower.endsWith(".ass") || nameLower.endsWith(".ssa")
+                            if (isPreferred || (fallbackEntryBytes == null && isFallbackSub)) {
+                                val out = ByteArrayOutputStream()
+                                val buf = ByteArray(4096)
+                                var read: Int
+                                while (zis.read(buf).also { read = it } != -1) {
+                                    out.write(buf, 0, read)
+                                }
+                                val entryBytes = out.toByteArray()
+                                if (isPreferred && entryBytes.isNotEmpty()) {
+                                    preferredSrtOrVttBytes = entryBytes
+                                    break
+                                } else if (entryBytes.isNotEmpty()) {
+                                    fallbackEntryBytes = entryBytes
+                                }
+                            }
+                        }
+                        zis.closeEntry()
+                        entry = zis.nextEntry
+                    }
+                }
+                val chosen = preferredSrtOrVttBytes ?: fallbackEntryBytes
+                if (chosen != null) {
+                    return decodeSubtitleBytesWithBomCheck(chosen, charset)
+                }
+            } catch (e: Exception) {
+                Log.w("WyzieSubtitleService", "Error extracting ZIP subtitle archive: ${e.message}")
+            }
+        }
+
+        return decodeSubtitleBytesWithBomCheck(bytes, charset)
+    }
+
+    private fun decodeSubtitleBytesWithBomCheck(bytes: ByteArray, defaultCharset: Charset): String {
+        return try {
+            String(bytes, defaultCharset).removePrefix("\uFEFF")
+        } catch (_: Exception) {
+            String(bytes, Charsets.UTF_8).removePrefix("\uFEFF")
+        }
+    }
+
+    /**
+     * Downloads a subtitle file (.srt, .vtt, or .zip) and parses it into timed [SubtitleCue] items.
      */
     suspend fun downloadAndParseSubtitle(
         option: WyzieSubtitleOption
     ): Result<List<SubtitleCue>> = withContext(Dispatchers.IO) {
-        try {
-            val request = Request.Builder()
-                .url(option.url)
-                .header("User-Agent", USER_AGENT)
-                .header("Accept", "*/*")
-                .build()
-
-            okHttpClient.newCall(request).execute().use { response ->
-                if (!response.isSuccessful || response.body == null) {
-                    return@withContext Result.failure(
-                        IllegalStateException("Subtitle download failed (HTTP ${response.code})")
-                    )
-                }
-                val bytes = response.body!!.bytes()
-                val charset = try {
-                    if (option.encoding.isNotBlank()) Charset.forName(option.encoding) else Charsets.UTF_8
-                } catch (_: Exception) {
-                    Charsets.UTF_8
-                }
-                val rawText = String(bytes, charset).removePrefix("\uFEFF")
+        val textResult = downloadSubtitleToCache(option)
+        textResult.fold(
+            onSuccess = { rawText ->
                 val cues = parseSubtitleText(rawText)
                 if (cues.isEmpty()) {
-                    return@withContext Result.failure(
+                    Result.failure(
                         IllegalStateException("Subtitle file contained no readable timestamp cues")
                     )
+                } else {
+                    Result.success(cues)
                 }
-                Result.success(cues)
-            }
-        } catch (e: Exception) {
-            Log.w("WyzieSubtitleService", "Failed to download subtitle: ${e.message}")
-            Result.failure(e)
-        }
+            },
+            onFailure = { err -> Result.failure(err) }
+        )
     }
 
     private fun resolveWyzieApiKey(): String {
         val buildConfigKey = try {
             BuildConfig.WYZIE_API_KEY.trim()
+        } catch (_: Exception) {
+            ""
+        }
+        return if (
+            buildConfigKey.isNotEmpty() &&
+            !buildConfigKey.startsWith("YOUR_", ignoreCase = true) &&
+            buildConfigKey != "null"
+        ) {
+            buildConfigKey
+        } else {
+            ""
+        }
+    }
+
+    internal fun resolveTmdbApiKey(): String {
+        val buildConfigKey = try {
+            BuildConfig.TMDB_API_KEY.trim()
+        } catch (_: Exception) {
+            ""
+        }
+        return if (
+            buildConfigKey.isNotEmpty() &&
+            !buildConfigKey.startsWith("YOUR_", ignoreCase = true) &&
+            buildConfigKey != "null"
+        ) {
+            buildConfigKey
+        } else {
+            ""
+        }
+    }
+
+    internal fun resolveSubdlApiKey(): String {
+        val buildConfigKey = try {
+            BuildConfig.SUBDL_API_KEY.trim()
         } catch (_: Exception) {
             ""
         }
@@ -510,29 +676,188 @@ class WyzieSubtitleService(
         val code = rawLang.trim().lowercase(Locale.ROOT)
         if (code.isBlank()) return "en"
         return when (code) {
-            "ara", "ar" -> "ar"
-            "eng", "en" -> "en"
-            "fre", "fra", "fr" -> "fr"
-            "spa", "es", "spn" -> "es"
-            "tur", "tr" -> "tr"
-            "ger", "deu", "de" -> "de"
-            "ita", "it" -> "it"
-            "por", "pob", "pt", "pb", "spl" -> "pt"
-            "rus", "ru" -> "ru"
-            "dut", "nld", "nl" -> "nl"
-            "hin", "hi" -> "hi"
-            "fas", "per", "fa" -> "fa"
-            "urd", "ur" -> "ur"
-            "kur", "ku" -> "ku"
-            "jpn", "ja" -> "ja"
-            "kor", "ko" -> "ko"
-            "chi", "zho", "zht", "zhs", "zh" -> "zh"
-            "pol", "pl" -> "pl"
-            "rum", "ron", "ro" -> "ro"
-            "gre", "ell", "el" -> "el"
-            "swe", "sv" -> "sv"
-            "ind", "id" -> "id"
+            "ara", "ar", "arabic" -> "ar"
+            "eng", "en", "english" -> "en"
+            "fre", "fra", "fr", "french", "français", "francais" -> "fr"
+            "spa", "es", "spn", "spanish", "español", "espanol" -> "es"
+            "tur", "tr", "turkish", "türkçe", "turkce" -> "tr"
+            "ger", "deu", "de", "german", "deutsch" -> "de"
+            "ita", "it", "italian", "italiano" -> "it"
+            "por", "pob", "pt", "pb", "spl", "portuguese", "português", "brazillian-portuguese" -> "pt"
+            "rus", "ru", "russian" -> "ru"
+            "dut", "nld", "nl", "dutch" -> "nl"
+            "hin", "hi", "hindi" -> "hi"
+            "fas", "per", "fa", "persian", "farsi" -> "fa"
+            "urd", "ur", "urdu" -> "ur"
+            "kur", "ku", "kurdish" -> "ku"
+            "jpn", "ja", "japanese" -> "ja"
+            "kor", "ko", "korean" -> "ko"
+            "chi", "zho", "zht", "zhs", "zh", "chinese" -> "zh"
+            "pol", "pl", "polish" -> "pl"
+            "rum", "ron", "ro", "romanian" -> "ro"
+            "gre", "ell", "el", "greek" -> "el"
+            "swe", "sv", "swedish" -> "sv"
+            "ind", "id", "indonesian" -> "id"
             else -> if (code.length > 2) code.take(2) else code
+        }
+    }
+
+    /**
+     * Queries SubDL API v1 (`https://api.subdl.com/api/v1/subtitles`) using `BuildConfig.SUBDL_API_KEY`.
+     */
+    fun querySubdlSubtitles(
+        imdbId: String?,
+        tmdbId: String?,
+        cleanTitle: String,
+        season: Int?,
+        episode: Int?,
+        languageFilter: String? = null
+    ): List<WyzieSubtitleOption> {
+        val subdlKey = resolveSubdlApiKey()
+        if (subdlKey.isBlank()) return emptyList()
+
+        val urlBuilder = "https://api.subdl.com/api/v1/subtitles".toHttpUrlOrNull()?.newBuilder()
+            ?: return emptyList()
+        urlBuilder.addQueryParameter("api_key", subdlKey)
+
+        val validImdb = imdbId?.trim()?.takeIf { it.startsWith("tt", ignoreCase = true) }
+        val validTmdb = tmdbId?.trim()?.takeIf { it.isNotEmpty() && it != "0" && it != "null" }
+        when {
+            !validImdb.isNullOrBlank() -> urlBuilder.addQueryParameter("imdb_id", validImdb)
+            !validTmdb.isNullOrBlank() -> urlBuilder.addQueryParameter("tmdb_id", validTmdb)
+            cleanTitle.isNotBlank() -> urlBuilder.addQueryParameter("film_name", cleanTitle.trim())
+            else -> return emptyList()
+        }
+
+        urlBuilder.addQueryParameter("type", if (season != null) "tv" else "movie")
+        if (season != null && season > 0) {
+            urlBuilder.addQueryParameter("season_number", season.toString())
+        }
+        if (episode != null && episode > 0) {
+            urlBuilder.addQueryParameter("episode_number", episode.toString())
+        }
+        val langs = languageFilter?.trim()?.takeIf { it.isNotEmpty() }?.uppercase(Locale.ROOT)
+            ?: "AR,EN,FR,ES,TR,DE,IT,PT"
+        urlBuilder.addQueryParameter("languages", langs)
+        urlBuilder.addQueryParameter("subs_per_page", "30")
+
+        return try {
+            val request = Request.Builder()
+                .url(urlBuilder.build())
+                .header("User-Agent", USER_AGENT)
+                .header("Accept", "application/json")
+                .build()
+
+            okHttpClient.newCall(request).execute().use { response ->
+                if (!response.isSuccessful || response.body == null) return emptyList()
+                val bodyStr = response.body!!.string()
+                if (bodyStr.isBlank()) return emptyList()
+                parseSubdlJson(
+                    json = bodyStr,
+                    fallbackTitle = cleanTitle,
+                    season = season,
+                    episode = episode
+                )
+            }
+        } catch (e: Exception) {
+            Log.w("WyzieSubtitleService", "SubDL subtitle search failed: ${e.message}")
+            emptyList()
+        }
+    }
+
+    internal fun parseSubdlJson(
+        json: String,
+        fallbackTitle: String,
+        season: Int? = null,
+        episode: Int? = null
+    ): List<WyzieSubtitleOption> {
+        val list = mutableListOf<WyzieSubtitleOption>()
+        try {
+            val root = JSONObject(json.trim())
+            val subsArr = root.optJSONArray("subtitles") ?: return emptyList()
+            for (i in 0 until subsArr.length()) {
+                val obj = subsArr.optJSONObject(i) ?: continue
+                val rawUrl = obj.optString("url", "")
+                    .ifBlank { obj.optString("sub_url", "") }
+                    .ifBlank { obj.optString("download_url", "") }
+                    .trim()
+                if (rawUrl.isBlank()) continue
+
+                val resolvedUrl = when {
+                    rawUrl.startsWith("http://", ignoreCase = true) ||
+                        rawUrl.startsWith("https://", ignoreCase = true) ||
+                        rawUrl.startsWith("file://", ignoreCase = true) -> rawUrl
+                    rawUrl.startsWith("/") -> "https://dl.subdl.com$rawUrl"
+                    else -> "https://dl.subdl.com/subtitle/${rawUrl.removePrefix("subtitle/")}"
+                }
+
+                val rawLang = obj.optString("lang", "")
+                    .ifBlank { obj.optString("language", "en") }
+                val normLang = mapIso6392ToLanguageCode(rawLang)
+                val display = languageCodeToDisplayName(normLang)
+                val flag = languageCodeToFlag(normLang)
+
+                val releaseName = obj.optString("release_name", "")
+                    .ifBlank { obj.optString("name", "") }
+                    .ifBlank { fallbackTitle }
+                val sdId = obj.optString("sd_id", "")
+                    .ifBlank { obj.optString("id", "subdl_${i + 1}") }
+                val hi = obj.optBoolean("hi", false) || obj.optInt("hi", 0) == 1
+                val subSeason = if (obj.has("season") && !obj.isNull("season")) obj.optInt("season", season ?: 0).takeIf { it > 0 } else season
+                val subEp = if (obj.has("episode") && !obj.isNull("episode")) obj.optInt("episode", episode ?: 0).takeIf { it > 0 } else episode
+
+                list.add(
+                    WyzieSubtitleOption(
+                        id = sdId.ifBlank { "subdl_${i + 1}" },
+                        url = resolvedUrl,
+                        languageCode = normLang,
+                        languageDisplay = display,
+                        flagEmoji = flag,
+                        mediaName = releaseName,
+                        format = "SRT",
+                        source = "SubDL",
+                        encoding = "UTF-8",
+                        isHearingImpaired = hi,
+                        season = subSeason,
+                        episode = subEp
+                    )
+                )
+            }
+        } catch (e: Exception) {
+            Log.w("WyzieSubtitleService", "Error parsing SubDL JSON: ${e.message}")
+        }
+        return list
+    }
+
+    internal fun mergeAndRankSubtitleOptions(
+        wyzieOptions: List<WyzieSubtitleOption>,
+        subdlOptions: List<WyzieSubtitleOption>,
+        openSubsOptions: List<WyzieSubtitleOption>
+    ): List<WyzieLanguageGroup> {
+        val seenUrls = HashSet<String>()
+        val combined = mutableListOf<WyzieSubtitleOption>()
+
+        for (opt in (wyzieOptions + subdlOptions + openSubsOptions)) {
+            val normUrl = opt.url.trim()
+            if (normUrl.isNotEmpty() && seenUrls.add(normUrl)) {
+                val normalizedBadge = when {
+                    opt.source.contains("subdl", ignoreCase = true) -> "SubDL"
+                    opt.source.contains("opensub", ignoreCase = true) -> "OpenSubtitles"
+                    else -> "Wyzie"
+                }
+                combined.add(opt.copy(source = normalizedBadge))
+            }
+        }
+
+        return groupSubtitlesByLanguage(combined)
+    }
+
+    private fun providerPriorityRank(source: String): Int {
+        return when {
+            source.equals("Wyzie", ignoreCase = true) -> 0
+            source.equals("SubDL", ignoreCase = true) -> 1
+            source.equals("OpenSubtitles", ignoreCase = true) -> 2
+            else -> 3
         }
     }
 
@@ -544,12 +869,16 @@ class WyzieSubtitleService(
         return options
             .groupBy { it.languageCode.lowercase(Locale.ROOT) }
             .map { (code, items) ->
-                val first = items.first()
+                val sortedItems = items.sortedWith(
+                    compareBy<WyzieSubtitleOption> { it.isHearingImpaired }
+                        .thenBy { providerPriorityRank(it.source) }
+                )
+                val first = sortedItems.first()
                 WyzieLanguageGroup(
                     languageCode = code,
-                    languageDisplay = first.languageDisplay,
-                    flagEmoji = first.flagEmoji,
-                    options = items
+                    languageDisplay = languageCodeToDisplayName(code).ifBlank { first.languageDisplay },
+                    flagEmoji = languageCodeToFlag(code),
+                    options = sortedItems
                 )
             }
             .sortedWith(
@@ -558,6 +887,101 @@ class WyzieSubtitleService(
                     if (idx >= 0) idx else 100
                 }.thenBy { it.languageDisplay }
             )
+    }
+
+    /**
+     * Resolves `(imdbId, tmdbId)` via TMDb API v3 (`/search/movie` or `/search/tv` + `/external_ids`)
+     * using `BuildConfig.TMDB_API_KEY`, caching results in [resolvedMediaIdCache].
+     */
+    fun resolveMediaIdsViaTmdb(
+        cleanTitle: String,
+        year: String?,
+        isSeries: Boolean
+    ): Pair<String?, String?> {
+        val normalizedTitle = cleanTitle.trim()
+        if (normalizedTitle.isEmpty()) return null to null
+
+        val cacheKey = "${isSeries}_${normalizedTitle.lowercase(Locale.ROOT)}_${year?.trim().orEmpty()}"
+        resolvedMediaIdCache[cacheKey]?.let { return it }
+
+        val tmdbKey = resolveTmdbApiKey()
+        if (tmdbKey.isBlank()) return null to null
+
+        val endpointType = if (isSeries) "tv" else "movie"
+        val encodedQuery = try {
+            URLEncoder.encode(normalizedTitle, "UTF-8")
+        } catch (_: Exception) {
+            return null to null
+        }
+        val yearParam = if (!year.isNullOrBlank()) "&year=${year.trim()}" else ""
+        val searchUrl = "https://api.themoviedb.org/3/search/$endpointType?api_key=$tmdbKey&query=$encodedQuery$yearParam"
+
+        return try {
+            val searchJson = okHttpClient.newCall(
+                Request.Builder()
+                    .url(searchUrl)
+                    .header("User-Agent", USER_AGENT)
+                    .header("Accept", "application/json")
+                    .build()
+            ).execute().use { resp ->
+                if (!resp.isSuccessful || resp.body == null) return null to null
+                resp.body!!.string()
+            }
+
+            val topTmdbId = parseTmdbSearchTopId(searchJson) ?: return null to null
+            val externalIdsUrl = "https://api.themoviedb.org/3/$endpointType/$topTmdbId/external_ids?api_key=$tmdbKey"
+            val externalIdsJson = okHttpClient.newCall(
+                Request.Builder()
+                    .url(externalIdsUrl)
+                    .header("User-Agent", USER_AGENT)
+                    .header("Accept", "application/json")
+                    .build()
+            ).execute().use { resp ->
+                if (!resp.isSuccessful || resp.body == null) null else resp.body!!.string()
+            }
+
+            val result = parseTmdbSearchAndExternalIdsJson(searchJson, externalIdsJson)
+            if (result.first != null || result.second != null) {
+                resolvedMediaIdCache[cacheKey] = result
+            }
+            result
+        } catch (e: Exception) {
+            Log.w("WyzieSubtitleService", "TMDb media ID resolution failed: ${e.message}")
+            null to null
+        }
+    }
+
+    internal fun parseTmdbSearchTopId(searchJson: String): String? {
+        return try {
+            val root = JSONObject(searchJson.trim())
+            val results = root.optJSONArray("results") ?: return null
+            if (results.length() == 0) return null
+            val firstObj = results.optJSONObject(0) ?: return null
+            val id = firstObj.optLong("id", 0L)
+            if (id > 0L) id.toString() else firstObj.optString("id", "").takeIf { it.isNotBlank() }
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    internal fun parseTmdbExternalIdsImdbId(externalIdsJson: String?): String? {
+        if (externalIdsJson.isNullOrBlank()) return null
+        return try {
+            val root = JSONObject(externalIdsJson.trim())
+            val imdb = root.optString("imdb_id", "").trim()
+            imdb.takeIf { it.startsWith("tt", ignoreCase = true) }
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    internal fun parseTmdbSearchAndExternalIdsJson(
+        searchJson: String,
+        externalIdsJson: String?
+    ): Pair<String?, String?> {
+        val tmdbId = parseTmdbSearchTopId(searchJson)
+        val imdbId = parseTmdbExternalIdsImdbId(externalIdsJson)
+        return imdbId to tmdbId
     }
 
     private fun resolveMediaQuery(
@@ -638,18 +1062,34 @@ class WyzieSubtitleService(
             }
         }
 
-        // 2. Resolve IMDb ID via public IMDb instant suggestion endpoint if still needed
-        val resolvedImdbId = xtreamImdbId ?: queryImdbSuggestionId(
-            cleanTitle = cleanTitle,
-            expectedYear = extractedYear,
-            isSeries = isSeries
-        )
+        // 2. When Xtream did not provide both imdb_id and tmdb_id, query TMDb API v3 (/search + /external_ids) first
+        var tmdbResolvedImdb: String? = null
+        var tmdbResolvedId: String? = null
+        if (xtreamImdbId.isNullOrBlank() || xtreamTmdbId.isNullOrBlank()) {
+            val tmdbPair = resolveMediaIdsViaTmdb(
+                cleanTitle = cleanTitle,
+                year = extractedYear?.toString(),
+                isSeries = isSeries
+            )
+            tmdbResolvedImdb = tmdbPair.first
+            tmdbResolvedId = tmdbPair.second
+        }
+
+        // 3. Resolve IMDb ID via public IMDb instant suggestion endpoint if still needed
+        val resolvedImdbId = xtreamImdbId
+            ?: tmdbResolvedImdb
+            ?: queryImdbSuggestionId(
+                cleanTitle = cleanTitle,
+                expectedYear = extractedYear,
+                isSeries = isSeries
+            )
+        val resolvedTmdbId = xtreamTmdbId ?: tmdbResolvedId
 
         return ResolvedMediaQuery(
             cleanTitle = cleanTitle.ifBlank { stream.name },
             year = extractedYear,
             imdbId = resolvedImdbId,
-            tmdbId = xtreamTmdbId,
+            tmdbId = resolvedTmdbId,
             isSeries = isSeries,
             season = finalSeason,
             episode = finalEpisode
@@ -1047,5 +1487,7 @@ class WyzieSubtitleService(
 
     companion object {
         private const val USER_AGENT = "SetPlay-IPTV/3.0 (Android; WyzieSubsClient)"
+        internal val resolvedMediaIdCache = ConcurrentHashMap<String, Pair<String?, String?>>()
+        internal val subtitleTextCache = ConcurrentHashMap<String, String>()
     }
 }

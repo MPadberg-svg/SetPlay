@@ -354,10 +354,24 @@ class IptvRepository(
     }
 
     suspend fun fetchVodMovieDetails(
-        playlist: PlaylistEntity,
+        playlist: PlaylistEntity?,
         movieStream: StreamEntity
-    ): com.example.data.remote.VodMovieDetails {
-        return xtreamClient.fetchVodMovieDetails(
+    ): com.example.data.remote.VodMovieDetails = withContext(Dispatchers.IO) {
+        if (playlist == null || playlist.username.isBlank()) {
+            val base = com.example.data.remote.VodMovieDetails(
+                vodId = movieStream.streamId,
+                title = movieStream.name,
+                coverUrl = movieStream.streamIcon,
+                backdropUrl = movieStream.streamIcon,
+                rating = movieStream.rating,
+                containerExtension = movieStream.containerExtension.ifBlank { "mp4" }
+            )
+            return@withContext xtreamClient.enrichVodMovieDetailsWithTmdb(
+                baseDetails = base,
+                rawTitle = movieStream.name
+            )
+        }
+        xtreamClient.fetchVodMovieDetails(
             serverUrl = playlist.serverUrl,
             username = playlist.username,
             password = SecurityManager.decryptCredential(playlist.password),

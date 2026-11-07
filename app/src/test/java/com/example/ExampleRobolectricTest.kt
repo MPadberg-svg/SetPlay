@@ -637,13 +637,13 @@ class ExampleRobolectricTest {
         assertTrue(dossier.timelineEvents.all { it.eventType == com.example.data.repository.MatchEventType.GOAL })
         assertEquals("TBA / Official Broadcast Feed", dossier.refereeName)
         assertEquals("TBA / Official Broadcast Feed", dossier.attendanceLabel)
-        assertTrue(dossier.stats.any { it.statLabel == "Ball Possession" })
-        assertTrue(dossier.stats.any { it.statLabel == "Expected Goals (xG)" })
+        assertTrue(dossier.stats.isEmpty())
         assertTrue(dossier.menaBroadcastGuide.isNotEmpty())
 
-        // Verify Single-Call Team Squad Cutout Matching & Honest Empty H2H/Standings when upstream JSON is absent
+        // Verify Single-Call Team Squad Cutout Matching & Honest Empty Stats/H2H/Standings when upstream JSON is absent
         val enricher = com.example.data.repository.MatchCenterEnricher(okhttp3.OkHttpClient())
         val offlineDossier = enricher.buildCompleteDossier(merged, raw = null)
+        assertTrue(offlineDossier.stats.isEmpty())
         assertTrue(offlineDossier.h2hMeetings.isEmpty())
         assertTrue(offlineDossier.standingsTable.isEmpty())
         assertEquals("TBA / Official Broadcast Feed", offlineDossier.refereeName)
@@ -1727,13 +1727,19 @@ class ExampleRobolectricTest {
         val workflowText = workflowFile.readText()
         assertTrue(workflowText.contains("RESOLVED_SPORT_KEY=\"\${RESOLVED_SPORT_KEY:-YOUR_SPORTAPI_AI_KEY}\""))
         assertTrue(workflowText.contains("RESOLVED_WYZIE_KEY=\"\${WYZIE_API_KEY_SECRET:-YOUR_WYZIE_API_KEY}\""))
+        assertTrue(workflowText.contains("RESOLVED_SUBDL_KEY=\"\${SUBDL_API_KEY_SECRET:-YOUR_SUBDL_API_KEY}\""))
+        assertTrue(workflowText.contains("RESOLVED_TMDB_KEY=\"\${TMDB_API_KEY_SECRET:-YOUR_TMDB_API_KEY}\""))
         assertTrue(workflowText.contains("RESOLVED_FOOTBALL_KEY=\"\${API_FOOTBALL_KEY_SECRET:-YOUR_API_FOOTBALL_KEY}\""))
+        assertTrue(workflowText.contains("RESOLVED_FOOTBALL_DATA_KEY=\"\${FOOTBALL_DATA_KEY_SECRET:-YOUR_FOOTBALL_DATA_KEY}\""))
         assertTrue(workflowText.contains("API_FOOTBALL_KEY=\${RESOLVED_FOOTBALL_KEY}"))
+        assertTrue(workflowText.contains("FOOTBALL_DATA_KEY=\${RESOLVED_FOOTBALL_DATA_KEY}"))
         assertTrue(workflowText.contains("SPORT_API_KEY=\${RESOLVED_SPORT_KEY}"))
         assertTrue(workflowText.contains("SPORTAPI_AI_KEY=\${RESOLVED_SPORT_KEY}"))
+        assertTrue(workflowText.contains("TMDB_API_KEY=\${RESOLVED_TMDB_KEY}"))
         assertTrue(workflowText.contains("WYZIE_API_KEY=\${RESOLVED_WYZIE_KEY}"))
+        assertTrue(workflowText.contains("SUBDL_API_KEY=\${RESOLVED_SUBDL_KEY}"))
 
-        // Verify .env.example has non-empty values for all 4 keys
+        // Verify .env.example has non-empty values for all 7 keys
         val envExampleFile = java.io.File("../.env.example").let {
             if (it.exists()) it else java.io.File(".env.example")
         }
@@ -1746,9 +1752,12 @@ class ExampleRobolectricTest {
             it.substring(0, idx).trim() to it.substring(idx + 1).trim()
         }
         assertTrue(envMap["API_FOOTBALL_KEY"]?.isNotEmpty() == true)
+        assertTrue(envMap["FOOTBALL_DATA_KEY"]?.isNotEmpty() == true)
         assertTrue(envMap["SPORT_API_KEY"]?.isNotEmpty() == true)
         assertTrue(envMap["SPORTAPI_AI_KEY"]?.isNotEmpty() == true)
+        assertTrue(envMap["TMDB_API_KEY"]?.isNotEmpty() == true)
         assertTrue(envMap["WYZIE_API_KEY"]?.isNotEmpty() == true)
+        assertTrue(envMap["SUBDL_API_KEY"]?.isNotEmpty() == true)
 
         // 3. Verify AndroidManifest.xml includes Leanback launcher and optional touchscreen features
         val manifestFile = java.io.File("src/main/AndroidManifest.xml").let {
@@ -1760,6 +1769,680 @@ class ExampleRobolectricTest {
         assertTrue(manifestText.contains("android.software.leanback"))
         assertTrue(manifestText.contains("android.intent.category.LEANBACK_LAUNCHER"))
     }
-}
 
+    @Test
+    fun testPhase1UpgradePlanApiKeysQuotaAndApiFootballDossier() = runBlocking {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val footballRepository = com.example.data.repository.FootballRepository(
+            context = context,
+            favoriteTeamDao = database.favoriteTeamDao(),
+            tournamentPreferenceDao = database.tournamentPreferenceDao(),
+            streamDao = database.streamDao()
+        )
+        com.example.data.repository.FootballRepository.resetSharedSportsDbRateLimiterForTests()
+
+        // 1. Verify Football-Data.org v4 JSON parser (CL, PL, PD, etc.)
+        val sampleFootballDataJson = """
+            {
+              "matches": [
+                {
+                  "id": 498123,
+                  "utcDate": "2026-04-19T19:00:00Z",
+                  "status": "IN_PLAY",
+                  "minute": 64,
+                  "injuryTime": 0,
+                  "matchday": 32,
+                  "stage": "REGULAR_SEASON",
+                  "venue": "Estadio Santiago Bernabéu",
+                  "competition": { "code": "PD", "name": "Primera Division" },
+                  "homeTeam": {
+                    "id": 86,
+                    "name": "Real Madrid CF",
+                    "shortName": "Real Madrid",
+                    "crest": "https://crests.football-data.org/86.png"
+                  },
+                  "awayTeam": {
+                    "id": 81,
+                    "name": "FC Barcelona",
+                    "shortName": "Barcelona",
+                    "crest": "https://crests.football-data.org/81.png"
+                  },
+                  "score": {
+                    "fullTime": { "home": 2, "away": 1 },
+                    "halfTime": { "home": 1, "away": 1 }
+                  }
+                }
+              ]
+            }
+        """.trimIndent()
+        val fdoMatches = footballRepository.parseFootballDataOrgMatchesJson(
+            rawJson = sampleFootballDataJson,
+            dayTab = com.example.data.repository.MatchDayTab.TODAY
+        )
+        assertEquals(1, fdoMatches.size)
+        val clasico = fdoMatches.first()
+        assertEquals("laliga", clasico.tournamentId)
+        assertEquals(com.example.data.repository.MatchStatus.LIVE, clasico.status)
+        assertEquals("2H • 64'", clasico.liveMinuteOrBadge)
+        assertEquals(2, clasico.homeScore)
+        assertEquals(1, clasico.awayScore)
+        assertEquals("1 - 1", clasico.halfTimeScore)
+
+        // 2. Verify Smart Quota Management for API-Football (reserves 15 requests for Match Center after 80 background requests)
+        repeat(com.example.data.repository.FootballRepository.API_FOOTBALL_MAX_DAILY_BACKGROUND) {
+            assertTrue(com.example.data.repository.FootballRepository.tryAcquireSharedApiFootballPermit(isMatchCenterDossier = false))
+        }
+        assertFalse(com.example.data.repository.FootballRepository.tryAcquireSharedApiFootballPermit(isMatchCenterDossier = false))
+        assertTrue(com.example.data.repository.FootballRepository.tryAcquireSharedApiFootballPermit(isMatchCenterDossier = true))
+        com.example.data.repository.FootballRepository.resetSharedSportsDbRateLimiterForTests()
+
+        // 3. Verify 1-Call API-Football v3 Match Center Dossier Enrichment (lineups, media.api-sports.io photos, events, statistics)
+        val homeXiArr = (1..11).joinToString(",") { idx ->
+            val pId = 1000 + idx
+            val pName = if (idx == 1) "Thibaut Courtois" else if (idx == 9) "Kylian Mbappé" else "Real Starter $idx"
+            val pos = if (idx == 1) "G" else if (idx <= 5) "D" else if (idx <= 8) "M" else "F"
+            """{"player":{"id":$pId,"name":"$pName","number":$idx,"pos":"$pos","grid":"1:$idx"}}"""
+        }
+        val awayXiArr = (1..11).joinToString(",") { idx ->
+            val pId = 2000 + idx
+            val pName = if (idx == 1) "Iñaki Peña" else if (idx == 9) "Robert Lewandowski" else "Barca Starter $idx"
+            val pos = if (idx == 1) "G" else if (idx <= 5) "D" else if (idx <= 8) "M" else "F"
+            """{"player":{"id":$pId,"name":"$pName","number":$idx,"pos":"$pos","grid":"1:$idx"}}"""
+        }
+        val apiFootballFixtureJson = org.json.JSONObject(
+            """
+            {
+              "fixture": {
+                "id": 1208550,
+                "referee": "Jesús Gil Manzano"
+              },
+              "score": {
+                "halftime": { "home": 1, "away": 1 }
+              },
+              "lineups": [
+                {
+                  "team": { "id": 541, "name": "Real Madrid" },
+                  "coach": { "id": 1, "name": "Carlo Ancelotti" },
+                  "formation": "4-3-3",
+                  "startXI": [$homeXiArr],
+                  "substitutes": [
+                    {"player":{"id":1099,"name":"Luka Modrić","number":10,"pos":"M"}}
+                  ]
+                },
+                {
+                  "team": { "id": 529, "name": "Barcelona" },
+                  "coach": { "id": 2, "name": "Hansi Flick" },
+                  "formation": "4-2-3-1",
+                  "startXI": [$awayXiArr],
+                  "substitutes": [
+                    {"player":{"id":2099,"name":"Gavi","number":6,"pos":"M"}}
+                  ]
+                }
+              ],
+              "players": [
+                {
+                  "team": { "id": 541, "name": "Real Madrid" },
+                  "players": [
+                    {
+                      "player": { "id": 1009, "name": "Kylian Mbappé", "photo": "https://media.api-sports.io/football/players/1009.png" },
+                      "statistics": [
+                        {
+                          "games": { "rating": "8.9", "captain": false },
+                          "goals": { "total": 2, "assists": 0 },
+                          "cards": { "yellow": 0, "red": 0 }
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ],
+              "events": [
+                {
+                  "time": { "elapsed": 18, "extra": null },
+                  "team": { "id": 541, "name": "Real Madrid" },
+                  "player": { "id": 1009, "name": "Kylian Mbappé" },
+                  "assist": { "id": 1005, "name": "Jude Bellingham" },
+                  "type": "Goal",
+                  "detail": "Normal Goal"
+                },
+                {
+                  "time": { "elapsed": 34, "extra": null },
+                  "team": { "id": 529, "name": "Barcelona" },
+                  "player": { "id": 2009, "name": "Robert Lewandowski" },
+                  "assist": { "id": 2007, "name": "Lamine Yamal" },
+                  "type": "Goal",
+                  "detail": "Normal Goal"
+                },
+                {
+                  "time": { "elapsed": 61, "extra": null },
+                  "team": { "id": 541, "name": "Real Madrid" },
+                  "player": { "id": 1009, "name": "Kylian Mbappé" },
+                  "assist": { "id": null, "name": null },
+                  "type": "Goal",
+                  "detail": "Penalty"
+                }
+              ],
+              "statistics": [
+                {
+                  "team": { "id": 541, "name": "Real Madrid" },
+                  "statistics": [
+                    { "type": "Ball Possession", "value": "54%" },
+                    { "type": "expected_goals", "value": "2.41" },
+                    { "type": "Total Shots", "value": 16 },
+                    { "type": "Shots on Goal", "value": 8 },
+                    { "type": "Corner Kicks", "value": 7 }
+                  ]
+                },
+                {
+                  "team": { "id": 529, "name": "Barcelona" },
+                  "statistics": [
+                    { "type": "Ball Possession", "value": "46%" },
+                    { "type": "expected_goals", "value": "1.65" },
+                    { "type": "Total Shots", "value": 12 },
+                    { "type": "Shots on Goal", "value": 5 },
+                    { "type": "Corner Kicks", "value": 5 }
+                  ]
+                }
+              ]
+            }
+            """.trimIndent()
+        )
+
+        val enricher = com.example.data.repository.MatchCenterEnricher(okhttp3.OkHttpClient())
+        val dossier = enricher.buildCompleteDossier(
+            match = clasico.copy(apiFootballFixtureId = "1208550"),
+            raw = com.example.data.repository.MatchCenterEnricher.LiveDossierRawPayload(
+                apiFootballFixtureJson = apiFootballFixtureJson
+            )
+        )
+
+        assertEquals("Jesús Gil Manzano", dossier.refereeName)
+        assertEquals("HT 1 - 1", dossier.halfTimeScoreLabel)
+        assertTrue(dossier.lineups.isConfirmed)
+        assertEquals("4-3-3", dossier.lineups.homeFormation)
+        assertEquals("4-2-3-1", dossier.lineups.awayFormation)
+        val mbappeNode = dossier.lineups.homeStartingXI.first { it.name == "Kylian Mbappé" }
+        assertEquals("https://media.api-sports.io/football/players/1009.png", mbappeNode.photoUrl)
+        assertEquals(8.9, mbappeNode.rating, 0.01)
+        assertEquals(2, mbappeNode.goals)
+        assertTrue(mbappeNode.isMvp)
+
+        assertEquals(3, dossier.timelineEvents.size)
+        assertEquals("Kylian Mbappé", dossier.timelineEvents.first().primaryPlayer)
+        assertEquals("1 - 0", dossier.timelineEvents.first().runningScore)
+        assertEquals(com.example.data.repository.MatchEventType.PENALTY_GOAL, dossier.timelineEvents.last().eventType)
+
+        assertTrue(dossier.stats.any { it.statLabel == "Ball Possession" && it.homeValueText == "54%" && it.awayValueText == "46%" })
+        assertTrue(dossier.stats.any { it.statLabel == "Expected Goals (xG)" && it.homeValueText == "2.41" && it.awayValueText == "1.65" })
+    }
+
+    @Test
+    fun `testPhase2UpgradePlanTmdbSubdlZipExtractionAndParallelSubtitleMerging`() = runBlocking {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val wyzieService = com.example.data.remote.WyzieSubtitleService()
+        val xtreamClient = com.example.data.remote.XtreamClient()
+
+        // 1. Verify TMDb /search/movie + /external_ids JSON parsing to (imdb_id, tmdb_id)
+        val tmdbSearchJson = """
+            {
+              "page": 1,
+              "results": [
+                {
+                  "id": 872585,
+                  "title": "Oppenheimer",
+                  "release_date": "2023-07-19"
+                }
+              ]
+            }
+        """.trimIndent()
+        val tmdbExternalIdsJson = """
+            {
+              "id": 872585,
+              "imdb_id": "tt15398776",
+              "wikidata_id": "Q108839994"
+            }
+        """.trimIndent()
+        val (resolvedImdbId, resolvedTmdbId) = wyzieService.parseTmdbSearchAndExternalIdsJson(
+            searchJson = tmdbSearchJson,
+            externalIdsJson = tmdbExternalIdsJson
+        )
+        assertEquals("tt15398776", resolvedImdbId)
+        assertEquals("872585", resolvedTmdbId)
+
+        // Verify TMDb /movie/{id}?append_to_response=credits fallback enrichment for MovieDossierBottomSheet
+        val tmdbMovieCreditsJson = """
+            {
+              "id": 872585,
+              "imdb_id": "tt15398776",
+              "title": "Oppenheimer",
+              "backdrop_path": "/fm6KqXpk3M2HVveHwCrBSSBaO0V.jpg",
+              "poster_path": "/8Gxv8gSFCU0XGDykEGv7zR1n2ua.jpg",
+              "overview": "The story of J. Robert Oppenheimer's role in the development of the atomic bomb.",
+              "release_date": "2023-07-19",
+              "runtime": 181,
+              "vote_average": 8.12,
+              "genres": [
+                { "id": 18, "name": "Drama" },
+                { "id": 36, "name": "History" }
+              ],
+              "credits": {
+                "cast": [
+                  { "name": "Cillian Murphy" },
+                  { "name": "Emily Blunt" },
+                  { "name": "Matt Damon" },
+                  { "name": "Robert Downey Jr." },
+                  { "name": "Florence Pugh" },
+                  { "name": "Josh Hartnett" }
+                ],
+                "crew": [
+                  { "job": "Producer", "name": "Emma Thomas" },
+                  { "job": "Director", "name": "Christopher Nolan" }
+                ]
+              }
+            }
+        """.trimIndent()
+        val baseMovieDetails = com.example.data.remote.VodMovieDetails(
+            vodId = 99L,
+            title = "EN | Oppenheimer [4K] (2023)",
+            coverUrl = "",
+            backdropUrl = ""
+        )
+        val enrichedDetails = xtreamClient.parseTmdbMovieDetailsWithCreditsJson(
+            json = tmdbMovieCreditsJson,
+            baseDetails = baseMovieDetails
+        )
+        assertEquals("https://image.tmdb.org/t/p/w1280/fm6KqXpk3M2HVveHwCrBSSBaO0V.jpg", enrichedDetails.backdropUrl)
+        assertEquals("https://image.tmdb.org/t/p/w780/8Gxv8gSFCU0XGDykEGv7zR1n2ua.jpg", enrichedDetails.coverUrl)
+        assertTrue(enrichedDetails.plot.contains("J. Robert Oppenheimer"))
+        assertEquals("Christopher Nolan", enrichedDetails.director)
+        assertEquals("Cillian Murphy, Emily Blunt, Matt Damon, Robert Downey Jr., Florence Pugh", enrichedDetails.cast)
+        assertEquals("181m", enrichedDetails.duration)
+        assertEquals("8.1", enrichedDetails.rating)
+        assertEquals("Drama, History", enrichedDetails.genre)
+        assertEquals("tt15398776", enrichedDetails.tmdbOrImdbId)
+
+        // 2. Verify SubDL JSON parsing & ZipInputStream .srt extraction in downloadSubtitleToCache()
+        val subdlJson = """
+            {
+              "status": true,
+              "subtitles": [
+                {
+                  "sd_id": 44101,
+                  "release_name": "Oppenheimer.2023.2160p.UHD.BluRay.x265-SURCODE",
+                  "lang": "arabic",
+                  "url": "/subtitle/3192810-3218492.zip",
+                  "hi": false
+                },
+                {
+                  "sd_id": 44102,
+                  "release_name": "Oppenheimer.2023.1080p.WEB-DL.DDP5.1.Atmos",
+                  "lang": "tr",
+                  "url": "https://dl.subdl.com/subtitle/3192810-9999999.zip",
+                  "hi": 0
+                }
+              ]
+            }
+        """.trimIndent()
+        val parsedSubdl = wyzieService.parseSubdlJson(subdlJson, fallbackTitle = "Oppenheimer")
+        assertEquals(2, parsedSubdl.size)
+        assertEquals("ar", parsedSubdl[0].languageCode)
+        assertEquals("🇸🇦", parsedSubdl[0].flagEmoji)
+        assertEquals("SubDL", parsedSubdl[0].source)
+        assertEquals("https://dl.subdl.com/subtitle/3192810-3218492.zip", parsedSubdl[0].url)
+        assertEquals("tr", parsedSubdl[1].languageCode)
+
+        // Create a temporary PK ZIP archive containing an .srt file and verify downloadSubtitleToCache() + downloadAndParseSubtitle()
+        val sampleSrtInsideZip = """
+            1
+            00:00:02,000 --> 00:00:05,500
+            الانشطار النووي سيغير العالم للأبد
+
+            2
+            00:00:06,200 --> 00:00:09,800
+            Now I am become Death, the destroyer of worlds.
+        """.trimIndent()
+        val tempZipFile = java.io.File.createTempFile("subdl_test_", ".zip", context.cacheDir)
+        java.util.zip.ZipOutputStream(java.io.FileOutputStream(tempZipFile)).use { zos ->
+            zos.putNextEntry(java.util.zip.ZipEntry("readme.txt"))
+            zos.write("Downloaded from SubDL".toByteArray(Charsets.UTF_8))
+            zos.closeEntry()
+
+            zos.putNextEntry(java.util.zip.ZipEntry("Oppenheimer.2023.Arabic.srt"))
+            zos.write(sampleSrtInsideZip.toByteArray(Charsets.UTF_8))
+            zos.closeEntry()
+        }
+        val zipBytes = tempZipFile.readBytes()
+        assertEquals(0x50.toByte(), zipBytes[0])
+        assertEquals(0x4B.toByte(), zipBytes[1])
+
+        val zipOption = parsedSubdl[0].copy(url = "file://${tempZipFile.absolutePath}")
+        val cachedSrtResult = wyzieService.downloadSubtitleToCache(zipOption)
+        assertTrue(cachedSrtResult.isSuccess)
+        assertTrue(cachedSrtResult.getOrThrow().contains("الانشطار النووي"))
+
+        val parsedCuesResult = wyzieService.downloadAndParseSubtitle(zipOption)
+        assertTrue(parsedCuesResult.isSuccess)
+        val cues = parsedCuesResult.getOrThrow()
+        assertEquals(2, cues.size)
+        assertEquals(2000L, cues[0].startTimeMs)
+        assertEquals("Now I am become Death, the destroyer of worlds.", cues[1].text)
+        tempZipFile.delete()
+
+        // 3. Verify Parallel Merging, Deduplication & Language Priority Ranking across Wyzie, SubDL, and OpenSubtitles v3
+        val wyzieOpts = listOf(
+            com.example.data.remote.WyzieSubtitleOption(
+                id = "w_en",
+                url = "https://sub.wyzie.io/dl/en_1.srt",
+                languageCode = "en",
+                languageDisplay = "English",
+                flagEmoji = "🇬🇧",
+                mediaName = "Oppenheimer 4K",
+                format = "SRT",
+                source = "Wyzie",
+                encoding = "UTF-8",
+                isHearingImpaired = false
+            ),
+            com.example.data.remote.WyzieSubtitleOption(
+                id = "w_fr",
+                url = "https://sub.wyzie.io/dl/fr_1.srt",
+                languageCode = "fr",
+                languageDisplay = "French",
+                flagEmoji = "🇫🇷",
+                mediaName = "Oppenheimer FR",
+                format = "SRT",
+                source = "Wyzie",
+                encoding = "UTF-8",
+                isHearingImpaired = false
+            )
+        )
+        val openSubsOpts = listOf(
+            com.example.data.remote.WyzieSubtitleOption(
+                id = "os_es",
+                url = "https://opensubtitles.strem.io/dl/es_1.srt",
+                languageCode = "es",
+                languageDisplay = "Spanish",
+                flagEmoji = "🇪🇸",
+                mediaName = "Oppenheimer ES",
+                format = "SRT",
+                source = "OpenSubtitles",
+                encoding = "UTF-8",
+                isHearingImpaired = false
+            ),
+            // Duplicate URL of w_en — must be deduplicated
+            com.example.data.remote.WyzieSubtitleOption(
+                id = "os_en_dup",
+                url = "https://sub.wyzie.io/dl/en_1.srt",
+                languageCode = "en",
+                languageDisplay = "English",
+                flagEmoji = "🇬🇧",
+                mediaName = "Duplicate EN",
+                format = "SRT",
+                source = "OpenSubtitles",
+                encoding = "UTF-8",
+                isHearingImpaired = false
+            )
+        )
+
+        val mergedGroups = wyzieService.mergeAndRankSubtitleOptions(
+            wyzieOptions = wyzieOpts,
+            subdlOptions = parsedSubdl,
+            openSubsOptions = openSubsOpts
+        )
+        assertEquals(listOf("ar", "en", "fr", "es", "tr"), mergedGroups.map { it.languageCode })
+        assertEquals(1, mergedGroups.first { it.languageCode == "en" }.options.size)
+        assertEquals("SubDL", mergedGroups.first { it.languageCode == "ar" }.options.first().source)
+        assertEquals("Wyzie", mergedGroups.first { it.languageCode == "en" }.options.first().source)
+        assertEquals("OpenSubtitles", mergedGroups.first { it.languageCode == "es" }.options.first().source)
+
+        // 4. Verify PlayerViewModel remembers lastSelectedSubtitleLanguageCode in SharedPreferences & PlayerUiState
+        val app = ApplicationProvider.getApplicationContext<android.app.Application>()
+        val playerVm = com.example.ui.player.PlayerViewModel(app)
+        playerVm.chooseSubtitleLanguageFromPrompt("ar")
+        assertEquals("ar", playerVm.uiState.value.lastSelectedSubtitleLanguageCode)
+        val savedPrefsLang = app.getSharedPreferences(
+            com.example.ui.player.PlayerViewModel.SUBTITLE_PREFS_NAME,
+            Context.MODE_PRIVATE
+        ).getString(com.example.ui.player.PlayerViewModel.KEY_LAST_SUBTITLE_LANG, null)
+        assertEquals("ar", savedPrefsLang)
+    }
+
+    @Test
+    fun `test Phase 3 Android TV D-Pad Enter trap delegation and adaptive Phone vs TV grid layout calculations`() {
+        var centerCalls = 0
+        var playPauseCalls = 0
+        val zapped = mutableListOf<Int>()
+        val seeks = mutableListOf<Int>()
+
+        // 1. When HUD controls are visible AND a HUD child holds D-Pad focus, KEYCODE_DPAD_CENTER / ENTER
+        // and directional D-Pad keys must return false so Compose dispatches click/focus to the focused button!
+        assertFalse(
+            handlePlayerRemoteKeyEvent(
+                keyCode = KeyEvent.KEYCODE_DPAD_CENTER,
+                isLive = false,
+                isControlsVisible = true,
+                isTouchLocked = false,
+                onShowControlsOrTogglePlay = { centerCalls++ },
+                onTogglePlayPause = { playPauseCalls++ },
+                onZapChannel = { zapped.add(it) },
+                onSeekRelative = { seeks.add(it) },
+                hasOpenOverlayOrSheet = false,
+                hasFocusedHudChild = true
+            )
+        )
+        assertFalse(
+            handlePlayerRemoteKeyEvent(
+                keyCode = KeyEvent.KEYCODE_DPAD_LEFT,
+                isLive = false,
+                isControlsVisible = true,
+                isTouchLocked = false,
+                onShowControlsOrTogglePlay = { centerCalls++ },
+                onTogglePlayPause = { playPauseCalls++ },
+                onZapChannel = { zapped.add(it) },
+                onSeekRelative = { seeks.add(it) },
+                hasOpenOverlayOrSheet = false,
+                hasFocusedHudChild = true
+            )
+        )
+        assertEquals(0, centerCalls)
+        assertTrue(seeks.isEmpty())
+
+        // 2. When Subtitle Language Prompt or a BottomSheet is open (`hasOpenOverlayOrSheet = true`),
+        // D-Pad Center/Enter and directional keys must also return false so overlay pills receive clicks!
+        assertFalse(
+            handlePlayerRemoteKeyEvent(
+                keyCode = KeyEvent.KEYCODE_ENTER,
+                isLive = false,
+                isControlsVisible = false,
+                isTouchLocked = false,
+                onShowControlsOrTogglePlay = { centerCalls++ },
+                onTogglePlayPause = { playPauseCalls++ },
+                onZapChannel = { zapped.add(it) },
+                onSeekRelative = { seeks.add(it) },
+                hasOpenOverlayOrSheet = true,
+                hasFocusedHudChild = false
+            )
+        )
+        assertEquals(0, centerCalls)
+
+        // 3. Dedicated hardware media keys (MEDIA_PLAY_PAUSE, CHANNEL_UP, MEDIA_FAST_FORWARD) remain active globally
+        assertTrue(
+            handlePlayerRemoteKeyEvent(
+                keyCode = KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE,
+                isLive = true,
+                isControlsVisible = true,
+                isTouchLocked = false,
+                onShowControlsOrTogglePlay = { centerCalls++ },
+                onTogglePlayPause = { playPauseCalls++ },
+                onZapChannel = { zapped.add(it) },
+                onSeekRelative = { seeks.add(it) },
+                hasOpenOverlayOrSheet = true,
+                hasFocusedHudChild = true
+            )
+        )
+        assertEquals(1, playPauseCalls)
+
+        // 4. Verify adaptive grid calculations for Phone (390dp) vs Tablet (720dp) vs Android TV (960dp / 1920dp)
+        assertEquals(112, com.example.ui.theme.calculateVodPosterMinCellDp(390))
+        assertEquals(136, com.example.ui.theme.calculateVodPosterMinCellDp(720))
+        assertEquals(156, com.example.ui.theme.calculateVodPosterMinCellDp(960))
+        assertEquals(156, com.example.ui.theme.calculateVodPosterMinCellDp(1920))
+
+        assertEquals(1, com.example.ui.theme.calculateLiveTvGridColumns(390))
+        assertEquals(2, com.example.ui.theme.calculateLiveTvGridColumns(720))
+        assertEquals(3, com.example.ui.theme.calculateLiveTvGridColumns(960))
+        assertEquals(3, com.example.ui.theme.calculateLiveTvGridColumns(1920))
+    }
+
+    @Test
+    fun `test Phase 4 Local Wi-Fi TvSyncManager loopback pairing, VaultSyncPayload exchange, and Single-Connection Safe TV playback`() = runBlocking {
+        val app = ApplicationProvider.getApplicationContext<android.app.Application>()
+        val tvHostManager = com.example.data.sync.TvSyncManager(app)
+        val phoneControllerManager = com.example.data.sync.TvSyncManager(app)
+
+        try {
+            // 1. Start TV Host Server on loopback
+            tvHostManager.startTvHostServer(preferredPort = 18765)
+            val hostState = tvHostManager.sessionState.value
+            assertEquals(com.example.data.sync.SyncRole.TV_HOST, hostState.role)
+            assertTrue(hostState.isSyncActive)
+            assertEquals(6, hostState.pairingPin.length)
+            val boundPort = hostState.serverPort
+
+            // Verify QR URI builder & parser
+            val qrUri = tvHostManager.buildQrPairingPayload()
+            val parsedQr = com.example.data.sync.TvSyncManager.parseQrPairingPayload(qrUri)
+            assertNotNull(parsedQr)
+            assertEquals(boundPort, parsedQr!!.second)
+            assertEquals(hostState.pairingPin, parsedQr.third)
+
+            // Configure TV Host vault exchange callback & live status provider
+            var receivedPhoneVaultOnTv: com.example.data.sync.VaultSyncPayload? = null
+            tvHostManager.onVaultPayloadReceived = { incomingPhoneVault ->
+                receivedPhoneVaultOnTv = incomingPhoneVault
+                com.example.data.sync.VaultSyncPayload(
+                    playlistName = "Living Room 4K Vault",
+                    serverUrl = "https://tv.setplay.io",
+                    username = "tv_vip",
+                    password = "tv_secret_password",
+                    countryZoneCode = "MA",
+                    preferredSubtitleLang = "ar",
+                    favoriteStreamIds = listOf("live:101", "movie:505"),
+                    episodeResumeMap = mapOf("1_ep_9001" to 420_000L)
+                )
+            }
+            tvHostManager.tvPlaybackStatusProvider = {
+                tvHostManager.sessionState.value.copy(
+                    tvNowPlayingTitle = "AR| beIN Sports 1 HD",
+                    tvIsPlaying = true,
+                    tvActiveSubtitleLang = "ar"
+                )
+            }
+
+            // 2. Pair Phone Controller to TV Host over 127.0.0.1 with wrong PIN first (must fail safely)
+            val phoneLocalVault = com.example.data.sync.VaultSyncPayload(
+                playlistName = "Phone Xtream Account",
+                serverUrl = "https://phone.setplay.io",
+                username = "phone_user",
+                password = "phone_password",
+                countryZoneCode = "FR",
+                preferredSubtitleLang = "fr",
+                favoriteStreamIds = listOf("live:777"),
+                episodeResumeMap = mapOf("1_ep_888" to 125_000L)
+            )
+            val failedPair = phoneControllerManager.connectToTvHost(
+                hostIp = "127.0.0.1",
+                port = boundPort,
+                pin = "000000",
+                localVault = phoneLocalVault
+            )
+            assertTrue(failedPair.isFailure)
+
+            // Now pair with the authentic 6-digit PIN from the TV Host
+            var receivedTvVaultOnPhone: com.example.data.sync.VaultSyncPayload? = null
+            val successPair = phoneControllerManager.connectToTvHost(
+                hostIp = "127.0.0.1",
+                port = boundPort,
+                pin = hostState.pairingPin,
+                localVault = phoneLocalVault,
+                onRemoteVaultReceived = { remoteVault ->
+                    receivedTvVaultOnPhone = remoteVault
+                }
+            )
+            assertTrue(successPair.isSuccess)
+            assertEquals(com.example.data.sync.SyncRole.PHONE_CONTROLLER, phoneControllerManager.sessionState.value.role)
+            assertTrue(phoneControllerManager.sessionState.value.isSyncActive)
+
+            // Verify bidirectional VaultSyncPayload exchange
+            assertNotNull(receivedPhoneVaultOnTv)
+            assertEquals("Phone Xtream Account", receivedPhoneVaultOnTv!!.playlistName)
+            assertEquals("FR", receivedPhoneVaultOnTv!!.countryZoneCode)
+            assertEquals(125_000L, receivedPhoneVaultOnTv!!.episodeResumeMap["1_ep_888"])
+
+            assertNotNull(receivedTvVaultOnPhone)
+            assertEquals("Living Room 4K Vault", receivedTvVaultOnPhone!!.playlistName)
+            assertEquals("tv_vip", receivedTvVaultOnPhone!!.username)
+            assertTrue(receivedTvVaultOnPhone!!.favoriteStreamIds.contains("live:101"))
+
+            // 3. Verify Navigation Mirroring (`POST /api/sync/navigate`)
+            var receivedNavCommandOnTv: com.example.data.sync.RemoteNavMirrorCommand? = null
+            tvHostManager.onNavMirrorReceived = { cmd ->
+                receivedNavCommandOnTv = cmd
+            }
+            phoneControllerManager.sendNavMirror(
+                com.example.data.sync.RemoteNavMirrorCommand(
+                    screenName = "LIVE_TV",
+                    matchDayName = "TOMORROW"
+                )
+            )
+            // Wait briefly for async nav mirror dispatch
+            kotlinx.coroutines.delay(150L)
+            assertNotNull(receivedNavCommandOnTv)
+            assertEquals("LIVE_TV", receivedNavCommandOnTv!!.screenName)
+            assertEquals("TOMORROW", receivedNavCommandOnTv!!.matchDayName)
+
+            // 4. Verify Single-Connection Safe Direct TV Playback (`POST /api/sync/play`):
+            // Phone PlayerViewModel remains stopped (`currentStream == null`) while TV Host receives the stream!
+            val phonePlayerVm = com.example.ui.player.PlayerViewModel(app)
+            phonePlayerVm.stopAndClosePlayer()
+            assertNull(phonePlayerVm.uiState.value.currentStream)
+
+            val playCmd = com.example.data.sync.RemotePlayCommand(
+                streamId = "10101",
+                streamName = "AR| beIN Sports 1 4K",
+                streamType = "live",
+                categoryId = "sports_bein",
+                streamIcon = "https://setplay.io/bein1.png",
+                epgChannelId = "bein1.ar",
+                containerExtension = "ts",
+                resumePositionMs = 0L,
+                preferredSubtitleLang = "ar"
+            )
+            val playResult = phoneControllerManager.sendPlayOnTv(playCmd)
+            assertTrue(playResult.isSuccess)
+            assertNull(phonePlayerVm.uiState.value.currentStream)
+            assertEquals("AR| beIN Sports 1 4K", phoneControllerManager.sessionState.value.tvNowPlayingTitle)
+            assertTrue(phoneControllerManager.sessionState.value.tvIsPlaying)
+            assertEquals("ar", phoneControllerManager.sessionState.value.tvActiveSubtitleLang)
+
+            // 5. Verify WhatsApp / ON_RESUME Status Refresh (`GET /api/sync/status`)
+            val statusResult = phoneControllerManager.refreshTvStatus()
+            assertTrue(statusResult.isSuccess)
+            assertEquals("AR| beIN Sports 1 HD", phoneControllerManager.sessionState.value.tvNowPlayingTitle)
+
+            // 6. Verify Leave Sync Mode & 1-Tap Rejoin (`rejoinLastTvHost`)
+            assertTrue(phoneControllerManager.hasSavedTvHost())
+            phoneControllerManager.leaveSyncMode()
+            assertEquals(com.example.data.sync.SyncRole.STANDALONE, phoneControllerManager.sessionState.value.role)
+            assertFalse(phoneControllerManager.sessionState.value.isSyncActive)
+
+            val rejoinResult = phoneControllerManager.rejoinLastTvHost(localVault = phoneLocalVault)
+            assertTrue(rejoinResult.isSuccess)
+            assertEquals(com.example.data.sync.SyncRole.PHONE_CONTROLLER, phoneControllerManager.sessionState.value.role)
+            assertTrue(phoneControllerManager.sessionState.value.isSyncActive)
+        } finally {
+            phoneControllerManager.leaveSyncMode()
+            tvHostManager.leaveSyncMode()
+        }
+    }
+}
 

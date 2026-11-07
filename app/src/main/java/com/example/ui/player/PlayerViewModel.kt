@@ -122,6 +122,7 @@ data class PlayerUiState(
     val subtitleSyncOffsetMs: Long = 0L,
     val subtitleScaleFactor: Float = 1.0f,
     val showSubtitleLanguagePrompt: Boolean = false,
+    val lastSelectedSubtitleLanguageCode: String? = null,
     val pendingPreferredSubtitleLanguageCode: String? = null,
     val subtitleActivationBannerMessage: String? = null,
     // 15-Minute Halftime Explorer Timer
@@ -136,6 +137,7 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application) 
     private val database = StreamVaultDatabase.getInstance(application)
     val repository = IptvRepository.getInstance(application)
     private val wyzieSubtitleService = WyzieSubtitleService(IptvRepository.sharedOkHttpClient)
+    private val subtitlePrefs = application.getSharedPreferences(SUBTITLE_PREFS_NAME, Context.MODE_PRIVATE)
 
     private val audioManager = application.getSystemService(Context.AUDIO_SERVICE) as AudioManager
     private var activePlaylistCache: PlaylistEntity? = null
@@ -272,8 +274,20 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     init {
+        val savedSubLang = subtitlePrefs.getString(KEY_LAST_SUBTITLE_LANG, null)
+            ?.trim()
+            ?.takeIf { it.isNotEmpty() }
+        if (savedSubLang != null) {
+            _uiState.value = _uiState.value.copy(lastSelectedSubtitleLanguageCode = savedSubLang)
+        }
         syncInitialSystemVolume()
         startProgressTracking()
+    }
+
+    private fun saveLastSelectedSubtitleLanguage(languageCode: String?) {
+        val normalized = languageCode?.trim()?.lowercase()?.takeIf { it.isNotEmpty() } ?: return
+        subtitlePrefs.edit().putString(KEY_LAST_SUBTITLE_LANG, normalized).apply()
+        _uiState.value = _uiState.value.copy(lastSelectedSubtitleLanguageCode = normalized)
     }
 
     private fun syncInitialSystemVolume() {
@@ -415,6 +429,8 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application) 
             resolvedMediaQuery = null,
             subtitleSyncOffsetMs = 0L,
             showSubtitleLanguagePrompt = !isLiveStream,
+            lastSelectedSubtitleLanguageCode = _uiState.value.lastSelectedSubtitleLanguageCode
+                ?: subtitlePrefs.getString(KEY_LAST_SUBTITLE_LANG, null)?.trim()?.takeIf { it.isNotEmpty() },
             pendingPreferredSubtitleLanguageCode = null,
             subtitleActivationBannerMessage = null,
             showHalftimeReturnPrompt = if (isReturningToHalftimeStream) false else _uiState.value.showHalftimeReturnPrompt
@@ -911,6 +927,8 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application) 
             return
         }
 
+        saveLastSelectedSubtitleLanguage(languageCode)
+
         val existingGroup = _uiState.value.wyzieLanguageGroups.find {
             it.languageCode.equals(languageCode, ignoreCase = true)
         }
@@ -939,6 +957,9 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application) 
      * Selects a language in the Wyzie Subtitle Studio to display all subtitle options for that language.
      */
     fun selectOnlineSubtitleLanguage(languageCode: String?) {
+        if (languageCode != null) {
+            saveLastSelectedSubtitleLanguage(languageCode)
+        }
         _uiState.value = _uiState.value.copy(selectedWyzieLanguageCode = languageCode)
     }
 
@@ -946,6 +967,7 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application) 
      * Downloads and activates the chosen [WyzieSubtitleOption] so playback immediately displays subtitles.
      */
     fun applyOnlineSubtitleOption(option: WyzieSubtitleOption, onReady: () -> Unit = {}) {
+        saveLastSelectedSubtitleLanguage(option.languageCode)
         subtitleDownloadJob?.cancel()
         subtitleDownloadJob = viewModelScope.launch {
             _uiState.value = _uiState.value.copy(
@@ -1331,6 +1353,11 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application) 
         } catch (_: Exception) {}
         player.removeListener(playerListener)
         player.release()
+    }
+
+    companion object {
+        internal const val SUBTITLE_PREFS_NAME = "setplay_subtitle_prefs"
+        internal const val KEY_LAST_SUBTITLE_LANG = "last_selected_subtitle_lang"
     }
 }
 

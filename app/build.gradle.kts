@@ -68,6 +68,7 @@ android {
       isIncludeAndroidResources = true
       all {
         it.systemProperty("java.awt.headless", "true")
+        it.systemProperty("robolectric.dependency.repo.url", "https://maven-central.storage-download.googleapis.com/maven2")
       }
     }
   }

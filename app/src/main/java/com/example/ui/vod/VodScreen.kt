@@ -11,6 +11,7 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
@@ -104,7 +105,9 @@ import com.example.ui.theme.SeriesIceAqua
 import com.example.ui.theme.SeriesMistTeal
 import com.example.ui.theme.SeriesPineBase
 import com.example.ui.theme.SeriesSeaJade
+import com.example.ui.theme.calculateVodPosterMinCellDp
 import com.example.ui.theme.luxuryFocusableCard
+import com.example.ui.theme.tvFocusablePill
 import com.example.util.StreamMetadataParser
 
 @Composable
@@ -484,17 +487,21 @@ fun VodScreen(
                                 Modifier
                             }
                         )
-                        .clickable {
-                            if (isSelected) {
-                                onSelectCategory(null)
-                            } else if (cat.isLocked && !isParentalUnlocked) {
-                                onRequestUnlockCategory?.invoke(cat.categoryId) {
+                        .tvFocusablePill(
+                            accentColor = sectionHighlight,
+                            shape = RoundedCornerShape(50),
+                            onClick = {
+                                if (isSelected) {
+                                    onSelectCategory(null)
+                                } else if (cat.isLocked && !isParentalUnlocked) {
+                                    onRequestUnlockCategory?.invoke(cat.categoryId) {
+                                        onSelectCategory(cat.categoryId)
+                                    }
+                                } else {
                                     onSelectCategory(cat.categoryId)
                                 }
-                            } else {
-                                onSelectCategory(cat.categoryId)
                             }
-                        }
+                        )
                 ) {
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
@@ -590,30 +597,33 @@ fun VodScreen(
                 }
             }
 
-            LazyVerticalGrid(
-                state = gridState,
-                columns = GridCells.Adaptive(minSize = 150.dp),
-                modifier = Modifier
-                    .fillMaxSize()
-                    .testTag("vod_grid"),
-                contentPadding = PaddingValues(16.dp),
-                horizontalArrangement = Arrangement.spacedBy(12.dp),
-                verticalArrangement = Arrangement.spacedBy(14.dp)
-            ) {
-                items(items, key = { it.id }) { item ->
-                    if (isMovies) {
-                        MoviePosterCard(
-                            item = item,
-                            onClick = { viewModel.openMovieDetails(item, activePlaylist) },
-                            onPlayImmediately = { onItemClick(item) },
-                            onToggleFavorite = { viewModel.toggleFavorite(item.id, item.isFavorite) }
-                        )
-                    } else {
-                        SeriesVaultCard(
-                            item = item,
-                            onClick = { viewModel.openSeriesDetails(item, activePlaylist) },
-                            onToggleFavorite = { viewModel.toggleFavorite(item.id, item.isFavorite) }
-                        )
+            BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
+                val minCellDp = calculateVodPosterMinCellDp(maxWidth.value.toInt())
+                LazyVerticalGrid(
+                    state = gridState,
+                    columns = GridCells.Adaptive(minSize = minCellDp.dp),
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .testTag("vod_grid"),
+                    contentPadding = PaddingValues(16.dp),
+                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                    verticalArrangement = Arrangement.spacedBy(14.dp)
+                ) {
+                    items(items, key = { it.id }) { item ->
+                        if (isMovies) {
+                            MoviePosterCard(
+                                item = item,
+                                onClick = { viewModel.openMovieDetails(item, activePlaylist) },
+                                onPlayImmediately = { onItemClick(item) },
+                                onToggleFavorite = { viewModel.toggleFavorite(item.id, item.isFavorite) }
+                            )
+                        } else {
+                            SeriesVaultCard(
+                                item = item,
+                                onClick = { viewModel.openSeriesDetails(item, activePlaylist) },
+                                onToggleFavorite = { viewModel.toggleFavorite(item.id, item.isFavorite) }
+                            )
+                        }
                     }
                 }
             }
@@ -1398,7 +1408,7 @@ fun ImaxMovieDossierModalSheet(
                             modifier = Modifier.size(16.dp)
                         )
                         Text(
-                            text = "Fetching synopsis, cast & director from Xtream server…",
+                            text = "Fetching synopsis, cast & 4K backdrop from Xtream / TMDb…",
                             color = Champagne.copy(alpha = 0.85f),
                             fontSize = 12.sp
                         )

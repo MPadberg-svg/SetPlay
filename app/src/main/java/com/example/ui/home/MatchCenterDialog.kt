@@ -113,6 +113,8 @@ import com.example.ui.theme.MetalCharcoal
 import com.example.ui.theme.MetalCharcoalElevated
 import com.example.ui.theme.PaleGold
 import com.example.ui.theme.TabularNumeralTextStyle
+import com.example.ui.theme.tvFocusableControl
+import com.example.ui.theme.tvFocusablePill
 import java.util.Locale
 
 /**
@@ -318,6 +320,11 @@ private fun MatchCenterScoreboardHeader(
                         .size(30.dp)
                         .clip(CircleShape)
                         .background(Color.White.copy(alpha = 0.07f))
+                        .tvFocusableControl(
+                            accentColor = AmberGold,
+                            shape = CircleShape,
+                            onClick = onDismiss
+                        )
                         .testTag("close_match_center_btn")
                 ) {
                     Icon(
@@ -692,7 +699,11 @@ private fun MatchCenterTabBar(
                             Modifier
                         }
                     )
-                    .clickable { onSelectTab(tab) }
+                    .tvFocusablePill(
+                        accentColor = AmberGold,
+                        shape = RoundedCornerShape(50),
+                        onClick = { onSelectTab(tab) }
+                    )
                     .testTag("match_center_tab_${tab.name.lowercase(Locale.ROOT)}")
             ) {
                 Text(
@@ -1222,7 +1233,11 @@ private fun MatchLineups2DPitchTabContent(
                             ),
                             modifier = Modifier
                                 .clip(RoundedCornerShape(50))
-                                .clickable { showPassingNetwork = !showPassingNetwork }
+                                .tvFocusablePill(
+                                    accentColor = ArenaFloodlightLime,
+                                    shape = RoundedCornerShape(50),
+                                    onClick = { showPassingNetwork = !showPassingNetwork }
+                                )
                                 .testTag("toggle_passing_links_btn")
                         ) {
                             Text(
@@ -1257,7 +1272,12 @@ private fun MatchLineups2DPitchTabContent(
                                 modifier = Modifier
                                     .weight(1f)
                                     .clip(RoundedCornerShape(9.dp))
-                                    .clickable { pitchFilterMode = PitchTeamFilterMode.HOME_ONLY }
+                                    .tvFocusableControl(
+                                        accentColor = AmberGold,
+                                        shape = RoundedCornerShape(9.dp),
+                                        focusedScale = 1.04f,
+                                        onClick = { pitchFilterMode = PitchTeamFilterMode.HOME_ONLY }
+                                    )
                                     .testTag("pitch_mode_home_only")
                             ) {
                                 Row(
@@ -1292,7 +1312,12 @@ private fun MatchLineups2DPitchTabContent(
                                 modifier = Modifier
                                     .weight(1f)
                                     .clip(RoundedCornerShape(9.dp))
-                                    .clickable { pitchFilterMode = PitchTeamFilterMode.AWAY_ONLY }
+                                    .tvFocusableControl(
+                                        accentColor = AmberGold,
+                                        shape = RoundedCornerShape(9.dp),
+                                        focusedScale = 1.04f,
+                                        onClick = { pitchFilterMode = PitchTeamFilterMode.AWAY_ONLY }
+                                    )
                                     .testTag("pitch_mode_away_only")
                             ) {
                                 Row(
@@ -1327,7 +1352,12 @@ private fun MatchLineups2DPitchTabContent(
                                 border = if (isBothSelected) BorderStroke(0.8.dp, AmberGold) else null,
                                 modifier = Modifier
                                     .clip(RoundedCornerShape(9.dp))
-                                    .clickable { pitchFilterMode = PitchTeamFilterMode.BOTH }
+                                    .tvFocusableControl(
+                                        accentColor = AmberGold,
+                                        shape = RoundedCornerShape(9.dp),
+                                        focusedScale = 1.04f,
+                                        onClick = { pitchFilterMode = PitchTeamFilterMode.BOTH }
+                                    )
                                     .testTag("pitch_mode_both")
                             ) {
                                 Text(

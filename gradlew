@@ -65,15 +65,45 @@ if [ -n "$API_FOOTBALL_KEY_SECRET" ]; then
   fi
 fi
 
+if [ -n "$FOOTBALL_DATA_KEY_SECRET" ]; then
+  if grep -q "^FOOTBALL_DATA_KEY=" .env 2>/dev/null; then
+    sed -i "s|^FOOTBALL_DATA_KEY=.*|FOOTBALL_DATA_KEY=${FOOTBALL_DATA_KEY_SECRET}|g" .env 2>/dev/null || true
+  else
+    echo "FOOTBALL_DATA_KEY=${FOOTBALL_DATA_KEY_SECRET}" >> .env
+  fi
+fi
+
+if [ -n "$TMDB_API_KEY_SECRET" ]; then
+  if grep -q "^TMDB_API_KEY=" .env 2>/dev/null; then
+    sed -i "s|^TMDB_API_KEY=.*|TMDB_API_KEY=${TMDB_API_KEY_SECRET}|g" .env 2>/dev/null || true
+  else
+    echo "TMDB_API_KEY=${TMDB_API_KEY_SECRET}" >> .env
+  fi
+fi
+
+if [ -n "$SUBDL_API_KEY_SECRET" ]; then
+  if grep -q "^SUBDL_API_KEY=" .env 2>/dev/null; then
+    sed -i "s|^SUBDL_API_KEY=.*|SUBDL_API_KEY=${SUBDL_API_KEY_SECRET}|g" .env 2>/dev/null || true
+  else
+    echo "SUBDL_API_KEY=${SUBDL_API_KEY_SECRET}" >> .env
+  fi
+fi
+
 grep -q "^API_FOOTBALL_KEY=" .env 2>/dev/null || echo "API_FOOTBALL_KEY=YOUR_API_FOOTBALL_KEY" >> .env
+grep -q "^FOOTBALL_DATA_KEY=" .env 2>/dev/null || echo "FOOTBALL_DATA_KEY=YOUR_FOOTBALL_DATA_KEY" >> .env
 grep -q "^SPORT_API_KEY=" .env 2>/dev/null || echo "SPORT_API_KEY=YOUR_SPORT_API_KEY" >> .env
 grep -q "^SPORTAPI_AI_KEY=" .env 2>/dev/null || echo "SPORTAPI_AI_KEY=YOUR_SPORTAPI_AI_KEY" >> .env
+grep -q "^TMDB_API_KEY=" .env 2>/dev/null || echo "TMDB_API_KEY=YOUR_TMDB_API_KEY" >> .env
 grep -q "^WYZIE_API_KEY=" .env 2>/dev/null || echo "WYZIE_API_KEY=YOUR_WYZIE_API_KEY" >> .env
+grep -q "^SUBDL_API_KEY=" .env 2>/dev/null || echo "SUBDL_API_KEY=YOUR_SUBDL_API_KEY" >> .env
 
 sed -i 's|^API_FOOTBALL_KEY=[[:space:]]*$|API_FOOTBALL_KEY=YOUR_API_FOOTBALL_KEY|g' .env 2>/dev/null || true
+sed -i 's|^FOOTBALL_DATA_KEY=[[:space:]]*$|FOOTBALL_DATA_KEY=YOUR_FOOTBALL_DATA_KEY|g' .env 2>/dev/null || true
 sed -i 's|^SPORT_API_KEY=[[:space:]]*$|SPORT_API_KEY=YOUR_SPORT_API_KEY|g' .env 2>/dev/null || true
 sed -i 's|^SPORTAPI_AI_KEY=[[:space:]]*$|SPORTAPI_AI_KEY=YOUR_SPORTAPI_AI_KEY|g' .env 2>/dev/null || true
+sed -i 's|^TMDB_API_KEY=[[:space:]]*$|TMDB_API_KEY=YOUR_TMDB_API_KEY|g' .env 2>/dev/null || true
 sed -i 's|^WYZIE_API_KEY=[[:space:]]*$|WYZIE_API_KEY=YOUR_WYZIE_API_KEY|g' .env 2>/dev/null || true
+sed -i 's|^SUBDL_API_KEY=[[:space:]]*$|SUBDL_API_KEY=YOUR_SUBDL_API_KEY|g' .env 2>/dev/null || true
 
 # Accept Android SDK licenses if ANDROID_HOME is available
 if [ -n "$ANDROID_HOME" ] && [ -f "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" ]; then

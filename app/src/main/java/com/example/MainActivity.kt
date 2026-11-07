@@ -76,6 +76,7 @@ import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Security
 import androidx.compose.material.icons.filled.SportsSoccer
 import androidx.compose.material.icons.filled.Star
+import androidx.compose.material.icons.filled.Tv
 import androidx.compose.material.icons.filled.VideoLibrary
 import androidx.compose.material.icons.outlined.LiveTv
 import androidx.compose.material.icons.outlined.Movie
@@ -108,6 +109,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.Brush
@@ -121,6 +123,7 @@ import androidx.compose.ui.graphics.drawscope.rotate
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.pointer.pointerInput
+import com.example.ui.theme.tvFocusableControl
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.testTag
@@ -145,7 +148,11 @@ import com.example.ui.player.PlayerScreen
 import com.example.ui.player.PlayerViewModel
 import com.example.ui.playlists.PlaylistsScreen
 import com.example.ui.search.GlobalSearchScreen
+import com.example.data.sync.SyncRole
+import com.example.ui.sync.TvSyncCompanionBar
+import com.example.ui.sync.TvSyncModalSheet
 import com.example.ui.theme.AmberGold
+import com.example.ui.theme.ArenaFloodlightLime
 import com.example.ui.theme.Champagne
 import com.example.ui.theme.DarkGraphite
 import com.example.ui.theme.FavoritesBotanicalBorder
@@ -221,6 +228,11 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    override fun onResume() {
+        super.onResume()
+        mainViewModel.refreshSyncedTvStatusOnResume()
+    }
+
     override fun onUserLeaveHint() {
         super.onUserLeaveHint()
         val hasActiveStream = playerViewModel.uiState.value.currentStream != null &&
@@ -259,6 +271,8 @@ fun MainAppContent(
     val isParentalUnlocked by mainViewModel.isParentalUnlockedThisSession.collectAsStateWithLifecycle()
     val playerUiState by playerViewModel.uiState.collectAsStateWithLifecycle()
     val activeGoalAlert by mainViewModel.activeGoalAlert.collectAsStateWithLifecycle()
+    val tvSyncState by mainViewModel.tvSyncState.collectAsStateWithLifecycle()
+    val tvSyncErrorMessage by mainViewModel.tvSyncErrorMessage.collectAsStateWithLifecycle()
 
     val selectedMatchDay by mainViewModel.selectedMatchDay.collectAsStateWithLifecycle()
     val matchesByDay by mainViewModel.matchesByDay.collectAsStateWithLifecycle()
@@ -331,6 +345,7 @@ fun MainAppContent(
 
     var isFullScreenPlayer by remember { mutableStateOf(false) }
     var showNavigationMenuSheet by remember { mutableStateOf(false) }
+    var showTvSyncSheet by remember { mutableStateOf(false) }
     var pendingStreamToPlay by remember { mutableStateOf<StreamEntity?>(null) }
     var pendingUnlockCallback by remember { mutableStateOf<(() -> Unit)?>(null) }
     var showPinDialog by remember { mutableStateOf(false) }
@@ -340,6 +355,69 @@ fun MainAppContent(
     val context = LocalContext.current
     val activity = context as? Activity
     val scope = rememberCoroutineScope()
+
+    LaunchedEffect(isFullScreenPlayer) {
+        mainViewModel.isTvInFullScreenPlayback = isFullScreenPlayer
+    }
+
+    LaunchedEffect(
+        playerUiState.currentStream?.name,
+        playerUiState.currentStream?.streamId,
+        playerUiState.currentStream?.streamType,
+        playerUiState.isPlaying,
+        playerUiState.selectedWyzieLanguageCode,
+        playerUiState.lastSelectedSubtitleLanguageCode
+    ) {
+        mainViewModel.tvSyncManager.tvPlaybackStatusProvider = {
+            mainViewModel.tvSyncState.value.copy(
+                tvNowPlayingTitle = playerUiState.currentStream?.name.orEmpty(),
+                tvNowPlayingStreamId = playerUiState.currentStream?.streamId?.toString().orEmpty(),
+                tvNowPlayingType = playerUiState.currentStream?.streamType.orEmpty(),
+                tvIsPlaying = playerUiState.isPlaying,
+                tvActiveSubtitleLang = (playerUiState.selectedWyzieLanguageCode ?: playerUiState.lastSelectedSubtitleLanguageCode).orEmpty()
+            )
+        }
+    }
+
+    LaunchedEffect(mainViewModel.tvSyncManager) {
+        launch {
+            mainViewModel.tvSyncManager.incomingPlayCommands.collect { cmd ->
+                if (mainViewModel.tvSyncState.value.role == SyncRole.TV_HOST) {
+                    val resolved = mainViewModel.resolveOrBuildStreamForTvCommand(cmd)
+                    if (resolved != null) {
+                        val (stream, playlist) = resolved
+                        isFullScreenPlayer = true
+                        playerViewModel.playStream(stream, playlist)
+                        if (cmd.preferredSubtitleLang.isNotBlank()) {
+                            playerViewModel.chooseSubtitleLanguageFromPrompt(cmd.preferredSubtitleLang)
+                        }
+                    }
+                }
+            }
+        }
+        launch {
+            mainViewModel.tvSyncManager.incomingControlCommands.collect { cmd ->
+                if (mainViewModel.tvSyncState.value.role == SyncRole.TV_HOST) {
+                    when (cmd.action.uppercase()) {
+                        "TOGGLE_PLAY_PAUSE" -> playerViewModel.togglePlayPause()
+                        "STOP" -> {
+                            playerViewModel.stopAndClosePlayer()
+                            isFullScreenPlayer = false
+                        }
+                        "SEEK_RELATIVE" -> {
+                            if (cmd.seekSeconds != 0) {
+                                playerViewModel.seekRelative(cmd.seekSeconds.toLong())
+                            }
+                        }
+                        "SET_SUBTITLE_LANG" -> {
+                            val lang = cmd.value.takeIf { !it.equals("off", ignoreCase = true) && it.isNotBlank() }
+                            playerViewModel.chooseSubtitleLanguageFromPrompt(lang)
+                        }
+                    }
+                }
+            }
+        }
+    }
 
     // If Android System PiP is active, show only the clean video surface
     if (isInSystemPipMode && playerUiState.currentStream != null) {
@@ -376,7 +454,7 @@ fun MainAppContent(
         }
     }
 
-    // Function to safely attempt playback with parental check
+    // Function to safely attempt playback with parental check & Single-Connection Safe TV Sync routing
     val requestPlayStream: (StreamEntity) -> Unit = { stream ->
         scope.launch {
             val isLocked = stream.isLocked || mainViewModel.repository.isCategoryLocked(stream.categoryId)
@@ -384,6 +462,11 @@ fun MainAppContent(
                 pendingUnlockCallback = null
                 pendingStreamToPlay = stream
                 showPinDialog = true
+            } else if (tvSyncState.role == SyncRole.PHONE_CONTROLLER && tvSyncState.isSyncActive) {
+                // Single-Connection Safe: stop local phone player BEFORE delegating stream to TV Host
+                playerViewModel.stopAndClosePlayer()
+                isFullScreenPlayer = false
+                mainViewModel.playStreamOnSyncedTv(stream, activePlaylist)
             } else {
                 isFullScreenPlayer = true
                 activePlaylist?.let { playlist ->
@@ -458,25 +541,49 @@ fun MainAppContent(
                     sectionDetailSummary = topSectionDetailText,
                     liveMatchesCount = liveMatchesCount,
                     halftimeRemainingSeconds = playerUiState.halftimeTimerRemainingSeconds,
+                    isTvSyncActive = tvSyncState.isSyncActive,
                     onReturnToHalftimeMatch = {
                         playerViewModel.returnToHalftimeChannel()
                         isFullScreenPlayer = true
                     },
                     onDrawerMenuClick = { showNavigationMenuSheet = true },
+                    onTvSyncClick = { showTvSyncSheet = true },
                     onCastOrAccountsClick = { mainViewModel.setScreen(AppScreen.PLAYLISTS) },
                     onSearchClick = { mainViewModel.setScreen(AppScreen.GLOBAL_SEARCH) }
                 )
             },
             bottomBar = {
-                BottomStreamingNav(
-                    currentScreen = currentScreen,
-                    isStreamPlaying = playerUiState.currentStream != null && playerUiState.isPlaying,
-                    liveMatchesCount = liveMatchesCount,
-                    favoritesCount = favorites.size,
-                    onScreenSelected = { screen ->
-                        mainViewModel.setScreen(screen)
+                Column(modifier = Modifier.fillMaxWidth()) {
+                    if (tvSyncState.role == SyncRole.PHONE_CONTROLLER && tvSyncState.isSyncActive) {
+                        TvSyncCompanionBar(
+                            syncState = tvSyncState,
+                            onTogglePlayPauseOnTv = {
+                                mainViewModel.sendControlToSyncedTv(action = "TOGGLE_PLAY_PAUSE")
+                            },
+                            onSelectSubtitleLangOnTv = { langCode ->
+                                mainViewModel.sendControlToSyncedTv(
+                                    action = "SET_SUBTITLE_LANG",
+                                    value = langCode
+                                )
+                            },
+                            onLeaveSyncMode = {
+                                mainViewModel.leaveTvSyncMode()
+                            },
+                            onOpenSyncSheet = {
+                                showTvSyncSheet = true
+                            }
+                        )
                     }
-                )
+                    BottomStreamingNav(
+                        currentScreen = currentScreen,
+                        isStreamPlaying = playerUiState.currentStream != null && playerUiState.isPlaying,
+                        liveMatchesCount = liveMatchesCount,
+                        favoritesCount = favorites.size,
+                        onScreenSelected = { screen ->
+                            mainViewModel.setScreen(screen)
+                        }
+                    )
+                }
             },
             modifier = Modifier
                 .fillMaxSize()
@@ -721,9 +828,65 @@ fun MainAppContent(
                     }
                 )
 
+                Spacer(modifier = Modifier.height(10.dp))
+
+                DrawerMenuOptionRow(
+                    title = "Wi-Fi Phone ↔ TV QR Companion",
+                    subtitle = if (tvSyncState.isSyncActive) {
+                        "Connected (${tvSyncState.role.name}) • 1-Connection Safe"
+                    } else {
+                        "Pair phone & Android TV over local Wi-Fi via QR or 6-digit PIN"
+                    },
+                    icon = Icons.Default.Tv,
+                    onClick = {
+                        showNavigationMenuSheet = false
+                        showTvSyncSheet = true
+                    }
+                )
+
                 Spacer(modifier = Modifier.height(16.dp))
             }
         }
+    }
+
+    if (showTvSyncSheet) {
+        TvSyncModalSheet(
+            syncState = tvSyncState,
+            qrPayload = mainViewModel.tvSyncManager.buildQrPairingPayload(),
+            hasSavedTvHost = mainViewModel.tvSyncManager.hasSavedTvHost(),
+            savedTvHostName = mainViewModel.tvSyncManager.getSavedTvHostName(),
+            savedTvHostSummary = mainViewModel.tvSyncManager.getSavedTvHostSummary(),
+            statusErrorMessage = tvSyncErrorMessage,
+            onStartTvHostMode = { mainViewModel.startTvHostMode() },
+            onStartPhoneDiscovery = { mainViewModel.startPhoneSyncDiscovery() },
+            onConnectToTv = { ip, port, pin ->
+                mainViewModel.connectPhoneToTv(
+                    ip = ip,
+                    port = port,
+                    pin = pin,
+                    onSuccess = {
+                        playerViewModel.stopAndClosePlayer()
+                        isFullScreenPlayer = false
+                        showTvSyncSheet = false
+                    }
+                )
+            },
+            onReconnectLastTv = {
+                mainViewModel.reconnectToLastTv(
+                    onSuccess = {
+                        playerViewModel.stopAndClosePlayer()
+                        isFullScreenPlayer = false
+                        showTvSyncSheet = false
+                    }
+                )
+            },
+            onLeaveSyncMode = {
+                mainViewModel.leaveTvSyncMode()
+            },
+            onDismiss = {
+                showTvSyncSheet = false
+            }
+        )
     }
 
     // Salted SHA-256 Parental PIN Challenge Modal with Brute-Force Rate Limiting
@@ -789,9 +952,15 @@ fun MainAppContent(
                                 mainViewModel.unlockParentalSession()
                                 showPinDialog = false
                                 pendingStreamToPlay?.let { stream ->
-                                    isFullScreenPlayer = true
-                                    activePlaylist?.let { playlist ->
-                                        playerViewModel.playStream(stream, playlist)
+                                    if (tvSyncState.role == SyncRole.PHONE_CONTROLLER && tvSyncState.isSyncActive) {
+                                        playerViewModel.stopAndClosePlayer()
+                                        isFullScreenPlayer = false
+                                        mainViewModel.playStreamOnSyncedTv(stream, activePlaylist)
+                                    } else {
+                                        isFullScreenPlayer = true
+                                        activePlaylist?.let { playlist ->
+                                            playerViewModel.playStream(stream, playlist)
+                                        }
                                     }
                                 }
                                 pendingUnlockCallback?.invoke()
@@ -1100,8 +1269,10 @@ fun TopStreamingBar(
     sectionDetailSummary: String = "",
     liveMatchesCount: Int = 0,
     halftimeRemainingSeconds: Int? = null,
+    isTvSyncActive: Boolean = false,
     onReturnToHalftimeMatch: () -> Unit = {},
     onDrawerMenuClick: () -> Unit,
+    onTvSyncClick: () -> Unit = {},
     onCastOrAccountsClick: () -> Unit,
     onSearchClick: () -> Unit
 ) {
@@ -1154,7 +1325,11 @@ fun TopStreamingBar(
                 horizontalAlignment = Alignment.Start,
                 modifier = Modifier
                     .clip(RoundedCornerShape(8.dp))
-                    .clickable { onCastOrAccountsClick() }
+                    .tvFocusableControl(
+                        accentColor = sectionPrimaryAccent,
+                        shape = RoundedCornerShape(8.dp),
+                        onClick = onCastOrAccountsClick
+                    )
                     .padding(horizontal = 2.dp, vertical = 1.dp)
                     .testTag("setplay_creative_wordmark")
             ) {
@@ -1247,7 +1422,11 @@ fun TopStreamingBar(
                     shape = RoundedCornerShape(50),
                     border = BorderStroke(1.dp, AmberGold),
                     modifier = Modifier
-                        .clickable { onReturnToHalftimeMatch() }
+                        .tvFocusableControl(
+                            accentColor = AmberGold,
+                            shape = RoundedCornerShape(50),
+                            onClick = onReturnToHalftimeMatch
+                        )
                         .testTag("top_bar_halftime_countdown_badge")
                 ) {
                     Text(
@@ -1260,6 +1439,19 @@ fun TopStreamingBar(
                 }
                 Spacer(modifier = Modifier.width(6.dp))
             }
+
+            GhostTopBarIconButton(
+                icon = Icons.Default.Tv,
+                contentDescription = "Wi-Fi Phone to TV QR Sync",
+                iconTint = if (isTvSyncActive) ArenaFloodlightLime else Color.White.copy(alpha = 0.88f),
+                accentColor = if (isTvSyncActive) ArenaFloodlightLime else sectionPrimaryAccent,
+                showStatusDot = isTvSyncActive,
+                statusDotColor = ArenaFloodlightLime,
+                onClick = onTvSyncClick,
+                testTag = "top_tv_sync_btn"
+            )
+
+            Spacer(modifier = Modifier.width(6.dp))
 
             GhostTopBarIconButton(
                 icon = Icons.Default.Cast,
@@ -1313,7 +1505,11 @@ private fun GhostTopBarIconButton(
                 ),
                 shape = CircleShape
             )
-            .clickable(onClick = onClick)
+            .tvFocusableControl(
+                accentColor = accentColor,
+                shape = CircleShape,
+                onClick = onClick
+            )
             .padding(7.dp)
             .testTag(testTag)
     ) {
@@ -1996,8 +2192,14 @@ private fun LuxuryBottomNavSectionSlot(
         else -> kineticRotationZ
     }
 
+    var isTvFocused by remember { mutableStateOf(false) }
+
     val labelColor by animateColorAsState(
-        targetValue = if (isSelected) item.activeLabelColor else Champagne.copy(alpha = 0.68f),
+        targetValue = when {
+            isTvFocused -> AmberGold
+            isSelected -> item.activeLabelColor
+            else -> Champagne.copy(alpha = 0.68f)
+        },
         animationSpec = tween(220),
         label = "label_color_${item.label}"
     )
@@ -2005,6 +2207,22 @@ private fun LuxuryBottomNavSectionSlot(
     Box(
         contentAlignment = Alignment.BottomCenter,
         modifier = modifier
+            .onFocusChanged { focusState ->
+                isTvFocused = focusState.isFocused
+            }
+            .then(
+                if (isTvFocused) {
+                    Modifier.border(
+                        width = 2.dp,
+                        brush = Brush.linearGradient(
+                            colors = listOf(item.crestNeonColor, AmberGold, item.crestNeonColor)
+                        ),
+                        shape = RoundedCornerShape(16.dp)
+                    )
+                } else {
+                    Modifier
+                }
+            )
             .clickable(
                 interactionSource = remember { MutableInteractionSource() },
                 indication = null,

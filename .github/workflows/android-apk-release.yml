@@ -38,7 +38,10 @@ jobs:
           SPORT_API_KEY_SECRET: ${{ secrets.SPORT_API_KEY }}
           SPORTAPI_AI_KEY_SECRET: ${{ secrets.SPORTAPI_AI_KEY }}
           WYZIE_API_KEY_SECRET: ${{ secrets.WYZIE_API_KEY }}
+          SUBDL_API_KEY_SECRET: ${{ secrets.SUBDL_API_KEY }}
+          TMDB_API_KEY_SECRET: ${{ secrets.TMDB_API_KEY }}
           API_FOOTBALL_KEY_SECRET: ${{ secrets.API_FOOTBALL_KEY }}
+          FOOTBALL_DATA_KEY_SECRET: ${{ secrets.FOOTBALL_DATA_KEY }}
         run: |
           # Secrets Gradle Plugin 2.0.1 requires every key in .env to have a non-empty value;
           # an empty `KEY=` generates invalid Java (`public static final String KEY = ;`).
@@ -46,13 +49,19 @@ jobs:
           RESOLVED_SPORT_KEY="${SPORTAPI_AI_KEY_SECRET:-$SPORT_API_KEY_SECRET}"
           RESOLVED_SPORT_KEY="${RESOLVED_SPORT_KEY:-YOUR_SPORTAPI_AI_KEY}"
           RESOLVED_WYZIE_KEY="${WYZIE_API_KEY_SECRET:-YOUR_WYZIE_API_KEY}"
+          RESOLVED_SUBDL_KEY="${SUBDL_API_KEY_SECRET:-YOUR_SUBDL_API_KEY}"
+          RESOLVED_TMDB_KEY="${TMDB_API_KEY_SECRET:-YOUR_TMDB_API_KEY}"
           RESOLVED_FOOTBALL_KEY="${API_FOOTBALL_KEY_SECRET:-YOUR_API_FOOTBALL_KEY}"
+          RESOLVED_FOOTBALL_DATA_KEY="${FOOTBALL_DATA_KEY_SECRET:-YOUR_FOOTBALL_DATA_KEY}"
 
           cat <<EOF > .env
           API_FOOTBALL_KEY=${RESOLVED_FOOTBALL_KEY}
+          FOOTBALL_DATA_KEY=${RESOLVED_FOOTBALL_DATA_KEY}
           SPORT_API_KEY=${RESOLVED_SPORT_KEY}
           SPORTAPI_AI_KEY=${RESOLVED_SPORT_KEY}
+          TMDB_API_KEY=${RESOLVED_TMDB_KEY}
           WYZIE_API_KEY=${RESOLVED_WYZIE_KEY}
+          SUBDL_API_KEY=${RESOLVED_SUBDL_KEY}
           EOF
           sed -i 's/^[[:space:]]*//g' .env
 

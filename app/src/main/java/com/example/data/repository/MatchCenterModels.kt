@@ -170,6 +170,8 @@ class MatchCenterEnricher(
 ) {
     private val dossierCache = ConcurrentHashMap<String, MatchFullDossier>()
     private val teamSquadCache = ConcurrentHashMap<String, List<RawPlayerEntry>>()
+    private val apiFootballFixtureCache = ConcurrentHashMap<String, JSONObject>()
+    private val apiFootballDayFixturesCache = ConcurrentHashMap<String, org.json.JSONArray>()
 
     suspend fun fetchMatchFullDossier(
         match: FootballMatch,
@@ -181,9 +183,12 @@ class MatchCenterEnricher(
             dossierCache[cacheKey]?.let { return@withContext it }
         }
 
-        // Fetch live lineup, timeline, stats, Sofascore ratings, and standings in parallel (Promise.allSettled via supervisorScope)
+        // Fetch 1-call API-Football fixture dossier, live lineup, timeline, stats, Sofascore ratings, and standings in parallel (Promise.allSettled via supervisorScope)
         val tournament = FootballRepository.ALL_TOURNAMENTS.find { it.tournamentId == match.tournamentId }
         val livePayload = supervisorScope {
+            val apiFootballDeferred = async {
+                runCatching { fetchApiFootballFixtureDossier(match) }.getOrNull()
+            }
             val tsdbLineupDeferred = async {
                 runCatching {
                     if (match.sportsDbEventId.isNotBlank()) {
@@ -248,7 +253,8 @@ class MatchCenterEnricher(
                 sofascoreLineupsJson = sofascorePair?.first,
                 sofascoreTvChannels = sofascorePair?.second.orEmpty(),
                 tsdbHomeSquad = tsdbHomeSquadDeferred.await(),
-                tsdbAwaySquad = tsdbAwaySquadDeferred.await()
+                tsdbAwaySquad = tsdbAwaySquadDeferred.await(),
+                apiFootballFixtureJson = apiFootballDeferred.await()
             )
         }
 
@@ -496,8 +502,10 @@ class MatchCenterEnricher(
                 return node.copy(photoUrl = cached)
             }
 
-            // 3. If node already has a non-fallbackTheSportsDB cutout URL, preserve it
-            if (node.photoUrl.contains("thesportsdb.com", ignoreCase = true)) {
+            // 3. If node already has an official API-Football (`media.api-sports.io`) or TheSportsDB cutout URL, preserve it
+            if (node.photoUrl.contains("media.api-sports.io", ignoreCase = true) ||
+                node.photoUrl.contains("thesportsdb.com", ignoreCase = true)
+            ) {
                 return node
             }
 
@@ -509,7 +517,7 @@ class MatchCenterEnricher(
                 }
             }
 
-            // 5. Preserve existing Sofascore player image or fallback Sofascore image if present
+            // 5. Preserve existing verified Sofascore player image if present
             val finalUrl = node.photoUrl.ifBlank { resolveSofascoreFallbackPlayerPhoto(node.name) }
             return if (finalUrl.isNotBlank()) node.copy(photoUrl = finalUrl) else node
         }
@@ -595,16 +603,108 @@ class MatchCenterEnricher(
         }
     }
 
+    /**
+     * Fetches the 1-call API-Football v3 fixture dossier (`GET https://v3.football.api-sports.io/fixtures?id={id}`)
+     * which returns official `lineups` (with `player.id` -> `https://media.api-sports.io/football/players/{id}.png`),
+     * `events` (goals, assists, cards, substitutions), `statistics` (possession, xG, shots, passes), and `players` ratings.
+     */
+    private fun fetchApiFootballFixtureDossier(match: FootballMatch): JSONObject? {
+        if (!FootballRepository.isApiFootballKeyConfigured()) return null
+        val apiKey = FootballRepository.resolveApiFootballKey()
+        if (apiKey.isBlank()) return null
+
+        var fixtureId = match.apiFootballFixtureId.ifBlank {
+            if (match.matchId.startsWith("apif_")) {
+                match.matchId.removePrefix("apif_").takeIf { it.all { ch -> ch.isDigit() } }.orEmpty()
+            } else ""
+        }
+
+        if (fixtureId.isBlank()) {
+            fixtureId = resolveApiFootballFixtureIdForMatch(match, apiKey)
+        }
+        if (fixtureId.isBlank()) return null
+
+        apiFootballFixtureCache[fixtureId]?.let { return it }
+        if (!FootballRepository.tryAcquireSharedApiFootballPermit(isMatchCenterDossier = true)) return null
+
+        val url = "${FootballRepository.API_FOOTBALL_BASE_URL}/fixtures".toHttpUrlOrNull()
+            ?.newBuilder()
+            ?.addQueryParameter("id", fixtureId)
+            ?.addQueryParameter("timezone", "Africa/Casablanca")
+            ?.build() ?: return null
+
+        val req = Request.Builder()
+            .url(url)
+            .header("x-apisports-key", apiKey)
+            .build()
+
+        httpClient.newCall(req).execute().use { resp ->
+            if (!resp.isSuccessful) return null
+            val body = resp.body?.string() ?: return null
+            val root = JSONObject(body)
+            val item = root.optJSONArray("response")?.optJSONObject(0) ?: return null
+            apiFootballFixtureCache[fixtureId] = item
+            return item
+        }
+    }
+
+    private fun resolveApiFootballFixtureIdForMatch(match: FootballMatch, apiKey: String): String {
+        val dateParam = runCatching {
+            val cal = java.util.Calendar.getInstance(java.util.TimeZone.getTimeZone("Africa/Casablanca"))
+            cal.add(java.util.Calendar.DAY_OF_YEAR, match.dayTab.dayOffset)
+            java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.US).apply {
+                timeZone = java.util.TimeZone.getTimeZone("Africa/Casablanca")
+            }.format(cal.time)
+        }.getOrDefault("")
+        if (dateParam.isBlank()) return ""
+
+        val dayArr = apiFootballDayFixturesCache[dateParam] ?: run {
+            if (!FootballRepository.tryAcquireSharedApiFootballPermit(isMatchCenterDossier = true)) return ""
+            val url = "${FootballRepository.API_FOOTBALL_BASE_URL}/fixtures".toHttpUrlOrNull()
+                ?.newBuilder()
+                ?.addQueryParameter("date", dateParam)
+                ?.addQueryParameter("timezone", "Africa/Casablanca")
+                ?.build() ?: return ""
+            val req = Request.Builder()
+                .url(url)
+                .header("x-apisports-key", apiKey)
+                .build()
+            httpClient.newCall(req).execute().use { resp ->
+                if (!resp.isSuccessful) return ""
+                val body = resp.body?.string() ?: return ""
+                val arr = JSONObject(body).optJSONArray("response") ?: return ""
+                apiFootballDayFixturesCache[dateParam] = arr
+                arr
+            }
+        }
+
+        for (i in 0 until dayArr.length()) {
+            val item = dayArr.optJSONObject(i) ?: continue
+            val teamsObj = item.optJSONObject("teams") ?: continue
+            val hName = teamsObj.optJSONObject("home")?.optString("name", "").orEmpty()
+            val aName = teamsObj.optJSONObject("away")?.optString("name", "").orEmpty()
+            if (hName.isNotBlank() && aName.isNotBlank() &&
+                FootballRepository.areSameClubNames(hName, match.homeTeamName) &&
+                FootballRepository.areSameClubNames(aName, match.awayTeamName)
+            ) {
+                val id = item.optJSONObject("fixture")?.optInt("id", 0) ?: 0
+                if (id > 0) return id.toString()
+            }
+        }
+        return ""
+    }
+
     internal data class LiveDossierRawPayload(
-        val tsdbLineupJson: JSONObject?,
-        val tsdbTimelineJson: JSONObject?,
-        val tsdbStatsJson: JSONObject?,
+        val tsdbLineupJson: JSONObject? = null,
+        val tsdbTimelineJson: JSONObject? = null,
+        val tsdbStatsJson: JSONObject? = null,
         val tsdbTableJson: JSONObject? = null,
-        val espnSummaryJson: JSONObject?,
+        val espnSummaryJson: JSONObject? = null,
         val sofascoreLineupsJson: JSONObject? = null,
         val sofascoreTvChannels: List<String> = emptyList(),
         val tsdbHomeSquad: List<RawPlayerEntry> = emptyList(),
-        val tsdbAwaySquad: List<RawPlayerEntry> = emptyList()
+        val tsdbAwaySquad: List<RawPlayerEntry> = emptyList(),
+        val apiFootballFixtureJson: JSONObject? = null
     )
 
     internal fun buildCompleteDossier(
@@ -620,22 +720,24 @@ class MatchCenterEnricher(
         val homeGoals = match.homeScore ?: 0
         val awayGoals = match.awayScore ?: 0
 
+        val apiFootballHtPair = extractApiFootballHalfTimeScore(raw?.apiFootballFixtureJson)
         val espnHtPair = extractEspnHalfTimeScore(raw?.espnSummaryJson)
         val htHome = when {
+            apiFootballHtPair != null -> apiFootballHtPair.first
             espnHtPair != null -> espnHtPair.first
             match.halfTimeScore != null -> match.halfTimeScore.substringBefore("-").trim().toIntOrNull() ?: 0
-            !isPlayedOrLive -> 0
-            homeGoals > 0 -> (homeGoals + 1) / 2
+            isPlayedOrLive -> (homeGoals / 2)
             else -> 0
         }
         val htAway = when {
+            apiFootballHtPair != null -> apiFootballHtPair.second
             espnHtPair != null -> espnHtPair.second
             match.halfTimeScore != null -> match.halfTimeScore.substringAfter("-").trim().toIntOrNull() ?: 0
-            !isPlayedOrLive -> 0
-            awayGoals > 1 -> awayGoals / 2
+            isPlayedOrLive -> (awayGoals / 2)
             else -> 0
         }
         val halfTimeLabel = when {
+            apiFootballHtPair != null -> "HT ${apiFootballHtPair.first} - ${apiFootballHtPair.second}"
             espnHtPair != null -> "HT ${espnHtPair.first} - ${espnHtPair.second}"
             match.halfTimeScore != null -> "HT ${match.halfTimeScore}"
             isPlayedOrLive -> "HT $htHome - $htAway"
@@ -647,6 +749,7 @@ class MatchCenterEnricher(
 
         val lineups = buildLineupsForMatch(
             match = match,
+            apiFootballFixtureJson = raw?.apiFootballFixtureJson,
             tsdbLineupJson = raw?.tsdbLineupJson,
             espnSummaryJson = raw?.espnSummaryJson,
             sofascoreLineupsJson = raw?.sofascoreLineupsJson,
@@ -657,22 +760,43 @@ class MatchCenterEnricher(
             awayGoals = awayGoals,
             isPlayedOrLive = isPlayedOrLive
         )
-        val timeline = buildTimelineForMatch(match, raw?.tsdbTimelineJson, raw?.espnSummaryJson, lineups, htHome, htAway, homeGoals, awayGoals, isPlayedOrLive)
-        val stats = buildStatsForMatch(match, raw?.tsdbStatsJson, raw?.espnSummaryJson, seed, homeGoals, awayGoals, isPlayedOrLive)
+        val timeline = buildTimelineForMatch(
+            match = match,
+            apiFootballFixtureJson = raw?.apiFootballFixtureJson,
+            tsdbTimelineJson = raw?.tsdbTimelineJson,
+            espnSummaryJson = raw?.espnSummaryJson,
+            lineups = lineups,
+            htHome = htHome,
+            htAway = htAway,
+            homeGoals = homeGoals,
+            awayGoals = awayGoals,
+            isPlayedOrLive = isPlayedOrLive
+        )
+        val stats = buildStatsForMatch(
+            match = match,
+            apiFootballFixtureJson = raw?.apiFootballFixtureJson,
+            tsdbStatsJson = raw?.tsdbStatsJson,
+            espnSummaryJson = raw?.espnSummaryJson,
+            seed = seed,
+            homeGoals = homeGoals,
+            awayGoals = awayGoals,
+            isPlayedOrLive = isPlayedOrLive
+        )
         val (homeForm, awayForm, h2hList) = buildH2HAndForm(match, raw?.espnSummaryJson, seed)
         val standings = buildLeagueStandings(match, raw?.espnSummaryJson, raw?.tsdbTableJson, seed)
         val menaGuide = buildMenaBroadcastGuide(match, seed, countryZone, raw?.sofascoreTvChannels.orEmpty())
 
+        val apiFootballReferee = raw?.apiFootballFixtureJson?.optJSONObject("fixture")?.optString("referee", "")?.trim().orEmpty()
         val gameInfoObj = raw?.espnSummaryJson?.optJSONObject("gameInfo")
         val espnReferee = gameInfoObj?.optJSONArray("officials")
             ?.optJSONObject(0)
             ?.let { it.optString("fullName", it.optString("displayName", "")).trim() }
             .orEmpty()
 
-        val ref = if (espnReferee.isNotBlank()) {
-            espnReferee
-        } else {
-            "TBA / Official Broadcast Feed"
+        val ref = when {
+            apiFootballReferee.isNotBlank() && apiFootballReferee != "null" -> apiFootballReferee
+            espnReferee.isNotBlank() -> espnReferee
+            else -> "TBA / Official Broadcast Feed"
         }
 
         val espnAttendance = gameInfoObj?.optInt("attendance", 0) ?: 0
@@ -699,6 +823,14 @@ class MatchCenterEnricher(
             menaBroadcastGuide = menaGuide,
             countryZone = countryZone
         )
+    }
+
+    private fun extractApiFootballHalfTimeScore(apiFootballFixtureJson: JSONObject?): Pair<Int, Int>? {
+        val htObj = apiFootballFixtureJson?.optJSONObject("score")?.optJSONObject("halftime") ?: return null
+        if (htObj.isNull("home") || htObj.isNull("away")) return null
+        val h = htObj.optInt("home", -1)
+        val a = htObj.optInt("away", -1)
+        return if (h >= 0 && a >= 0) h to a else null
     }
 
     private fun extractEspnHalfTimeScore(espnSummaryJson: JSONObject?): Pair<Int, Int>? {
@@ -926,6 +1058,7 @@ class MatchCenterEnricher(
 
     private fun buildLineupsForMatch(
         match: FootballMatch,
+        apiFootballFixtureJson: JSONObject? = null,
         tsdbLineupJson: JSONObject?,
         espnSummaryJson: JSONObject?,
         sofascoreLineupsJson: JSONObject? = null,
@@ -939,7 +1072,24 @@ class MatchCenterEnricher(
         val homeProfile = getClubSquadTemplate(match.homeTeamName, isHome = true, seed = seed)
         val awayProfile = getClubSquadTemplate(match.awayTeamName, isHome = false, seed = seed + 17)
 
-        // 0. Check if Sofascore API returned lineups and real-time player ratings
+        // 0a. Check if 1-call API-Football v3 fixture JSON returned official `lineups` + `media.api-sports.io` player headshots
+        val apiFootballLineups = parseApiFootballLineups(
+            match = match,
+            apiFootballFixtureJson = apiFootballFixtureJson,
+            tsdbHomeSquad = tsdbHomeSquad,
+            tsdbAwaySquad = tsdbAwaySquad,
+            homeProfile = homeProfile,
+            awayProfile = awayProfile,
+            homeGoals = homeGoals,
+            awayGoals = awayGoals,
+            seed = seed,
+            isPlayedOrLive = isPlayedOrLive
+        )
+        if (apiFootballLineups != null) {
+            return apiFootballLineups
+        }
+
+        // 0b. Check if Sofascore API returned lineups and real-time player ratings
         if (sofascoreLineupsJson != null) {
             val sofaConfirmed = sofascoreLineupsJson.optBoolean("confirmed", isPlayedOrLive)
             val homeSideObj = sofascoreLineupsJson.optJSONObject("home")
@@ -1554,8 +1704,232 @@ class MatchCenterEnricher(
         }
     }
 
+    private fun parseApiFootballLineups(
+        match: FootballMatch,
+        apiFootballFixtureJson: JSONObject?,
+        tsdbHomeSquad: List<RawPlayerEntry>,
+        tsdbAwaySquad: List<RawPlayerEntry>,
+        homeProfile: ClubSquadTemplate,
+        awayProfile: ClubSquadTemplate,
+        homeGoals: Int,
+        awayGoals: Int,
+        seed: Int,
+        isPlayedOrLive: Boolean
+    ): MatchLineupsData? {
+        val lineupsArr = apiFootballFixtureJson?.optJSONArray("lineups") ?: return null
+        if (lineupsArr.length() < 2) return null
+
+        var homeLineupObj = lineupsArr.optJSONObject(0)
+        var awayLineupObj = lineupsArr.optJSONObject(1)
+        for (i in 0 until lineupsArr.length()) {
+            val lObj = lineupsArr.optJSONObject(i) ?: continue
+            val tName = lObj.optJSONObject("team")?.optString("name", "").orEmpty()
+            if (tName.isNotBlank()) {
+                if (FootballRepository.areSameClubNames(tName, match.homeTeamName)) homeLineupObj = lObj
+                else if (FootballRepository.areSameClubNames(tName, match.awayTeamName)) awayLineupObj = lObj
+            }
+        }
+
+        // Index live player ratings, goals, assists & cards from `players` array in API-Football fixture response
+        data class ApiFootballPlayerTelemetry(
+            val rating: Double?,
+            val goals: Int,
+            val assists: Int,
+            val yellow: Boolean,
+            val red: Boolean,
+            val isCaptain: Boolean,
+            val photoUrl: String
+        )
+        val telemetryById = mutableMapOf<Int, ApiFootballPlayerTelemetry>()
+        val telemetryByName = mutableMapOf<String, ApiFootballPlayerTelemetry>()
+        val playersTeamsArr = apiFootballFixtureJson.optJSONArray("players")
+        if (playersTeamsArr != null) {
+            for (tIdx in 0 until playersTeamsArr.length()) {
+                val teamPlayersArr = playersTeamsArr.optJSONObject(tIdx)?.optJSONArray("players") ?: continue
+                for (pIdx in 0 until teamPlayersArr.length()) {
+                    val pItem = teamPlayersArr.optJSONObject(pIdx) ?: continue
+                    val pObj = pItem.optJSONObject("player") ?: continue
+                    val pId = pObj.optInt("id", 0)
+                    val pName = pObj.optString("name", "").trim()
+                    val pPhoto = pObj.optString("photo", "").takeIf { it.startsWith("http") }
+                        ?: if (pId > 0) "https://media.api-sports.io/football/players/$pId.png" else ""
+                    val st = pItem.optJSONArray("statistics")?.optJSONObject(0)
+                    val gamesObj = st?.optJSONObject("games")
+                    val ratingVal = gamesObj?.optString("rating", "")?.toDoubleOrNull()
+                    val isCap = gamesObj?.optBoolean("captain", false) ?: false
+                    val goalsObj = st?.optJSONObject("goals")
+                    val gCount = goalsObj?.optInt("total", 0)?.coerceAtLeast(0) ?: 0
+                    val aCount = goalsObj?.optInt("assists", 0)?.coerceAtLeast(0) ?: 0
+                    val cardsObj = st?.optJSONObject("cards")
+                    val yCount = cardsObj?.optInt("yellow", 0) ?: 0
+                    val rCount = cardsObj?.optInt("red", 0) ?: 0
+                    val tel = ApiFootballPlayerTelemetry(
+                        rating = ratingVal,
+                        goals = gCount,
+                        assists = aCount,
+                        yellow = yCount > 0,
+                        red = rCount > 0,
+                        isCaptain = isCap,
+                        photoUrl = pPhoto
+                    )
+                    if (pId > 0) telemetryById[pId] = tel
+                    if (pName.isNotBlank()) telemetryByName[normalizePlayerNameForMatch(pName)] = tel
+                }
+            }
+        }
+
+        fun parseSideEntries(lineupObj: JSONObject?, squadFallback: List<RawPlayerEntry>): Pair<List<RawPlayerEntry>, List<RawPlayerEntry>> {
+            val starters = mutableListOf<RawPlayerEntry>()
+            val bench = mutableListOf<RawPlayerEntry>()
+            val startArr = lineupObj?.optJSONArray("startXI")
+            val subArr = lineupObj?.optJSONArray("substitutes")
+
+            fun parsePlayerWrapper(wrapper: JSONObject?, idx: Int, isStarter: Boolean): RawPlayerEntry? {
+                val pObj = wrapper?.optJSONObject("player") ?: return null
+                val pName = pObj.optString("name", "").trim()
+                if (pName.isBlank()) return null
+                val pId = pObj.optInt("id", 0)
+                val num = pObj.optInt("number", idx + 1)
+                val posRaw = pObj.optString("pos", if (idx == 0 && isStarter) "G" else "M").uppercase(Locale.ROOT)
+                val posCode = when (posRaw) {
+                    "G" -> "GK"
+                    "D" -> "DF"
+                    "M" -> "MF"
+                    "F" -> "FW"
+                    else -> posRaw
+                }
+                val tel = (if (pId > 0) telemetryById[pId] else null) ?: telemetryByName[normalizePlayerNameForMatch(pName)]
+                val officialApiSportsPhoto = tel?.photoUrl?.takeIf { it.isNotBlank() }
+                    ?: if (pId > 0) "https://media.api-sports.io/football/players/$pId.png" else ""
+                val resolvedPhoto = officialApiSportsPhoto
+                    .ifBlank { resolvePlayerPhotoFromSquad(pName, squadFallback) }
+                    .ifBlank { resolveCuratedOrCachedPlayerPhoto(pName) }
+                if (resolvedPhoto.isNotBlank()) {
+                    cachePlayerPhoto(pName, resolvedPhoto)
+                }
+                return RawPlayerEntry(
+                    name = pName,
+                    jersey = num,
+                    positionAbbr = posCode,
+                    photoUrl = resolvedPhoto,
+                    goals = tel?.goals ?: 0,
+                    assists = tel?.assists ?: 0,
+                    yellowCard = tel?.yellow ?: false,
+                    redCard = tel?.red ?: false,
+                    isCaptain = tel?.isCaptain ?: false,
+                    sofascoreRating = tel?.rating
+                )
+            }
+
+            if (startArr != null) {
+                for (i in 0 until startArr.length()) {
+                    parsePlayerWrapper(startArr.optJSONObject(i), i, isStarter = true)?.let { starters.add(it) }
+                }
+            }
+            if (subArr != null) {
+                for (i in 0 until subArr.length()) {
+                    parsePlayerWrapper(subArr.optJSONObject(i), i, isStarter = false)?.let { bench.add(it) }
+                }
+            }
+            return starters to bench
+        }
+
+        val (homeStarters, homeBenchRaw) = parseSideEntries(homeLineupObj, tsdbHomeSquad)
+        val (awayStarters, awayBenchRaw) = parseSideEntries(awayLineupObj, tsdbAwaySquad)
+        if (homeStarters.size < 11 || awayStarters.size < 11) return null
+
+        val homeFormation = homeLineupObj?.optString("formation", "")?.takeIf { it.contains("-") } ?: homeProfile.formation
+        val awayFormation = awayLineupObj?.optString("formation", "")?.takeIf { it.contains("-") } ?: awayProfile.formation
+        val homeCoach = homeLineupObj?.optJSONObject("coach")?.optString("name", "")?.takeIf { it.isNotBlank() && it != "null" } ?: homeProfile.coachName
+        val awayCoach = awayLineupObj?.optJSONObject("coach")?.optString("name", "")?.takeIf { it.isNotBlank() && it != "null" } ?: awayProfile.coachName
+
+        val rawHomeStarting = mapFormationToPitchNodesFromEntries(
+            teamKey = "home_${match.matchId}",
+            formation = homeFormation,
+            entries = homeStarters.take(11),
+            teamSquad = tsdbHomeSquad,
+            goalsScored = homeGoals,
+            seed = seed,
+            isPlayedOrLive = isPlayedOrLive
+        )
+        val rawAwayStarting = mapFormationToPitchNodesFromEntries(
+            teamKey = "away_${match.matchId}",
+            formation = awayFormation,
+            entries = awayStarters.take(11),
+            teamSquad = tsdbAwaySquad,
+            goalsScored = awayGoals,
+            seed = seed + 31,
+            isPlayedOrLive = isPlayedOrLive
+        )
+        val (homeStarting, awayStarting, homeAvg, awayAvg) = finalizeMvpAndTeamRatings(
+            rawHomeStarting,
+            rawAwayStarting,
+            isPlayedOrLive = isPlayedOrLive
+        )
+
+        val (headline, subtext, _) = buildLineupStatusMetadata(
+            match = match,
+            isConfirmed = true,
+            hasSofascoreRatings = telemetryById.isNotEmpty(),
+            isPlayedOrLive = isPlayedOrLive
+        )
+
+        return MatchLineupsData(
+            isConfirmed = true,
+            homeFormation = homeFormation,
+            awayFormation = awayFormation,
+            homeCoach = homeCoach,
+            awayCoach = awayCoach,
+            homeStartingXI = homeStarting,
+            awayStartingXI = awayStarting,
+            homeBench = homeBenchRaw.take(9).mapIndexed { idx, entry ->
+                PitchPlayerNode(
+                    playerId = "h_sub_$idx",
+                    name = entry.name,
+                    shortName = extractShortPlayerName(entry.name),
+                    jerseyNumber = entry.jersey,
+                    positionCode = entry.positionAbbr,
+                    rowIndex = 5,
+                    colIndex = idx,
+                    colCountInRow = homeBenchRaw.size.coerceAtMost(9),
+                    rating = entry.sofascoreRating ?: 6.7,
+                    goals = if (isPlayedOrLive) entry.goals else 0,
+                    assists = if (isPlayedOrLive) entry.assists else 0,
+                    hasYellowCard = isPlayedOrLive && entry.yellowCard,
+                    hasRedCard = isPlayedOrLive && entry.redCard,
+                    photoUrl = entry.photoUrl
+                )
+            },
+            awayBench = awayBenchRaw.take(9).mapIndexed { idx, entry ->
+                PitchPlayerNode(
+                    playerId = "a_sub_$idx",
+                    name = entry.name,
+                    shortName = extractShortPlayerName(entry.name),
+                    jerseyNumber = entry.jersey,
+                    positionCode = entry.positionAbbr,
+                    rowIndex = 5,
+                    colIndex = idx,
+                    colCountInRow = awayBenchRaw.size.coerceAtMost(9),
+                    rating = entry.sofascoreRating ?: 6.7,
+                    goals = if (isPlayedOrLive) entry.goals else 0,
+                    assists = if (isPlayedOrLive) entry.assists else 0,
+                    hasYellowCard = isPlayedOrLive && entry.yellowCard,
+                    hasRedCard = isPlayedOrLive && entry.redCard,
+                    photoUrl = entry.photoUrl
+                )
+            },
+            missingPlayers = emptyList(),
+            homeAvgRating = homeAvg,
+            awayAvgRating = awayAvg,
+            lineupStatusHeadline = headline,
+            lineupStatusSubtext = subtext,
+            ratingSourceLabel = "API-Football v3 • Official Match Sheet & Cutouts"
+        )
+    }
+
     private fun buildTimelineForMatch(
         match: FootballMatch,
+        apiFootballFixtureJson: JSONObject? = null,
         tsdbTimelineJson: JSONObject?,
         espnSummaryJson: JSONObject?,
         lineups: MatchLineupsData,
@@ -1567,6 +1941,12 @@ class MatchCenterEnricher(
     ): List<MatchTimelineEvent> {
         if (!isPlayedOrLive) {
             return emptyList()
+        }
+
+        // 0. Check if API-Football v3 returned `events` array
+        val apiFootballEvents = parseApiFootballTimelineEvents(match, apiFootballFixtureJson)
+        if (apiFootballEvents.isNotEmpty()) {
+            return apiFootballEvents
         }
 
         // 1. Check if ESPN `/summary` returned `keyEvents` or `header.competitions[0].details`
@@ -1780,8 +2160,77 @@ class MatchCenterEnricher(
     private inline fun String?.ifNullOrBlank(defaultValue: () -> String): String =
         if (this.isNullOrBlank()) defaultValue() else this
 
+    private fun parseApiFootballTimelineEvents(
+        match: FootballMatch,
+        apiFootballFixtureJson: JSONObject?
+    ): List<MatchTimelineEvent> {
+        val eventsArr = apiFootballFixtureJson?.optJSONArray("events") ?: return emptyList()
+        if (eventsArr.length() == 0) return emptyList()
+
+        val list = mutableListOf<MatchTimelineEvent>()
+        var runningH = 0
+        var runningA = 0
+
+        for (i in 0 until eventsArr.length()) {
+            val ev = eventsArr.optJSONObject(i) ?: continue
+            val timeObj = ev.optJSONObject("time")
+            val elapsed = timeObj?.optInt("elapsed", 45)?.coerceAtLeast(1) ?: 45
+            val extra = timeObj?.optInt("extra", 0)?.takeIf { it > 0 }
+            val minLabel = if (extra != null) "${elapsed}+${extra}'" else "${elapsed}'"
+
+            val teamName = ev.optJSONObject("team")?.optString("name", "").orEmpty()
+            val isHome = FootballRepository.areSameClubNames(teamName, match.homeTeamName) ||
+                teamName.contains(match.homeTeamName.take(4), ignoreCase = true)
+
+            val playerName = ev.optJSONObject("player")?.optString("name", "")?.trim().orEmpty()
+            val assistName = ev.optJSONObject("assist")?.optString("name", "")?.trim()
+                ?.takeIf { it != "null" }.orEmpty()
+            if (playerName.isBlank() || playerName == "null") continue
+
+            val typeRaw = ev.optString("type", "")
+            val detailRaw = ev.optString("detail", "")
+            if (detailRaw.contains("Missed Penalty", ignoreCase = true)) continue
+
+            val evType = when {
+                typeRaw.equals("Goal", ignoreCase = true) && detailRaw.contains("Penalty", ignoreCase = true) -> MatchEventType.PENALTY_GOAL
+                typeRaw.equals("Goal", ignoreCase = true) && detailRaw.contains("Own", ignoreCase = true) -> MatchEventType.OWN_GOAL
+                typeRaw.equals("Goal", ignoreCase = true) -> MatchEventType.GOAL
+                typeRaw.equals("Card", ignoreCase = true) && detailRaw.contains("Red", ignoreCase = true) -> MatchEventType.RED_CARD
+                typeRaw.equals("Card", ignoreCase = true) -> MatchEventType.YELLOW_CARD
+                typeRaw.equals("subst", ignoreCase = true) -> MatchEventType.SUBSTITUTION
+                else -> continue
+            }
+
+            val isGoal = evType == MatchEventType.GOAL || evType == MatchEventType.PENALTY_GOAL || evType == MatchEventType.OWN_GOAL
+            if (isGoal) {
+                if (isHome) runningH++ else runningA++
+            }
+
+            list.add(
+                MatchTimelineEvent(
+                    id = "apif_ev_$i",
+                    minute = elapsed,
+                    minuteLabel = minLabel,
+                    halfLabel = if (elapsed <= 45) "1ST HALF" else "2ND HALF",
+                    teamSide = if (isHome) MatchTeamSide.HOME else MatchTeamSide.AWAY,
+                    eventType = evType,
+                    primaryPlayer = if (evType == MatchEventType.SUBSTITUTION && assistName.isNotBlank()) "IN: $assistName" else playerName,
+                    secondaryPlayer = when {
+                        evType == MatchEventType.SUBSTITUTION -> "OUT: $playerName"
+                        isGoal && assistName.isNotBlank() -> "Assist: $assistName"
+                        else -> ""
+                    },
+                    runningScore = if (isGoal) "$runningH - $runningA" else "",
+                    detailNote = detailRaw.ifBlank { typeRaw }
+                )
+            )
+        }
+        return list.sortedBy { it.minute }
+    }
+
     private fun buildStatsForMatch(
         match: FootballMatch,
+        apiFootballFixtureJson: JSONObject? = null,
         tsdbStatsJson: JSONObject?,
         espnSummaryJson: JSONObject?,
         seed: Int,
@@ -1792,6 +2241,70 @@ class MatchCenterEnricher(
         fun ratio(h: Double, a: Double): Float {
             val sum = h + a
             return if (sum <= 0.0) 0.5f else (h / sum).toFloat().coerceIn(0.08f, 0.92f)
+        }
+
+        // 0. Check if API-Football v3 returned `statistics` array
+        val apiFootballStatsArr = apiFootballFixtureJson?.optJSONArray("statistics")
+        if (apiFootballStatsArr != null && apiFootballStatsArr.length() >= 2) {
+            var homeStatsTeamObj = apiFootballStatsArr.optJSONObject(0)
+            var awayStatsTeamObj = apiFootballStatsArr.optJSONObject(1)
+            for (i in 0 until apiFootballStatsArr.length()) {
+                val tObj = apiFootballStatsArr.optJSONObject(i) ?: continue
+                val tName = tObj.optJSONObject("team")?.optString("name", "").orEmpty()
+                if (tName.isNotBlank()) {
+                    if (FootballRepository.areSameClubNames(tName, match.homeTeamName)) homeStatsTeamObj = tObj
+                    else if (FootballRepository.areSameClubNames(tName, match.awayTeamName)) awayStatsTeamObj = tObj
+                }
+            }
+            fun extractApiFootballStatMap(teamStatsWrapper: JSONObject?): Map<String, String> {
+                val arr = teamStatsWrapper?.optJSONArray("statistics") ?: return emptyMap()
+                val map = mutableMapOf<String, String>()
+                for (i in 0 until arr.length()) {
+                    val s = arr.optJSONObject(i) ?: continue
+                    val typeName = s.optString("type", "").trim()
+                    val valRaw = if (s.isNull("value")) "0" else s.optString("value", "0").trim()
+                    if (typeName.isNotBlank()) {
+                        map[typeName] = valRaw.ifBlank { "0" }
+                    }
+                }
+                return map
+            }
+            val hMap = extractApiFootballStatMap(homeStatsTeamObj)
+            val aMap = extractApiFootballStatMap(awayStatsTeamObj)
+            if (hMap.isNotEmpty() && aMap.isNotEmpty()) {
+                val apifStats = mutableListOf<MatchStatComparison>()
+                fun addApifStat(apiKey: String, label: String, isPercent: Boolean = false, isKey: Boolean = false) {
+                    val hRaw = hMap[apiKey] ?: return
+                    val aRaw = aMap[apiKey] ?: return
+                    val hNum = hRaw.replace("%", "").toDoubleOrNull() ?: 0.0
+                    val aNum = aRaw.replace("%", "").toDoubleOrNull() ?: 0.0
+                    val hText = if (isPercent && !hRaw.endsWith("%")) "${hNum.toInt()}%" else hRaw
+                    val aText = if (isPercent && !aRaw.endsWith("%")) "${aNum.toInt()}%" else aRaw
+                    apifStats.add(
+                        MatchStatComparison(
+                            statLabel = label,
+                            homeValueText = hText,
+                            awayValueText = aText,
+                            homeRatio = if (isPercent) (hNum / 100.0).toFloat().coerceIn(0.08f, 0.92f) else ratio(hNum, aNum),
+                            isKeyMetric = isKey
+                        )
+                    )
+                }
+                addApifStat("Ball Possession", "Ball Possession", isPercent = true, isKey = true)
+                addApifStat("expected_goals", "Expected Goals (xG)", isKey = true)
+                addApifStat("Total Shots", "Total Shots", isKey = true)
+                addApifStat("Shots on Goal", "Shots on Target", isKey = true)
+                addApifStat("Corner Kicks", "Corner Kicks", isKey = true)
+                addApifStat("Passes %", "Pass Accuracy", isPercent = true)
+                addApifStat("Fouls", "Fouls Committed")
+                addApifStat("Offsides", "Offsides")
+                addApifStat("Goalkeeper Saves", "Goalkeeper Saves")
+                addApifStat("Yellow Cards", "Yellow Cards")
+                addApifStat("Red Cards", "Red Cards")
+                if (apifStats.size >= 3) {
+                    return apifStats
+                }
+            }
         }
 
         // 1. Check if ESPN `boxscore.teams` has real match statistics
@@ -1885,112 +2398,20 @@ class MatchCenterEnricher(
             if (tsdbStats.isNotEmpty()) return tsdbStats
         }
 
-        val homePoss = 46 + (seed % 14) + (homeGoals * 2) - (awayGoals * 2)
-        val clampedHomePoss = homePoss.coerceIn(34, 68)
-        val awayPoss = 100 - clampedHomePoss
-
-        val homeXg = if (isPlayedOrLive) (homeGoals * 0.78 + 0.45 + (seed % 5) * 0.12) else 1.45
-        val awayXg = if (isPlayedOrLive) (awayGoals * 0.75 + 0.38 + ((seed + 3) % 5) * 0.11) else 1.18
-
-        val homeShots = if (isPlayedOrLive) (homeGoals * 3 + 7 + (seed % 6)) else 13
-        val awayShots = if (isPlayedOrLive) (awayGoals * 3 + 5 + ((seed + 2) % 6)) else 10
-
-        val homeOnTarget = if (isPlayedOrLive) (homeGoals + 2 + (seed % 4)).coerceAtMost(homeShots) else 5
-        val awayOnTarget = if (isPlayedOrLive) (awayGoals + 2 + ((seed + 1) % 3)).coerceAtMost(awayShots) else 4
-
-        val homeCorners = 4 + (seed % 5)
-        val awayCorners = 3 + ((seed + 2) % 5)
-
-        val homeFouls = 9 + (seed % 6)
-        val awayFouls = 10 + ((seed + 4) % 6)
-
-        val homeBigChances = (homeGoals + 1 + (seed % 2))
-        val awayBigChances = (awayGoals + 1 + ((seed + 1) % 2))
-
-        val homePassAcc = 82 + (seed % 9)
-        val awayPassAcc = 79 + ((seed + 3) % 9)
-
-        return listOf(
-            MatchStatComparison(
-                statLabel = "Ball Possession",
-                homeValueText = "$clampedHomePoss%",
-                awayValueText = "$awayPoss%",
-                homeRatio = clampedHomePoss / 100f,
-                isKeyMetric = true
-            ),
-            MatchStatComparison(
-                statLabel = "Expected Goals (xG)",
-                homeValueText = String.format(Locale.US, "%.2f", homeXg),
-                awayValueText = String.format(Locale.US, "%.2f", awayXg),
-                homeRatio = ratio(homeXg, awayXg),
-                isKeyMetric = true
-            ),
-            MatchStatComparison(
-                statLabel = "Total Shots",
-                homeValueText = homeShots.toString(),
-                awayValueText = awayShots.toString(),
-                homeRatio = ratio(homeShots.toDouble(), awayShots.toDouble()),
-                isKeyMetric = true
-            ),
-            MatchStatComparison(
-                statLabel = "Shots on Target",
-                homeValueText = homeOnTarget.toString(),
-                awayValueText = awayOnTarget.toString(),
-                homeRatio = ratio(homeOnTarget.toDouble(), awayOnTarget.toDouble()),
-                isKeyMetric = true
-            ),
-            MatchStatComparison(
-                statLabel = "Big Chances",
-                homeValueText = homeBigChances.toString(),
-                awayValueText = awayBigChances.toString(),
-                homeRatio = ratio(homeBigChances.toDouble(), awayBigChances.toDouble())
-            ),
-            MatchStatComparison(
-                statLabel = "Corner Kicks",
-                homeValueText = homeCorners.toString(),
-                awayValueText = awayCorners.toString(),
-                homeRatio = ratio(homeCorners.toDouble(), awayCorners.toDouble())
-            ),
-            MatchStatComparison(
-                statLabel = "Pass Accuracy",
-                homeValueText = "$homePassAcc%",
-                awayValueText = "$awayPassAcc%",
-                homeRatio = ratio(homePassAcc.toDouble(), awayPassAcc.toDouble())
-            ),
-            MatchStatComparison(
-                statLabel = "Fouls Committed",
-                homeValueText = homeFouls.toString(),
-                awayValueText = awayFouls.toString(),
-                homeRatio = ratio(homeFouls.toDouble(), awayFouls.toDouble())
-            ),
-            MatchStatComparison(
-                statLabel = "Yellow Cards",
-                homeValueText = "1",
-                awayValueText = "1",
-                homeRatio = 0.5f
-            ),
-            MatchStatComparison(
-                statLabel = "Red Cards",
-                homeValueText = match.homeRedCards.toString(),
-                awayValueText = match.awayRedCards.toString(),
-                homeRatio = ratio(match.homeRedCards.toDouble(), match.awayRedCards.toDouble())
-            )
-        )
+        // No synthetic pre-match or fabricated statistics when upstream stats are unavailable
+        if (!isPlayedOrLive) {
+            return emptyList()
+        }
+        return emptyList()
     }
 
     private fun buildH2HAndForm(
         match: FootballMatch,
         espnSummaryJson: JSONObject?,
-        seed: Int
+        @Suppress("UNUSED_PARAMETER") seed: Int
     ): Triple<List<String>, List<String>, List<H2HMeetingItem>> {
-        val formPatterns = listOf(
-            listOf("W", "W", "D", "W", "W"),
-            listOf("W", "D", "W", "L", "W"),
-            listOf("D", "W", "W", "W", "L"),
-            listOf("W", "L", "W", "D", "W")
-        )
-        var homeForm = formPatterns[seed % formPatterns.size]
-        var awayForm = formPatterns[(seed + 1) % formPatterns.size]
+        var homeForm = emptyList<String>()
+        var awayForm = emptyList<String>()
 
         // Parse real Last-5 Form from ESPN `boxscore.form` if available
         val espnFormArr = espnSummaryJson?.optJSONObject("boxscore")?.optJSONArray("form")
@@ -2006,8 +2427,8 @@ class MatchCenterEnricher(
             }
             val hParsed = parseTeamForm(espnFormArr.optJSONObject(0))
             val aParsed = parseTeamForm(espnFormArr.optJSONObject(1))
-            if (hParsed.size >= 3) homeForm = hParsed
-            if (aParsed.size >= 3) awayForm = aParsed
+            if (hParsed.isNotEmpty()) homeForm = hParsed
+            if (aParsed.isNotEmpty()) awayForm = aParsed
         }
 
         // Parse real H2H meetings from ESPN `headToHeadGames` if available
@@ -2359,8 +2780,8 @@ class MatchCenterEnricher(
             norm.contains("raphinha") -> 831005L
             norm.contains("pedri") -> 992587L
             norm.contains("haaland") -> 839956L
-            else -> 100000L + (abs(norm.hashCode()) % 899999L)
-        }
+            else -> null
+        } ?: return ""
         return "https://api.sofascore.com/api/v1/player/$sofascoreId/image"
     }
 

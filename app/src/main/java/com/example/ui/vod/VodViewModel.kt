@@ -177,10 +177,6 @@ class VodViewModel(application: Application) : AndroidViewModel(application) {
             containerExtension = movieStream.containerExtension.ifBlank { "mp4" }
         )
         _movieDetails.value = instantFallback
-        if (playlist == null) {
-            _isLoadingMovieDetails.value = false
-            return
-        }
         _isLoadingMovieDetails.value = true
         viewModelScope.launch {
             val details = repository.fetchVodMovieDetails(playlist, movieStream)

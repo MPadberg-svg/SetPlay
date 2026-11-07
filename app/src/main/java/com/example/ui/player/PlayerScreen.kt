@@ -114,6 +114,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
@@ -123,6 +124,8 @@ import androidx.compose.ui.graphics.Shadow
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.key.onKeyEvent
+import com.example.ui.theme.tvFocusableControl
+import com.example.ui.theme.tvFocusablePill
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.onSizeChanged
@@ -267,9 +270,23 @@ fun PlayerScreen(
     }
 
     val playerFocusRequester = remember { FocusRequester() }
+    var hasFocusedHudChild by remember { mutableStateOf(false) }
 
-    LaunchedEffect(Unit) {
-        runCatching { playerFocusRequester.requestFocus() }
+    val hasOpenOverlayOrSheet = uiState.showSubtitleLanguagePrompt ||
+        uiState.isChannelZapperOpen ||
+        showAudioSheet ||
+        showSubtitleSheet ||
+        showSpeedSheet ||
+        showCatchupSheet ||
+        showBufferSheet ||
+        showSleepTimerSheet ||
+        showFeedSwitcherSheet
+
+    LaunchedEffect(uiState.isControlsVisible, hasOpenOverlayOrSheet) {
+        if (!uiState.isControlsVisible && !hasOpenOverlayOrSheet) {
+            hasFocusedHudChild = false
+            runCatching { playerFocusRequester.requestFocus() }
+        }
     }
 
     val isLiveMode = uiState.isLive
@@ -297,7 +314,9 @@ fun PlayerScreen(
                     },
                     onTogglePlayPause = { viewModel.togglePlayPause() },
                     onZapChannel = { offset -> viewModel.zapChannelOffset(offset) },
-                    onSeekRelative = { seconds -> viewModel.seekRelative(seconds.toLong()) }
+                    onSeekRelative = { seconds -> viewModel.seekRelative(seconds.toLong()) },
+                    hasOpenOverlayOrSheet = hasOpenOverlayOrSheet,
+                    hasFocusedHudChild = hasFocusedHudChild
                 )
             }
             .testTag("player_screen")
@@ -533,6 +552,20 @@ fun PlayerScreen(
         }
 
         // 3b. Floating Auto-Prompt: "Subtitles — Choose Your Language" (Movies & Series)
+        var promptRemainingSeconds by remember(uiState.showSubtitleLanguagePrompt, uiState.currentStream?.id) {
+            mutableIntStateOf(12)
+        }
+        LaunchedEffect(uiState.showSubtitleLanguagePrompt, uiState.currentStream?.id) {
+            if (!uiState.isLive && uiState.showSubtitleLanguagePrompt) {
+                promptRemainingSeconds = 12
+                while (promptRemainingSeconds > 0) {
+                    delay(1_000L)
+                    promptRemainingSeconds--
+                }
+                viewModel.dismissSubtitleLanguagePrompt()
+            }
+        }
+
         if (!uiState.isLive && uiState.showSubtitleLanguagePrompt) {
             val coreLanguagePills = listOf(
                 Triple("ar", "🇸🇦", "Arabic"),
@@ -551,7 +584,10 @@ fun PlayerScreen(
                         group.languageDisplay.substringBefore(" (").trim().ifBlank { group.languageCode.uppercase(Locale.ROOT) }
                     )
                 }
-            val allLanguagePills = coreLanguagePills + extraLanguagePills
+            val preferredLang = uiState.lastSelectedSubtitleLanguageCode?.lowercase(Locale.ROOT)
+            val allLanguagePills = (coreLanguagePills + extraLanguagePills).sortedByDescending { (code, _, _) ->
+                preferredLang != null && code.equals(preferredLang, ignoreCase = true)
+            }
 
             Surface(
                 color = Color(0xEB0A0E17),
@@ -566,6 +602,11 @@ fun PlayerScreen(
                         bottom = if (uiState.isControlsVisible && !uiState.isTouchLocked) 96.dp else 28.dp
                     )
                     .widthIn(max = 560.dp)
+                    .onFocusChanged { focusState ->
+                        if (focusState.hasFocus) {
+                            hasFocusedHudChild = true
+                        }
+                    }
                     .testTag("subtitle_language_prompt_card")
             ) {
                 Column(
@@ -602,22 +643,37 @@ fun PlayerScreen(
                             }
                         }
 
-                        Text(
-                            text = "All Options ›",
-                            color = AmberGold,
-                            fontSize = 11.sp,
-                            fontWeight = FontWeight.SemiBold,
-                            modifier = Modifier
-                                .clip(RoundedCornerShape(8.dp))
-                                .clickable {
-                                    viewModel.dismissSubtitleLanguagePrompt()
-                                    showSubtitleSheet = true
-                                    if (uiState.wyzieLanguageGroups.isEmpty() && !uiState.isSearchingOnlineSubtitles) {
-                                        viewModel.searchOnlineSubtitles()
-                                    }
-                                }
-                                .padding(horizontal = 6.dp, vertical = 2.dp)
-                        )
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            Text(
+                                text = "${promptRemainingSeconds}s",
+                                color = PlayerTextSecondary,
+                                fontSize = 10.5.sp,
+                                fontWeight = FontWeight.Medium
+                            )
+                            Text(
+                                text = "All Options ›",
+                                color = AmberGold,
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.SemiBold,
+                                modifier = Modifier
+                                    .clip(RoundedCornerShape(8.dp))
+                                    .tvFocusablePill(
+                                        accentColor = AmberGold,
+                                        shape = RoundedCornerShape(8.dp),
+                                        onClick = {
+                                            viewModel.dismissSubtitleLanguagePrompt()
+                                            showSubtitleSheet = true
+                                            if (uiState.wyzieLanguageGroups.isEmpty() && !uiState.isSearchingOnlineSubtitles) {
+                                                viewModel.searchOnlineSubtitles()
+                                            }
+                                        }
+                                    )
+                                    .padding(horizontal = 6.dp, vertical = 2.dp)
+                            )
+                        }
                     }
 
                     Row(
@@ -628,20 +684,29 @@ fun PlayerScreen(
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         allLanguagePills.forEach { (code, flag, name) ->
+                            val isPreferred = preferredLang != null && code.equals(preferredLang, ignoreCase = true)
                             val matchingGroup = uiState.wyzieLanguageGroups.find {
                                 it.languageCode.equals(code, ignoreCase = true)
                             }
                             val countSuffix = matchingGroup?.options?.size?.takeIf { it > 0 }?.let { " ($it)" } ?: ""
                             Surface(
-                                color = Color(0xFF141C2B),
+                                color = if (isPreferred) Color(0xFF1F2418) else Color(0xFF141C2B),
                                 shape = RoundedCornerShape(50),
                                 border = BorderStroke(
-                                    1.dp,
-                                    if (matchingGroup != null) AmberGold.copy(alpha = 0.55f) else Color(0x26FFFFFF)
+                                    width = if (isPreferred) 1.5.dp else 1.dp,
+                                    color = when {
+                                        isPreferred -> AmberGold
+                                        matchingGroup != null -> AmberGold.copy(alpha = 0.55f)
+                                        else -> Color(0x26FFFFFF)
+                                    }
                                 ),
                                 modifier = Modifier
                                     .clip(RoundedCornerShape(50))
-                                    .clickable { viewModel.chooseSubtitleLanguageFromPrompt(code) }
+                                    .tvFocusablePill(
+                                        accentColor = AmberGold,
+                                        shape = RoundedCornerShape(50),
+                                        onClick = { viewModel.chooseSubtitleLanguageFromPrompt(code) }
+                                    )
                                     .testTag("subtitle_prompt_lang_$code")
                             ) {
                                 Row(
@@ -652,10 +717,18 @@ fun PlayerScreen(
                                     Text(text = flag, fontSize = 13.sp)
                                     Text(
                                         text = "$name$countSuffix",
-                                        color = PlayerTextPrimary,
+                                        color = if (isPreferred) PaleGold else PlayerTextPrimary,
                                         fontSize = 12.sp,
-                                        fontWeight = FontWeight.SemiBold
+                                        fontWeight = if (isPreferred) FontWeight.ExtraBold else FontWeight.SemiBold
                                     )
+                                    if (isPreferred) {
+                                        Text(
+                                            text = "★ Preferred",
+                                            color = AmberGold,
+                                            fontSize = 10.sp,
+                                            fontWeight = FontWeight.ExtraBold
+                                        )
+                                    }
                                 }
                             }
                         }
@@ -667,7 +740,11 @@ fun PlayerScreen(
                             border = BorderStroke(1.dp, Color(0x33FF6B6B)),
                             modifier = Modifier
                                 .clip(RoundedCornerShape(50))
-                                .clickable { viewModel.chooseSubtitleLanguageFromPrompt(null) }
+                                .tvFocusablePill(
+                                    accentColor = LiveRed,
+                                    shape = RoundedCornerShape(50),
+                                    onClick = { viewModel.chooseSubtitleLanguageFromPrompt(null) }
+                                )
                                 .testTag("subtitle_prompt_lang_off")
                         ) {
                             Row(
@@ -1016,6 +1093,9 @@ fun PlayerScreen(
             Box(
                 modifier = Modifier
                     .fillMaxSize()
+                    .onFocusChanged { focusState ->
+                        hasFocusedHudChild = focusState.hasFocus
+                    }
                     .background(
                         Brush.verticalGradient(
                             0.0f to Color.Black.copy(alpha = 0.78f),
@@ -1041,6 +1121,11 @@ fun PlayerScreen(
                         onClick = onBack,
                         modifier = Modifier
                             .size(40.dp)
+                            .tvFocusableControl(
+                                accentColor = AmberGold,
+                                shape = CircleShape,
+                                onClick = onBack
+                            )
                             .testTag("player_back_button")
                     ) {
                         Icon(
@@ -1126,13 +1211,17 @@ fun PlayerScreen(
                                 shape = RoundedCornerShape(50),
                                 border = BorderStroke(1.dp, AmberGold.copy(alpha = 0.65f)),
                                 modifier = Modifier
-                                    .clickable {
-                                        if (uiState.halftimeSavedStream != null && uiState.halftimeSavedStream?.id != uiState.currentStream?.id) {
-                                            viewModel.returnToHalftimeChannel()
-                                        } else {
-                                            viewModel.startOrToggleHalftimeTimer()
+                                    .tvFocusablePill(
+                                        accentColor = AmberGold,
+                                        shape = RoundedCornerShape(50),
+                                        onClick = {
+                                            if (uiState.halftimeSavedStream != null && uiState.halftimeSavedStream?.id != uiState.currentStream?.id) {
+                                                viewModel.returnToHalftimeChannel()
+                                            } else {
+                                                viewModel.startOrToggleHalftimeTimer()
+                                            }
                                         }
-                                    }
+                                    )
                                     .testTag("halftime_timer_countdown_badge")
                             ) {
                                 Row(
@@ -1156,7 +1245,11 @@ fun PlayerScreen(
                                 color = Color.White.copy(alpha = 0.14f),
                                 shape = RoundedCornerShape(50),
                                 modifier = Modifier
-                                    .clickable { viewModel.recallPreviousChannel() }
+                                    .tvFocusablePill(
+                                        accentColor = AmberGold,
+                                        shape = RoundedCornerShape(50),
+                                        onClick = { viewModel.recallPreviousChannel() }
+                                    )
                                     .testTag("player_recall_channel_button")
                             ) {
                                 Row(
@@ -1186,6 +1279,11 @@ fun PlayerScreen(
                                 onClick = { viewModel.toggleChannelZapper() },
                                 modifier = Modifier
                                     .size(40.dp)
+                                    .tvFocusableControl(
+                                        accentColor = AmberGold,
+                                        shape = CircleShape,
+                                        onClick = { viewModel.toggleChannelZapper() }
+                                    )
                                     .testTag("player_zapper_drawer_button")
                             ) {
                                 Icon(
@@ -1203,6 +1301,11 @@ fun PlayerScreen(
                             onClick = { uiState.currentStream?.let { onToggleFavorite(it) } },
                             modifier = Modifier
                                 .size(40.dp)
+                                .tvFocusableControl(
+                                    accentColor = AmberGold,
+                                    shape = CircleShape,
+                                    onClick = { uiState.currentStream?.let { onToggleFavorite(it) } }
+                                )
                                 .testTag("player_favorite_button")
                         ) {
                             Icon(
@@ -1218,6 +1321,11 @@ fun PlayerScreen(
                             onClick = { onEnterInAppPip() },
                             modifier = Modifier
                                 .size(40.dp)
+                                .tvFocusableControl(
+                                    accentColor = AmberGold,
+                                    shape = CircleShape,
+                                    onClick = { onEnterInAppPip() }
+                                )
                                 .testTag("player_pip_button")
                         ) {
                             Icon(
@@ -2239,7 +2347,12 @@ private fun CleanCenterCircleButton(
         modifier = modifier
             .size(sizeDp.dp)
             .clip(CircleShape)
-            .clickable(onClick = onClick)
+            .tvFocusableControl(
+                accentColor = AmberGold,
+                shape = CircleShape,
+                focusedScale = 1.08f,
+                onClick = onClick
+            )
     ) {
         Box(contentAlignment = Alignment.Center) {
             Icon(
@@ -2273,7 +2386,11 @@ private fun PrimaryLabeledHudPill(
         ),
         modifier = modifier
             .clip(RoundedCornerShape(50))
-            .clickable(onClick = onClick)
+            .tvFocusablePill(
+                accentColor = AmberGold,
+                shape = RoundedCornerShape(50),
+                onClick = onClick
+            )
     ) {
         Row(
             verticalAlignment = Alignment.CenterVertically,
@@ -2319,7 +2436,11 @@ private fun CompactIconHudPill(
         ),
         modifier = modifier
             .clip(RoundedCornerShape(50))
-            .clickable(onClick = onClick)
+            .tvFocusablePill(
+                accentColor = AmberGold,
+                shape = RoundedCornerShape(50),
+                onClick = onClick
+            )
     ) {
         Row(
             verticalAlignment = Alignment.CenterVertically,
@@ -2869,15 +2990,22 @@ internal fun handlePlayerRemoteKeyEvent(
     onShowControlsOrTogglePlay: () -> Unit,
     onTogglePlayPause: () -> Unit,
     onZapChannel: (Int) -> Unit,
-    onSeekRelative: (Int) -> Unit
+    onSeekRelative: (Int) -> Unit,
+    hasOpenOverlayOrSheet: Boolean = false,
+    hasFocusedHudChild: Boolean = false
 ): Boolean {
     if (isTouchLocked) return false
+    val delegateDpadToFocusedUi = hasOpenOverlayOrSheet || (isControlsVisible && hasFocusedHudChild)
     return when (keyCode) {
         KeyEvent.KEYCODE_DPAD_CENTER,
         KeyEvent.KEYCODE_ENTER,
         KeyEvent.KEYCODE_NUMPAD_ENTER -> {
-            onShowControlsOrTogglePlay()
-            true
+            if (delegateDpadToFocusedUi) {
+                false
+            } else {
+                onShowControlsOrTogglePlay()
+                true
+            }
         }
         KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE -> {
             onTogglePlayPause()
@@ -2900,7 +3028,9 @@ internal fun handlePlayerRemoteKeyEvent(
             }
         }
         KeyEvent.KEYCODE_DPAD_UP -> {
-            if (isLive && !isControlsVisible) {
+            if (delegateDpadToFocusedUi) {
+                false
+            } else if (isLive && !isControlsVisible) {
                 onZapChannel(1)
                 true
             } else {
@@ -2908,14 +3038,35 @@ internal fun handlePlayerRemoteKeyEvent(
             }
         }
         KeyEvent.KEYCODE_DPAD_DOWN -> {
-            if (isLive && !isControlsVisible) {
+            if (delegateDpadToFocusedUi) {
+                false
+            } else if (isLive && !isControlsVisible) {
                 onZapChannel(-1)
                 true
             } else {
                 false
             }
         }
-        KeyEvent.KEYCODE_DPAD_LEFT,
+        KeyEvent.KEYCODE_DPAD_LEFT -> {
+            if (delegateDpadToFocusedUi) {
+                false
+            } else if (!isLive && !isControlsVisible) {
+                onSeekRelative(-10)
+                true
+            } else {
+                false
+            }
+        }
+        KeyEvent.KEYCODE_DPAD_RIGHT -> {
+            if (delegateDpadToFocusedUi) {
+                false
+            } else if (!isLive && !isControlsVisible) {
+                onSeekRelative(10)
+                true
+            } else {
+                false
+            }
+        }
         KeyEvent.KEYCODE_MEDIA_REWIND -> {
             if (!isLive) {
                 onSeekRelative(-10)
@@ -2924,7 +3075,6 @@ internal fun handlePlayerRemoteKeyEvent(
                 false
             }
         }
-        KeyEvent.KEYCODE_DPAD_RIGHT,
         KeyEvent.KEYCODE_MEDIA_FAST_FORWARD -> {
             if (!isLive) {
                 onSeekRelative(10)

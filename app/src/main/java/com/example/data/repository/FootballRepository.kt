@@ -172,6 +172,7 @@ data class FootballMatch(
     val stageOrRound: String = "Regular Season",
     val sportsDbEventId: String = "",
     val espnEventId: String = "",
+    val apiFootballFixtureId: String = "",
     val halfTimeScore: String? = null,      // e.g. "1 - 0"
     val fullTimeScore: String? = null,      // e.g. "2 - 1"
     val homeRedCards: Int = 0,
@@ -252,10 +253,13 @@ class FootballRepository(
     private val sofascoreEventTvCache = ConcurrentHashMap<String, Pair<Long, List<String>>>()
     private val sofascoreChannelNameCache = ConcurrentHashMap<Long, String>()
 
-    // 3. Optional API-Football cache (15-min TTL)
+    // 3. API-Football cache (smart TTL: 90s for live TODAY polling, 15m otherwise; reserves quota for Match Center)
     private val apiFootballDayCache = ConcurrentHashMap<String, Pair<Long, List<FootballMatch>>>()
 
-    // 4. 5-Tab Match Center Enricher (Lineups, 2D Pitch, Timeline, Stats, H2H/Standings, MENA TV Guide)
+    // 4. Football-Data.org v4 cache (10 req/min sliding window + per-day cache)
+    private val footballDataDayCache = ConcurrentHashMap<String, Pair<Long, List<FootballMatch>>>()
+
+    // 5. 5-Tab Match Center Enricher (Lineups, 2D Pitch, Timeline, Stats, H2H/Standings, MENA TV Guide)
     private val matchCenterEnricher = MatchCenterEnricher(
         httpClient = httpClient,
         canAcquireSportsDbPermit = ::canAcquireSportsDbPermit
@@ -496,17 +500,28 @@ class FootballRepository(
         return resolveSportApiKey().isNotEmpty()
     }
 
-    private fun isApiFootballKeyConfigured(): Boolean {
+    internal fun isApiFootballKeyConfigured(): Boolean = Companion.isApiFootballKeyConfigured()
+
+    internal fun resolveApiFootballKey(): String = Companion.resolveApiFootballKey()
+
+    internal fun resolveFootballDataKey(): String {
         val key = try {
-            BuildConfig.API_FOOTBALL_KEY
+            BuildConfig.FOOTBALL_DATA_KEY.trim()
         } catch (_: Exception) {
             ""
         }
-        return key.isNotBlank() &&
-            key != "YOUR_API_FOOTBALL_KEY" &&
-            !key.startsWith("MY_") &&
+        return if (key.isNotBlank() &&
+            !key.startsWith("YOUR_", ignoreCase = true) &&
+            !key.startsWith("MY_", ignoreCase = true) &&
             key != "null"
+        ) {
+            key
+        } else {
+            ""
+        }
     }
+
+    fun isFootballDataKeyConfigured(): Boolean = resolveFootballDataKey().isNotEmpty()
 
     /**
      * Enforces TheSportsDB Free v1 rate limit of 30 requests/minute across both FootballRepository and MatchCenterEnricher.
@@ -1075,7 +1090,11 @@ class FootballRepository(
                 }
             }
             val apiFootballDeferred = async {
-                runCatching { fetchApiFootballDayMatches(isoDateStr, dayTab) }
+                runCatching { fetchApiFootballDayMatches(isoDateStr, dayTab, forceLiveRefresh) }
+                    .getOrDefault(emptyList())
+            }
+            val footballDataDeferred = async {
+                runCatching { fetchFootballDataOrgDayMatches(isoDateStr, dayTab, forceLiveRefresh) }
                     .getOrDefault(emptyList())
             }
 
@@ -1084,7 +1103,8 @@ class FootballRepository(
                 sportsDbMatches = sportsDbAllSoccerDeferred.await() + sportsDbLeagueJobs.awaitAll().flatten(),
                 tvBroadcasts = sofascoreTvDeferred.await() + sportsDbTvDeferred.await(),
                 espnMatches = espnJobs.awaitAll().flatten(),
-                apiFootballMatches = apiFootballDeferred.await()
+                apiFootballMatches = apiFootballDeferred.await(),
+                footballDataMatches = footballDataDeferred.await()
             )
         }
 
@@ -1114,8 +1134,8 @@ class FootballRepository(
             }
         }
 
-        // Step 3: Supplement with API-Football & ESPN real-time scoreboard fixtures
-        for (extraMatch in (parallelResults.apiFootballMatches + parallelResults.espnMatches)) {
+        // Step 3: Supplement with API-Football, Football-Data.org & ESPN real-time scoreboard fixtures
+        for (extraMatch in (parallelResults.apiFootballMatches + parallelResults.footballDataMatches + parallelResults.espnMatches)) {
             val key = findOrBuildMergeKey(mergedMap, extraMatch.homeTeamName, extraMatch.awayTeamName)
             val existing = mergedMap[key]
             if (existing == null) {
@@ -1143,7 +1163,8 @@ class FootballRepository(
         val sportsDbMatches: List<FootballMatch>,
         val tvBroadcasts: List<SportsDbTvBroadcastEntry>,
         val espnMatches: List<FootballMatch>,
-        val apiFootballMatches: List<FootballMatch>
+        val apiFootballMatches: List<FootballMatch>,
+        val footballDataMatches: List<FootballMatch> = emptyList()
     )
 
     internal fun shouldPreferCandidateLiveState(
@@ -1189,6 +1210,7 @@ class FootballRepository(
         }
         val resolvedEventId = badgeAndTvSource.sportsDbEventId.ifBlank { primaryLive.sportsDbEventId }
         val resolvedEspnId = primaryLive.espnEventId.ifBlank { badgeAndTvSource.espnEventId }
+        val resolvedApiFootballId = primaryLive.apiFootballFixtureId.ifBlank { badgeAndTvSource.apiFootballFixtureId }
         val resolvedStadium = if (primaryLive.stadiumName != "Main Stadium" && primaryLive.stadiumName.isNotBlank()) {
             primaryLive.stadiumName
         } else {
@@ -1244,6 +1266,7 @@ class FootballRepository(
             stadiumName = resolvedStadium,
             sportsDbEventId = resolvedEventId,
             espnEventId = resolvedEspnId,
+            apiFootballFixtureId = resolvedApiFootballId,
             fallbackMenaChannels = mergedFallbacks,
             sourceTvChannels = mergedSourceTv,
             halfTimeScore = primaryLive.halfTimeScore ?: badgeAndTvSource.halfTimeScore,
@@ -2155,7 +2178,11 @@ class FootballRepository(
                 }.getOrDefault(emptyList())
             }
             val apiFootballDeferred = async {
-                runCatching { fetchApiFootballDayMatches(isoDateStr, dayTab) }
+                runCatching { fetchApiFootballDayMatches(isoDateStr, dayTab, forceLiveRefresh = true) }
+                    .getOrDefault(emptyList())
+            }
+            val footballDataDeferred = async {
+                runCatching { fetchFootballDataOrgDayMatches(isoDateStr, dayTab, forceLiveRefresh = true) }
                     .getOrDefault(emptyList())
             }
             val sportsDbDeferred = async {
@@ -2166,7 +2193,7 @@ class FootballRepository(
             QuadrupleLiveDelta(
                 sportApiMatches = sportApiLiveDeferred.await(),
                 espnMatches = espnDeferred.await(),
-                apiFootballMatches = apiFootballDeferred.await(),
+                apiFootballMatches = apiFootballDeferred.await() + footballDataDeferred.await(),
                 sportsDbMatches = sportsDbDeferred.await()
             )
         }
@@ -2211,7 +2238,7 @@ class FootballRepository(
             }
         }
 
-        // 3. Supplement with real-time scoreboard deltas (API-Football & ESPN)
+        // 3. Supplement with real-time scoreboard deltas (API-Football, Football-Data.org & ESPN)
         for (extraMatch in (apiFootballMatches + espnLiveMatches)) {
             val key = findOrBuildMergeKey(mergedMap, extraMatch.homeTeamName, extraMatch.awayTeamName)
             val existing = mergedMap[key]
@@ -3280,14 +3307,28 @@ class FootballRepository(
 
     private fun fetchApiFootballDayMatches(
         isoDate: String,
-        dayTab: MatchDayTab
+        dayTab: MatchDayTab,
+        forceLiveRefresh: Boolean = false
     ): List<FootballMatch> {
         if (!isApiFootballKeyConfigured()) return emptyList()
 
         val now = System.currentTimeMillis()
         val cached = apiFootballDayCache[isoDate]
-        if (cached != null && (now - cached.first) < 15 * 60 * 1000L && cached.second.isNotEmpty()) {
-            return cached.second
+        if (cached != null && cached.second.isNotEmpty()) {
+            val hasLiveInCache = cached.second.any { it.status == MatchStatus.LIVE || it.status == MatchStatus.HALFTIME }
+            val ttlMs = if (dayTab == MatchDayTab.TODAY && (forceLiveRefresh || hasLiveInCache)) {
+                90_000L // 90s TTL during active live TODAY polling to conserve 100 req/day free tier
+            } else {
+                15 * 60 * 1000L // 15-min TTL for non-live days
+            }
+            if ((now - cached.first) < ttlMs) {
+                return cached.second
+            }
+        }
+
+        // Smart Quota Management: reserve 15 of the 100 daily requests for Match Center 1-call dossier lookups
+        if (!Companion.tryAcquireSharedApiFootballPermit(isMatchCenterDossier = false)) {
+            return cached?.second ?: emptyList()
         }
 
         return try {
@@ -3299,16 +3340,16 @@ class FootballRepository(
 
             val request = Request.Builder()
                 .url(url)
-                .header("x-apisports-key", BuildConfig.API_FOOTBALL_KEY)
+                .header("x-apisports-key", resolveApiFootballKey())
                 .build()
 
             httpClient.newCall(request).execute().use { response ->
-                if (!response.isSuccessful) return emptyList()
-                val body = response.body?.string() ?: return emptyList()
+                if (!response.isSuccessful) return cached?.second ?: emptyList()
+                val body = response.body?.string() ?: return cached?.second ?: emptyList()
                 val root = JSONObject(body)
                 val errorsObj = root.optJSONObject("errors")
                 if (errorsObj != null && errorsObj.length() > 0) {
-                    return emptyList()
+                    return cached?.second ?: emptyList()
                 }
                 val arr = root.optJSONArray("response") ?: return emptyList()
                 val list = mutableListOf<FootballMatch>()
@@ -3323,6 +3364,8 @@ class FootballRepository(
                     val matchedTournament = matchApiFootballLeague(leagueId, country, leagueName) ?: continue
 
                     val fixtureObj = item.optJSONObject("fixture") ?: continue
+                    val fixtureIdInt = fixtureObj.optInt("id", 0)
+                    val fixtureIdStr = if (fixtureIdInt > 0) fixtureIdInt.toString() else ""
                     val venueObj = fixtureObj.optJSONObject("venue")
                     val stadiumName = venueObj?.optString("name", "")?.ifBlank { "Main Stadium" } ?: "Main Stadium"
                     val cityName = venueObj?.optString("city", "")?.ifBlank { matchedTournament.countryOrRegion }
@@ -3331,14 +3374,22 @@ class FootballRepository(
                     val statusObj = fixtureObj.optJSONObject("status")
                     val shortStatus = statusObj?.optString("short", "NS") ?: "NS"
                     val elapsed = statusObj?.optInt("elapsed", 0) ?: 0
+                    val extraElapsed = statusObj?.optInt("extra", 0)?.coerceAtLeast(0) ?: 0
 
                     val teamsObj = item.optJSONObject("teams") ?: continue
                     val homeObj = teamsObj.optJSONObject("home") ?: continue
                     val awayObj = teamsObj.optJSONObject("away") ?: continue
                     val goalsObj = item.optJSONObject("goals")
+                    val scoreObj = item.optJSONObject("score")
+                    val htObj = scoreObj?.optJSONObject("halftime")
+                    val htHome = htObj?.optInt("home", -1)?.takeIf { it >= 0 }
+                    val htAway = htObj?.optInt("away", -1)?.takeIf { it >= 0 }
+                    val htScoreStr = if (htHome != null && htAway != null && shortStatus != "NS" && shortStatus != "TBD") {
+                        "$htHome - $htAway"
+                    } else null
 
                     val kickoffTime = formatIsoToMoroccoTime(fixtureObj.optString("date", ""))
-                    val (status, badge) = parseLiveStatusAndMinuteBadge(shortStatus, elapsed, kickoffTime)
+                    val (status, badge) = parseLiveStatusAndMinuteBadge(shortStatus, elapsed, kickoffTime, extraElapsed)
 
                     val homeName = homeObj.optString("name", "")
                     val awayName = awayObj.optString("name", "")
@@ -3353,9 +3404,12 @@ class FootballRepository(
                     val primaryChannel = smartFallbacks.firstOrNull()
                         ?: matchedTournament.defaultBeinPool[list.size % matchedTournament.defaultBeinPool.size]
 
+                    val homeGoalsVal = if (status == MatchStatus.UPCOMING) null else goalsObj?.optInt("home")
+                    val awayGoalsVal = if (status == MatchStatus.UPCOMING) null else goalsObj?.optInt("away")
+
                     list.add(
                         FootballMatch(
-                            matchId = "apif_${fixtureObj.optInt("id", i)}",
+                            matchId = "apif_${fixtureIdStr.ifBlank { i.toString() }}",
                             tournamentId = matchedTournament.tournamentId,
                             tournamentName = matchedTournament.name,
                             tournamentRegion = matchedTournament.countryOrRegion,
@@ -3367,18 +3421,21 @@ class FootballRepository(
                             homeTeamId = "apif_${homeObj.optInt("id", 0)}",
                             homeTeamName = homeName,
                             homeTeamBadge = homeObj.optString("logo", ""),
-                            homeScore = if (status == MatchStatus.UPCOMING) null else goalsObj?.optInt("home"),
+                            homeScore = homeGoalsVal,
                             awayTeamId = "apif_${awayObj.optInt("id", 0)}",
                             awayTeamName = awayName,
                             awayTeamBadge = awayObj.optString("logo", ""),
-                            awayScore = if (status == MatchStatus.UPCOMING) null else goalsObj?.optInt("away"),
+                            awayScore = awayGoalsVal,
                             stadiumName = stadiumName,
                             cityName = cityName,
                             beinChannel = primaryChannel,
                             beinChannelNumberHint = extractBeinHint(primaryChannel),
                             menaProviderName = detectMenaProviderFromLabel(primaryChannel),
                             fallbackMenaChannels = smartFallbacks.drop(1),
-                            stageOrRound = roundStr
+                            stageOrRound = roundStr,
+                            apiFootballFixtureId = fixtureIdStr,
+                            halfTimeScore = htScoreStr,
+                            fullTimeScore = if (status == MatchStatus.FINISHED && homeGoalsVal != null && awayGoalsVal != null) "$homeGoalsVal - $awayGoalsVal" else null
                         )
                     )
                 }
@@ -3388,7 +3445,182 @@ class FootballRepository(
                 list
             }
         } catch (_: Exception) {
-            emptyList()
+            cached?.second ?: emptyList()
+        }
+    }
+
+    /**
+     * Football-Data.org v4 Integration (`https://api.football-data.org/v4/matches`):
+     * Fetches European flagship competitions (`CL`, `PL`, `PD`, `SA`, `BL1`, `FL1`) with header `X-Auth-Token: BuildConfig.FOOTBALL_DATA_KEY`,
+     * rate-limited to 10 requests/minute on the free tier.
+     */
+    private fun fetchFootballDataOrgDayMatches(
+        isoDate: String,
+        dayTab: MatchDayTab,
+        forceLiveRefresh: Boolean = false
+    ): List<FootballMatch> {
+        if (!isFootballDataKeyConfigured()) return emptyList()
+
+        val now = System.currentTimeMillis()
+        val cached = footballDataDayCache[isoDate]
+        if (cached != null && cached.second.isNotEmpty()) {
+            val hasLive = cached.second.any { it.status == MatchStatus.LIVE || it.status == MatchStatus.HALFTIME }
+            val ttlMs = if (dayTab == MatchDayTab.TODAY && (forceLiveRefresh || hasLive)) 60_000L else 15 * 60 * 1000L
+            if ((now - cached.first) < ttlMs) {
+                return cached.second
+            }
+        }
+
+        if (!Companion.tryAcquireSharedFootballDataPermit()) {
+            return cached?.second ?: emptyList()
+        }
+
+        return try {
+            val url = "$FOOTBALL_DATA_BASE_URL/matches".toHttpUrlOrNull()
+                ?.newBuilder()
+                ?.addQueryParameter("dateFrom", isoDate)
+                ?.addQueryParameter("dateTo", isoDate)
+                ?.build() ?: return emptyList()
+
+            val request = Request.Builder()
+                .url(url)
+                .header("X-Auth-Token", resolveFootballDataKey())
+                .header("Accept", "application/json")
+                .build()
+
+            httpClient.newCall(request).execute().use { response ->
+                if (!response.isSuccessful) return cached?.second ?: emptyList()
+                val body = response.body?.string() ?: return cached?.second ?: emptyList()
+                val parsed = parseFootballDataOrgMatchesJson(body, dayTab)
+                if (parsed.isNotEmpty()) {
+                    footballDataDayCache[isoDate] = now to parsed
+                }
+                parsed
+            }
+        } catch (_: Exception) {
+            cached?.second ?: emptyList()
+        }
+    }
+
+    internal fun parseFootballDataOrgMatchesJson(
+        rawJson: String,
+        dayTab: MatchDayTab = MatchDayTab.TODAY
+    ): List<FootballMatch> {
+        val root = runCatching { JSONObject(rawJson) }.getOrNull() ?: return emptyList()
+        val matchesArr = root.optJSONArray("matches") ?: return emptyList()
+        val list = mutableListOf<FootballMatch>()
+
+        for (i in 0 until matchesArr.length()) {
+            val item = matchesArr.optJSONObject(i) ?: continue
+            val compObj = item.optJSONObject("competition") ?: continue
+            val compCode = compObj.optString("code", "").trim().uppercase(Locale.ROOT)
+            val compName = compObj.optString("name", "").trim()
+            val matchedTournament = matchFootballDataCompetition(compCode, compName) ?: continue
+
+            val homeObj = item.optJSONObject("homeTeam") ?: continue
+            val awayObj = item.optJSONObject("awayTeam") ?: continue
+            val homeName = homeObj.optString("name", homeObj.optString("shortName", "")).trim()
+            val awayName = awayObj.optString("name", awayObj.optString("shortName", "")).trim()
+            if (homeName.isBlank() || awayName.isBlank()) continue
+
+            val utcDate = item.optString("utcDate", "")
+            val kickoffTime = formatIsoToMoroccoTime(utcDate)
+            val rawStatus = item.optString("status", "TIMED").uppercase(Locale.ROOT)
+            val minuteVal = item.optInt("minute", 0)
+            val injuryTimeVal = item.optInt("injuryTime", 0).coerceAtLeast(0)
+
+            val mappedShortStatus = when (rawStatus) {
+                "IN_PLAY" -> if (minuteVal > 45) "2H" else "1H"
+                "PAUSED" -> "HT"
+                "FINISHED", "AWARDED" -> "FT"
+                else -> "NS"
+            }
+            val (status, badge) = parseLiveStatusAndMinuteBadge(mappedShortStatus, minuteVal, kickoffTime, injuryTimeVal)
+
+            val scoreObj = item.optJSONObject("score")
+            val fullTimeObj = scoreObj?.optJSONObject("fullTime")
+            val halfTimeObj = scoreObj?.optJSONObject("halfTime")
+
+            val hGoals = if (status == MatchStatus.UPCOMING) null else fullTimeObj?.optInt("home", -1)?.takeIf { it >= 0 }
+            val aGoals = if (status == MatchStatus.UPCOMING) null else fullTimeObj?.optInt("away", -1)?.takeIf { it >= 0 }
+
+            val htH = halfTimeObj?.optInt("home", -1)?.takeIf { it >= 0 }
+            val htA = halfTimeObj?.optInt("away", -1)?.takeIf { it >= 0 }
+            val htStr = if (htH != null && htA != null && status != MatchStatus.UPCOMING) "$htH - $htA" else null
+
+            val matchdayInt = item.optInt("matchday", 0)
+            val stageStr = item.optString("stage", "").replace("_", " ").trim()
+            val roundLabel = when {
+                matchdayInt > 0 -> "Matchday $matchdayInt"
+                stageStr.isNotBlank() -> stageStr
+                else -> matchedTournament.name
+            }
+
+            val smartFallbacks = getSmartMenaFallbackChannels(
+                tournamentId = matchedTournament.tournamentId,
+                tournamentName = matchedTournament.name,
+                slotIndex = list.size,
+                isMarquee = isMarqueeMenaMatch(homeName, awayName),
+                homeTeamName = homeName,
+                awayTeamName = awayName
+            )
+            val primaryChannel = smartFallbacks.firstOrNull()
+                ?: matchedTournament.defaultBeinPool[list.size % matchedTournament.defaultBeinPool.size]
+
+            list.add(
+                FootballMatch(
+                    matchId = "fdo_${item.optLong("id", i.toLong())}",
+                    tournamentId = matchedTournament.tournamentId,
+                    tournamentName = matchedTournament.name,
+                    tournamentRegion = matchedTournament.countryOrRegion,
+                    dayTab = dayTab,
+                    kickoffTimeFormatted = kickoffTime,
+                    kickoffDateFormatted = "${dayTab.getDynamicTitle()} • GMT+1",
+                    status = status,
+                    liveMinuteOrBadge = badge,
+                    homeTeamId = "fdo_${homeObj.optLong("id", 0L)}",
+                    homeTeamName = homeName,
+                    homeTeamBadge = homeObj.optString("crest", ""),
+                    homeScore = hGoals,
+                    awayTeamId = "fdo_${awayObj.optLong("id", 0L)}",
+                    awayTeamName = awayName,
+                    awayTeamBadge = awayObj.optString("crest", ""),
+                    awayScore = aGoals,
+                    stadiumName = item.optString("venue", "").ifBlank { "Main Stadium" },
+                    cityName = matchedTournament.countryOrRegion,
+                    beinChannel = primaryChannel,
+                    beinChannelNumberHint = extractBeinHint(primaryChannel),
+                    menaProviderName = detectMenaProviderFromLabel(primaryChannel),
+                    fallbackMenaChannels = smartFallbacks.drop(1),
+                    stageOrRound = roundLabel,
+                    halfTimeScore = htStr,
+                    fullTimeScore = if (status == MatchStatus.FINISHED && hGoals != null && aGoals != null) "$hGoals - $aGoals" else null
+                )
+            )
+        }
+        return list
+    }
+
+    private fun matchFootballDataCompetition(code: String, name: String): TournamentCatalogItem? {
+        return when (code) {
+            "CL" -> ALL_TOURNAMENTS.first { it.tournamentId == "uefa_cl" }
+            "PL" -> ALL_TOURNAMENTS.first { it.tournamentId == "premier_league" }
+            "PD" -> ALL_TOURNAMENTS.first { it.tournamentId == "laliga" }
+            "SA" -> ALL_TOURNAMENTS.first { it.tournamentId == "serie_a" }
+            "BL1" -> ALL_TOURNAMENTS.first { it.tournamentId == "bundesliga" }
+            "FL1" -> ALL_TOURNAMENTS.first { it.tournamentId == "ligue_1" }
+            else -> {
+                val lower = name.lowercase(Locale.ROOT)
+                when {
+                    lower.contains("champions league") && !lower.contains("caf") -> ALL_TOURNAMENTS.first { it.tournamentId == "uefa_cl" }
+                    lower.contains("premier league") -> ALL_TOURNAMENTS.first { it.tournamentId == "premier_league" }
+                    lower.contains("primera division") || lower.contains("laliga") -> ALL_TOURNAMENTS.first { it.tournamentId == "laliga" }
+                    lower.contains("serie a") -> ALL_TOURNAMENTS.first { it.tournamentId == "serie_a" }
+                    lower.contains("bundesliga") -> ALL_TOURNAMENTS.first { it.tournamentId == "bundesliga" }
+                    lower.contains("ligue 1") -> ALL_TOURNAMENTS.first { it.tournamentId == "ligue_1" }
+                    else -> null
+                }
+            }
         }
     }
 
@@ -4073,11 +4305,68 @@ class FootballRepository(
         const val BOTOLA_PRO_SPORTSDB_LEAGUE_ID = "4520"
         internal const val THESPORTSDB_MAX_REQ_PER_MINUTE = 30
 
+        // API #3: API-Football v3 (100 req/day free tier: reserve 15 req/day for Match Center 1-call dossiers)
+        const val API_FOOTBALL_BASE_URL = "https://v3.football.api-sports.io"
+        internal const val API_FOOTBALL_MAX_DAILY_TOTAL = 95
+        internal const val API_FOOTBALL_MAX_DAILY_BACKGROUND = 80
+        private val sharedApiFootballDailyCounter = AtomicInteger(0)
+
+        // API #4: Football-Data.org v4 (10 req/min free tier)
+        const val FOOTBALL_DATA_BASE_URL = "https://api.football-data.org/v4"
+        internal const val FOOTBALL_DATA_MAX_REQ_PER_MINUTE = 10
+        private val sharedFootballDataRequestTimestamps = ConcurrentLinkedDeque<Long>()
+
         const val SOFASCORE_BROWSER_USER_AGENT =
             "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Mobile Safari/537.36"
         const val SOFASCORE_REFERER = "https://www.sofascore.com/"
 
         private val sharedSportsDbRequestTimestamps = ConcurrentLinkedDeque<Long>()
+
+        internal fun resolveApiFootballKey(): String {
+            val key = try {
+                BuildConfig.API_FOOTBALL_KEY.trim()
+            } catch (_: Exception) {
+                ""
+            }
+            return if (key.isNotBlank() &&
+                !key.startsWith("YOUR_", ignoreCase = true) &&
+                !key.startsWith("MY_", ignoreCase = true) &&
+                key != "null"
+            ) {
+                key
+            } else {
+                ""
+            }
+        }
+
+        internal fun isApiFootballKeyConfigured(): Boolean = resolveApiFootballKey().isNotEmpty()
+
+        @Synchronized
+        internal fun tryAcquireSharedApiFootballPermit(isMatchCenterDossier: Boolean = false): Boolean {
+            val current = sharedApiFootballDailyCounter.get()
+            val limit = if (isMatchCenterDossier) API_FOOTBALL_MAX_DAILY_TOTAL else API_FOOTBALL_MAX_DAILY_BACKGROUND
+            if (current >= limit) return false
+            sharedApiFootballDailyCounter.incrementAndGet()
+            return true
+        }
+
+        @Synchronized
+        internal fun tryAcquireSharedFootballDataPermit(): Boolean {
+            val now = System.currentTimeMillis()
+            while (true) {
+                val oldest = sharedFootballDataRequestTimestamps.peekFirst() ?: break
+                if (now - oldest > 60_000L) {
+                    sharedFootballDataRequestTimestamps.pollFirst()
+                } else {
+                    break
+                }
+            }
+            if (sharedFootballDataRequestTimestamps.size >= FOOTBALL_DATA_MAX_REQ_PER_MINUTE) {
+                return false
+            }
+            sharedFootballDataRequestTimestamps.addLast(now)
+            return true
+        }
 
         @Synchronized
         internal fun tryAcquireSharedSportsDbPermit(): Boolean {
@@ -4100,6 +4389,8 @@ class FootballRepository(
         @Synchronized
         internal fun resetSharedSportsDbRateLimiterForTests() {
             sharedSportsDbRequestTimestamps.clear()
+            sharedFootballDataRequestTimestamps.clear()
+            sharedApiFootballDailyCounter.set(0)
         }
 
         internal val SOFASCORE_KNOWN_TV_CHANNELS = mapOf(
