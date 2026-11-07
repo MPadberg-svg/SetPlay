@@ -578,7 +578,9 @@ fun MainAppContent(
             onDismissGoalAlert = {
                 mainViewModel.dismissGoalAlert()
             },
-            canSendToTv = tvSyncState.isSyncActive || mainViewModel.tvSyncManager.hasSavedTvHost(),
+            canSendToTv = activeEdition == com.example.util.SetPlayEdition.PHONE &&
+                (tvSyncState.isSyncActive || mainViewModel.tvSyncManager.hasSavedTvHost()),
+            activeEdition = activeEdition,
             onSendToTv = {
                 val streamToHandover = playerUiState.currentStream?.copy(
                     lastPositionMs = playerUiState.currentPositionMs
@@ -779,8 +781,8 @@ fun MainAppContent(
                     }
                 }
 
-                // Floating Draggable In-App Picture-in-Picture (PiP) Video Window
-                if (playerUiState.currentStream != null) {
+                // Floating Draggable In-App Picture-in-Picture (PiP) Video Window (Phone & Tablet touch edition only)
+                if (activeEdition == com.example.util.SetPlayEdition.PHONE && playerUiState.currentStream != null) {
                     FloatingInAppPipWindow(
                         playerViewModel = playerViewModel,
                         stream = playerUiState.currentStream!!,
@@ -1003,27 +1005,6 @@ fun MainAppContent(
                     }
                 )
 
-                Spacer(modifier = Modifier.height(10.dp))
-
-                DrawerMenuOptionRow(
-                    title = if (activeEdition == com.example.util.SetPlayEdition.TV) {
-                        "Switch to Phone Touch UI Edition"
-                    } else {
-                        "Preview 10-Foot Android TV Edition"
-                    },
-                    subtitle = "Current UI Edition: ${activeEdition.name}",
-                    icon = Icons.Default.LiveTv,
-                    onClick = {
-                        showNavigationMenuSheet = false
-                        val nextEdition = if (activeEdition == com.example.util.SetPlayEdition.TV) {
-                            com.example.util.SetPlayEdition.PHONE
-                        } else {
-                            com.example.util.SetPlayEdition.TV
-                        }
-                        mainViewModel.setEditionOverride(nextEdition)
-                    }
-                )
-
                 Spacer(modifier = Modifier.height(16.dp))
             }
         }
@@ -1037,7 +1018,8 @@ fun MainAppContent(
             savedTvHostName = mainViewModel.tvSyncManager.getSavedTvHostName(),
             savedTvHostSummary = mainViewModel.tvSyncManager.getSavedTvHostSummary(),
             statusErrorMessage = tvSyncErrorMessage,
-            defaultToTvHostTab = openTvSyncSheetOnHostTab || activeEdition == com.example.util.SetPlayEdition.TV,
+            activeEdition = activeEdition,
+            defaultToTvHostTab = openTvSyncSheetOnHostTab,
             onStartTvHostMode = { mainViewModel.startTvHostMode() },
             onStartPhoneDiscovery = { mainViewModel.startPhoneSyncDiscovery() },
             onConnectToTv = { ip, port, pin ->
@@ -1635,8 +1617,8 @@ fun TopStreamingBar(
             Spacer(modifier = Modifier.width(6.dp))
 
             GhostTopBarIconButton(
-                icon = Icons.Default.Cast,
-                contentDescription = "Cast & Xtream Servers",
+                icon = Icons.Default.Dns,
+                contentDescription = "Xtream Accounts & Servers",
                 iconTint = if (activePlaylist != null) AmberGold else Color.White.copy(alpha = 0.88f),
                 accentColor = sectionPrimaryAccent,
                 showStatusDot = activePlaylist != null,

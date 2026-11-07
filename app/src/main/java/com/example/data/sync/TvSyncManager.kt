@@ -1030,24 +1030,106 @@ class TvSyncManager(
             return if (model.isNotEmpty()) model else "SetPlay Device"
         }
 
+        private val IGNORED_INTERFACE_TOKENS = listOf(
+            "rmnet",
+            "ccmni",
+            "pdp",
+            "wwan",
+            "clat",
+            "tun",
+            "tap",
+            "ppp",
+            "wg",
+            "dummy",
+            "lo"
+        )
+
+        private val PREFERRED_LAN_PREFIXES = listOf(
+            "wlan",
+            "eth",
+            "en",
+            "ap",
+            "swlan"
+        )
+
+        fun isIgnoredCellularOrTunnelInterface(name: String, displayName: String = name): Boolean {
+            val lowerName = name.trim().lowercase(Locale.ROOT)
+            val lowerDisplay = displayName.trim().lowercase(Locale.ROOT)
+            if (lowerName.isEmpty()) return true
+            return IGNORED_INTERFACE_TOKENS.any { token ->
+                lowerName.startsWith(token) ||
+                    lowerName.contains(token) ||
+                    lowerDisplay.startsWith(token) ||
+                    lowerDisplay.contains(token)
+            }
+        }
+
+        fun isPrivateIpv4(ip: String, allowClassA10: Boolean): Boolean {
+            val parts = ip.trim().split(".")
+            if (parts.size != 4) return false
+            val o0 = parts[0].toIntOrNull() ?: return false
+            val o1 = parts[1].toIntOrNull() ?: return false
+            val o2 = parts[2].toIntOrNull() ?: return false
+            val o3 = parts[3].toIntOrNull() ?: return false
+            if (o0 !in 0..255 || o1 !in 0..255 || o2 !in 0..255 || o3 !in 0..255) return false
+            if (o0 == 192 && o1 == 168) return true
+            if (o0 == 172 && o1 in 16..31) return true
+            if (allowClassA10 && o0 == 10) return true
+            return false
+        }
+
+        /**
+         * Selects the best Home Wi-Fi / Ethernet IPv4 address from `(interfaceName, ipAddress)` pairs:
+         * - Explicitly ignores cellular (`rmnet*`, `ccmni*`, `pdp*`, `wwan*`, `clat*`) and VPN/tunnel (`tun*`, `tap*`, `ppp*`, `wg*`) interfaces.
+         * - Pass 1 (Preferred Home Wi-Fi / Ethernet): Scans `wlan*`, `eth*`, `en*`, `ap*`, `swlan*` for `192.168.*`, `172.16-31.*`, or `10.*`.
+         * - Pass 2 (Fallback Site-Local): Scans remaining non-cellular/non-VPN interfaces for `192.168.*` or `172.16-31.*`.
+         */
+        fun selectBestLanIpv4FromCandidates(candidates: List<Pair<String, String>>): String {
+            // Pass 1: Preferred Home Wi-Fi / Ethernet interfaces
+            for ((ifName, ip) in candidates) {
+                if (isIgnoredCellularOrTunnelInterface(ifName)) continue
+                val lower = ifName.trim().lowercase(Locale.ROOT)
+                val isPreferredLan = PREFERRED_LAN_PREFIXES.any { lower.startsWith(it) }
+                if (isPreferredLan && isPrivateIpv4(ip, allowClassA10 = true)) {
+                    return ip
+                }
+            }
+            // Pass 2: Remaining non-cellular/non-VPN interfaces with 192.168.* or 172.16-31.*
+            for ((ifName, ip) in candidates) {
+                if (isIgnoredCellularOrTunnelInterface(ifName)) continue
+                if (isPrivateIpv4(ip, allowClassA10 = false)) {
+                    return ip
+                }
+            }
+            return "127.0.0.1"
+        }
+
         fun detectLocalLanIpv4(): String {
             return try {
                 val interfaces = NetworkInterface.getNetworkInterfaces()?.toList().orEmpty()
+                val candidates = mutableListOf<Pair<String, String>>()
                 for (intf in interfaces) {
-                    if (!intf.isUp || intf.isLoopback) continue
+                    if (!intf.isUp || intf.isLoopback || intf.isPointToPoint) continue
+                    val name = intf.name.orEmpty()
+                    val displayName = intf.displayName.orEmpty()
+                    if (isIgnoredCellularOrTunnelInterface(name, displayName)) continue
                     for (addr in intf.inetAddresses.toList()) {
-                        if (addr is Inet4Address && !addr.isLoopbackAddress) {
+                        if (addr is Inet4Address && !addr.isLoopbackAddress && !addr.isLinkLocalAddress) {
                             val ip = addr.hostAddress.orEmpty()
-                            if (ip.startsWith("192.168.") || ip.startsWith("10.") || ip.startsWith("172.")) {
-                                return ip
+                            if (ip.isNotEmpty()) {
+                                candidates.add(name to ip)
                             }
                         }
                     }
                 }
-                "127.0.0.1"
+                selectBestLanIpv4FromCandidates(candidates)
             } catch (_: Exception) {
                 "127.0.0.1"
             }
+        }
+
+        fun isHomeLanConnected(): Boolean {
+            return detectLocalLanIpv4() != "127.0.0.1"
         }
 
         /**

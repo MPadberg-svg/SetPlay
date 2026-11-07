@@ -157,6 +157,8 @@ import com.example.ui.theme.LiveRed
 import com.example.ui.theme.PaleGold
 import com.example.ui.theme.TabularNumeralTextStyle
 import com.example.ui.viewmodel.LiveGoalAlertEvent
+import com.example.util.EditionResolver
+import com.example.util.SetPlayEdition
 import com.example.util.StreamMetadataParser
 import kotlinx.coroutines.delay
 import java.text.SimpleDateFormat
@@ -185,6 +187,7 @@ fun PlayerScreen(
     onDismissGoalAlert: (() -> Unit)? = null,
     canSendToTv: Boolean = false,
     onSendToTv: (() -> Unit)? = null,
+    activeEdition: SetPlayEdition = EditionResolver.resolveEdition(LocalContext.current),
     modifier: Modifier = Modifier
 ) {
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
@@ -1251,8 +1254,8 @@ fun PlayerScreen(
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.spacedBy(4.dp)
                     ) {
-                        // 1-Tap "📺 Send to TV" Handover Pill when a TV is paired or Sync Mode is available
-                        if (canSendToTv && onSendToTv != null) {
+                        // 1-Tap "📺 Send to TV" Handover Pill (Phone Edition ONLY)
+                        if (activeEdition == SetPlayEdition.PHONE && canSendToTv && onSendToTv != null) {
                             Surface(
                                 color = AmberGold.copy(alpha = 0.22f),
                                 shape = RoundedCornerShape(50),
@@ -1358,23 +1361,23 @@ fun PlayerScreen(
                             }
                         }
 
-                        // Channel List Drawer (Live TV only)
-                        if (uiState.isLive && uiState.siblingChannels.isNotEmpty()) {
+                        // Channel List Drawer (Live TV only — toggles unified TvLiveChannelZapperOverlay)
+                        if (uiState.isLive && (zapperChannelList.isNotEmpty() || uiState.siblingChannels.isNotEmpty())) {
                             IconButton(
-                                onClick = { viewModel.toggleChannelZapper() },
+                                onClick = { showLiveChannelZapperDrawer = !showLiveChannelZapperDrawer },
                                 modifier = Modifier
                                     .size(40.dp)
                                     .tvFocusableControl(
                                         accentColor = AmberGold,
                                         shape = CircleShape,
-                                        onClick = { viewModel.toggleChannelZapper() }
+                                        onClick = { showLiveChannelZapperDrawer = !showLiveChannelZapperDrawer }
                                     )
                                     .testTag("player_zapper_drawer_button")
                             ) {
                                 Icon(
                                     imageVector = Icons.AutoMirrored.Filled.FormatListBulleted,
                                     contentDescription = "Channels",
-                                    tint = if (uiState.isChannelZapperOpen) AmberGold else PlayerTextPrimary,
+                                    tint = if (showLiveChannelZapperDrawer) AmberGold else PlayerTextPrimary,
                                     modifier = Modifier.size(21.dp)
                                 )
                             }
@@ -1711,25 +1714,27 @@ fun PlayerScreen(
                                 modifier = Modifier.testTag("player_sleep_timer_button")
                             )
 
-                            // Rotate
-                            CompactIconHudPill(
-                                icon = Icons.Default.ScreenRotation,
-                                contentDescription = "Rotate Screen",
-                                badgeText = null,
-                                isActive = uiState.isLandscapeLocked,
-                                onClick = { viewModel.toggleScreenOrientation(activity) },
-                                modifier = Modifier.testTag("player_rotate_button")
-                            )
+                            if (activeEdition == SetPlayEdition.PHONE) {
+                                // Rotate (Phone & Tablet touch edition only)
+                                CompactIconHudPill(
+                                    icon = Icons.Default.ScreenRotation,
+                                    contentDescription = "Rotate Screen",
+                                    badgeText = null,
+                                    isActive = uiState.isLandscapeLocked,
+                                    onClick = { viewModel.toggleScreenOrientation(activity) },
+                                    modifier = Modifier.testTag("player_rotate_button")
+                                )
 
-                            // Touch Lock
-                            CompactIconHudPill(
-                                icon = Icons.Default.LockOpen,
-                                contentDescription = "Lock Controls",
-                                badgeText = null,
-                                isActive = false,
-                                onClick = { viewModel.toggleTouchLock() },
-                                modifier = Modifier.testTag("player_touch_lock_button")
-                            )
+                                // Touch Lock (Phone & Tablet touch edition only)
+                                CompactIconHudPill(
+                                    icon = Icons.Default.LockOpen,
+                                    contentDescription = "Lock Controls",
+                                    badgeText = null,
+                                    isActive = false,
+                                    onClick = { viewModel.toggleTouchLock() },
+                                    modifier = Modifier.testTag("player_touch_lock_button")
+                                )
+                            }
                         }
                     }
                 }

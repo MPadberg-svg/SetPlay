@@ -2705,8 +2705,129 @@ class ExampleRobolectricTest {
             tvHost.leaveSyncMode()
         }
     }
+
+    @Test
+    fun `test SetPlayQrCodec round-trip encoding and decoding with bit-error tolerance and Bitmap scan`() {
+        val ip = "192.168.1.45"
+        val port = 8765
+        val pin = "943746"
+
+        val bits = com.example.ui.sync.SetPlayQrCodec.encodePayloadToBits(ip, port, pin)
+        assertEquals(com.example.ui.sync.SetPlayQrCodec.PAYLOAD_BIT_COUNT, bits.size)
+
+        val matrix = com.example.ui.sync.SetPlayQrCodec.encodeToMatrix(ip, port, pin)
+        assertEquals(21, matrix.size)
+        val decodedClean = com.example.ui.sync.SetPlayQrCodec.decodeFromMatrix(matrix)
+        assertNotNull(decodedClean)
+        assertEquals(ip, decodedClean!!.first)
+        assertEquals(port, decodedClean.second)
+        assertEquals(pin, decodedClean.third)
+
+        // Corrupt 15 non-reserved data modules in the first copy — Triple-Modular Redundancy + CRC8 must still recover 100%
+        var corruptedCount = 0
+        for (r in 0 until 21) {
+            for (c in 0 until 21) {
+                if (!com.example.ui.sync.SetPlayQrCodec.isReservedModule(r, c) && corruptedCount < 15) {
+                    matrix[r][c] = !matrix[r][c]
+                    corruptedCount++
+                }
+            }
+        }
+        val decodedWithBitErrors = com.example.ui.sync.SetPlayQrCodec.decodeFromMatrix(matrix)
+        assertNotNull(decodedWithBitErrors)
+        assertEquals(ip, decodedWithBitErrors!!.first)
+        assertEquals(port, decodedWithBitErrors.second)
+        assertEquals(pin, decodedWithBitErrors.third)
+
+        // Render to Bitmap with quiet zone and decode via decodeFromBitmap
+        val qrBitmap = com.example.ui.sync.SetPlayQrCodec.renderToBitmap(ip, port, pin, sizePx = 252)
+        val decodedFromBitmap = com.example.ui.sync.SetPlayQrCodec.decodeFromBitmap(qrBitmap)
+        assertNotNull(decodedFromBitmap)
+        assertEquals(ip, decodedFromBitmap!!.first)
+        assertEquals(port, decodedFromBitmap.second)
+        assertEquals(pin, decodedFromBitmap.third)
+    }
+
+    @Test
+    fun `test TvSyncManager detectLocalLanIpv4 ignores cellular rmnet 10_x_x_x and VPN interfaces`() {
+        assertTrue(com.example.data.sync.TvSyncManager.isIgnoredCellularOrTunnelInterface("rmnet_data0"))
+        assertTrue(com.example.data.sync.TvSyncManager.isIgnoredCellularOrTunnelInterface("ccmni1"))
+        assertTrue(com.example.data.sync.TvSyncManager.isIgnoredCellularOrTunnelInterface("tun0"))
+        assertTrue(com.example.data.sync.TvSyncManager.isIgnoredCellularOrTunnelInterface("wg0"))
+        assertFalse(com.example.data.sync.TvSyncManager.isIgnoredCellularOrTunnelInterface("wlan0"))
+        assertFalse(com.example.data.sync.TvSyncManager.isIgnoredCellularOrTunnelInterface("eth0"))
+
+        // When cellular rmnet_data0 (10.85.158.111) appears before wlan0 (192.168.1.45), wlan0 MUST win
+        val mixedCandidates = listOf(
+            "rmnet_data0" to "10.85.158.111",
+            "tun0" to "10.8.0.2",
+            "wlan0" to "192.168.1.45"
+        )
+        assertEquals(
+            "192.168.1.45",
+            com.example.data.sync.TvSyncManager.selectBestLanIpv4FromCandidates(mixedCandidates)
+        )
+
+        // When Wi-Fi is disconnected and only cellular/VPN interfaces exist, must return 127.0.0.1 (never cellular 10.85.158.111)
+        val cellularOnlyCandidates = listOf(
+            "rmnet_data0" to "10.85.158.111",
+            "ccmni0" to "10.44.12.9",
+            "tun0" to "172.16.0.5"
+        )
+        assertEquals(
+            "127.0.0.1",
+            com.example.data.sync.TvSyncManager.selectBestLanIpv4FromCandidates(cellularOnlyCandidates)
+        )
+    }
 }
 
+@RunWith(RobolectricTestRunner::class)
+@Config(sdk = [34])
+class TvSyncDeviceSeparationComposeTest {
 
+    @get:org.junit.Rule
+    val composeTestRule = androidx.compose.ui.test.junit4.createComposeRule()
 
+    @Test
+    fun `test TvSyncSheetContent enforces strict Phone vs TV edition UI separation`() {
+        val currentEdition = androidx.compose.runtime.mutableStateOf(com.example.util.SetPlayEdition.PHONE)
+        val sampleSyncState = com.example.data.sync.TvSyncSessionState(
+            localIpAddress = "192.168.1.45",
+            serverPort = 8765,
+            pairingPin = "943746"
+        )
 
+        composeTestRule.setContent {
+            com.example.ui.sync.TvSyncSheetContent(
+                syncState = sampleSyncState,
+                qrPayload = "setplay://sync?ip=192.168.1.45&port=8765&pin=943746",
+                hasSavedTvHost = true,
+                savedTvHostName = "Living Room Sony Bravia",
+                savedTvHostSummary = Triple("192.168.1.45", 8765, "943746"),
+                statusErrorMessage = null,
+                activeEdition = currentEdition.value,
+                isHomeLanConnected = true,
+                onConnectToTv = { _, _, _ -> },
+                onReconnectLastTv = {},
+                onLeaveSyncMode = {},
+                onDismiss = {}
+            )
+        }
+        composeTestRule.waitForIdle()
+
+        // 1. In SetPlayEdition.PHONE: Phone controls are displayed, TV QR Canvas is NOT displayed
+        composeTestRule.onNode(androidx.compose.ui.test.hasTestTag("tv_sync_scan_qr_camera_btn")).assertExists()
+        composeTestRule.onNode(androidx.compose.ui.test.hasTestTag("tv_sync_ip_input")).assertExists()
+        composeTestRule.onNode(androidx.compose.ui.test.hasTestTag("tv_sync_pin_input")).assertExists()
+        composeTestRule.onNode(androidx.compose.ui.test.hasTestTag("tv_sync_connect_btn")).assertExists()
+        composeTestRule.onNode(androidx.compose.ui.test.hasTestTag("tv_sync_qr_canvas")).assertDoesNotExist()
+
+        // 2. Switch to SetPlayEdition.TV: TV QR Canvas is displayed, Phone inputs & camera button are NOT displayed
+        currentEdition.value = com.example.util.SetPlayEdition.TV
+        composeTestRule.waitForIdle()
+
+        composeTestRule.onNode(androidx.compose.ui.test.hasTestTag("tv_sync_qr_canvas")).assertExists()
+        composeTestRule.onNode(androidx.compose.ui.test.hasTestTag("tv_sync_ip_input")).assertDoesNotExist()
+        composeTestRule.onNode(androidx.compose.ui.test.hasTestTag("tv_sync_scan_qr_camera_btn")).assertDoesNotExist()
+    }
+}
