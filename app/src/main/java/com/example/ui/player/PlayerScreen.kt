@@ -257,6 +257,9 @@ fun PlayerScreen(
     var showBufferSheet by remember { mutableStateOf(false) }
     var showSleepTimerSheet by remember { mutableStateOf(false) }
     var showFeedSwitcherSheet by remember { mutableStateOf(false) }
+    var showLiveChannelZapperDrawer by remember { mutableStateOf(false) }
+
+    val zapperChannelList by viewModel.zapperChannelList.collectAsStateWithLifecycle()
 
     // Double-tap left/right VOD ripple state (-1 = left -10s, +1 = right +10s)
     var doubleTapRippleSide by remember { mutableStateOf<Int?>(null) }
@@ -276,6 +279,7 @@ fun PlayerScreen(
 
     val hasOpenOverlayOrSheet = uiState.showSubtitleLanguagePrompt ||
         uiState.isChannelZapperOpen ||
+        showLiveChannelZapperDrawer ||
         showAudioSheet ||
         showSubtitleSheet ||
         showSpeedSheet ||
@@ -318,7 +322,12 @@ fun PlayerScreen(
                     onZapChannel = { offset -> viewModel.zapChannelOffset(offset) },
                     onSeekRelative = { seconds -> viewModel.seekRelative(seconds.toLong()) },
                     hasOpenOverlayOrSheet = hasOpenOverlayOrSheet,
-                    hasFocusedHudChild = hasFocusedHudChild
+                    hasFocusedHudChild = hasFocusedHudChild,
+                    onOpenLiveChannelZapper = {
+                        if (isLiveMode && !showLiveChannelZapperDrawer) {
+                            showLiveChannelZapperDrawer = true
+                        }
+                    }
                 )
             }
             .testTag("player_screen")
@@ -1599,8 +1608,16 @@ fun PlayerScreen(
                                 modifier = Modifier.testTag("player_audio_tracks")
                             )
 
-                            // Live TV Specific Primary Pills: Multi-Feed Switcher, Catchup, 15m Halftime Timer
+                            // Live TV Specific Primary Pills: 📋 Channels Zapper, Multi-Feed Switcher, Catchup, 15m Halftime Timer
                             if (uiState.isLive) {
+                                PrimaryLabeledHudPill(
+                                    icon = Icons.Default.Tv,
+                                    label = "📋 Channels",
+                                    isActive = showLiveChannelZapperDrawer,
+                                    onClick = { showLiveChannelZapperDrawer = !showLiveChannelZapperDrawer },
+                                    modifier = Modifier.testTag("player_channel_zapper_button")
+                                )
+
                                 val feedCount = uiState.alternateQualityFeeds.size.coerceAtLeast(1)
                                 PrimaryLabeledHudPill(
                                     icon = Icons.Default.Bolt,
@@ -1717,6 +1734,25 @@ fun PlayerScreen(
                     }
                 }
             }
+        }
+
+        // 8b. 10-Foot & Touch Live TV Channel Zapper Left Sidebar (`player_live_channel_zapper_drawer`)
+        if (showLiveChannelZapperDrawer && isLiveMode) {
+            val channelsToRender = when {
+                zapperChannelList.isNotEmpty() -> zapperChannelList
+                uiState.siblingChannels.isNotEmpty() -> uiState.siblingChannels
+                uiState.currentStream != null -> listOf(uiState.currentStream!!)
+                else -> emptyList()
+            }
+            TvLiveChannelZapperOverlay(
+                channels = channelsToRender,
+                currentStreamId = uiState.currentStream?.streamId ?: -1L,
+                onSelectChannel = { channel ->
+                    viewModel.playStream(channel, playlist)
+                },
+                onClose = { showLiveChannelZapperDrawer = false },
+                modifier = Modifier.align(Alignment.CenterStart)
+            )
         }
 
         // 9. Quick Channel Zapper Drawer (Live TV)
@@ -3125,6 +3161,209 @@ private fun formatTime(millis: Long): String {
     }
 }
 
+@Composable
+internal fun TvLiveChannelZapperOverlay(
+    channels: List<StreamEntity>,
+    currentStreamId: Long,
+    onSelectChannel: (StreamEntity) -> Unit,
+    onClose: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    Surface(
+        color = Color(0xEB081018),
+        modifier = modifier
+            .width(310.dp)
+            .fillMaxHeight()
+            .border(
+                width = 1.dp,
+                color = AmberGold.copy(alpha = 0.55f),
+                shape = RoundedCornerShape(topEnd = 18.dp, bottomEnd = 18.dp)
+            )
+            .testTag("player_live_channel_zapper_drawer")
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .displayCutoutPadding()
+                .padding(horizontal = 14.dp, vertical = 14.dp)
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Tv,
+                        contentDescription = "Live Channel Zapper",
+                        tint = AmberGold,
+                        modifier = Modifier.size(18.dp)
+                    )
+                    Column {
+                        Text(
+                            text = "📋 Live Channel Zapper",
+                            color = PlayerTextPrimary,
+                            fontSize = 14.sp,
+                            fontWeight = FontWeight.ExtraBold
+                        )
+                        Text(
+                            text = "${channels.size} channels • Instant 1-tap switch",
+                            color = PaleGold,
+                            fontSize = 10.sp,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                    }
+                }
+
+                Surface(
+                    color = Color.White.copy(alpha = 0.10f),
+                    shape = RoundedCornerShape(50),
+                    border = BorderStroke(0.8.dp, AmberGold.copy(alpha = 0.45f)),
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(50))
+                        .tvFocusablePill(
+                            accentColor = AmberGold,
+                            shape = RoundedCornerShape(50),
+                            onClick = onClose
+                        )
+                        .testTag("player_live_channel_zapper_close_btn")
+                ) {
+                    Text(
+                        text = "✕ Close",
+                        color = AmberGold,
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.ExtraBold,
+                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp)
+                    )
+                }
+            }
+
+            Spacer(modifier = Modifier.height(10.dp))
+            HorizontalDivider(color = AmberGold.copy(alpha = 0.22f))
+            Spacer(modifier = Modifier.height(10.dp))
+
+            LazyColumn(
+                verticalArrangement = Arrangement.spacedBy(6.dp),
+                modifier = Modifier.fillMaxSize()
+            ) {
+                itemsIndexed(
+                    items = channels,
+                    key = { idx, ch -> "${ch.id}_${ch.streamId}_$idx" }
+                ) { index, ch ->
+                    val isCurrent = ch.streamId == currentStreamId
+                    val cleanTitle = remember(ch.name) {
+                        StreamMetadataParser.cleanDisplayTitle(ch.name).ifBlank { ch.name }
+                    }
+                    val qualityBadge = remember(ch.name) {
+                        StreamMetadataParser.extractQualityBadge(ch.name)
+                    }
+
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(12.dp))
+                            .background(
+                                if (isCurrent) AmberGold.copy(alpha = 0.18f) else Color(0xFF121A26)
+                            )
+                            .border(
+                                width = if (isCurrent) 1.4.dp else 0.8.dp,
+                                color = if (isCurrent) AmberGold else Color.White.copy(alpha = 0.08f),
+                                shape = RoundedCornerShape(12.dp)
+                            )
+                            .tvFocusableControl(
+                                accentColor = AmberGold,
+                                shape = RoundedCornerShape(12.dp),
+                                onClick = { onSelectChannel(ch) }
+                            )
+                            .padding(horizontal = 10.dp, vertical = 8.dp)
+                            .testTag("zapper_channel_item_${ch.streamId}"),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        // Channel Number Pill
+                        Text(
+                            text = String.format(Locale.US, "%02d", index + 1),
+                            color = if (isCurrent) AmberGold else PlayerTextSecondary,
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.ExtraBold,
+                            style = TabularNumeralTextStyle,
+                            modifier = Modifier.width(24.dp)
+                        )
+
+                        // Channel Logo
+                        Box(
+                            modifier = Modifier
+                                .size(32.dp)
+                                .clip(RoundedCornerShape(7.dp))
+                                .background(Color.Black.copy(alpha = 0.45f)),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            if (ch.streamIcon.isNotEmpty()) {
+                                AsyncImage(
+                                    model = ch.streamIcon,
+                                    contentDescription = cleanTitle,
+                                    contentScale = ContentScale.Fit,
+                                    modifier = Modifier
+                                        .fillMaxSize()
+                                        .padding(2.dp)
+                                )
+                            } else {
+                                Icon(
+                                    imageVector = Icons.Default.Tv,
+                                    contentDescription = null,
+                                    tint = if (isCurrent) AmberGold else PlayerTextSecondary,
+                                    modifier = Modifier.size(16.dp)
+                                )
+                            }
+                        }
+
+                        Spacer(modifier = Modifier.width(9.dp))
+
+                        // Channel Name & Quality / Playing Status
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = cleanTitle,
+                                color = if (isCurrent) AmberGold else PlayerTextPrimary,
+                                fontSize = 12.5.sp,
+                                fontWeight = if (isCurrent) FontWeight.ExtraBold else FontWeight.SemiBold,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                            if (isCurrent) {
+                                Text(
+                                    text = "● PLAYING",
+                                    color = LiveRed,
+                                    fontSize = 9.5.sp,
+                                    fontWeight = FontWeight.ExtraBold
+                                )
+                            }
+                        }
+
+                        if (!qualityBadge.isNullOrBlank()) {
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Surface(
+                                color = AmberGold.copy(alpha = 0.16f),
+                                shape = RoundedCornerShape(6.dp),
+                                border = BorderStroke(0.7.dp, AmberGold.copy(alpha = 0.55f))
+                            ) {
+                                Text(
+                                    text = qualityBadge,
+                                    color = PaleGold,
+                                    fontSize = 9.5.sp,
+                                    fontWeight = FontWeight.ExtraBold,
+                                    modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
 internal fun handlePlayerRemoteKeyEvent(
     keyCode: Int,
     isLive: Boolean,
@@ -3135,7 +3374,8 @@ internal fun handlePlayerRemoteKeyEvent(
     onZapChannel: (Int) -> Unit,
     onSeekRelative: (Int) -> Unit,
     hasOpenOverlayOrSheet: Boolean = false,
-    hasFocusedHudChild: Boolean = false
+    hasFocusedHudChild: Boolean = false,
+    onOpenLiveChannelZapper: (() -> Unit)? = null
 ): Boolean {
     if (isTouchLocked) return false
     val delegateDpadToFocusedUi = hasOpenOverlayOrSheet || (isControlsVisible && hasFocusedHudChild)
@@ -3193,6 +3433,9 @@ internal fun handlePlayerRemoteKeyEvent(
         KeyEvent.KEYCODE_DPAD_LEFT -> {
             if (delegateDpadToFocusedUi) {
                 false
+            } else if (isLive && !isControlsVisible && onOpenLiveChannelZapper != null) {
+                onOpenLiveChannelZapper()
+                true
             } else if (!isLive && !isControlsVisible) {
                 onSeekRelative(-10)
                 true
@@ -3229,4 +3472,5 @@ internal fun handlePlayerRemoteKeyEvent(
         else -> false
     }
 }
+
 

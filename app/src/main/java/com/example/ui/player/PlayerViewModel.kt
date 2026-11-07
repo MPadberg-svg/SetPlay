@@ -188,6 +188,9 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application) 
     private val _uiState = MutableStateFlow(PlayerUiState())
     val uiState: StateFlow<PlayerUiState> = _uiState.asStateFlow()
 
+    private val _zapperChannelList = MutableStateFlow<List<StreamEntity>>(emptyList())
+    val zapperChannelList: StateFlow<List<StreamEntity>> = _zapperChannelList.asStateFlow()
+
     private var progressTrackingJob: Job? = null
     private var controlsFadeJob: Job? = null
     private var gestureFadeJob: Job? = null
@@ -439,7 +442,10 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application) 
             subtitleActivationBannerMessage = null,
             showHalftimeReturnPrompt = if (isReturningToHalftimeStream) false else _uiState.value.showHalftimeReturnPrompt
         )
-        if (!isLiveStream) {
+        if (isLiveStream) {
+            _zapperChannelList.value = listOf(effectiveStream)
+        } else {
+            _zapperChannelList.value = emptyList()
             startSubtitleLanguagePromptCountdown()
         }
 
@@ -456,7 +462,17 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application) 
                 repository.updateWatchHistory(stream.id)
             }
             if (stream.streamType.equals("live", ignoreCase = true)) {
-                val siblings = repository.getSiblingLiveChannels(playlist.id, stream.categoryId)
+                val categorySiblings = repository.getSiblingLiveChannels(playlist.id, stream.categoryId)
+                val fallbackAllLive = if (categorySiblings.size <= 1) {
+                    runCatching {
+                        repository.queryStreamsFast(playlist.id, "live", null, "").firstOrNull().orEmpty()
+                    }.getOrDefault(emptyList())
+                } else {
+                    emptyList()
+                }
+                val combinedSiblings = (categorySiblings + fallbackAllLive + listOf(effectiveStream))
+                    .distinctBy { it.streamId }
+                    .take(180)
                 val catchupList = if (stream.tvArchive == 1) {
                     repository.getCatchupEpg(playlist.id, stream.streamId)
                 } else {
@@ -472,10 +488,11 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application) 
                 }
                 val feeds = resolveAlternateQualityFeeds(
                     current = effectiveStream,
-                    candidates = (siblings + crossCategoryMatches)
+                    candidates = (combinedSiblings + crossCategoryMatches)
                 )
+                _zapperChannelList.value = combinedSiblings
                 _uiState.value = _uiState.value.copy(
-                    siblingChannels = siblings,
+                    siblingChannels = combinedSiblings,
                     alternateQualityFeeds = feeds,
                     catchupPrograms = catchupList
                 )

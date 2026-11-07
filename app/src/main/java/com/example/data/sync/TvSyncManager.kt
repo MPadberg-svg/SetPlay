@@ -515,13 +515,19 @@ class TvSyncManager(
                             tvActiveSubtitleLang = cmd.value
                         )
                     }
+                    "ZAP_NEXT", "ZAP_PREV" -> {
+                        // Handled by onControlCommandReceived (zapChannelOffset(1) / zapChannelOffset(-1))
+                        // followed by tvPlaybackStatusProvider refresh below
+                    }
                 }
                 _incomingControlCommands.tryEmit(cmd)
                 onControlCommandReceived?.invoke(cmd)
                 val updated = if (cmd.action.equals("STOP", ignoreCase = true)) {
                     _sessionState.value
                 } else {
-                    tvPlaybackStatusProvider?.invoke() ?: _sessionState.value
+                    (tvPlaybackStatusProvider?.invoke() ?: _sessionState.value).also { latest ->
+                        _sessionState.value = latest
+                    }
                 }
                 val resp = buildStatusJson(updated).apply {
                     put("status", "control_applied")
@@ -714,20 +720,37 @@ class TvSyncManager(
         }
 
         scope.launch {
-            runCatching {
-                val cmd = RemoteControlCommand(action = action, value = value, seekSeconds = seekSeconds)
-                val request = Request.Builder()
-                    .url("http://$activeTargetHostIp:$activeTargetPort/api/sync/control")
-                    .post(cmd.toJson().toString().toRequestBody(JSON_MEDIA_TYPE))
-                    .build()
-                httpClient.newCall(request).execute().use { response ->
-                    val bodyStr = response.body?.string().orEmpty()
-                    val respJson = runCatching { JSONObject(bodyStr) }.getOrNull()
-                    if (response.isSuccessful && respJson != null) {
-                        applyStatusJsonFromTv(respJson)
-                    }
+            sendControlToTvSuspend(action = action, value = value, seekSeconds = seekSeconds)
+        }
+    }
+
+    suspend fun sendControlToTvSuspend(
+        action: String,
+        value: String = "",
+        seekSeconds: Int = 0
+    ): Result<TvSyncSessionState> = withContext(Dispatchers.IO) {
+        val state = _sessionState.value
+        if (state.role != SyncRole.PHONE_CONTROLLER || !state.isSyncActive || activeTargetHostIp.isBlank()) {
+            return@withContext Result.failure(IllegalStateException("Not in Phone Controller Sync Mode"))
+        }
+        try {
+            val cmd = RemoteControlCommand(action = action, value = value, seekSeconds = seekSeconds)
+            val request = Request.Builder()
+                .url("http://$activeTargetHostIp:$activeTargetPort/api/sync/control")
+                .post(cmd.toJson().toString().toRequestBody(JSON_MEDIA_TYPE))
+                .build()
+            httpClient.newCall(request).execute().use { response ->
+                val bodyStr = response.body?.string().orEmpty()
+                val respJson = runCatching { JSONObject(bodyStr) }.getOrNull()
+                if (response.isSuccessful && respJson != null) {
+                    applyStatusJsonFromTv(respJson)
+                    Result.success(_sessionState.value)
+                } else {
+                    Result.failure(IllegalStateException("Control command failed (${response.code})"))
                 }
             }
+        } catch (e: Exception) {
+            Result.failure(e)
         }
     }
 

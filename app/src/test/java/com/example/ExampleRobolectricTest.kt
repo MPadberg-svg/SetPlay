@@ -2572,7 +2572,141 @@ class ExampleRobolectricTest {
             tvMainVm.leaveTvSyncMode()
         }
     }
+
+    @Test
+    fun `test Phase A EditionResolver resolves PHONE and TV editions and auto-starts TV Sync Host`() {
+        val app = ApplicationProvider.getApplicationContext<Application>()
+        try {
+            com.example.util.EditionResolver.runtimeEditionOverride = com.example.util.SetPlayEdition.PHONE
+            assertEquals(
+                com.example.util.SetPlayEdition.PHONE,
+                com.example.util.EditionResolver.resolveEdition(app)
+            )
+
+            com.example.util.EditionResolver.runtimeEditionOverride = com.example.util.SetPlayEdition.TV
+            assertEquals(
+                com.example.util.SetPlayEdition.TV,
+                com.example.util.EditionResolver.resolveEdition(app)
+            )
+
+            val mainVm = com.example.ui.viewmodel.MainViewModel(app)
+            try {
+                assertEquals(com.example.data.sync.SyncRole.TV_HOST, mainVm.tvSyncState.value.role)
+                assertTrue(mainVm.tvSyncState.value.isSyncActive)
+                assertEquals(6, mainVm.tvSyncState.value.pairingPin.length)
+            } finally {
+                mainVm.leaveTvSyncMode()
+            }
+        } finally {
+            com.example.util.EditionResolver.runtimeEditionOverride = null
+        }
+    }
+
+    @Test
+    fun `test Phase A Live TV Channel Zapper list and D-Pad Left zapper overlay trigger`() {
+        val app = ApplicationProvider.getApplicationContext<Application>()
+        val playerVm = PlayerViewModel(app)
+        val playlist = PlaylistEntity(
+            id = 1L,
+            name = "Test Vault",
+            serverUrl = "https://setplay.io",
+            username = "u",
+            password = "p"
+        )
+        val ch1 = StreamEntity(
+            id = 101L,
+            playlistId = 1L,
+            streamId = 10101L,
+            categoryId = "sports",
+            name = "AR| beIN Sports 1 4K",
+            streamType = "live",
+            streamIcon = "",
+            epgChannelId = "",
+            containerExtension = "ts"
+        )
+        playerVm.playStream(ch1, playlist)
+        assertTrue(playerVm.uiState.value.isLive)
+        assertTrue(playerVm.zapperChannelList.value.isNotEmpty())
+        assertEquals(10101L, playerVm.zapperChannelList.value.first().streamId)
+
+        var zapperDrawerOpened = false
+        val handled = handlePlayerRemoteKeyEvent(
+            keyCode = KeyEvent.KEYCODE_DPAD_LEFT,
+            isLive = true,
+            isControlsVisible = false,
+            isTouchLocked = false,
+            onShowControlsOrTogglePlay = {},
+            onTogglePlayPause = {},
+            onZapChannel = {},
+            onSeekRelative = {},
+            hasOpenOverlayOrSheet = false,
+            hasFocusedHudChild = false,
+            onOpenLiveChannelZapper = { zapperDrawerOpened = true }
+        )
+        assertTrue(handled)
+        assertTrue(zapperDrawerOpened)
+        playerVm.stopAndClosePlayer()
+    }
+
+    @Test
+    fun `test Phase A TvSyncManager ZAP_NEXT and ZAP_PREV remote channel zapping`() = kotlinx.coroutines.runBlocking {
+        val app = ApplicationProvider.getApplicationContext<Application>()
+        val tvHost = com.example.data.sync.TvSyncManager(app)
+        val phoneController = com.example.data.sync.TvSyncManager(app)
+        try {
+            val channels = listOf(
+                "10101" to "AR| beIN Sports 1 4K",
+                "10102" to "AR| beIN Sports 2 4K",
+                "10103" to "AR| beIN Sports 3 FHD"
+            )
+            var currentIndex = 0
+            tvHost.tvPlaybackStatusProvider = {
+                val (streamId, title) = channels[currentIndex]
+                tvHost.sessionState.value.copy(
+                    tvNowPlayingStreamId = streamId,
+                    tvNowPlayingTitle = title,
+                    tvNowPlayingType = "live",
+                    tvIsPlaying = true
+                )
+            }
+            tvHost.onControlCommandReceived = { cmd ->
+                when (cmd.action.uppercase()) {
+                    "ZAP_NEXT" -> currentIndex = (currentIndex + 1) % channels.size
+                    "ZAP_PREV" -> currentIndex = (currentIndex - 1 + channels.size) % channels.size
+                }
+            }
+
+            val hostState = tvHost.startTvHostServer()
+            val pairResult = phoneController.connectToTvHost(
+                hostIp = "127.0.0.1",
+                port = hostState.serverPort,
+                pin = hostState.pairingPin,
+                localVault = com.example.data.sync.VaultSyncPayload(
+                    playlistName = "Phone Vault",
+                    serverUrl = "https://setplay.io",
+                    username = "u",
+                    password = "p"
+                )
+            )
+            assertTrue(pairResult.isSuccess)
+            assertEquals("AR| beIN Sports 1 4K", phoneController.sessionState.value.tvNowPlayingTitle)
+
+            val zapNextRes = phoneController.sendControlToTvSuspend(action = "ZAP_NEXT")
+            assertTrue(zapNextRes.isSuccess)
+            assertEquals("10102", phoneController.sessionState.value.tvNowPlayingStreamId)
+            assertEquals("AR| beIN Sports 2 4K", phoneController.sessionState.value.tvNowPlayingTitle)
+
+            val zapPrevRes = phoneController.sendControlToTvSuspend(action = "ZAP_PREV")
+            assertTrue(zapPrevRes.isSuccess)
+            assertEquals("10101", phoneController.sessionState.value.tvNowPlayingStreamId)
+            assertEquals("AR| beIN Sports 1 4K", phoneController.sessionState.value.tvNowPlayingTitle)
+        } finally {
+            phoneController.leaveSyncMode()
+            tvHost.leaveSyncMode()
+        }
+    }
 }
+
 
 
 

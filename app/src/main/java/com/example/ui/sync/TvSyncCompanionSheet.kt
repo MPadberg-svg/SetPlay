@@ -99,12 +99,15 @@ import java.security.MessageDigest
 fun TvSyncCompanionBar(
     syncState: TvSyncSessionState,
     onTogglePlayPauseOnTv: () -> Unit,
+    onZapPrevOnTv: () -> Unit = {},
+    onZapNextOnTv: () -> Unit = {},
     onPullStreamToPhone: () -> Unit = {},
     onLeaveSyncMode: () -> Unit,
     onOpenSyncSheet: () -> Unit,
     modifier: Modifier = Modifier
 ) {
     val hasActiveTvStream = syncState.tvNowPlayingStreamId.isNotBlank() || syncState.tvNowPlayingTitle.isNotBlank()
+    val isLiveTvOnTv = syncState.tvNowPlayingType.equals("live", ignoreCase = true)
     val peerLabel = syncState.connectedPeerName.ifBlank { "Smart TV" }
 
     Box(
@@ -192,13 +195,62 @@ fun TvSyncCompanionBar(
                 Spacer(modifier = Modifier.width(6.dp))
 
                 // Right: Streamlined Action Pills (No Audio or Subtitle Menus on the Companion Bar):
-                // 1. [ ⏯ ] (tv_sync_play_pause_btn)
-                // 2. [ 📱 Watch Here ] (tv_sync_pull_to_phone_btn)
-                // 3. [ Leave Sync ] (tv_sync_leave_btn)
+                // - When Live TV is playing on TV: [ ⏮ ] (tv_sync_zap_prev_btn), [ ⏭ ] (tv_sync_zap_next_btn)
+                // - Always: [ ⏯ ] (tv_sync_play_pause_btn), [ 📱 Watch Here ] (tv_sync_pull_to_phone_btn), [ Leave Sync ] (tv_sync_leave_btn)
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    horizontalArrangement = Arrangement.spacedBy(5.dp)
                 ) {
+                    if (isLiveTvOnTv) {
+                        Surface(
+                            color = KickoffOceanElevated,
+                            shape = CircleShape,
+                            border = BorderStroke(0.9.dp, PaleGold.copy(alpha = 0.65f)),
+                            modifier = Modifier
+                                .size(28.dp)
+                                .clip(CircleShape)
+                                .tvFocusableControl(
+                                    accentColor = AmberGold,
+                                    shape = CircleShape,
+                                    onClick = onZapPrevOnTv
+                                )
+                                .testTag("tv_sync_zap_prev_btn")
+                        ) {
+                            Box(contentAlignment = Alignment.Center) {
+                                Text(
+                                    text = "⏮",
+                                    color = PaleGold,
+                                    fontSize = 11.sp,
+                                    fontWeight = FontWeight.ExtraBold
+                                )
+                            }
+                        }
+
+                        Surface(
+                            color = KickoffOceanElevated,
+                            shape = CircleShape,
+                            border = BorderStroke(0.9.dp, PaleGold.copy(alpha = 0.65f)),
+                            modifier = Modifier
+                                .size(28.dp)
+                                .clip(CircleShape)
+                                .tvFocusableControl(
+                                    accentColor = AmberGold,
+                                    shape = CircleShape,
+                                    onClick = onZapNextOnTv
+                                )
+                                .testTag("tv_sync_zap_next_btn")
+                        ) {
+                            Box(contentAlignment = Alignment.Center) {
+                                Text(
+                                    text = "⏭",
+                                    color = PaleGold,
+                                    fontSize = 11.sp,
+                                    fontWeight = FontWeight.ExtraBold
+                                )
+                            }
+                        }
+                    }
+
                     // 1. Play / Pause on TV Pill
                     Surface(
                         color = AmberGold,
@@ -310,6 +362,7 @@ fun TvSyncModalSheet(
     savedTvHostName: String,
     savedTvHostSummary: Triple<String, Int, String>?,
     statusErrorMessage: String?,
+    defaultToTvHostTab: Boolean = false,
     onStartTvHostMode: () -> Unit,
     onStartPhoneDiscovery: () -> Unit,
     onConnectToTv: (ip: String, port: Int, pin: String) -> Unit,
@@ -318,8 +371,8 @@ fun TvSyncModalSheet(
     onDismiss: () -> Unit
 ) {
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
-    var selectedTabIndex by remember {
-        mutableIntStateOf(if (syncState.role == SyncRole.TV_HOST) 1 else 0)
+    var selectedTabIndex by remember(defaultToTvHostTab) {
+        mutableIntStateOf(if (defaultToTvHostTab || syncState.role == SyncRole.TV_HOST) 1 else 0)
     }
 
     var ipInput by remember(savedTvHostSummary) {

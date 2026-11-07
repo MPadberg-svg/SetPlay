@@ -11,6 +11,16 @@ on:
       - main
       - master
   workflow_dispatch:
+    inputs:
+      build_target:
+        description: "Which APK edition to build (both, phone, or tv)"
+        required: false
+        default: "both"
+        type: choice
+        options:
+          - both
+          - phone
+          - tv
 
 permissions:
   contents: write
@@ -20,7 +30,7 @@ env:
 
 jobs:
   build-and-release-apk:
-    name: Build & Publish Installable SetPlay APK
+    name: Build & Publish Installable SetPlay Dual APKs (Phone & TV)
     runs-on: ubuntu-latest
 
     steps:
@@ -32,8 +42,9 @@ jobs:
         with:
           distribution: 'temurin'
           java-version: '17'
+          cache: 'gradle'
 
-      - name: Build Installable SetPlay Debug APK via Self-Bootstrapping Gradle Wrapper
+      - name: Build Installable SetPlay Phone & TV APKs via Self-Bootstrapping Gradle Wrapper
         env:
           SPORT_API_KEY_SECRET: ${{ secrets.SPORT_API_KEY }}
           SPORTAPI_AI_KEY_SECRET: ${{ secrets.SPORTAPI_AI_KEY }}
@@ -66,22 +77,43 @@ jobs:
           sed -i 's/^[[:space:]]*//g' .env
 
           chmod +x ./gradlew
-          ./gradlew :app:assembleDebug --no-daemon --stacktrace
-
+          TARGET_MODE="${{ github.event.inputs.build_target || 'both' }}"
           mkdir -p release-apk
-          cp app/build/outputs/apk/debug/app-debug.apk release-apk/SetPlay.apk
-          cp app/build/outputs/apk/debug/app-debug.apk release-apk/SetPlay-latest.apk
+
+          if [[ "$TARGET_MODE" == "both" || "$TARGET_MODE" == "phone" ]]; then
+            echo ">>> Building SetPlay-Phone.apk (-PSETPLAY_TARGET=PHONE)..."
+            ./gradlew :app:assembleDebug -PSETPLAY_TARGET=PHONE --no-daemon --stacktrace
+            cp app/build/outputs/apk/debug/app-debug.apk release-apk/SetPlay-Phone.apk
+            cp app/build/outputs/apk/debug/app-debug.apk release-apk/SetPlay.apk
+          fi
+
+          if [[ "$TARGET_MODE" == "both" || "$TARGET_MODE" == "tv" ]]; then
+            echo ">>> Building SetPlay-TV.apk (-PSETPLAY_TARGET=TV)..."
+            ./gradlew :app:assembleDebug -PSETPLAY_TARGET=TV --no-daemon --stacktrace
+            cp app/build/outputs/apk/debug/app-debug.apk release-apk/SetPlay-TV.apk
+          fi
+
           ls -lh release-apk/
 
-      - name: Upload SetPlay APK to GitHub Actions Artifacts
+      - name: Upload SetPlay-Phone-APK to GitHub Actions Artifacts
+        if: ${{ (github.event.inputs.build_target || 'both') != 'tv' }}
         uses: actions/upload-artifact@v4
         with:
-          name: SetPlay-APK
-          path: release-apk/SetPlay.apk
+          name: SetPlay-Phone-APK
+          path: release-apk/SetPlay-Phone.apk
           if-no-files-found: error
           retention-days: 90
 
-      - name: Publish SetPlay.apk to GitHub Releases
+      - name: Upload SetPlay-TV-APK to GitHub Actions Artifacts
+        if: ${{ (github.event.inputs.build_target || 'both') != 'phone' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: SetPlay-TV-APK
+          path: release-apk/SetPlay-TV.apk
+          if-no-files-found: error
+          retention-days: 90
+
+      - name: Publish Dual Release Assets to GitHub Releases
         if: github.event_name != 'pull_request'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -92,29 +124,32 @@ jobs:
           fi
 
           cat << 'EOF' > release-notes.md
-          ## ⚽🎬 Set ▶ Play — Official Dual-Mode Android & Android TV APK (Latest Build)
+          ## ⚽🎬 Set ▶ Play — Official Dual-Edition Android Phone & Android TV APKs (Latest Build)
 
-          Download and install **`SetPlay.apk`** below on any Android phone, tablet, foldable, or Android TV / Google TV box (**Android 7.0+ / API 24+**).
+          Choose the dedicated edition tailored for your device (**Android 7.0+ / API 24+**):
 
-          ### 📥 Direct 1-Click Download Link
-          - **[📲 Download `SetPlay.apk` (1-Click Install)](https://github.com/MPadberg-svg/SetPlay/releases/latest/download/SetPlay.apk)**
+          ### 📥 Direct 1-Click APK Downloads
+
+          | Edition | Target Devices | Direct 1-Click Download |
+          | :--- | :--- | :---: |
+          | 📱 **`SetPlay-Phone.apk`**<br>*(Touch & Companion Edition)* | **Android Phones, Tablets & Foldables**<br>Top/Bottom Glass Nav • Floating PiP • Wi-Fi TV Companion Remote | **[📲 Download `SetPlay-Phone.apk`](https://github.com/MPadberg-svg/SetPlay/releases/latest/download/SetPlay-Phone.apk)** |
+          | 📺 **`SetPlay-TV.apk`**<br>*(10-Foot Living Room Edition)* | **Android TV, Google TV & Fire TV**<br>Left Glass Nav Rail • Live Channel Zapper Sidebar • Auto Wi-Fi Sync Host | **[📺 Download `SetPlay-TV.apk`](https://github.com/MPadberg-svg/SetPlay/releases/latest/download/SetPlay-TV.apk)** |
 
           ---
 
-          ### ✨ What's Inside This Build
-          - **⚽ KickOff Arena (MENA & Global Live Hub)**: Real-time live scores & match minute auto-sync (`SportAPI.ai`, `TheSportsDB`, `ESPN`), official TV broadcast resolution (`Sofascore` + `TheSportsDB` + playlist match-channel detection), Country & Timezone Zone selector, and 2-Zone Flashscore Match Cards with 1-tap `Watch` launch.
-          - **📋 Match Center Dossier 2.0**: 5-tab interactive match modal with chronological match events, interactive **2D Tactical Pitch** with real player cutout photos & jersey badges, match stats, H2H & standings, and official TV guide.
-          - **📺 Broadcast Control Room Live TV**: Progressive infinite-scroll across 56,000+ live channels with authentic `4K UHD` / `FHD` / `HD` quality badges, 1-tap Multi-Feed Quality Switcher, 15-Minute Halftime Explorer Timer, and In-Player Live Goal Alerts.
-          - **🎬 IMAX Glass Movies & Series Vaults**: Progressive infinite-scroll across 230,000+ VOD titles, IMAX Movie Dossier (`get_vod_info`), independent per-episode Series resume tracking, `"Continue Watching"` rail, and auto-prompt **Wyzie + OpenSubtitles v3** multi-language subtitle studio.
-          - **📺 Dual-Mode Phone + Android TV (10-Foot UI)**: Native Leanback launcher support, D-Pad focus rings (`AmberGold` border + `1.04f` scale lift), and hardware TV remote keybindings.
+          ### ✨ What's Inside Both Editions
+          - **⚽ KickOff Arena & Match Center 3.0**: Real-time live scores & match minute auto-sync (`API-Football`, `Football-Data.org`, `TheSportsDB`, `ESPN`), official TV broadcaster resolution (`Sofascore` + `TheSportsDB` + playlist match-channel scanner), and 5-tab interactive **Match Center Dossier** with **2D Tactical Pitch** & real player cutouts (`media.api-sports.io` + `TheSportsDB` + `Sofascore`).
+          - **📺 Dedicated 10-Foot Android TV Experience (`SetPlay-TV.apk`)**: Widescreen Left Glass Navigation Rail (`216.dp`) with live Wi-Fi Sync PIN badge, In-Player **Live TV Channel Zapper Sidebar** (`D-Pad Left` or `📋 Channels` button), 2-Stage TV Back-Button Exit Guard, and D-Pad `AmberGold` focus choreography.
+          - **📱⇄📺 Local Wi-Fi Phone ↔ TV QR Companion & Sync Mode**: Zero-cloud local Wi-Fi pairing via QR code or 6-digit PIN. Browse 289,000+ channels/movies on your phone and beam in 1 tap (`[ 📺 Send to TV ]` / `[ 📱 Watch Here ]`) with strict single-connection (`max_connections = 1`) protection and quick Live TV `- / +` channel zapping.
+          - **🎬 Triple-Engine Subtitles & TMDB IMAX Dossier**: Automatic `imdb_id` / `tmdb_id` resolution (`TMDB API` + `IMDb Instant Suggestion`) powering parallel **Wyzie + SubDL (`.zip` -> `.srt`) + OpenSubtitles v3** subtitles (`🇸🇦 Arabic`, `🇬🇧 English`, `🇫🇷 Français`, `🇪🇸 Español`, `🇹🇷 Türkçe`) with remembered preferred language and 12-second auto-hide countdown.
           EOF
 
           if gh release view "$TAG_NAME" >/dev/null 2>&1; then
-            gh release upload "$TAG_NAME" release-apk/SetPlay.apk release-apk/SetPlay-latest.apk --clobber
-            gh release edit "$TAG_NAME" --title "Set ▶ Play — Official Android & TV APK (Latest Build)" --notes-file release-notes.md --latest
+            gh release upload "$TAG_NAME" release-apk/*.apk --clobber
+            gh release edit "$TAG_NAME" --title "Set ▶ Play — Official Phone & Android TV APKs (Latest Build)" --notes-file release-notes.md --latest
           else
-            gh release create "$TAG_NAME" release-apk/SetPlay.apk release-apk/SetPlay-latest.apk \
-              --title "Set ▶ Play — Official Android & TV APK (Latest Build)" \
+            gh release create "$TAG_NAME" release-apk/*.apk \
+              --title "Set ▶ Play — Official Phone & Android TV APKs (Latest Build)" \
               --notes-file release-notes.md \
               --latest
           fi

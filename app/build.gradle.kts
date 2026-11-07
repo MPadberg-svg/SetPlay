@@ -8,6 +8,12 @@ plugins {
   alias(libs.plugins.google.services)
 }
 
+val setplayTargetEdition = (project.findProperty("SETPLAY_TARGET") as? String)
+    ?.trim()
+    ?.uppercase()
+    ?.takeIf { it == "TV" || it == "PHONE" }
+    ?: "PHONE"
+
 android {
   namespace = "com.example"
   compileSdk { version = release(36) { minorApiLevel = 1 } }
@@ -20,6 +26,9 @@ android {
     versionName = "1.0"
 
     testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+    buildConfigField("String", "DEVICE_EDITION", "\"$setplayTargetEdition\"")
+    manifestPlaceholders["appLabel"] = if (setplayTargetEdition == "TV") "SetPlay TV" else "@string/app_name"
+    manifestPlaceholders["screenOrientation"] = if (setplayTargetEdition == "TV") "sensorLandscape" else "unspecified"
   }
 
   // Do not remove or modify these signingConfigs. They are necessary for building, installing,

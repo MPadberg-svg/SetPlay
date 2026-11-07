@@ -44,6 +44,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -55,8 +56,10 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.windowInsetsPadding
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.EventNote
 import androidx.compose.material.icons.filled.Cast
@@ -178,6 +181,7 @@ import com.example.ui.theme.MoviesMintSpring
 import com.example.ui.theme.MoviesSapphireNavy
 import com.example.ui.theme.MyApplicationTheme
 import com.example.ui.theme.PaleGold
+import com.example.ui.theme.SeriesEmerald
 import com.example.ui.theme.SeriesForestSurface
 import com.example.ui.theme.SeriesIceAqua
 import com.example.ui.theme.SeriesMistTeal
@@ -347,6 +351,7 @@ fun MainAppContent(
     var isFullScreenPlayer by remember { mutableStateOf(false) }
     var showNavigationMenuSheet by remember { mutableStateOf(false) }
     var showTvSyncSheet by remember { mutableStateOf(false) }
+    var openTvSyncSheetOnHostTab by remember { mutableStateOf(false) }
     var pendingStreamToPlay by remember { mutableStateOf<StreamEntity?>(null) }
     var pendingUnlockCallback by remember { mutableStateOf<(() -> Unit)?>(null) }
     var showPinDialog by remember { mutableStateOf(false) }
@@ -356,6 +361,27 @@ fun MainAppContent(
     val context = LocalContext.current
     val activity = context as? Activity
     val scope = rememberCoroutineScope()
+
+    val editionOverride by mainViewModel.editionOverride.collectAsStateWithLifecycle()
+    val activeEdition = remember(editionOverride, context) {
+        com.example.util.EditionResolver.resolveEdition(context)
+    }
+
+    var lastTvBackPressEpochMs by remember { androidx.compose.runtime.mutableLongStateOf(0L) }
+    var showTvExitConfirmBanner by remember { mutableStateOf(false) }
+
+    LaunchedEffect(showTvExitConfirmBanner) {
+        if (showTvExitConfirmBanner) {
+            kotlinx.coroutines.delay(2500L)
+            showTvExitConfirmBanner = false
+        }
+    }
+
+    LaunchedEffect(activeEdition) {
+        if (activeEdition == com.example.util.SetPlayEdition.TV && tvSyncState.role != SyncRole.TV_HOST) {
+            mainViewModel.startTvHostMode()
+        }
+    }
 
     val lifecycleOwner = androidx.lifecycle.compose.LocalLifecycleOwner.current
     DisposableEffect(lifecycleOwner) {
@@ -384,18 +410,43 @@ fun MainAppContent(
         playerUiState.lastSelectedSubtitleLanguageCode
     ) {
         mainViewModel.tvSyncManager.tvPlaybackStatusProvider = {
+            val latestPlayerState = playerViewModel.uiState.value
             mainViewModel.tvSyncState.value.copy(
-                tvNowPlayingTitle = playerUiState.currentStream?.name.orEmpty(),
-                tvNowPlayingStreamId = playerUiState.currentStream?.streamId?.toString().orEmpty(),
-                tvNowPlayingType = playerUiState.currentStream?.streamType.orEmpty(),
-                tvNowPlayingPositionMs = playerUiState.currentPositionMs,
-                tvIsPlaying = playerUiState.isPlaying,
-                tvActiveSubtitleLang = (playerUiState.selectedWyzieLanguageCode ?: playerUiState.lastSelectedSubtitleLanguageCode).orEmpty()
+                tvNowPlayingTitle = latestPlayerState.currentStream?.name.orEmpty(),
+                tvNowPlayingStreamId = latestPlayerState.currentStream?.streamId?.toString().orEmpty(),
+                tvNowPlayingType = latestPlayerState.currentStream?.streamType.orEmpty(),
+                tvNowPlayingPositionMs = latestPlayerState.currentPositionMs,
+                tvIsPlaying = latestPlayerState.isPlaying,
+                tvActiveSubtitleLang = (latestPlayerState.selectedWyzieLanguageCode ?: latestPlayerState.lastSelectedSubtitleLanguageCode).orEmpty()
             )
         }
     }
 
     LaunchedEffect(mainViewModel.tvSyncManager) {
+        mainViewModel.tvSyncManager.onControlCommandReceived = { cmd ->
+            if (mainViewModel.tvSyncState.value.role == SyncRole.TV_HOST) {
+                kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main.immediate) {
+                    when (cmd.action.uppercase()) {
+                        "TOGGLE_PLAY_PAUSE" -> playerViewModel.togglePlayPause()
+                        "STOP" -> {
+                            playerViewModel.stopAndClosePlayer()
+                            isFullScreenPlayer = false
+                        }
+                        "ZAP_NEXT" -> playerViewModel.zapChannelOffset(1)
+                        "ZAP_PREV" -> playerViewModel.zapChannelOffset(-1)
+                        "SEEK_RELATIVE" -> {
+                            if (cmd.seekSeconds != 0) {
+                                playerViewModel.seekRelative(cmd.seekSeconds.toLong())
+                            }
+                        }
+                        "SET_SUBTITLE_LANG" -> {
+                            val lang = cmd.value.takeIf { !it.equals("off", ignoreCase = true) && it.isNotBlank() }
+                            playerViewModel.chooseSubtitleLanguageFromPrompt(lang)
+                        }
+                    }
+                }
+            }
+        }
         launch {
             mainViewModel.tvSyncManager.incomingPlayCommands.collect { cmd ->
                 if (mainViewModel.tvSyncState.value.role == SyncRole.TV_HOST) {
@@ -406,28 +457,6 @@ fun MainAppContent(
                         playerViewModel.playStream(stream, playlist)
                         if (cmd.preferredSubtitleLang.isNotBlank()) {
                             playerViewModel.chooseSubtitleLanguageFromPrompt(cmd.preferredSubtitleLang)
-                        }
-                    }
-                }
-            }
-        }
-        launch {
-            mainViewModel.tvSyncManager.incomingControlCommands.collect { cmd ->
-                if (mainViewModel.tvSyncState.value.role == SyncRole.TV_HOST) {
-                    when (cmd.action.uppercase()) {
-                        "TOGGLE_PLAY_PAUSE" -> playerViewModel.togglePlayPause()
-                        "STOP" -> {
-                            playerViewModel.stopAndClosePlayer()
-                            isFullScreenPlayer = false
-                        }
-                        "SEEK_RELATIVE" -> {
-                            if (cmd.seekSeconds != 0) {
-                                playerViewModel.seekRelative(cmd.seekSeconds.toLong())
-                            }
-                        }
-                        "SET_SUBTITLE_LANG" -> {
-                            val lang = cmd.value.takeIf { !it.equals("off", ignoreCase = true) && it.isNotBlank() }
-                            playerViewModel.chooseSubtitleLanguageFromPrompt(lang)
                         }
                     }
                 }
@@ -462,11 +491,24 @@ fun MainAppContent(
     // Handle back press:
     // 1. If in fullscreen player -> minimize to Floating In-App PiP window so video continues while browsing
     // 2. If on a secondary screen -> return to Home
-    BackHandler(enabled = isFullScreenPlayer || currentScreen != AppScreen.HOME) {
+    // 3. On SetPlayEdition.TV when already on Home -> 2-Stage TV Back-Button Exit Guard (requires 2nd Back within 2500ms)
+    BackHandler(
+        enabled = isFullScreenPlayer ||
+            currentScreen != AppScreen.HOME ||
+            activeEdition == com.example.util.SetPlayEdition.TV
+    ) {
         if (isFullScreenPlayer) {
             isFullScreenPlayer = false
-        } else {
+        } else if (currentScreen != AppScreen.HOME) {
             mainViewModel.setScreen(AppScreen.HOME)
+        } else if (activeEdition == com.example.util.SetPlayEdition.TV) {
+            val now = System.currentTimeMillis()
+            if (now - lastTvBackPressEpochMs <= 2500L) {
+                activity?.finish()
+            } else {
+                lastTvBackPressEpochMs = now
+                showTvExitConfirmBanner = true
+            }
         }
     }
 
@@ -554,6 +596,7 @@ fun MainAppContent(
                                 mainViewModel.playStreamOnSyncedTv(streamToHandover, activePlaylist)
                             }
                         } else {
+                            openTvSyncSheetOnHostTab = false
                             showTvSyncSheet = true
                         }
                     }
@@ -575,67 +618,9 @@ fun MainAppContent(
             label = "section_base_bg"
         )
 
-        Scaffold(
-            containerColor = sectionBaseColor,
-            topBar = {
-                TopStreamingBar(
-                    currentScreen = currentScreen,
-                    activePlaylist = activePlaylist,
-                    sectionDetailSummary = topSectionDetailText,
-                    liveMatchesCount = liveMatchesCount,
-                    halftimeRemainingSeconds = playerUiState.halftimeTimerRemainingSeconds,
-                    isTvSyncActive = tvSyncState.isSyncActive,
-                    onReturnToHalftimeMatch = {
-                        playerViewModel.returnToHalftimeChannel()
-                        isFullScreenPlayer = true
-                    },
-                    onDrawerMenuClick = { showNavigationMenuSheet = true },
-                    onTvSyncClick = { showTvSyncSheet = true },
-                    onCastOrAccountsClick = { mainViewModel.setScreen(AppScreen.PLAYLISTS) },
-                    onSearchClick = { mainViewModel.setScreen(AppScreen.GLOBAL_SEARCH) }
-                )
-            },
-            bottomBar = {
-                Column(modifier = Modifier.fillMaxWidth()) {
-                    if (tvSyncState.role == SyncRole.PHONE_CONTROLLER && tvSyncState.isSyncActive) {
-                        TvSyncCompanionBar(
-                            syncState = tvSyncState,
-                            onTogglePlayPauseOnTv = {
-                                mainViewModel.sendControlToSyncedTv(action = "TOGGLE_PLAY_PAUSE")
-                            },
-                            onPullStreamToPhone = {
-                                mainViewModel.pullStreamFromTvToPhone { pulledStream, playlist ->
-                                    isFullScreenPlayer = true
-                                    playerViewModel.playStream(pulledStream, playlist)
-                                }
-                            },
-                            onLeaveSyncMode = {
-                                mainViewModel.leaveTvSyncMode()
-                            },
-                            onOpenSyncSheet = {
-                                showTvSyncSheet = true
-                            }
-                        )
-                    }
-                    BottomStreamingNav(
-                        currentScreen = currentScreen,
-                        isStreamPlaying = playerUiState.currentStream != null && playerUiState.isPlaying,
-                        liveMatchesCount = liveMatchesCount,
-                        favoritesCount = favorites.size,
-                        onScreenSelected = { screen ->
-                            mainViewModel.setScreen(screen)
-                        }
-                    )
-                }
-            },
-            modifier = Modifier
-                .fillMaxSize()
-                .testTag("main_scaffold")
-        ) { innerPadding ->
+        val renderMainScreenContent: @Composable (Modifier) -> Unit = { containerModifier ->
             BoxWithConstraints(
-                modifier = Modifier
-                    .padding(innerPadding)
-                    .fillMaxSize()
+                modifier = containerModifier.fillMaxSize()
             ) {
                 AnimatedContent(
                     targetState = currentScreen,
@@ -772,6 +757,28 @@ fun MainAppContent(
                     }
                 }
 
+                // 2-Stage TV Back-Button Exit Guard Banner
+                if (showTvExitConfirmBanner && activeEdition == com.example.util.SetPlayEdition.TV) {
+                    Surface(
+                        color = Color(0xF50B131E),
+                        shape = RoundedCornerShape(50),
+                        border = BorderStroke(1.2.dp, AmberGold),
+                        shadowElevation = 12.dp,
+                        modifier = Modifier
+                            .align(Alignment.BottomCenter)
+                            .padding(bottom = 22.dp)
+                            .testTag("tv_exit_confirm_banner")
+                    ) {
+                        Text(
+                            text = "Press Back again to exit SetPlay TV",
+                            color = PaleGold,
+                            fontSize = 13.sp,
+                            fontWeight = FontWeight.ExtraBold,
+                            modifier = Modifier.padding(horizontal = 20.dp, vertical = 10.dp)
+                        )
+                    }
+                }
+
                 // Floating Draggable In-App Picture-in-Picture (PiP) Video Window
                 if (playerUiState.currentStream != null) {
                     FloatingInAppPipWindow(
@@ -801,9 +808,117 @@ fun MainAppContent(
                 }
             }
         }
+
+        if (activeEdition == com.example.util.SetPlayEdition.TV) {
+            // =========================================================================
+            // 10-FOOT WIDESCREEN ANDROID TV SHELL (`SetPlayEdition.TV`)
+            // =========================================================================
+            Row(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(sectionBaseColor)
+                    .testTag("main_scaffold")
+            ) {
+                TvLeftNavigationRail(
+                    currentScreen = currentScreen,
+                    liveMatchesCount = liveMatchesCount,
+                    favoritesCount = favorites.size,
+                    tvSyncState = tvSyncState,
+                    onScreenSelected = { screen ->
+                        mainViewModel.setScreen(screen)
+                    },
+                    onOpenTvSyncQr = {
+                        mainViewModel.startTvHostMode()
+                        openTvSyncSheetOnHostTab = true
+                        showTvSyncSheet = true
+                    }
+                )
+
+                Column(
+                    modifier = Modifier
+                        .weight(1f)
+                        .fillMaxSize()
+                ) {
+                    renderMainScreenContent(Modifier.weight(1f))
+                }
+            }
+        } else {
+            // =========================================================================
+            // TOUCH-FIRST LUXURY PHONE & TABLET SHELL (`SetPlayEdition.PHONE`)
+            // =========================================================================
+            Scaffold(
+                containerColor = sectionBaseColor,
+                topBar = {
+                    TopStreamingBar(
+                        currentScreen = currentScreen,
+                        activePlaylist = activePlaylist,
+                        sectionDetailSummary = topSectionDetailText,
+                        liveMatchesCount = liveMatchesCount,
+                        halftimeRemainingSeconds = playerUiState.halftimeTimerRemainingSeconds,
+                        isTvSyncActive = tvSyncState.isSyncActive,
+                        onReturnToHalftimeMatch = {
+                            playerViewModel.returnToHalftimeChannel()
+                            isFullScreenPlayer = true
+                        },
+                        onDrawerMenuClick = { showNavigationMenuSheet = true },
+                        onTvSyncClick = {
+                            openTvSyncSheetOnHostTab = false
+                            showTvSyncSheet = true
+                        },
+                        onCastOrAccountsClick = { mainViewModel.setScreen(AppScreen.PLAYLISTS) },
+                        onSearchClick = { mainViewModel.setScreen(AppScreen.GLOBAL_SEARCH) }
+                    )
+                },
+                bottomBar = {
+                    Column(modifier = Modifier.fillMaxWidth()) {
+                        if (tvSyncState.role == SyncRole.PHONE_CONTROLLER && tvSyncState.isSyncActive) {
+                            TvSyncCompanionBar(
+                                syncState = tvSyncState,
+                                onTogglePlayPauseOnTv = {
+                                    mainViewModel.sendControlToSyncedTv(action = "TOGGLE_PLAY_PAUSE")
+                                },
+                                onZapPrevOnTv = {
+                                    mainViewModel.sendControlToSyncedTv(action = "ZAP_PREV")
+                                },
+                                onZapNextOnTv = {
+                                    mainViewModel.sendControlToSyncedTv(action = "ZAP_NEXT")
+                                },
+                                onPullStreamToPhone = {
+                                    mainViewModel.pullStreamFromTvToPhone { pulledStream, playlist ->
+                                        isFullScreenPlayer = true
+                                        playerViewModel.playStream(pulledStream, playlist)
+                                    }
+                                },
+                                onLeaveSyncMode = {
+                                    mainViewModel.leaveTvSyncMode()
+                                },
+                                onOpenSyncSheet = {
+                                    openTvSyncSheetOnHostTab = false
+                                    showTvSyncSheet = true
+                                }
+                            )
+                        }
+                        BottomStreamingNav(
+                            currentScreen = currentScreen,
+                            isStreamPlaying = playerUiState.currentStream != null && playerUiState.isPlaying,
+                            liveMatchesCount = liveMatchesCount,
+                            favoritesCount = favorites.size,
+                            onScreenSelected = { screen ->
+                                mainViewModel.setScreen(screen)
+                            }
+                        )
+                    }
+                },
+                modifier = Modifier
+                    .fillMaxSize()
+                    .testTag("main_scaffold")
+            ) { innerPadding ->
+                renderMainScreenContent(Modifier.padding(innerPadding))
+            }
+        }
     }
 
-    // Royal Gold Navigation Drawer Menu Sheet (Accounts, Parental Controls)
+    // Royal Gold Navigation Drawer Menu Sheet (Accounts, Parental Controls, Edition Switcher)
     if (showNavigationMenuSheet) {
         ModalBottomSheet(
             onDismissRequest = { showNavigationMenuSheet = false },
@@ -883,7 +998,29 @@ fun MainAppContent(
                     icon = Icons.Default.Tv,
                     onClick = {
                         showNavigationMenuSheet = false
+                        openTvSyncSheetOnHostTab = false
                         showTvSyncSheet = true
+                    }
+                )
+
+                Spacer(modifier = Modifier.height(10.dp))
+
+                DrawerMenuOptionRow(
+                    title = if (activeEdition == com.example.util.SetPlayEdition.TV) {
+                        "Switch to Phone Touch UI Edition"
+                    } else {
+                        "Preview 10-Foot Android TV Edition"
+                    },
+                    subtitle = "Current UI Edition: ${activeEdition.name}",
+                    icon = Icons.Default.LiveTv,
+                    onClick = {
+                        showNavigationMenuSheet = false
+                        val nextEdition = if (activeEdition == com.example.util.SetPlayEdition.TV) {
+                            com.example.util.SetPlayEdition.PHONE
+                        } else {
+                            com.example.util.SetPlayEdition.TV
+                        }
+                        mainViewModel.setEditionOverride(nextEdition)
                     }
                 )
 
@@ -900,6 +1037,7 @@ fun MainAppContent(
             savedTvHostName = mainViewModel.tvSyncManager.getSavedTvHostName(),
             savedTvHostSummary = mainViewModel.tvSyncManager.getSavedTvHostSummary(),
             statusErrorMessage = tvSyncErrorMessage,
+            defaultToTvHostTab = openTvSyncSheetOnHostTab || activeEdition == com.example.util.SetPlayEdition.TV,
             onStartTvHostMode = { mainViewModel.startTvHostMode() },
             onStartPhoneDiscovery = { mainViewModel.startPhoneSyncDiscovery() },
             onConnectToTv = { ip, port, pin ->
@@ -2523,5 +2661,323 @@ private fun LiveEqualizerMiniBadge(
         }
     }
 }
+
+private data class TvRailNavEntry(
+    val label: String,
+    val icon: ImageVector,
+    val testTag: String,
+    val targetScreen: AppScreen? = null,
+    val badgeText: String? = null,
+    val accentColor: Color = AmberGold,
+    val customAction: (() -> Unit)? = null
+)
+
+/**
+ * Dedicated 10-Foot Widescreen Android TV Left Navigation Rail (`testTag("tv_left_navigation_rail")`):
+ * - Sleek vertical glass rail (`width = 216.dp`, `Color(0xF2081018)`) with D-Pad focus rings (`Modifier.tvFocusableControl`).
+ * - Top Brand Header (`Set ▶ Play` + `"TV EDITION"` gold badge + active live matches badge).
+ * - Preserves all `nav_*` (`nav_home`, `nav_live_tv`, `nav_movies`, `nav_series`, `nav_favorites`) and
+ *   `top_*` (`top_search_btn`, `top_tv_sync_btn`, `top_playlists_btn`) test tags.
+ * - Bottom Live Sync Telemetry Pod (`testTag("tv_rail_sync_status_pod")`) displaying real-time Phone Sync
+ *   status or the 6-digit Pairing PIN + LAN IP at a glance.
+ */
+@Composable
+fun TvLeftNavigationRail(
+    currentScreen: AppScreen,
+    liveMatchesCount: Int,
+    favoritesCount: Int,
+    tvSyncState: com.example.data.sync.TvSyncSessionState,
+    onScreenSelected: (AppScreen) -> Unit,
+    onOpenTvSyncQr: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val entries = remember(liveMatchesCount, favoritesCount) {
+        listOf(
+            TvRailNavEntry(
+                label = "⚽ KickOff Arena",
+                icon = Icons.Default.SportsSoccer,
+                testTag = "nav_home",
+                targetScreen = AppScreen.HOME,
+                badgeText = if (liveMatchesCount > 0) "$liveMatchesCount LIVE" else null,
+                accentColor = KickoffTropicalTeal
+            ),
+            TvRailNavEntry(
+                label = "📺 Live TV",
+                icon = Icons.Default.LiveTv,
+                testTag = "nav_live_tv",
+                targetScreen = AppScreen.LIVE_TV,
+                accentColor = TvBroadcastScarlet
+            ),
+            TvRailNavEntry(
+                label = "🎬 Movies",
+                icon = Icons.Default.Movie,
+                testTag = "nav_movies",
+                targetScreen = AppScreen.MOVIES,
+                accentColor = MoviesCyanTeal
+            ),
+            TvRailNavEntry(
+                label = "🎞️ Series",
+                icon = Icons.Default.VideoLibrary,
+                testTag = "nav_series",
+                targetScreen = AppScreen.SERIES,
+                accentColor = SeriesEmerald
+            ),
+            TvRailNavEntry(
+                label = "⭐ Favorites",
+                icon = Icons.Default.Star,
+                testTag = "nav_favorites",
+                targetScreen = AppScreen.FAVORITES,
+                badgeText = if (favoritesCount > 0) favoritesCount.toString() else null,
+                accentColor = FavoritesSagePrimary
+            ),
+            TvRailNavEntry(
+                label = "🔍 Global Search",
+                icon = Icons.Default.Search,
+                testTag = "top_search_btn",
+                targetScreen = AppScreen.GLOBAL_SEARCH,
+                accentColor = AmberGold
+            ),
+            TvRailNavEntry(
+                label = "📲 Phone Sync QR",
+                icon = Icons.Default.Tv,
+                testTag = "top_tv_sync_btn",
+                accentColor = ArenaFloodlightLime,
+                customAction = onOpenTvSyncQr
+            ),
+            TvRailNavEntry(
+                label = "🖧 Xtream Servers",
+                icon = Icons.Default.Dns,
+                testTag = "top_playlists_btn",
+                targetScreen = AppScreen.PLAYLISTS,
+                accentColor = PaleGold
+            ),
+            TvRailNavEntry(
+                label = "🔒 Parental Lock",
+                icon = Icons.Default.Security,
+                testTag = "tv_rail_parental_lock_btn",
+                targetScreen = AppScreen.PARENTAL_SETTINGS,
+                accentColor = LiveCrimson
+            )
+        )
+    }
+
+    val isPhonePaired = tvSyncState.connectedPeerName.isNotBlank()
+    val pinDisplay = tvSyncState.pairingPin.ifBlank { "READY" }
+    val ipDisplay = tvSyncState.localIpAddress.ifBlank { "LAN Wi-Fi" }
+
+    Row(modifier = modifier.fillMaxHeight()) {
+        Column(
+            modifier = Modifier
+                .width(216.dp)
+                .fillMaxHeight()
+                .background(Color(0xF2081018))
+                .padding(horizontal = 12.dp, vertical = 14.dp)
+                .testTag("tv_left_navigation_rail"),
+            verticalArrangement = Arrangement.SpaceBetween
+        ) {
+            // 1. Top Brand Header + TV EDITION Badge
+            Column {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Box(
+                            contentAlignment = Alignment.Center,
+                            modifier = Modifier
+                                .size(30.dp)
+                                .clip(RoundedCornerShape(9.dp))
+                                .background(
+                                    Brush.linearGradient(
+                                        listOf(AmberGold, PaleGold)
+                                    )
+                                )
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.PlayArrow,
+                                contentDescription = "SetPlay TV",
+                                tint = DarkGraphite,
+                                modifier = Modifier.size(19.dp)
+                            )
+                        }
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Column {
+                            Text(
+                                text = "Set ▶ Play",
+                                color = Color.White,
+                                fontSize = 15.sp,
+                                fontWeight = FontWeight.ExtraBold
+                            )
+                            Text(
+                                text = "10-FOOT CINEMA & ARENA",
+                                color = Champagne,
+                                fontSize = 8.5.sp,
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
+                    }
+
+                    Surface(
+                        color = AmberGold.copy(alpha = 0.20f),
+                        shape = RoundedCornerShape(6.dp),
+                        border = BorderStroke(0.8.dp, AmberGold)
+                    ) {
+                        Text(
+                            text = "TV EDITION",
+                            color = PaleGold,
+                            fontSize = 8.5.sp,
+                            fontWeight = FontWeight.ExtraBold,
+                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 3.dp)
+                        )
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(12.dp))
+            }
+
+            // 2. Scrollable 10-Foot Navigation Items
+            Column(
+                modifier = Modifier
+                    .weight(1f)
+                    .verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(5.dp)
+            ) {
+                entries.forEach { entry ->
+                    val isSelected = entry.targetScreen != null && entry.targetScreen == currentScreen
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(12.dp))
+                            .background(
+                                if (isSelected) {
+                                    entry.accentColor.copy(alpha = 0.20f)
+                                } else {
+                                    Color.White.copy(alpha = 0.03f)
+                                }
+                            )
+                            .border(
+                                width = if (isSelected) 1.4.dp else 0.7.dp,
+                                color = if (isSelected) entry.accentColor else Color.White.copy(alpha = 0.07f),
+                                shape = RoundedCornerShape(12.dp)
+                            )
+                            .tvFocusableControl(
+                                accentColor = AmberGold,
+                                shape = RoundedCornerShape(12.dp),
+                                onClick = {
+                                    if (entry.customAction != null) {
+                                        entry.customAction.invoke()
+                                    } else if (entry.targetScreen != null) {
+                                        onScreenSelected(entry.targetScreen)
+                                    }
+                                }
+                            )
+                            .padding(horizontal = 10.dp, vertical = 8.dp)
+                            .testTag(entry.testTag)
+                    ) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier.weight(1f)
+                        ) {
+                            Icon(
+                                imageVector = entry.icon,
+                                contentDescription = entry.label,
+                                tint = if (isSelected) entry.accentColor else Champagne,
+                                modifier = Modifier.size(16.dp)
+                            )
+                            Spacer(modifier = Modifier.width(9.dp))
+                            Text(
+                                text = entry.label,
+                                color = if (isSelected) Color.White else Champagne,
+                                fontSize = 12.sp,
+                                fontWeight = if (isSelected) FontWeight.ExtraBold else FontWeight.SemiBold,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
+
+                        if (!entry.badgeText.isNullOrBlank()) {
+                            Surface(
+                                color = entry.accentColor.copy(alpha = 0.24f),
+                                shape = RoundedCornerShape(50),
+                                border = BorderStroke(0.7.dp, entry.accentColor)
+                            ) {
+                                Text(
+                                    text = entry.badgeText,
+                                    color = Color.White,
+                                    fontSize = 8.5.sp,
+                                    fontWeight = FontWeight.ExtraBold,
+                                    modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+
+            Spacer(modifier = Modifier.height(8.dp))
+
+            // 3. Bottom Live Sync Telemetry Pod (`tv_rail_sync_status_pod`)
+            Surface(
+                color = Color(0xFF0E1B28),
+                shape = RoundedCornerShape(14.dp),
+                border = BorderStroke(
+                    width = 1.dp,
+                    color = if (isPhonePaired) ArenaFloodlightLime else AmberGold.copy(alpha = 0.55f)
+                ),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(14.dp))
+                    .tvFocusableControl(
+                        accentColor = AmberGold,
+                        shape = RoundedCornerShape(14.dp),
+                        onClick = onOpenTvSyncQr
+                    )
+                    .testTag("tv_rail_sync_status_pod")
+            ) {
+                Column(
+                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp)
+                ) {
+                    Text(
+                        text = if (isPhonePaired) {
+                            "🟢 Phone Connected"
+                        } else {
+                            "📲 Wi-Fi Sync Ready • PIN: $pinDisplay"
+                        },
+                        color = if (isPhonePaired) ArenaFloodlightLime else PaleGold,
+                        fontSize = 10.5.sp,
+                        fontWeight = FontWeight.ExtraBold,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                    Spacer(modifier = Modifier.height(2.dp))
+                    Text(
+                        text = if (isPhonePaired) {
+                            tvSyncState.connectedPeerName
+                        } else {
+                            "IP: $ipDisplay:${tvSyncState.serverPort}"
+                        },
+                        color = Champagne,
+                        fontSize = 9.5.sp,
+                        fontWeight = FontWeight.Medium,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+            }
+        }
+
+        // Right 1.dp Gold Divider Border
+        Box(
+            modifier = Modifier
+                .width(1.dp)
+                .fillMaxHeight()
+                .background(AmberGold.copy(alpha = 0.28f))
+        )
+    }
+}
+
 
 

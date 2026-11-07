@@ -252,6 +252,12 @@ plugins {
   alias(libs.plugins.secrets)
 }
 
+val setplayTargetEdition = (project.findProperty("SETPLAY_TARGET") as? String)
+    ?.trim()
+    ?.uppercase()
+    ?.takeIf { it == "TV" || it == "PHONE" }
+    ?: "PHONE"
+
 android {
   namespace = "com.example"
   compileSdk = 35
@@ -263,6 +269,9 @@ android {
     versionCode = 1
     versionName = "1.0"
     testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+    buildConfigField("String", "DEVICE_EDITION", "\"$setplayTargetEdition\"")
+    manifestPlaceholders["appLabel"] = if (setplayTargetEdition == "TV") "SetPlay TV" else "@string/app_name"
+    manifestPlaceholders["screenOrientation"] = if (setplayTargetEdition == "TV") "sensorLandscape" else "unspecified"
   }
 
   signingConfigs {

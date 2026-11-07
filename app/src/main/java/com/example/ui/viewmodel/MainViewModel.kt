@@ -266,6 +266,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val _tvSyncErrorMessage = MutableStateFlow<String?>(null)
     val tvSyncErrorMessage: StateFlow<String?> = _tvSyncErrorMessage.asStateFlow()
 
+    private val _editionOverride = MutableStateFlow(com.example.util.EditionResolver.runtimeEditionOverride)
+    val editionOverride: StateFlow<com.example.util.SetPlayEdition?> = _editionOverride.asStateFlow()
+
     @Volatile
     var isTvInFullScreenPlayback: Boolean = false
 
@@ -281,7 +284,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         // Auto-Ready on Android TV Boot: automatically start TvSyncManager host server on Android TV devices
         runCatching {
             val uiModeManager = application.getSystemService(android.content.Context.UI_MODE_SERVICE) as? android.app.UiModeManager
-            if (uiModeManager?.currentModeType == android.content.res.Configuration.UI_MODE_TYPE_TELEVISION) {
+            if (uiModeManager?.currentModeType == android.content.res.Configuration.UI_MODE_TYPE_TELEVISION ||
+                com.example.util.EditionResolver.resolveEdition(application) == com.example.util.SetPlayEdition.TV
+            ) {
                 tvSyncManager.startTvHostServer()
             }
         }
@@ -1105,6 +1110,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun leaveTvSyncMode() {
         _tvSyncErrorMessage.value = null
         tvSyncManager.leaveSyncMode()
+    }
+
+    fun setEditionOverride(edition: com.example.util.SetPlayEdition?) {
+        com.example.util.EditionResolver.runtimeEditionOverride = edition
+        _editionOverride.value = edition
+        if (com.example.util.EditionResolver.resolveEdition(getApplication()) == com.example.util.SetPlayEdition.TV) {
+            tvSyncManager.startTvHostServer()
+        }
     }
 
     fun playStreamOnSyncedTv(stream: StreamEntity, playlist: PlaylistEntity? = activePlaylist.value) {
