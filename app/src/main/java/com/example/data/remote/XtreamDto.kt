@@ -6,7 +6,8 @@ import com.squareup.moshi.JsonClass
 @JsonClass(generateAdapter = true)
 data class XtreamAuthResponse(
     @param:Json(name = "user_info") val userInfo: XtreamUserInfo? = null,
-    @param:Json(name = "server_info") val serverInfo: XtreamServerInfo? = null
+    @param:Json(name = "server_info") val serverInfo: XtreamServerInfo? = null,
+    val resolvedServerUrl: String = ""
 )
 
 @JsonClass(generateAdapter = true)

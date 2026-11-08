@@ -25,9 +25,13 @@ object StreamMetadataParser {
         "24/7", "VIP", "RAW", "MULTI", "SPORT", "SPORTS"
     )
 
-    // Matches leading index/tag brackets or pipe-enclosed tags like "[01]", "(12)", "[VIP]", "┃FR┃", "|AR|"
+    // Matches leading decorative Unicode symbols, index/tag brackets, or pipe-enclosed tags like "✦●✦|", "[01]", "(12)", "[VIP]", "┃FR┃", "|AR|"
     private val LEADING_BRACKET_OR_BAR_TAG_REGEX = Regex(
-        """^\s*(?:\[[^\]]{1,12}]|\([^\)]{1,12}\)|[|┃¦][A-Za-z0-9/+\-_ ]{2,8}[|┃¦]|★+|•+)\s*"""
+        """^\s*(?:\[[^\]]{1,12}]|\([^\)]{1,12}\)|[|┃¦][A-Za-z0-9/+\-_ ]{2,8}[|┃¦]|[✦●★◆▪►•❖✪|┃¦]+)\s*"""
+    )
+
+    private val LEADING_DECORATIVE_SYMBOLS_REGEX = Regex(
+        """^\s*[✦●★◆▪►•❖✪|┃¦]+\s*"""
     )
 
     // Matches leading prefix before a pipe/heavy-bar/dash separator: e.g. "ES|", "AR |", "FR┃", "24/7 |"
@@ -61,7 +65,7 @@ object StreamMetadataParser {
     private val BEIN_BRAND_REGEX = Regex("""\bbein\s+sports?\b""", RegexOption.IGNORE_CASE)
 
     /**
-     * Strips leading country/provider prefixes (e.g., `ES|`, `AR |`, `[01]`, `FR┃`, `┃FR┃`) and trailing
+     * Strips leading country/provider prefixes (e.g., `ES|`, `AR |`, `[01]`, `FR┃`, `┃FR┃`, `✦●✦|`) and trailing
      * technical codec/resolution tags while preserving the clean human-readable title.
      */
     fun cleanDisplayTitle(rawName: String): String {
@@ -70,8 +74,8 @@ object StreamMetadataParser {
 
         var working = trimmed
 
-        // 1. Repeatedly strip leading bracketed/bar tags and pipe/colon prefixes (up to 3 layers, e.g. "[01] AR | VIP |")
-        repeat(3) {
+        // 1. Repeatedly strip leading decorative symbols, bracketed/bar tags, and pipe/colon prefixes (up to 4 layers)
+        repeat(4) {
             var changed = false
 
             val bracketOrBarMatch = LEADING_BRACKET_OR_BAR_TAG_REGEX.find(working)
@@ -133,6 +137,26 @@ object StreamMetadataParser {
     }
 
     /**
+     * Compacts verbose live football broadcaster labels for match cards and capsules:
+     * - Strips leading decorative symbols and country/region tags via [cleanDisplayTitle]
+     * - Strips trailing bracketed or parenthesized fixture descriptions (e.g. `[LaLiga: Malaga vs. Racing Santander...]`)
+     * - Truncates cleanly at 24 characters with `…` if still overly long.
+     */
+    fun compactBroadcastChannelLabel(rawLabel: String): String {
+        val withoutFixtureSuffix = rawLabel
+            .replace(Regex("""\s*\[[^\]]*vs\.?[^\]]*].*$""", RegexOption.IGNORE_CASE), "")
+            .replace(Regex("""\s*\[[^\]]*:[^\]]*].*$"""), "")
+            .replace(Regex("""\s*\([^\)]*vs\.?[^\)]*\).*$""", RegexOption.IGNORE_CASE), "")
+            .trim()
+        val base = cleanDisplayTitle(withoutFixtureSuffix.ifBlank { rawLabel })
+        return if (base.length > 24) {
+            base.take(23).trimEnd() + "…"
+        } else {
+            base
+        }
+    }
+
+    /**
      * Extracts the region, language, or bouquet code prefix from a raw stream or category name
      * (e.g. `"ES"`, `"AR"`, `"FR"`, `"EN"`, `"MA"`, `"ALB"`, `"AF"`, `"24/7"`), or `null` if none is present.
      */
@@ -140,7 +164,16 @@ object StreamMetadataParser {
         var working = rawName.trim()
         if (working.isEmpty()) return null
 
-        repeat(3) {
+        repeat(4) {
+            // 0. Strip any leading decorative Unicode symbols like "✦●✦|" before inspecting tags
+            val decoMatch = LEADING_DECORATIVE_SYMBOLS_REGEX.find(working)
+            if (decoMatch != null) {
+                val remainder = working.substring(decoMatch.range.last + 1).trim()
+                if (remainder.isNotEmpty() && remainder != working) {
+                    working = remainder
+                }
+            }
+
             // 1. Check leading bracket "[AF]" or "[01]"
             val bracketMatch = Regex("""^\s*\[([^\]]{1,10})]\s*""").find(working)
             if (bracketMatch != null) {

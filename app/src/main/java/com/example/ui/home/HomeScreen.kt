@@ -2523,7 +2523,7 @@ private fun SplitBroadcasterWatchCapsule(
                 )
                 Spacer(modifier = Modifier.width(4.5.dp))
                 Text(
-                    text = broadcasterName,
+                    text = com.example.util.StreamMetadataParser.compactBroadcastChannelLabel(broadcasterName),
                     color = badgeText,
                     fontSize = 9.5.sp,
                     fontWeight = FontWeight.Bold,
@@ -3114,7 +3114,7 @@ private fun FlashscoreMatchCard(
                             )
                             Spacer(modifier = Modifier.width(5.5.dp))
                             Text(
-                                text = match.beinChannel,
+                                text = com.example.util.StreamMetadataParser.compactBroadcastChannelLabel(match.beinChannel),
                                 color = badgeText,
                                 fontSize = 10.5.sp,
                                 fontWeight = FontWeight.Bold,

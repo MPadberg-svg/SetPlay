@@ -376,11 +376,18 @@ class TvSyncManager(
             val path = parts.getOrNull(1) ?: "/"
 
             var contentLength = 0
+            val headers = mutableMapOf<String, String>()
             while (true) {
                 val headerLine = reader.readLine() ?: break
                 if (headerLine.isEmpty()) break
-                if (headerLine.startsWith("Content-Length:", ignoreCase = true)) {
-                    contentLength = headerLine.substringAfter(":").trim().toIntOrNull() ?: 0
+                val colonIdx = headerLine.indexOf(':')
+                if (colonIdx > 0) {
+                    val key = headerLine.substring(0, colonIdx).trim().lowercase(Locale.ROOT)
+                    val value = headerLine.substring(colonIdx + 1).trim()
+                    headers[key] = value
+                    if (key == "content-length") {
+                        contentLength = value.toIntOrNull() ?: 0
+                    }
                 }
             }
 
@@ -397,7 +404,7 @@ class TvSyncManager(
                 ""
             }
 
-            val (statusCode, responseJson) = routeHttpRequest(method, path, bodyText)
+            val (statusCode, responseJson) = routeHttpRequest(method, path, bodyText, headers)
             val responseBytes = responseJson.toString().toByteArray(Charsets.UTF_8)
             val writer = PrintWriter(OutputStreamWriter(socket.getOutputStream(), Charsets.UTF_8), false)
             val statusText = if (statusCode == 200) "OK" else if (statusCode == 403) "Forbidden" else "Bad Request"
@@ -414,14 +421,49 @@ class TvSyncManager(
         }
     }
 
+    private fun extractPinFromRequest(
+        path: String,
+        reqJson: JSONObject?,
+        headers: Map<String, String>
+    ): String {
+        val headerPin = headers["x-setplay-pin"]?.trim().orEmpty()
+        if (headerPin.isNotEmpty()) return headerPin
+        val bodyPin = reqJson?.optString("pin", "")?.trim().orEmpty()
+        if (bodyPin.isNotEmpty()) return bodyPin
+        val query = path.substringAfter("?", "")
+        if (query.isNotEmpty()) {
+            for (pair in query.split("&")) {
+                if (pair.startsWith("pin=", ignoreCase = true)) {
+                    return pair.substringAfter("=").trim()
+                }
+            }
+        }
+        return ""
+    }
+
+    private fun isPinAuthorized(
+        path: String,
+        reqJson: JSONObject?,
+        headers: Map<String, String>
+    ): Boolean {
+        val currentPin = _sessionState.value.pairingPin.trim()
+        if (currentPin.isEmpty()) return true
+        val providedPin = extractPinFromRequest(path, reqJson, headers)
+        return providedPin == currentPin
+    }
+
     private suspend fun routeHttpRequest(
         method: String,
         path: String,
-        bodyText: String
+        bodyText: String,
+        headers: Map<String, String> = emptyMap()
     ): Pair<Int, JSONObject> {
         val cleanPath = path.substringBefore("?")
         return when {
             method == "GET" && cleanPath == "/api/sync/status" -> {
+                if (!isPinAuthorized(path, null, headers)) {
+                    return 403 to JSONObject().put("error", "Unauthorized: Invalid Pairing PIN")
+                }
                 val liveStatus = tvPlaybackStatusProvider?.invoke() ?: _sessionState.value
                 _sessionState.value = _sessionState.value.copy(
                     tvNowPlayingTitle = liveStatus.tvNowPlayingTitle,
@@ -438,9 +480,7 @@ class TvSyncManager(
             method == "POST" && cleanPath == "/api/sync/pair" -> {
                 val reqJson = runCatching { JSONObject(bodyText) }.getOrNull()
                     ?: return 400 to JSONObject().put("error", "Invalid JSON")
-                val providedPin = reqJson.optString("pin", "").trim()
-                val currentPin = _sessionState.value.pairingPin
-                if (currentPin.isNotEmpty() && providedPin != currentPin) {
+                if (!isPinAuthorized(path, reqJson, headers)) {
                     return 403 to JSONObject().put("error", "Invalid 6-digit Pairing PIN")
                 }
 
@@ -465,6 +505,9 @@ class TvSyncManager(
             method == "POST" && cleanPath == "/api/sync/navigate" -> {
                 val reqJson = runCatching { JSONObject(bodyText) }.getOrNull()
                     ?: return 400 to JSONObject().put("error", "Invalid JSON")
+                if (!isPinAuthorized(path, reqJson, headers)) {
+                    return 403 to JSONObject().put("error", "Unauthorized: Invalid Pairing PIN")
+                }
                 val cmd = RemoteNavMirrorCommand.fromJson(reqJson)
                 _incomingNavCommands.tryEmit(cmd)
                 onNavMirrorReceived?.invoke(cmd)
@@ -474,6 +517,9 @@ class TvSyncManager(
             method == "POST" && cleanPath == "/api/sync/play" -> {
                 val reqJson = runCatching { JSONObject(bodyText) }.getOrNull()
                     ?: return 400 to JSONObject().put("error", "Invalid JSON")
+                if (!isPinAuthorized(path, reqJson, headers)) {
+                    return 403 to JSONObject().put("error", "Unauthorized: Invalid Pairing PIN")
+                }
                 val cmd = RemotePlayCommand.fromJson(reqJson)
                 _sessionState.value = _sessionState.value.copy(
                     tvNowPlayingTitle = cmd.streamName,
@@ -493,6 +539,9 @@ class TvSyncManager(
             method == "POST" && cleanPath == "/api/sync/control" -> {
                 val reqJson = runCatching { JSONObject(bodyText) }.getOrNull()
                     ?: return 400 to JSONObject().put("error", "Invalid JSON")
+                if (!isPinAuthorized(path, reqJson, headers)) {
+                    return 403 to JSONObject().put("error", "Unauthorized: Invalid Pairing PIN")
+                }
                 val cmd = RemoteControlCommand.fromJson(reqJson)
                 val preControlSnapshot = tvPlaybackStatusProvider?.invoke() ?: _sessionState.value
                 when (cmd.action.uppercase(Locale.ROOT)) {
@@ -551,12 +600,19 @@ class TvSyncManager(
             put("tvNowPlayingTitle", state.tvNowPlayingTitle)
             put("tvNowPlayingStreamId", state.tvNowPlayingStreamId)
             put("tvNowPlayingType", state.tvNowPlayingType)
-            put("tvNowPlayingUrl", state.tvNowPlayingUrl)
+            // Never broadcast raw Xtream URLs containing username/password in status responses
+            put("tvNowPlayingUrl", "")
             put("tvNowPlayingPositionMs", state.tvNowPlayingPositionMs)
             put("tvIsPlaying", state.tvIsPlaying)
             put("tvActiveSubtitleLang", state.tvActiveSubtitleLang)
             put("connectedPeerName", state.connectedPeerName)
         }
+    }
+
+    private fun resolveActiveControllerPin(state: TvSyncSessionState = _sessionState.value): String {
+        return activeTargetPin.ifBlank {
+            state.savedTvHostPin.ifBlank { state.pairingPin }
+        }.trim()
     }
 
     /**
@@ -586,6 +642,7 @@ class TvSyncManager(
             }
             val request = Request.Builder()
                 .url("http://$cleanIp:$port/api/sync/pair")
+                .header("X-SetPlay-Pin", cleanPin)
                 .post(reqBodyJson.toString().toRequestBody(JSON_MEDIA_TYPE))
                 .build()
 
@@ -641,11 +698,14 @@ class TvSyncManager(
     fun sendNavMirror(command: RemoteNavMirrorCommand) {
         val state = _sessionState.value
         if (state.role != SyncRole.PHONE_CONTROLLER || !state.isSyncActive || activeTargetHostIp.isBlank()) return
+        val pin = resolveActiveControllerPin(state)
         scope.launch {
             runCatching {
+                val payloadJson = command.toJson().apply { put("pin", pin) }
                 val request = Request.Builder()
                     .url("http://$activeTargetHostIp:$activeTargetPort/api/sync/navigate")
-                    .post(command.toJson().toString().toRequestBody(JSON_MEDIA_TYPE))
+                    .header("X-SetPlay-Pin", pin)
+                    .post(payloadJson.toString().toRequestBody(JSON_MEDIA_TYPE))
                     .build()
                 httpClient.newCall(request).execute().close()
             }
@@ -660,6 +720,7 @@ class TvSyncManager(
         if (state.role != SyncRole.PHONE_CONTROLLER || !state.isSyncActive || activeTargetHostIp.isBlank()) {
             return@withContext Result.failure(IllegalStateException("Phone is not currently in TV Sync Mode"))
         }
+        val pin = resolveActiveControllerPin(state)
 
         // Optimistically update the companion bar immediately for zero-latency UX
         _sessionState.value = _sessionState.value.copy(
@@ -674,9 +735,11 @@ class TvSyncManager(
         )
 
         try {
+            val payloadJson = command.toJson().apply { put("pin", pin) }
             val request = Request.Builder()
                 .url("http://$activeTargetHostIp:$activeTargetPort/api/sync/play")
-                .post(command.toJson().toString().toRequestBody(JSON_MEDIA_TYPE))
+                .header("X-SetPlay-Pin", pin)
+                .post(payloadJson.toString().toRequestBody(JSON_MEDIA_TYPE))
                 .build()
             httpClient.newCall(request).execute().use { response ->
                 val bodyStr = response.body?.string().orEmpty()
@@ -733,11 +796,14 @@ class TvSyncManager(
         if (state.role != SyncRole.PHONE_CONTROLLER || !state.isSyncActive || activeTargetHostIp.isBlank()) {
             return@withContext Result.failure(IllegalStateException("Not in Phone Controller Sync Mode"))
         }
+        val pin = resolveActiveControllerPin(state)
         try {
             val cmd = RemoteControlCommand(action = action, value = value, seekSeconds = seekSeconds)
+            val payloadJson = cmd.toJson().apply { put("pin", pin) }
             val request = Request.Builder()
                 .url("http://$activeTargetHostIp:$activeTargetPort/api/sync/control")
-                .post(cmd.toJson().toString().toRequestBody(JSON_MEDIA_TYPE))
+                .header("X-SetPlay-Pin", pin)
+                .post(payloadJson.toString().toRequestBody(JSON_MEDIA_TYPE))
                 .build()
             httpClient.newCall(request).execute().use { response ->
                 val bodyStr = response.body?.string().orEmpty()
@@ -765,6 +831,7 @@ class TvSyncManager(
         if (state.role != SyncRole.PHONE_CONTROLLER || !state.isSyncActive || activeTargetHostIp.isBlank()) {
             return@withContext Result.failure(IllegalStateException("Not in Phone Controller Sync Mode"))
         }
+        val pin = resolveActiveControllerPin(state)
         val fallbackStreamId = state.tvNowPlayingStreamId
         val fallbackTitle = state.tvNowPlayingTitle
         val fallbackType = state.tvNowPlayingType.ifBlank { "live" }
@@ -773,9 +840,11 @@ class TvSyncManager(
 
         try {
             val stopCmd = RemoteControlCommand(action = "STOP")
+            val payloadJson = stopCmd.toJson().apply { put("pin", pin) }
             val request = Request.Builder()
                 .url("http://$activeTargetHostIp:$activeTargetPort/api/sync/control")
-                .post(stopCmd.toJson().toString().toRequestBody(JSON_MEDIA_TYPE))
+                .header("X-SetPlay-Pin", pin)
+                .post(payloadJson.toString().toRequestBody(JSON_MEDIA_TYPE))
                 .build()
             httpClient.newCall(request).execute().use { response ->
                 val bodyStr = response.body?.string().orEmpty()
@@ -826,9 +895,11 @@ class TvSyncManager(
         if (state.role != SyncRole.PHONE_CONTROLLER || !state.isSyncActive || activeTargetHostIp.isBlank()) {
             return@withContext Result.failure(IllegalStateException("Not in Phone Controller Sync Mode"))
         }
+        val pin = resolveActiveControllerPin(state)
         try {
             val request = Request.Builder()
                 .url("http://$activeTargetHostIp:$activeTargetPort/api/sync/status")
+                .header("X-SetPlay-Pin", pin)
                 .get()
                 .build()
             httpClient.newCall(request).execute().use { response ->
@@ -876,6 +947,12 @@ class TvSyncManager(
             savedTvHostName = prefs.getString(KEY_LAST_TV_NAME, "").orEmpty(),
             lastSyncStatusMessage = "Disconnected from TV Sync Mode"
         )
+    }
+
+    fun shutdown() {
+        stopServerInternal()
+        stopNsdDiscovery()
+        runCatching { scope.coroutineContext[Job]?.cancel() }
     }
 
     fun hasSavedTvHost(): Boolean {
@@ -1128,8 +1205,23 @@ class TvSyncManager(
             }
         }
 
-        fun isHomeLanConnected(): Boolean {
-            return detectLocalLanIpv4() != "127.0.0.1"
+        fun isHomeLanConnected(context: Context? = null): Boolean {
+            if (detectLocalLanIpv4() != "127.0.0.1") return true
+            if (context != null) {
+                runCatching {
+                    val cm = context.getSystemService(Context.CONNECTIVITY_SERVICE) as? android.net.ConnectivityManager
+                    val activeNet = cm?.activeNetwork
+                    val caps = if (activeNet != null) cm.getNetworkCapabilities(activeNet) else null
+                    if (caps != null && (
+                            caps.hasTransport(android.net.NetworkCapabilities.TRANSPORT_WIFI) ||
+                                caps.hasTransport(android.net.NetworkCapabilities.TRANSPORT_ETHERNET)
+                        )
+                    ) {
+                        return true
+                    }
+                }
+            }
+            return false
         }
 
         /**

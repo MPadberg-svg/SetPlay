@@ -113,7 +113,32 @@ interface CategoryDao {
 
     @Query("UPDATE categories SET isLocked = :isLocked WHERE playlistId = :playlistId AND categoryId = :categoryId")
     suspend fun setCategoryLocked(playlistId: Long, categoryId: String, isLocked: Boolean)
+
+    @Query("""
+        DELETE FROM categories
+        WHERE UPPER(categoryName) LIKE '%+18%'
+           OR UPPER(categoryName) LIKE '%18+%'
+           OR UPPER(categoryName) LIKE '%ADULT%'
+           OR UPPER(categoryName) LIKE '%XXX%'
+           OR UPPER(categoryName) LIKE '%PORN%'
+           OR UPPER(categoryName) LIKE '%EROTIC%'
+           OR UPPER(categoryName) LIKE '%NSFW%'
+           OR UPPER(categoryName) LIKE '%PLAYBOY%'
+           OR UPPER(categoryName) LIKE '%BRAZZERS%'
+           OR UPPER(categoryName) LIKE '%ONLYFANS%'
+           OR UPPER(categoryName) LIKE '%HENTAI%'
+           OR UPPER(categoryName) LIKE '%XVIDEOS%'
+           OR UPPER(categoryName) LIKE '%XNXX%'
+           OR categoryName LIKE '%للكبار%'
+    """)
+    suspend fun purgeAdultCategories(): Int
 }
+
+data class StreamPositionSnapshot(
+    val streamId: Long,
+    val lastPositionMs: Long,
+    val watchHistoryTimestamp: Long
+)
 
 @Dao
 interface StreamDao {
@@ -215,6 +240,12 @@ interface StreamDao {
     @Query("UPDATE streams SET isFavorite = 1 WHERE playlistId = :playlistId AND streamType = :type AND streamId IN (:streamIds)")
     suspend fun restoreFavorites(playlistId: Long, type: String, streamIds: List<Long>)
 
+    @Query("SELECT streamId, lastPositionMs, watchHistoryTimestamp FROM streams WHERE playlistId = :playlistId AND streamType = :type AND (lastPositionMs > 0 OR watchHistoryTimestamp > 0)")
+    suspend fun getSavedStreamPositions(playlistId: Long, type: String): List<StreamPositionSnapshot>
+
+    @Query("UPDATE streams SET lastPositionMs = :lastPositionMs, watchHistoryTimestamp = :watchHistoryTimestamp WHERE playlistId = :playlistId AND streamType = :type AND streamId = :streamId")
+    suspend fun restoreStreamPosition(playlistId: Long, type: String, streamId: Long, lastPositionMs: Long, watchHistoryTimestamp: Long)
+
     @Query("UPDATE streams SET lastPositionMs = :positionMs, watchHistoryTimestamp = :timestamp WHERE id = :id")
     suspend fun updatePlaybackPosition(id: Long, positionMs: Long, timestamp: Long)
 
@@ -232,6 +263,48 @@ interface StreamDao {
 
     @Query("DELETE FROM streams WHERE playlistId = :playlistId")
     suspend fun clearStreamsForPlaylist(playlistId: Long)
+
+    @Query("DELETE FROM streams WHERE playlistId = :playlistId AND streamType = :streamType")
+    suspend fun deleteStreamsByType(playlistId: Long, streamType: String)
+
+    @Query("""
+        DELETE FROM streams
+        WHERE categoryId != ''
+          AND EXISTS (
+              SELECT 1 FROM categories c
+              WHERE c.playlistId = streams.playlistId
+          )
+          AND NOT EXISTS (
+              SELECT 1 FROM categories c
+              WHERE c.playlistId = streams.playlistId
+                AND c.categoryId = streams.categoryId
+                AND c.type = CASE
+                    WHEN streams.streamType = 'live' THEN 'LIVE'
+                    WHEN streams.streamType = 'movie' THEN 'MOVIE'
+                    ELSE 'SERIES'
+                END
+          )
+    """)
+    suspend fun purgeStreamsInDeletedCategories(): Int
+
+    @Query("""
+        DELETE FROM streams
+        WHERE UPPER(name) LIKE '%+18%'
+           OR UPPER(name) LIKE '%18+%'
+           OR UPPER(name) LIKE '%ADULT%'
+           OR UPPER(name) LIKE '%XXX%'
+           OR UPPER(name) LIKE '%PORN%'
+           OR UPPER(name) LIKE '%EROTIC%'
+           OR UPPER(name) LIKE '%NSFW%'
+           OR UPPER(name) LIKE '%PLAYBOY%'
+           OR UPPER(name) LIKE '%BRAZZERS%'
+           OR UPPER(name) LIKE '%ONLYFANS%'
+           OR UPPER(name) LIKE '%HENTAI%'
+           OR UPPER(name) LIKE '%XVIDEOS%'
+           OR UPPER(name) LIKE '%XNXX%'
+           OR name LIKE '%للكبار%'
+    """)
+    suspend fun purgeAdultStreamsByName(): Int
 
     @Query("SELECT COUNT(*) FROM streams WHERE playlistId = :playlistId AND streamType = :type")
     suspend fun countStreams(playlistId: Long, type: String): Int

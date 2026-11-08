@@ -30,6 +30,7 @@ object SecurityManager {
     private const val GCM_TAG_LENGTH_BITS = 128
 
     const val ENCRYPTED_PREFIX = "ENC:v1:"
+    const val FALLBACK_PREFIX = "ENC_FALLBACK_V1:"
     const val HASHED_PIN_PREFIX = "HASH:v1:"
 
     private const val MAX_PIN_ATTEMPTS = 5
@@ -42,11 +43,71 @@ object SecurityManager {
         "ts", "mp4", "mkv", "m3u8", "avi", "flv", "mov", "webm", "mpg", "mpeg", "mp3", "aac"
     )
 
+    private val ADULT_WHOLE_WORD_REGEX = Regex(
+        """\b(?:adult|adults|porn|porno|pornography|erotic|erotica|nsfw|playboy|brazzers|onlyfans|hentai|xvideos|xnxx|redtube|youporn|sex\s*cam|live\s*sex|arab\s*sex)\b""",
+        RegexOption.IGNORE_CASE
+    )
+
+    private val ADULT_TAG_TOKEN_REGEX = Regex(
+        """(?:^|[\s|\-_/┃¦\[\]()•✦●★:])(?:\+18|18\+|xxx|sex|ero|18\s*ans|للكبار)(?!\w)""",
+        RegexOption.IGNORE_CASE
+    )
+
+    /**
+     * Centralized classifier that returns `true` for any Adult / +18 / XXX / NSFW category or stream.
+     * Uses strict word/token boundaries so substrings inside normal words ("Hero", "Zero", "Romero", "Sussex")
+     * are never false-flagged.
+     */
+    fun isAdultContent(
+        name: String?,
+        categoryName: String? = null,
+        isAdultFlag: String? = null
+    ): Boolean {
+        val cleanFlag = isAdultFlag?.trim()
+        if (cleanFlag == "1" || cleanFlag.equals("true", ignoreCase = true)) {
+            return true
+        }
+        return matchesAdultToken(name) || matchesAdultToken(categoryName)
+    }
+
+    private fun matchesAdultToken(text: String?): Boolean {
+        if (text.isNullOrBlank()) return false
+        return ADULT_WHOLE_WORD_REGEX.containsMatchIn(text) ||
+            ADULT_TAG_TOKEN_REGEX.containsMatchIn(text)
+    }
+
     // Fallback in-memory/test key used only when running on local JVM unit tests without AndroidKeyStore hardware
     private val jvmFallbackKey: SecretKey by lazy {
         val digest = MessageDigest.getInstance("SHA-256")
             .digest("SetPlay-Local-JVM-Fallback-Key-2026".toByteArray(Charsets.UTF_8))
         SecretKeySpec(digest, "AES")
+    }
+
+    private val fallbackXorMask: ByteArray by lazy {
+        MessageDigest.getInstance("SHA-256")
+            .digest("SetPlay-Fallback-Obfuscation-Mask-v1".toByteArray(Charsets.UTF_8))
+    }
+
+    private fun obfuscateFallback(plaintext: String): String {
+        val raw = plaintext.toByteArray(Charsets.UTF_8)
+        val mask = fallbackXorMask
+        val xored = ByteArray(raw.size) { i ->
+            (raw[i].toInt() xor mask[i % mask.size].toInt()).toByte()
+        }
+        return FALLBACK_PREFIX + Base64.encodeToString(xored, Base64.NO_WRAP)
+    }
+
+    private fun deobfuscateFallback(encoded: String): String {
+        return try {
+            val xored = Base64.decode(encoded.removePrefix(FALLBACK_PREFIX), Base64.NO_WRAP)
+            val mask = fallbackXorMask
+            val raw = ByteArray(xored.size) { i ->
+                (xored[i].toInt() xor mask[i % mask.size].toInt()).toByte()
+            }
+            String(raw, Charsets.UTF_8)
+        } catch (_: Exception) {
+            ""
+        }
     }
 
     @Synchronized
@@ -73,12 +134,16 @@ object SecurityManager {
         }
     }
 
+    fun encryptSecret(plaintext: String): String = encryptCredential(plaintext)
+
+    fun decryptSecret(stored: String): String = decryptCredential(stored)
+
     /**
      * Encrypts a plaintext credential using AES-256-GCM.
-     * Idempotent: if input already starts with [ENCRYPTED_PREFIX], returns it unchanged.
+     * Idempotent: if input already starts with [ENCRYPTED_PREFIX] or [FALLBACK_PREFIX], returns it unchanged.
      */
     fun encryptCredential(plaintext: String): String {
-        if (plaintext.isEmpty() || plaintext.startsWith(ENCRYPTED_PREFIX)) {
+        if (plaintext.isEmpty() || plaintext.startsWith(ENCRYPTED_PREFIX) || plaintext.startsWith(FALLBACK_PREFIX)) {
             return plaintext
         }
         return try {
@@ -105,17 +170,22 @@ object SecurityManager {
                 System.arraycopy(cipherBytes, 0, combined, iv.size, cipherBytes.size)
                 ENCRYPTED_PREFIX + Base64.encodeToString(combined, Base64.NO_WRAP)
             } catch (_: Exception) {
-                plaintext
+                obfuscateFallback(plaintext)
             }
         }
     }
 
     /**
-     * Decrypts an AES-256-GCM encrypted credential prefixed with [ENCRYPTED_PREFIX].
+     * Decrypts an AES-256-GCM encrypted credential prefixed with [ENCRYPTED_PREFIX]
+     * or fallback-obfuscated credential prefixed with [FALLBACK_PREFIX].
      * Transparently returns plaintext if the string is not encrypted (seamless migration).
      */
     fun decryptCredential(stored: String): String {
-        if (stored.isEmpty() || !stored.startsWith(ENCRYPTED_PREFIX)) {
+        if (stored.isEmpty()) return stored
+        if (stored.startsWith(FALLBACK_PREFIX)) {
+            return deobfuscateFallback(stored)
+        }
+        if (!stored.startsWith(ENCRYPTED_PREFIX)) {
             return stored
         }
         val encoded = stored.removePrefix(ENCRYPTED_PREFIX)

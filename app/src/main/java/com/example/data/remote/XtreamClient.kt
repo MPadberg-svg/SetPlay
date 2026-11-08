@@ -83,7 +83,7 @@ class XtreamClient(
                         val msg = authRes?.userInfo?.message ?: "Invalid username or password"
                         return@withContext Result.failure(IOException(msg))
                     }
-                    return@withContext Result.success(authRes)
+                    return@withContext Result.success(authRes.copy(resolvedServerUrl = candidateBaseUrl))
                 }
             } catch (e: Exception) {
                 val safeMsg = SecurityManager.redactSensitiveText(e.message, username, plainPassword)
@@ -140,7 +140,7 @@ class XtreamClient(
                                     }
                                 }
                                 reader.endObject()
-                                if (catId.isNotEmpty() && catName.isNotEmpty()) {
+                                if (catId.isNotEmpty() && catName.isNotEmpty() && !SecurityManager.isAdultContent(catName)) {
                                     categories.add(
                                         CategoryEntity(
                                             playlistId = playlistId,
@@ -215,6 +215,7 @@ class XtreamClient(
                             var tvArchive = 0
                             var tvArchiveDuration = 0
                             var containerExt = defaultExt
+                            var isAdult = "0"
 
                             try {
                                 reader.beginObject()
@@ -228,6 +229,7 @@ class XtreamClient(
                                         "rating", "rating_5based" -> rating = readSafeString(reader)
                                         "tv_archive" -> tvArchive = readSafeInt(reader)
                                         "tv_archive_duration" -> tvArchiveDuration = readSafeInt(reader)
+                                        "is_adult" -> isAdult = readSafeString(reader)
                                         "container_extension" -> {
                                             val ext = readSafeString(reader)
                                             if (ext.isNotEmpty()) {
@@ -239,7 +241,10 @@ class XtreamClient(
                                 }
                                 reader.endObject()
 
-                                if (streamId > 0 && name.isNotEmpty()) {
+                                if (streamId > 0 &&
+                                    name.isNotEmpty() &&
+                                    !SecurityManager.isAdultContent(name, categoryName = null, isAdultFlag = isAdult)
+                                ) {
                                     currentBatch.add(
                                         StreamEntity(
                                             playlistId = playlistId,

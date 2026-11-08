@@ -371,11 +371,11 @@ fun PlayerScreen(
                 )
         )
 
-        // 2. Gesture Layer (Tap to show/hide controls, Double-Tap +/-10s with ripple, Left Swipe Brightness, Right Swipe Volume, Pinch Zoom)
+        // 2. Gesture Layer (Tap to show/hide controls; Phone-only: Double-Tap +/-10s with ripple, Left Swipe Brightness, Right Swipe Volume, Pinch Zoom)
         Box(
             modifier = Modifier
                 .fillMaxSize()
-                .pointerInput(uiState.isTouchLocked, uiState.isLive) {
+                .pointerInput(uiState.isTouchLocked, uiState.isLive, activeEdition) {
                     detectTapGestures(
                         onTap = {
                             if (uiState.isChannelZapperOpen) {
@@ -385,6 +385,7 @@ fun PlayerScreen(
                             }
                         },
                         onDoubleTap = { offset ->
+                            if (activeEdition != SetPlayEdition.PHONE) return@detectTapGestures
                             if (!uiState.isTouchLocked && !uiState.isLive) {
                                 if (offset.x < screenWidth / 2f) {
                                     viewModel.seekRelative(-10)
@@ -403,16 +404,16 @@ fun PlayerScreen(
                         }
                     )
                 }
-                .pointerInput(uiState.isTouchLocked) {
-                    if (uiState.isTouchLocked) return@pointerInput
+                .pointerInput(uiState.isTouchLocked, activeEdition) {
+                    if (activeEdition != SetPlayEdition.PHONE || uiState.isTouchLocked) return@pointerInput
                     detectTransformGestures { _, pan, zoom, _ ->
                         if (abs(zoom - 1.0f) > 0.01f || uiState.videoZoomScale > 1.02f) {
                             viewModel.onTransformGesture(zoom, pan.x, pan.y)
                         }
                     }
                 }
-                .pointerInput(uiState.isTouchLocked, uiState.isLive) {
-                    if (uiState.isTouchLocked) return@pointerInput
+                .pointerInput(uiState.isTouchLocked, uiState.isLive, activeEdition) {
+                    if (activeEdition != SetPlayEdition.PHONE || uiState.isTouchLocked) return@pointerInput
                     var totalDragY = 0f
                     var totalDragX = 0f
                     var isHorizontal = false
@@ -1152,8 +1153,8 @@ fun PlayerScreen(
                     }
                     .background(
                         Brush.verticalGradient(
-                            0.0f to Color.Black.copy(alpha = 0.78f),
-                            0.22f to Color.Black.copy(alpha = 0.25f),
+                            0.0f to Color.Black.copy(alpha = 0.88f),
+                            0.26f to Color.Black.copy(alpha = 0.48f),
                             0.50f to Color.Black.copy(alpha = 0.15f),
                             0.76f to Color.Black.copy(alpha = 0.30f),
                             1.0f to Color.Black.copy(alpha = 0.86f)
@@ -1560,6 +1561,24 @@ fun PlayerScreen(
                         }
                     }
 
+                    if (activeEdition == SetPlayEdition.TV) {
+                        Spacer(modifier = Modifier.height(6.dp))
+                        Surface(
+                            color = Color(0xCC0D1826),
+                            shape = RoundedCornerShape(50),
+                            border = BorderStroke(0.8.dp, AmberGold.copy(alpha = 0.45f)),
+                            modifier = Modifier.testTag("tv_player_remote_hint_pill")
+                        ) {
+                            Text(
+                                text = "📺 Remote: OK Play/Pause • Left Channel List • Up/Down Zap",
+                                color = PaleGold,
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.SemiBold,
+                                modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp)
+                            )
+                        }
+                    }
+
                     Spacer(modifier = Modifier.height(6.dp))
 
                     // 2. Reorganized 2-Cluster Bottom Control Bar:
@@ -1611,11 +1630,11 @@ fun PlayerScreen(
                                 modifier = Modifier.testTag("player_audio_tracks")
                             )
 
-                            // Live TV Specific Primary Pills: 📋 Channels Zapper, Multi-Feed Switcher, Catchup, 15m Halftime Timer
+                            // Live TV Specific Primary Pills: Channels Zapper, Multi-Feed Switcher, Catchup, 15m Halftime Timer
                             if (uiState.isLive) {
                                 PrimaryLabeledHudPill(
                                     icon = Icons.Default.Tv,
-                                    label = "📋 Channels",
+                                    label = "Channels",
                                     isActive = showLiveChannelZapperDrawer,
                                     onClick = { showLiveChannelZapperDrawer = !showLiveChannelZapperDrawer },
                                     modifier = Modifier.testTag("player_channel_zapper_button")
@@ -1624,7 +1643,7 @@ fun PlayerScreen(
                                 val feedCount = uiState.alternateQualityFeeds.size.coerceAtLeast(1)
                                 PrimaryLabeledHudPill(
                                     icon = Icons.Default.Bolt,
-                                    label = "⚡ Feed ($feedCount)",
+                                    label = "Feed ($feedCount)",
                                     isActive = feedCount > 1,
                                     onClick = { showFeedSwitcherSheet = true },
                                     modifier = Modifier.testTag("player_feed_switcher_button")
@@ -1640,9 +1659,9 @@ fun PlayerScreen(
 
                                 val htRem = uiState.halftimeTimerRemainingSeconds
                                 val htLabel = if (htRem != null && htRem > 0) {
-                                    String.format(Locale.US, "⏱️ %02d:%02d HT", htRem / 60, htRem % 60)
+                                    String.format(Locale.US, "%02d:%02d HT", htRem / 60, htRem % 60)
                                 } else {
-                                    "⏱️ 15m HT Timer"
+                                    "15m HT Timer"
                                 }
                                 PrimaryLabeledHudPill(
                                     icon = Icons.Default.Timer,
@@ -3174,6 +3193,17 @@ internal fun TvLiveChannelZapperOverlay(
     onClose: () -> Unit,
     modifier: Modifier = Modifier
 ) {
+    val activeChannelFocusRequester = remember { FocusRequester() }
+    val hasCurrentChannelMatch = remember(channels, currentStreamId) {
+        channels.any { it.streamId == currentStreamId }
+    }
+
+    LaunchedEffect(currentStreamId, channels.size) {
+        if (channels.isNotEmpty()) {
+            runCatching { activeChannelFocusRequester.requestFocus() }
+        }
+    }
+
     Surface(
         color = Color(0xEB081018),
         modifier = modifier
@@ -3259,6 +3289,7 @@ internal fun TvLiveChannelZapperOverlay(
                     key = { idx, ch -> "${ch.id}_${ch.streamId}_$idx" }
                 ) { index, ch ->
                     val isCurrent = ch.streamId == currentStreamId
+                    val isInitialFocusTarget = isCurrent || (!hasCurrentChannelMatch && index == 0)
                     val cleanTitle = remember(ch.name) {
                         StreamMetadataParser.cleanDisplayTitle(ch.name).ifBlank { ch.name }
                     }
@@ -3277,6 +3308,13 @@ internal fun TvLiveChannelZapperOverlay(
                                 width = if (isCurrent) 1.4.dp else 0.8.dp,
                                 color = if (isCurrent) AmberGold else Color.White.copy(alpha = 0.08f),
                                 shape = RoundedCornerShape(12.dp)
+                            )
+                            .then(
+                                if (isInitialFocusTarget) {
+                                    Modifier.focusRequester(activeChannelFocusRequester)
+                                } else {
+                                    Modifier
+                                }
                             )
                             .tvFocusableControl(
                                 accentColor = AmberGold,

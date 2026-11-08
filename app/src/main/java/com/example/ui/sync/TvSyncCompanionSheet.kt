@@ -394,7 +394,7 @@ fun TvSyncModalSheet(
     statusErrorMessage: String?,
     activeEdition: SetPlayEdition = SetPlayEdition.PHONE,
     defaultToTvHostTab: Boolean = false,
-    isHomeLanConnected: Boolean = TvSyncManager.isHomeLanConnected(),
+    isHomeLanConnected: Boolean = TvSyncManager.isHomeLanConnected(androidx.compose.ui.platform.LocalContext.current),
     onStartTvHostMode: () -> Unit,
     onStartPhoneDiscovery: () -> Unit,
     onConnectToTv: (ip: String, port: Int, pin: String) -> Unit,

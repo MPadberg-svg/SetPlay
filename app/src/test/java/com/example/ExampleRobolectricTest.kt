@@ -2779,6 +2779,178 @@ class ExampleRobolectricTest {
             com.example.data.sync.TvSyncManager.selectBestLanIpv4FromCandidates(cellularOnlyCandidates)
         )
     }
+
+    @Test
+    fun `test SecurityManager isAdultContent classifier and SQLite purgeAllAdultContent`() = runBlocking {
+        // 1. Positive Adult / +18 matches (including exact requested strings)
+        assertTrue(SecurityManager.isAdultContent("ADULT +18 PORN"))
+        assertTrue(SecurityManager.isAdultContent("|XXX| Movies"))
+        assertTrue(SecurityManager.isAdultContent("18+ VIP"))
+        assertTrue(SecurityManager.isAdultContent("AR| Erotic"))
+        assertTrue(SecurityManager.isAdultContent("VIP | +18 Adult Channels"))
+        assertTrue(SecurityManager.isAdultContent("18+ Live Movies"))
+        assertTrue(SecurityManager.isAdultContent("FR | XXX Late Night"))
+        assertTrue(SecurityManager.isAdultContent("Playboy TV HD"))
+        assertTrue(SecurityManager.isAdultContent("Brazzers Premium"))
+        assertTrue(SecurityManager.isAdultContent("OnlyFans Exclusive"))
+        assertTrue(SecurityManager.isAdultContent("Hentai Anime"))
+        assertTrue(SecurityManager.isAdultContent("XVideos Stream"))
+        assertTrue(SecurityManager.isAdultContent("XNXX Channel"))
+        assertTrue(SecurityManager.isAdultContent("أفلام للكبار فقط"))
+        assertTrue(SecurityManager.isAdultContent("Normal Title", isAdultFlag = "1"))
+        assertTrue(SecurityManager.isAdultContent("Normal Title", isAdultFlag = "true"))
+
+        // 2. False-positive immunity on normal words containing "ero" or "sex" substrings
+        assertFalse(SecurityManager.isAdultContent("Hero"))
+        assertFalse(SecurityManager.isAdultContent("Zero"))
+        assertFalse(SecurityManager.isAdultContent("Romero"))
+        assertFalse(SecurityManager.isAdultContent("Sussex"))
+        assertFalse(SecurityManager.isAdultContent("beIN Sports 1 HD"))
+        assertFalse(SecurityManager.isAdultContent("My Hero Academia"))
+        assertFalse(SecurityManager.isAdultContent("Zero Dark Thirty"))
+        assertFalse(SecurityManager.isAdultContent("Cristian Romero Highlights"))
+        assertFalse(SecurityManager.isAdultContent("Sussex County Cricket"))
+        assertFalse(SecurityManager.isAdultContent("✦●✦| AR - beIN Sports 1 FHD"))
+        assertFalse(SecurityManager.isAdultContent("AR| Mr. Robot"))
+
+        // 3. Database purge removes adult categories and streams while keeping family/sports content
+        val repository = IptvRepository(
+            playlistDao = database.playlistDao(),
+            categoryDao = database.categoryDao(),
+            streamDao = database.streamDao(),
+            epgDao = database.epgDao(),
+            parentalDao = database.parentalSettingsDao()
+        )
+        val playlistId = repository.addOrUpdatePlaylist(
+            PlaylistEntity(
+                name = "Purge Test Vault",
+                serverUrl = "http://live.example.com:8080",
+                username = "user",
+                password = "pass",
+                isActive = true
+            )
+        )
+        database.categoryDao().insertCategories(
+            listOf(
+                CategoryEntity(playlistId = playlistId, categoryId = "cat_sports", categoryName = "AR | Sports FHD", type = "LIVE"),
+                CategoryEntity(playlistId = playlistId, categoryId = "cat_xxx", categoryName = "VIP | +18 Adult XXX", type = "LIVE")
+            )
+        )
+        database.streamDao().insertStreamsBatch(
+            listOf(
+                StreamEntity(playlistId = playlistId, streamId = 101L, categoryId = "cat_sports", name = "beIN Sports 1 FHD", streamType = "live"),
+                StreamEntity(playlistId = playlistId, streamId = 998L, categoryId = "cat_xxx", name = "Channel In Adult Category", streamType = "live"),
+                StreamEntity(playlistId = playlistId, streamId = 999L, categoryId = "cat_sports", name = "XXX Porn Stream +18", streamType = "live")
+            )
+        )
+
+        repository.purgeAllAdultContent()
+
+        val remainingCats = database.categoryDao().getCategoriesOnce(playlistId, "LIVE")
+        assertEquals(1, remainingCats.size)
+        assertEquals("cat_sports", remainingCats.first().categoryId)
+
+        val remainingStreams = database.streamDao().getStreamsInitial(playlistId, "live", limit = 50).first()
+        assertEquals(1, remainingStreams.size)
+        assertEquals(101L, remainingStreams.first().streamId)
+    }
+
+    @Test
+    fun `test TvSyncManager enforces X-SetPlay-Pin on all endpoints and scrubs tvNowPlayingUrl`() = runBlocking {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val tvHost = com.example.data.sync.TvSyncManager(context)
+        try {
+            val hostState = tvHost.startTvHostServer(preferredPort = 18920, customPin = "654321")
+            val port = hostState.serverPort
+            tvHost.tvPlaybackStatusProvider = {
+                hostState.copy(
+                    tvNowPlayingTitle = "beIN Sports 1",
+                    tvNowPlayingStreamId = "101",
+                    tvNowPlayingType = "live",
+                    tvNowPlayingUrl = "http://secret.iptv.server:8080/live/myuser/mypassword/101.ts",
+                    tvIsPlaying = true
+                )
+            }
+
+            fun sendSyncHttp(
+                method: String,
+                path: String,
+                pinHeader: String? = null,
+                jsonBody: String? = null
+            ): Pair<Int, String> {
+                val conn = (java.net.URL("http://127.0.0.1:$port$path").openConnection() as java.net.HttpURLConnection).apply {
+                    requestMethod = method
+                    connectTimeout = 3000
+                    readTimeout = 3000
+                    setRequestProperty("Content-Type", "application/json; charset=utf-8")
+                    if (pinHeader != null) {
+                        setRequestProperty("X-SetPlay-Pin", pinHeader)
+                    }
+                    if (jsonBody != null) {
+                        doOutput = true
+                        outputStream.use { it.write(jsonBody.toByteArray(Charsets.UTF_8)) }
+                    }
+                }
+                val code = conn.responseCode
+                val stream = if (code in 200..299) conn.inputStream else conn.errorStream
+                val body = stream?.bufferedReader(Charsets.UTF_8)?.use { it.readText() }.orEmpty()
+                conn.disconnect()
+                return code to body
+            }
+
+            // 1. Unauthenticated or wrong-PIN requests to /api/sync/navigate, /api/sync/play, /api/sync/control, /api/sync/status must return HTTP 403
+            val postEndpoints = listOf(
+                "/api/sync/navigate" to """{"screen":"LIVE_TV","category":"Sports"}""",
+                "/api/sync/play" to """{"stream_id":"101","title":"beIN Sports 1","stream_type":"live","stream_url":"http://live.example.com/101.ts"}""",
+                "/api/sync/control" to """{"action":"TOGGLE_PLAY_PAUSE"}"""
+            )
+            for ((path, payload) in postEndpoints) {
+                val (unauthCode, _) = sendSyncHttp("POST", path, pinHeader = null, jsonBody = payload)
+                assertEquals("Expected 403 for unauthenticated $path", 403, unauthCode)
+
+                val (wrongPinCode, _) = sendSyncHttp("POST", path, pinHeader = "000000", jsonBody = payload)
+                assertEquals("Expected 403 for wrong PIN on $path", 403, wrongPinCode)
+
+                val (validPinCode, _) = sendSyncHttp("POST", path, pinHeader = "654321", jsonBody = payload)
+                assertEquals("Expected 200 for authenticated $path", 200, validPinCode)
+            }
+
+            // Unauthenticated GET /api/sync/status must be rejected with HTTP 403
+            val (unauthStatusCode, _) = sendSyncHttp("GET", "/api/sync/status", pinHeader = null)
+            assertEquals(403, unauthStatusCode)
+
+            // 2. Authenticated GET /api/sync/status with X-SetPlay-Pin succeeds and scrubs tvNowPlayingUrl
+            val (authStatusCode, statusBody) = sendSyncHttp("GET", "/api/sync/status", pinHeader = "654321")
+            assertEquals(200, authStatusCode)
+            assertTrue(statusBody.contains("beIN Sports 1"))
+            assertFalse(statusBody.contains("mypassword"))
+            assertFalse(statusBody.contains("secret.iptv.server"))
+        } finally {
+            tvHost.shutdown()
+        }
+    }
+
+    @Test
+    fun `test StreamMetadataParser strips leading decorative Unicode symbols and compacts broadcast labels`() {
+        assertEquals(
+            "beIN Sports",
+            com.example.util.StreamMetadataParser.cleanDisplayTitle("✦●✦| AR - beIN Sports FHD")
+        )
+        assertEquals(
+            "AR",
+            com.example.util.StreamMetadataParser.extractLanguageBadge("✦●✦| AR - beIN Sports FHD")
+        )
+        assertEquals(
+            "Mr. Robot",
+            com.example.util.StreamMetadataParser.cleanDisplayTitle("AR| Mr. Robot")
+        )
+        assertEquals(
+            "beIN Sports 2",
+            com.example.util.StreamMetadataParser.compactBroadcastChannelLabel(
+                "✦●✦| ES | beIN Sports 2 FHD [LaLiga: Malaga vs. Racing Santander]"
+            )
+        )
+    }
 }
 
 @RunWith(RobolectricTestRunner::class)
@@ -2830,4 +3002,124 @@ class TvSyncDeviceSeparationComposeTest {
         composeTestRule.onNode(androidx.compose.ui.test.hasTestTag("tv_sync_ip_input")).assertDoesNotExist()
         composeTestRule.onNode(androidx.compose.ui.test.hasTestTag("tv_sync_scan_qr_camera_btn")).assertDoesNotExist()
     }
+
+    @OptIn(androidx.compose.material3.ExperimentalMaterial3Api::class)
+    @Test
+    fun `test Automated TV Edition UI and D-Pad Verification`() {
+        val application = ApplicationProvider.getApplicationContext<Application>()
+        com.example.util.EditionResolver.runtimeEditionOverride = com.example.util.SetPlayEdition.TV
+        val playerVm = com.example.ui.player.PlayerViewModel(application)
+        try {
+            val activeScreen = androidx.compose.runtime.mutableStateOf(com.example.ui.viewmodel.AppScreen.HOME)
+            val syncState = com.example.data.sync.TvSyncSessionState(
+                localIpAddress = "192.168.1.45",
+                serverPort = 8765,
+                pairingPin = "943746"
+            )
+            val testPlaylist = PlaylistEntity(
+                name = "TV Vault",
+                serverUrl = "http://live.example.com:8080",
+                username = "u",
+                password = "p",
+                isActive = true
+            )
+
+            composeTestRule.setContent {
+                androidx.compose.foundation.layout.Row {
+                    TvLeftNavigationRail(
+                        currentScreen = activeScreen.value,
+                        liveMatchesCount = 3,
+                        favoritesCount = 5,
+                        tvSyncState = syncState,
+                        onScreenSelected = { activeScreen.value = it },
+                        onOpenTvSyncQr = {}
+                    )
+                    com.example.ui.player.PlayerScreen(
+                        viewModel = playerVm,
+                        playlist = testPlaylist,
+                        onBack = {},
+                        onToggleFavorite = {},
+                        activeEdition = com.example.util.SetPlayEdition.TV,
+                        modifier = androidx.compose.ui.Modifier.weight(1f)
+                    )
+                }
+            }
+            composeTestRule.waitForIdle()
+
+            // 1. Verify 10-Foot TV Left Navigation Rail and its D-Pad focusable items are visible
+            composeTestRule.onNode(androidx.compose.ui.test.hasTestTag("tv_left_navigation_rail")).assertExists()
+            composeTestRule.onNode(androidx.compose.ui.test.hasTestTag("nav_home")).assertExists()
+            composeTestRule.onNode(androidx.compose.ui.test.hasTestTag("nav_live_tv")).assertExists()
+            composeTestRule.onNode(androidx.compose.ui.test.hasTestTag("tv_rail_sync_status_pod")).assertExists()
+
+            // 2. Verify TV Player HUD shows 10-foot remote hint pill and hides phone-only controls
+            composeTestRule.onNode(androidx.compose.ui.test.hasTestTag("tv_player_remote_hint_pill")).assertExists()
+            composeTestRule.onNode(androidx.compose.ui.test.hasTestTag("player_rotate_button")).assertDoesNotExist()
+            composeTestRule.onNode(androidx.compose.ui.test.hasTestTag("player_touch_lock_button")).assertDoesNotExist()
+            composeTestRule.onNode(androidx.compose.ui.test.hasTestTag("player_send_to_tv_button")).assertDoesNotExist()
+
+            // 3. Verify D-Pad remote key choreography (OK/Center, Left Zapper, Up/Down Channel Zap)
+            var toggledPlay = false
+            var openedZapper = false
+            var zappedOffset = 0
+            val centerHandled = com.example.ui.player.handlePlayerRemoteKeyEvent(
+                keyCode = android.view.KeyEvent.KEYCODE_DPAD_CENTER,
+                isLive = true,
+                isControlsVisible = false,
+                isTouchLocked = false,
+                onShowControlsOrTogglePlay = { toggledPlay = true },
+                onTogglePlayPause = {},
+                onZapChannel = {},
+                onSeekRelative = {}
+            )
+            assertTrue(centerHandled)
+            assertTrue(toggledPlay)
+
+            val leftHandled = com.example.ui.player.handlePlayerRemoteKeyEvent(
+                keyCode = android.view.KeyEvent.KEYCODE_DPAD_LEFT,
+                isLive = true,
+                isControlsVisible = false,
+                isTouchLocked = false,
+                onShowControlsOrTogglePlay = {},
+                onTogglePlayPause = {},
+                onZapChannel = {},
+                onSeekRelative = {},
+                onOpenLiveChannelZapper = { openedZapper = true }
+            )
+            assertTrue(leftHandled)
+            assertTrue(openedZapper)
+
+            val upHandled = com.example.ui.player.handlePlayerRemoteKeyEvent(
+                keyCode = android.view.KeyEvent.KEYCODE_DPAD_UP,
+                isLive = true,
+                isControlsVisible = false,
+                isTouchLocked = false,
+                onShowControlsOrTogglePlay = {},
+                onTogglePlayPause = {},
+                onZapChannel = { zappedOffset = it },
+                onSeekRelative = {}
+            )
+            assertTrue(upHandled)
+            assertEquals(1, zappedOffset)
+
+            val downHandled = com.example.ui.player.handlePlayerRemoteKeyEvent(
+                keyCode = android.view.KeyEvent.KEYCODE_DPAD_DOWN,
+                isLive = true,
+                isControlsVisible = false,
+                isTouchLocked = false,
+                onShowControlsOrTogglePlay = {},
+                onTogglePlayPause = {},
+                onZapChannel = { zappedOffset = it },
+                onSeekRelative = {}
+            )
+            assertTrue(downHandled)
+            assertEquals(-1, zappedOffset)
+        } finally {
+            com.example.util.EditionResolver.runtimeEditionOverride = null
+            playerVm.stopAndClosePlayer()
+        }
+    }
 }
+
+
+

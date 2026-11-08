@@ -1,0 +1,70 @@
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="320dp"
+    android:height="180dp"
+    android:viewportWidth="320"
+    android:viewportHeight="180">
+
+    <!-- 1. Luxury Obsidian / Midnight Slate 16:9 Background (#07131E) -->
+    <path
+        android:fillColor="#07131E"
+        android:pathData="M0,0h320v180h-320z" />
+
+    <!-- 2. Subtle Stadium Horizon & Cinema Spotlight Accents -->
+    <path
+        android:fillColor="#0E2235"
+        android:pathData="M0,126 C90,104 230,104 320,126 L320,180 L0,180 Z" />
+
+    <path
+        android:fillColor="#142F47"
+        android:pathData="M48,18 L272,18 C288,18 302,32 302,48 L302,132 C302,148 288,162 272,162 L48,162 C32,162 18,148 18,132 L18,48 C18,32 32,18 48,18 Z" />
+
+    <!-- 3. Royal Gold Outer Widescreen Frame (#F5B041) -->
+    <path
+        android:fillColor="#00000000"
+        android:strokeColor="#F5B041"
+        android:strokeWidth="3"
+        android:pathData="M10,10 L310,10 L310,170 L10,170 Z" />
+
+    <path
+        android:fillColor="#00000000"
+        android:strokeColor="#66F6E8C8"
+        android:strokeWidth="1.2"
+        android:pathData="M16,16 L304,16 L304,164 L16,164 Z" />
+
+    <!-- 4. Central Gold Set ▶ Play Crest Medallion -->
+    <path
+        android:fillColor="#07131E"
+        android:strokeColor="#F5B041"
+        android:strokeWidth="3.5"
+        android:pathData="M160,42 A48,48 0 1,1 159.9,42 Z" />
+
+    <path
+        android:fillColor="#1AF5B041"
+        android:pathData="M160,50 A40,40 0 1,1 159.9,50 Z" />
+
+    <!-- Sculpted Play Triangle Inside Crest -->
+    <path
+        android:fillColor="#F5B041"
+        android:pathData="M147,68 L184,90 L147,112 Z" />
+
+    <path
+        android:fillColor="#F6E8C8"
+        android:pathData="M147,68 L184,90 L147,90 Z" />
+
+    <!-- 5. Flanking Gold Cinema Wing Bars -->
+    <path
+        android:fillColor="#F5B041"
+        android:pathData="M44,87 L96,87 L96,93 L44,93 Z" />
+
+    <path
+        android:fillColor="#F5B041"
+        android:pathData="M224,87 L276,87 L276,93 L224,93 Z" />
+
+    <path
+        android:fillColor="#00AFB9"
+        android:pathData="M62,98 L96,98 L96,102 L62,102 Z" />
+
+    <path
+        android:fillColor="#00AFB9"
+        android:pathData="M224,98 L258,98 L258,102 L224,102 Z" />
+</vector>

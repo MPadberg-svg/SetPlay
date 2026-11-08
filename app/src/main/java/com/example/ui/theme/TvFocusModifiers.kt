@@ -5,6 +5,7 @@ import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.spring
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.focusable
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -64,6 +65,7 @@ fun Modifier.luxuryFocusableCard(
             }
         )
         .clickable { onClick() }
+        .focusable()
 }
 
 /**
@@ -112,6 +114,7 @@ fun Modifier.tvFocusableControl(
             }
         )
         .clickable { onClick() }
+        .focusable()
 }
 
 /**

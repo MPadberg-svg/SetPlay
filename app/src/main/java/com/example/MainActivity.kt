@@ -113,6 +113,8 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
@@ -1310,12 +1312,13 @@ fun FloatingInAppPipWindow(
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
+                    .height(34.dp)
                     .background(MetalCharcoal)
-                    .padding(horizontal = 8.dp, vertical = 4.dp),
+                    .padding(horizontal = 8.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Text(
-                    text = stream.name,
+                    text = com.example.util.StreamMetadataParser.cleanDisplayTitle(stream.name),
                     color = PaleGold,
                     fontSize = 11.sp,
                     fontWeight = FontWeight.Bold,
@@ -1331,7 +1334,7 @@ fun FloatingInAppPipWindow(
                 IconButton(
                     onClick = onTogglePlayPause,
                     modifier = Modifier
-                        .size(26.dp)
+                        .size(24.dp)
                         .background(AmberGold, CircleShape)
                         .testTag("pip_play_pause_button")
                 ) {
@@ -1339,34 +1342,34 @@ fun FloatingInAppPipWindow(
                         imageVector = if (isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow,
                         contentDescription = if (isPlaying) "Pause" else "Play",
                         tint = DarkGraphite,
-                        modifier = Modifier.size(15.dp)
+                        modifier = Modifier.size(14.dp)
                     )
                 }
 
-                Spacer(modifier = Modifier.width(4.dp))
+                Spacer(modifier = Modifier.width(3.dp))
 
                 IconButton(
                     onClick = { isLargePip = !isLargePip },
-                    modifier = Modifier.size(26.dp)
+                    modifier = Modifier.size(24.dp)
                 ) {
                     Icon(
                         imageVector = Icons.Default.PhotoSizeSelectLarge,
                         contentDescription = "Resize PiP",
                         tint = Champagne,
-                        modifier = Modifier.size(15.dp)
+                        modifier = Modifier.size(14.dp)
                     )
                 }
 
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                     IconButton(
                         onClick = onEnterSystemPip,
-                        modifier = Modifier.size(26.dp)
+                        modifier = Modifier.size(24.dp)
                     ) {
                         Icon(
                             imageVector = Icons.Default.PictureInPictureAlt,
                             contentDescription = "System PiP",
                             tint = AmberGold,
-                            modifier = Modifier.size(15.dp)
+                            modifier = Modifier.size(14.dp)
                         )
                     }
                 }
@@ -1374,14 +1377,14 @@ fun FloatingInAppPipWindow(
                 IconButton(
                     onClick = onExpandFullScreen,
                     modifier = Modifier
-                        .size(26.dp)
+                        .size(24.dp)
                         .testTag("pip_expand_button")
                 ) {
                     Icon(
                         imageVector = Icons.Default.OpenInFull,
                         contentDescription = "Expand Fullscreen",
                         tint = PaleGold,
-                        modifier = Modifier.size(15.dp)
+                        modifier = Modifier.size(14.dp)
                     )
                 }
             }
@@ -1819,9 +1822,11 @@ fun BottomStreamingNav(
         )
     }
 
-    val selectedIndex = remember(currentScreen, navItems) {
-        navItems.indexOfFirst { it.screen == currentScreen }.let { if (it >= 0) it else 0 }
+    val rawSelectedIndex = remember(currentScreen, navItems) {
+        navItems.indexOfFirst { it.screen == currentScreen }
     }
+    val hasActivePrimaryTab = rawSelectedIndex >= 0
+    val selectedIndex = rawSelectedIndex.coerceAtLeast(0)
     val activeItemSpec = navItems[selectedIndex]
 
     // Dual-spring hydrodynamic wave physics:
@@ -1924,7 +1929,11 @@ fun BottomStreamingNav(
             val baseHalfWidth = 34.dp.toPx() // 68.dp total concave cutout width
             val crestHalfWidth = baseHalfWidth * (1f + transitStretch * 0.14f)
 
-            val notchDepthPx = (24.dp.toPx() - (transitStretch * 3.dp.toPx()).coerceAtMost(4.dp.toPx()))
+            val notchDepthPx = if (hasActivePrimaryTab) {
+                24.dp.toPx() - (transitStretch * 3.dp.toPx()).coerceAtMost(4.dp.toPx())
+            } else {
+                0f
+            }
             val notchBottomY = barTopY + notchDepthPx
 
             val crestStartX = crestCenterX - crestHalfWidth
@@ -2746,6 +2755,12 @@ fun TvLeftNavigationRail(
     val isPhonePaired = tvSyncState.connectedPeerName.isNotBlank()
     val pinDisplay = tvSyncState.pairingPin.ifBlank { "READY" }
     val ipDisplay = tvSyncState.localIpAddress.ifBlank { "LAN Wi-Fi" }
+    val activeRailItemFocusRequester = remember { FocusRequester() }
+    val hasMatchingTarget = entries.any { it.targetScreen != null && it.targetScreen == currentScreen }
+
+    LaunchedEffect(currentScreen) {
+        runCatching { activeRailItemFocusRequester.requestFocus() }
+    }
 
     Row(modifier = modifier.fillMaxHeight()) {
         Column(
@@ -2825,8 +2840,9 @@ fun TvLeftNavigationRail(
                     .verticalScroll(rememberScrollState()),
                 verticalArrangement = Arrangement.spacedBy(5.dp)
             ) {
-                entries.forEach { entry ->
+                entries.forEachIndexed { index, entry ->
                     val isSelected = entry.targetScreen != null && entry.targetScreen == currentScreen
+                    val isInitialFocusTarget = isSelected || (!hasMatchingTarget && index == 0)
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.SpaceBetween,
@@ -2844,6 +2860,13 @@ fun TvLeftNavigationRail(
                                 width = if (isSelected) 1.4.dp else 0.7.dp,
                                 color = if (isSelected) entry.accentColor else Color.White.copy(alpha = 0.07f),
                                 shape = RoundedCornerShape(12.dp)
+                            )
+                            .then(
+                                if (isInitialFocusTarget) {
+                                    Modifier.focusRequester(activeRailItemFocusRequester)
+                                } else {
+                                    Modifier
+                                }
                             )
                             .tvFocusableControl(
                                 accentColor = AmberGold,

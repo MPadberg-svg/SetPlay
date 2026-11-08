@@ -80,6 +80,9 @@ jobs:
           TARGET_MODE="${{ github.event.inputs.build_target || 'both' }}"
           mkdir -p release-apk
 
+          echo ">>> Running Unit & Robolectric Tests (:app:testDebugUnitTest)..."
+          ./gradlew :app:testDebugUnitTest --no-daemon --stacktrace
+
           if [[ "$TARGET_MODE" == "both" || "$TARGET_MODE" == "phone" ]]; then
             echo ">>> Building SetPlay-Phone.apk (-PSETPLAY_TARGET=PHONE)..."
             ./gradlew :app:assembleDebug -PSETPLAY_TARGET=PHONE --no-daemon --stacktrace

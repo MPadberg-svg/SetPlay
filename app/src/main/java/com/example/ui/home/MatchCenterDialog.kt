@@ -2111,24 +2111,27 @@ private fun SingleTeam3DPitchCard(
             BoxWithConstraints(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .height(455.dp)
+                    .height(500.dp)
             ) {
                 val pitchW = maxWidth
                 val pitchH = maxHeight
                 val rowMax = (startingXI.maxOfOrNull { it.rowIndex } ?: 3).coerceAtLeast(1)
 
                 // 3D Perspective Stadium Pitch coordinates:
-                // - Goalkeeper (rowIndex = 0) at bottom near goal box (y = 0.81f)
-                // - Defenders, Midfielders, and Forwards advancing up to top attacking box (y = 0.13f)
+                // - Goalkeeper (rowIndex = 0) at bottom near goal box (y = 0.77f)
+                // - Defenders, Midfielders, and Forwards advancing up to top attacking box (y = 0.11f)
                 // - Horizontal spread narrows toward the top to match the 3D trapezoid perspective
                 fun compute3DPlayerNormalizedCoords(player: PitchPlayerNode): Pair<Float, Float> {
                     val progressFromGkToAttack = (player.rowIndex.toFloat() / rowMax.toFloat()).coerceIn(0f, 1f)
                     val isWidePlayer = player.colCountInRow >= 3 &&
                         (player.colIndex == 0 || player.colIndex == player.colCountInRow - 1)
-                    val wingPushUp = if (isWidePlayer && player.rowIndex in 1 until rowMax) 0.025f else 0f
+                    val wingPushUp = if (rowMax < 4 && isWidePlayer && player.rowIndex in 1 until rowMax) 0.025f else 0f
 
-                    val yFraction = (0.81f - progressFromGkToAttack * 0.68f - wingPushUp).coerceIn(0.11f, 0.83f)
-                    val perspectiveSpan = 0.78f - (1f - yFraction) * 0.20f
+                    val yFraction = (0.77f - progressFromGkToAttack * 0.66f - wingPushUp).coerceIn(0.10f, 0.78f)
+                    val baseSpan = 0.78f - (1f - yFraction) * 0.20f
+                    val isCompactCentralRow = (player.rowIndex == 1 && player.colCountInRow == 3) ||
+                        (player.rowIndex >= 2 && player.colCountInRow == 2)
+                    val perspectiveSpan = if (isCompactCentralRow) baseSpan * 0.74f else baseSpan
                     val leftMargin = (1f - perspectiveSpan) / 2f
                     val xFraction = if (player.colCountInRow <= 1) {
                         0.5f

@@ -467,6 +467,16 @@ class IptvRepository(
     }
 
     /**
+     * Permanently purges any Adult/+18 categories and streams from the local SQLite database.
+     * Invoked automatically on app startup and after every catalog synchronization.
+     */
+    suspend fun purgeAllAdultContent() = withContext(Dispatchers.IO) {
+        categoryDao.purgeAdultCategories()
+        streamDao.purgeStreamsInDeletedCategories()
+        streamDao.purgeAdultStreamsByName()
+    }
+
+    /**
      * Synchronizes the account catalog with streaming bounded batches.
      * Prevents race conditions and preserves previous catalog on failure.
      */
@@ -496,7 +506,8 @@ class IptvRepository(
 
             val authData = authResult.getOrNull()
             val userInfo = authData?.userInfo
-            val updatedPlaylist = playlist.encryptedForStorage().copy(
+            val resolvedServerUrl = authData?.resolvedServerUrl?.takeIf { it.isNotBlank() } ?: playlist.serverUrl.trim()
+            val updatedPlaylist = playlist.copy(serverUrl = resolvedServerUrl).encryptedForStorage().copy(
                 status = userInfo?.status ?: "Active",
                 expDate = userInfo?.expDate ?: "",
                 maxConnections = userInfo?.maxConnections ?: "1",
@@ -504,23 +515,28 @@ class IptvRepository(
             )
             playlistDao.updatePlaylist(updatedPlaylist)
 
-            // 2. Fetch categories (Live, VOD, Series)
+            // 2. Fetch categories (Live, VOD, Series) — adult categories are already dropped by XtreamClient
             _syncProgress.value = SyncProgress(isSyncing = true, phase = "Syncing categories…")
             val liveCats = xtreamClient.fetchCategories(
-                playlist.serverUrl, playlist.username, plainPassword,
+                resolvedServerUrl, playlist.username, plainPassword,
                 action = "get_live_categories", categoryType = "LIVE", playlistId = playlist.id
-            )
+            ).filterNot { SecurityManager.isAdultContent(it.categoryName) }
             val vodCats = xtreamClient.fetchCategories(
-                playlist.serverUrl, playlist.username, plainPassword,
+                resolvedServerUrl, playlist.username, plainPassword,
                 action = "get_vod_categories", categoryType = "MOVIE", playlistId = playlist.id
-            )
+            ).filterNot { SecurityManager.isAdultContent(it.categoryName) }
             val seriesCats = xtreamClient.fetchCategories(
-                playlist.serverUrl, playlist.username, plainPassword,
+                resolvedServerUrl, playlist.username, plainPassword,
                 action = "get_series_categories", categoryType = "SERIES", playlistId = playlist.id
-            )
+            ).filterNot { SecurityManager.isAdultContent(it.categoryName) }
+
+            val allowedLiveCatIds = liveCats.map { it.categoryId }.toSet()
+            val allowedVodCatIds = vodCats.map { it.categoryId }.toSet()
+            val allowedSeriesCatIds = seriesCats.map { it.categoryId }.toSet()
 
             val allCats = liveCats + vodCats + seriesCats
             if (allCats.isNotEmpty()) {
+                categoryDao.clearCategoriesForPlaylist(playlist.id)
                 categoryDao.insertCategories(allCats)
                 val lockedCategoriesJson = getParentalSettingsOnce().lockedCategoriesJson
                 val lockedCategoryIds = try {
@@ -536,27 +552,44 @@ class IptvRepository(
                 }
             }
 
-            // Snapshot existing favorite streamIds before replace so user favorites survive re-sync
+            // Snapshot existing favorite streamIds and playback positions before replace so user state survives re-sync
             val liveFavIds = streamDao.getFavoriteProviderIds(playlist.id, "live")
             val vodFavIds = streamDao.getFavoriteProviderIds(playlist.id, "movie")
             val seriesFavIds = streamDao.getFavoriteProviderIds(playlist.id, "series")
 
+            val livePositions = streamDao.getSavedStreamPositions(playlist.id, "live")
+            val vodPositions = streamDao.getSavedStreamPositions(playlist.id, "movie")
+            val seriesPositions = streamDao.getSavedStreamPositions(playlist.id, "series")
+
             // 3. Stream Live channels in bounded batches
             _syncProgress.value = SyncProgress(isSyncing = true, phase = "Syncing Live TV channels…")
-            val liveCount = xtreamClient.streamCatalogEntries(
-                serverUrl = playlist.serverUrl,
+            var liveFirstBatchCleared = false
+            var liveInsertedCount = 0
+            xtreamClient.streamCatalogEntries(
+                serverUrl = resolvedServerUrl,
                 username = playlist.username,
                 password = plainPassword,
                 action = "get_live_streams",
                 streamType = "live",
                 playlistId = playlist.id,
                 batchSize = 500
-            ) { batch, processedSoFar ->
-                streamDao.insertStreamsBatch(batch)
+            ) { batch, _ ->
+                if (!liveFirstBatchCleared) {
+                    streamDao.deleteStreamsByType(playlist.id, "live")
+                    liveFirstBatchCleared = true
+                }
+                val safeBatch = batch.filter { item ->
+                    !SecurityManager.isAdultContent(item.name) &&
+                        (allowedLiveCatIds.isEmpty() || item.categoryId.isBlank() || item.categoryId in allowedLiveCatIds)
+                }
+                if (safeBatch.isNotEmpty()) {
+                    streamDao.insertStreamsBatch(safeBatch)
+                    liveInsertedCount += safeBatch.size
+                }
                 _syncProgress.value = SyncProgress(
                     isSyncing = true,
-                    phase = "Ingesting Live TV ($processedSoFar channels)…",
-                    itemsProcessed = processedSoFar
+                    phase = "Ingesting Live TV ($liveInsertedCount channels)…",
+                    itemsProcessed = liveInsertedCount
                 )
             }
             if (liveFavIds.isNotEmpty()) {
@@ -564,23 +597,39 @@ class IptvRepository(
                     streamDao.restoreFavorites(playlist.id, "live", chunk)
                 }
             }
+            livePositions.forEach { snap ->
+                streamDao.restoreStreamPosition(playlist.id, "live", snap.streamId, snap.lastPositionMs, snap.watchHistoryTimestamp)
+            }
 
             // 4. Stream VOD movies in bounded batches
             _syncProgress.value = SyncProgress(isSyncing = true, phase = "Syncing Movies catalog…")
-            val vodCount = xtreamClient.streamCatalogEntries(
-                serverUrl = playlist.serverUrl,
+            var vodFirstBatchCleared = false
+            var vodInsertedCount = 0
+            xtreamClient.streamCatalogEntries(
+                serverUrl = resolvedServerUrl,
                 username = playlist.username,
                 password = plainPassword,
                 action = "get_vod_streams",
                 streamType = "movie",
                 playlistId = playlist.id,
                 batchSize = 500
-            ) { batch, processedSoFar ->
-                streamDao.insertStreamsBatch(batch)
+            ) { batch, _ ->
+                if (!vodFirstBatchCleared) {
+                    streamDao.deleteStreamsByType(playlist.id, "movie")
+                    vodFirstBatchCleared = true
+                }
+                val safeBatch = batch.filter { item ->
+                    !SecurityManager.isAdultContent(item.name) &&
+                        (allowedVodCatIds.isEmpty() || item.categoryId.isBlank() || item.categoryId in allowedVodCatIds)
+                }
+                if (safeBatch.isNotEmpty()) {
+                    streamDao.insertStreamsBatch(safeBatch)
+                    vodInsertedCount += safeBatch.size
+                }
                 _syncProgress.value = SyncProgress(
                     isSyncing = true,
-                    phase = "Ingesting Movies ($processedSoFar titles)…",
-                    itemsProcessed = processedSoFar
+                    phase = "Ingesting Movies ($vodInsertedCount titles)…",
+                    itemsProcessed = vodInsertedCount
                 )
             }
             if (vodFavIds.isNotEmpty()) {
@@ -588,23 +637,39 @@ class IptvRepository(
                     streamDao.restoreFavorites(playlist.id, "movie", chunk)
                 }
             }
+            vodPositions.forEach { snap ->
+                streamDao.restoreStreamPosition(playlist.id, "movie", snap.streamId, snap.lastPositionMs, snap.watchHistoryTimestamp)
+            }
 
             // 5. Stream Series in bounded batches
             _syncProgress.value = SyncProgress(isSyncing = true, phase = "Syncing Series catalog…")
-            val seriesCount = xtreamClient.streamCatalogEntries(
-                serverUrl = playlist.serverUrl,
+            var seriesFirstBatchCleared = false
+            var seriesInsertedCount = 0
+            xtreamClient.streamCatalogEntries(
+                serverUrl = resolvedServerUrl,
                 username = playlist.username,
                 password = plainPassword,
                 action = "get_series",
                 streamType = "series",
                 playlistId = playlist.id,
                 batchSize = 500
-            ) { batch, processedSoFar ->
-                streamDao.insertStreamsBatch(batch)
+            ) { batch, _ ->
+                if (!seriesFirstBatchCleared) {
+                    streamDao.deleteStreamsByType(playlist.id, "series")
+                    seriesFirstBatchCleared = true
+                }
+                val safeBatch = batch.filter { item ->
+                    !SecurityManager.isAdultContent(item.name) &&
+                        (allowedSeriesCatIds.isEmpty() || item.categoryId.isBlank() || item.categoryId in allowedSeriesCatIds)
+                }
+                if (safeBatch.isNotEmpty()) {
+                    streamDao.insertStreamsBatch(safeBatch)
+                    seriesInsertedCount += safeBatch.size
+                }
                 _syncProgress.value = SyncProgress(
                     isSyncing = true,
-                    phase = "Ingesting Series ($processedSoFar shows)…",
-                    itemsProcessed = processedSoFar
+                    phase = "Ingesting Series ($seriesInsertedCount shows)…",
+                    itemsProcessed = seriesInsertedCount
                 )
             }
             if (seriesFavIds.isNotEmpty()) {
@@ -612,6 +677,16 @@ class IptvRepository(
                     streamDao.restoreFavorites(playlist.id, "series", chunk)
                 }
             }
+            seriesPositions.forEach { snap ->
+                streamDao.restoreStreamPosition(playlist.id, "series", snap.streamId, snap.lastPositionMs, snap.watchHistoryTimestamp)
+            }
+
+            // Final multi-layer SQLite sweep to guarantee zero adult categories or streams remain
+            purgeAllAdultContent()
+
+            val liveCount = liveInsertedCount
+            val vodCount = vodInsertedCount
+            val seriesCount = seriesInsertedCount
 
             // Update counts in playlist
             val finalPlaylist = updatedPlaylist.copy(

@@ -942,7 +942,7 @@ fun MovieCinemaPosterCard(
                     horizontalArrangement = Arrangement.spacedBy(4.dp),
                     modifier = Modifier
                         .align(Alignment.TopStart)
-                        .padding(8.dp)
+                        .padding(start = 8.dp, top = 8.dp, end = 36.dp)
                 ) {
                     if (item.rating.isNotEmpty() && item.rating != "0" && item.rating != "0.0") {
                         Surface(
@@ -1631,7 +1631,7 @@ fun SeriesVaultCard(
                         horizontalArrangement = Arrangement.spacedBy(4.dp),
                         modifier = Modifier
                             .align(Alignment.TopStart)
-                            .padding(8.dp)
+                            .padding(start = 8.dp, top = 8.dp, end = 36.dp)
                     ) {
                         if (item.rating.isNotEmpty() && item.rating != "0" && item.rating != "0.0") {
                             Surface(
@@ -1763,20 +1763,15 @@ fun SeriesVaultCard(
                     Spacer(modifier = Modifier.height(3.dp))
                     Row(
                         modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         Text(
-                            text = "Explore Seasons",
+                            text = "Explore Seasons ›",
                             color = SeriesIceAqua,
-                            fontSize = 9.5.sp,
-                            fontWeight = FontWeight.Bold
-                        )
-                        Text(
-                            text = "ALL EPISODES",
-                            color = Champagne.copy(alpha = 0.65f),
-                            fontSize = 8.5.sp,
-                            fontWeight = FontWeight.ExtraBold
+                            fontSize = 10.sp,
+                            fontWeight = FontWeight.ExtraBold,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
                         )
                     }
                 }
@@ -1925,7 +1920,9 @@ fun SeriesDetailHierarchyScreen(
                         .padding(top = 62.dp, start = 16.dp, end = 16.dp, bottom = 14.dp)
                 ) {
                     Text(
-                        text = seriesDetails?.title?.ifBlank { seriesStream.name } ?: seriesStream.name,
+                        text = StreamMetadataParser.cleanDisplayTitle(
+                            seriesDetails?.title?.ifBlank { seriesStream.name } ?: seriesStream.name
+                        ),
                         color = PaleGold,
                         fontSize = 21.sp,
                         fontWeight = FontWeight.ExtraBold,
@@ -2083,9 +2080,10 @@ fun SeriesDetailHierarchyScreen(
                 items(episodes, key = { "${it.seasonNumber}_${it.episodeNumber}_${it.episodeId}" }) { episode ->
                     val resumeKey = "${seriesStream.playlistId}_ep_${episode.episodeId}"
                     val resumeInfo = episodeResumeMap[resumeKey]
+                    val resolvedCover = seriesDetails?.coverUrl?.ifBlank { seriesStream.streamIcon } ?: seriesStream.streamIcon
                     SeriesEpisodeCard(
                         episode = episode,
-                        fallbackCover = seriesStream.streamIcon,
+                        fallbackCover = resolvedCover,
                         resumeInfo = resumeInfo,
                         onPlay = { onPlayEpisode(episode) }
                     )
@@ -2191,6 +2189,18 @@ fun SeriesEpisodeCard(
                             contentDescription = episode.title,
                             contentScale = ContentScale.Crop,
                             modifier = Modifier.fillMaxSize()
+                        )
+                        Box(
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .background(
+                                    Brush.verticalGradient(
+                                        listOf(
+                                            Color.Transparent,
+                                            SeriesPineBase.copy(alpha = 0.65f)
+                                        )
+                                    )
+                                )
                         )
                     } else {
                         Icon(

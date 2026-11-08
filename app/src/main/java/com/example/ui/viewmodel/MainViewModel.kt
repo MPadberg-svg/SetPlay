@@ -305,6 +305,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             }
         }
         viewModelScope.launch {
+            runCatching { repository.purgeAllAdultContent() }
             footballRepository.ensureDefaultTournamentsInitialized()
             refreshFootballSchedules()
             startConditionalLivePolling()
@@ -1304,5 +1305,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 }
             }
         }
+    }
+
+    override fun onCleared() {
+        super.onCleared()
+        tvSyncManager.shutdown()
     }
 }
