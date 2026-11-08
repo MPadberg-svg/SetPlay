@@ -362,13 +362,30 @@ EOF
   sed -i 's/fallbackToDestructiveMigration(dropAllTables = true)/fallbackToDestructiveMigration()/g' app/src/main/java/com/example/data/local/StreamVaultDatabase.kt 2>/dev/null || true
 fi
 
-# 3. Ensure Gradle 8.11.1 binary is available
+# 3. Ensure Gradle 8.11.1 binary is available with robust retries and ZIP validation
 GRADLE_VERSION="8.11.1"
 GRADLE_DIR="/tmp/gradle-${GRADLE_VERSION}"
+GRADLE_ZIP="/tmp/gradle-${GRADLE_VERSION}.zip"
+
 if [ ! -x "${GRADLE_DIR}/bin/gradle" ]; then
-  echo ">>> [SetPlay Gradle Wrapper] Downloading Gradle ${GRADLE_VERSION}..."
-  curl -sL "https://services.gradle.org/distributions/gradle-${GRADLE_VERSION}-bin.zip" -o "/tmp/gradle-${GRADLE_VERSION}.zip"
-  unzip -q -o "/tmp/gradle-${GRADLE_VERSION}.zip" -d /tmp
+  echo ">>> [SetPlay Gradle Wrapper] Downloading Gradle ${GRADLE_VERSION} with auto-retry..."
+  
+  # Download with fail-on-HTTP-error, resume support, 5 retries, and redirect following
+  curl --fail --show-error --location --retry 5 --retry-delay 2 --retry-connrefused \
+    "https://services.gradle.org/distributions/gradle-${GRADLE_VERSION}-bin.zip" \
+    -o "${GRADLE_ZIP}"
+
+  # Validate ZIP archive integrity before attempting extraction
+  if ! unzip -tq "${GRADLE_ZIP}" >/dev/null 2>&1; then
+    echo ">>> [SetPlay Gradle Wrapper] Downloaded ZIP is corrupt or incomplete. Retrying download..."
+    rm -f "${GRADLE_ZIP}"
+    curl --fail --show-error --location --retry 5 --retry-delay 3 \
+      "https://services.gradle.org/distributions/gradle-${GRADLE_VERSION}-bin.zip" \
+      -o "${GRADLE_ZIP}"
+  fi
+
+  unzip -q -o "${GRADLE_ZIP}" -d /tmp
+  rm -f "${GRADLE_ZIP}"
   chmod +x "${GRADLE_DIR}/bin/gradle"
 fi
 
