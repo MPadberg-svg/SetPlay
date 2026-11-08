@@ -130,7 +130,14 @@ data class PlayerUiState(
     val halftimeTimerRemainingSeconds: Int? = null,
     val halftimeSavedStream: StreamEntity? = null,
     val halftimeSavedPlaylist: PlaylistEntity? = null,
-    val showHalftimeReturnPrompt: Boolean = false
+    val showHalftimeReturnPrompt: Boolean = false,
+    // 3-Stage ExoPlayer Auto-Reconnect & Quality-Tier Step-Down
+    val reconnectStage: Int = 0,
+    val qualityFallbackNotice: String? = null,
+    // Series 90% "Up Next" 10-Second Countdown & Auto-Play
+    val nextSeriesEpisodeStream: StreamEntity? = null,
+    val showNextEpisodePrompt: Boolean = false,
+    val nextEpisodeCountdownSec: Int = 10
 )
 
 @OptIn(UnstableApi::class)
@@ -150,8 +157,13 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application) 
     private var subtitleBannerFadeJob: Job? = null
     private var subtitlePromptCountdownJob: Job? = null
     private var liveAutoReconnectJob: Job? = null
+    private var qualityFallbackNoticeFadeJob: Job? = null
+    private var nextEpisodeCountdownJob: Job? = null
     private var halftimeTimerJob: Job? = null
     private var hasAutoRetriedCurrentLiveStream: Boolean = false
+    private val triedFallbackStreamIds = mutableSetOf<Long>()
+    private var seriesEpisodeQueue: List<StreamEntity> = emptyList()
+    private var dismissedUpNextForStreamId: Long? = null
 
     val player: ExoPlayer by lazy {
         val okHttpDataSourceFactory = OkHttpDataSource.Factory(IptvRepository.sharedOkHttpClient)
@@ -212,10 +224,12 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application) 
                 }
                 Player.STATE_READY -> {
                     hasAutoRetriedCurrentLiveStream = false
+                    triedFallbackStreamIds.clear()
                     val duration = if (player.duration > 0 && player.duration != C.TIME_UNSET) player.duration else 0L
                     _uiState.value = _uiState.value.copy(
                         isBuffering = false,
                         durationMs = duration,
+                        reconnectStage = 0,
                         error = null
                     )
                     extractTracks(player.currentTracks)
@@ -254,27 +268,192 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application) 
         }
 
         override fun onPlayerError(error: PlaybackException) {
-            if (_uiState.value.isLive && !hasAutoRetriedCurrentLiveStream) {
+            handlePlayerErrorRecovery(error.localizedMessage ?: "Tap Retry to reconnect")
+        }
+    }
+
+    internal fun buildMediaItemForStream(
+        stream: StreamEntity,
+        playlist: PlaylistEntity,
+        catchupStartEpoch: Long? = null,
+        catchupDurationMin: Int? = null
+    ): Pair<MediaItem, Boolean> {
+        val streamUrl = if (catchupStartEpoch != null && catchupDurationMin != null) {
+            XtreamClient.buildCatchupUrl(
+                serverUrl = playlist.serverUrl,
+                username = playlist.username,
+                password = playlist.password,
+                streamId = stream.streamId,
+                startEpochSeconds = catchupStartEpoch,
+                durationMinutes = catchupDurationMin
+            )
+        } else {
+            XtreamClient.buildStreamUrl(
+                serverUrl = playlist.serverUrl,
+                username = playlist.username,
+                password = playlist.password,
+                streamType = stream.streamType,
+                streamId = stream.streamId,
+                containerExtension = stream.containerExtension
+            )
+        }
+        val isLiveStream = stream.streamType.equals("live", ignoreCase = true) && catchupStartEpoch == null
+        val mediaItemBuilder = MediaItem.Builder()
+            .setUri(Uri.parse(streamUrl))
+            .setMediaId("${stream.id}_${stream.streamId}")
+
+        if (isLiveStream) {
+            val targetOffsetMs = when (_uiState.value.bufferProfile) {
+                BufferProfile.FAST_ZAP -> 1_500L
+                BufferProfile.BALANCED -> 5_000L
+                BufferProfile.STABLE_4K -> 15_000L
+            }
+            mediaItemBuilder.setLiveConfiguration(
+                MediaItem.LiveConfiguration.Builder()
+                    .setTargetOffsetMs(targetOffsetMs)
+                    .setMinPlaybackSpeed(0.97f)
+                    .setMaxPlaybackSpeed(1.03f)
+                    .build()
+            )
+        }
+        return mediaItemBuilder.build() to isLiveStream
+    }
+
+    /**
+     * 3-Stage Auto-Recovery State Machine for ExoPlayer `PlaybackException`:
+     * - Stage 1 (800ms Immediate Re-Arm): `reconnectStage = 1`, wait 800ms, `player.prepare(); player.play()`.
+     * - Stage 2 (1800ms Fresh Session & Header Rebuild): `reconnectStage = 2`, wait 1800ms, rebuild `MediaItem` from `currentStream` and `activePlaylist`, `player.setMediaItem(mediaItem); player.prepare(); player.play()`.
+     * - Stage 3 (Automatic Quality-Tier Step-Down: `4K UHD` -> `1080p FHD` -> `HD` -> `SD`): switch seamlessly to the next lower-tier feed in `alternateQualityFeeds` without closing `PlayerScreen`, setting `qualityFallbackNotice`.
+     * - Only surfaces a user-facing `error` banner if all 3 stages (and available alternate feeds) fail.
+     */
+    internal fun handlePlayerErrorRecovery(
+        errorReason: String = "Tap Retry to reconnect",
+        skipDelaysForTesting: Boolean = false
+    ) {
+        val state = _uiState.value
+        val current = state.currentStream
+        val playlist = activePlaylistCache
+
+        when (state.reconnectStage) {
+            0 -> {
+                // Stage 1: 800ms Immediate Re-Arm without showing error banner
                 hasAutoRetriedCurrentLiveStream = true
-                _uiState.value = _uiState.value.copy(
+                _uiState.value = state.copy(
+                    reconnectStage = 1,
                     isBuffering = true,
                     error = null
                 )
                 liveAutoReconnectJob?.cancel()
-                liveAutoReconnectJob = viewModelScope.launch {
-                    delay(1500L)
-                    try {
+                if (skipDelaysForTesting) {
+                    runCatching {
                         player.prepare()
                         player.play()
-                    } catch (_: Exception) {}
+                    }
+                } else {
+                    liveAutoReconnectJob = viewModelScope.launch {
+                        delay(800L)
+                        runCatching {
+                            player.prepare()
+                            player.play()
+                        }
+                    }
                 }
-                return
             }
+            1 -> {
+                // Stage 2: 1800ms Fresh Session & Header Rebuild
+                _uiState.value = state.copy(
+                    reconnectStage = 2,
+                    isBuffering = true,
+                    error = null
+                )
+                liveAutoReconnectJob?.cancel()
+                val rebuildBlock: () -> Unit = {
+                    runCatching {
+                        if (current != null && playlist != null) {
+                            val (freshMediaItem, isLiveStream) = buildMediaItemForStream(current, playlist)
+                            player.setMediaItem(freshMediaItem)
+                            player.prepare()
+                            if (!isLiveStream && state.currentPositionMs > 5_000L) {
+                                player.seekTo(state.currentPositionMs)
+                            }
+                            player.play()
+                        } else {
+                            player.prepare()
+                            player.play()
+                        }
+                    }
+                }
+                if (skipDelaysForTesting) {
+                    rebuildBlock()
+                } else {
+                    liveAutoReconnectJob = viewModelScope.launch {
+                        delay(1800L)
+                        rebuildBlock()
+                    }
+                }
+            }
+            else -> {
+                // Stage 3: Automatic Quality-Tier Step-Down (4K UHD -> 1080p FHD -> HD -> SD)
+                val feeds = state.alternateQualityFeeds
+                if (current != null && feeds.size > 1) {
+                    triedFallbackStreamIds.add(current.streamId)
+                    val currentIdx = feeds.indexOfFirst { it.streamId == current.streamId }
+                    val afterCurrent = if (currentIdx >= 0 && currentIdx + 1 < feeds.size) {
+                        feeds.subList(currentIdx + 1, feeds.size).firstOrNull { it.streamId !in triedFallbackStreamIds }
+                    } else {
+                        null
+                    }
+                    val fallbackFeed = afterCurrent ?: feeds.firstOrNull {
+                        it.streamId != current.streamId && it.streamId !in triedFallbackStreamIds
+                    }
 
-            _uiState.value = _uiState.value.copy(
-                isBuffering = false,
-                error = "Stream interrupted: ${error.localizedMessage ?: "Tap Retry to reconnect"}"
-            )
+                    if (fallbackFeed != null) {
+                        triedFallbackStreamIds.add(fallbackFeed.streamId)
+                        val badge = com.example.util.StreamMetadataParser.extractCompactQualityBadge(fallbackFeed.name)
+                            ?: "Backup Feed"
+                        val notice = "⚡ Quality adjusted to $badge for stream stability"
+                        val resolvedPlaylist = playlist ?: PlaylistEntity(
+                            id = fallbackFeed.playlistId,
+                            name = "Active Vault",
+                            serverUrl = "http://localhost",
+                            username = "user",
+                            password = "pass",
+                            isActive = true
+                        )
+                        val (fallbackMediaItem, isLiveFallback) = buildMediaItemForStream(fallbackFeed, resolvedPlaylist)
+                        _uiState.value = state.copy(
+                            currentStream = fallbackFeed,
+                            previousStream = current,
+                            reconnectStage = 3,
+                            isBuffering = true,
+                            error = null,
+                            qualityFallbackNotice = notice
+                        )
+                        runCatching {
+                            player.setMediaItem(fallbackMediaItem)
+                            player.prepare()
+                            if (!isLiveFallback && state.currentPositionMs > 5_000L) {
+                                player.seekTo(state.currentPositionMs)
+                            }
+                            player.play()
+                        }
+                        qualityFallbackNoticeFadeJob?.cancel()
+                        qualityFallbackNoticeFadeJob = viewModelScope.launch {
+                            delay(5000L)
+                            if (_uiState.value.qualityFallbackNotice == notice) {
+                                _uiState.value = _uiState.value.copy(qualityFallbackNotice = null)
+                            }
+                        }
+                        return
+                    }
+                }
+
+                // All 3 stages (and all available alternate feeds) failed — surface user-facing error banner
+                _uiState.value = state.copy(
+                    isBuffering = false,
+                    error = "Stream interrupted: $errorReason"
+                )
+            }
         }
     }
 
@@ -406,6 +585,12 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application) 
         val isReturningToHalftimeStream = _uiState.value.halftimeSavedStream?.streamId == stream.streamId
         subtitleBannerFadeJob?.cancel()
         subtitlePromptCountdownJob?.cancel()
+        qualityFallbackNoticeFadeJob?.cancel()
+        nextEpisodeCountdownJob?.cancel()
+        triedFallbackStreamIds.clear()
+        if (dismissedUpNextForStreamId != stream.streamId) {
+            dismissedUpNextForStreamId = null
+        }
         _uiState.value = _uiState.value.copy(
             currentStream = effectiveStream,
             previousStream = previous,
@@ -415,6 +600,11 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application) 
             durationMs = resolvedDurationMs,
             playbackSpeed = if (isLiveStream) 1.0f else _uiState.value.playbackSpeed,
             error = null,
+            reconnectStage = 0,
+            qualityFallbackNotice = null,
+            nextSeriesEpisodeStream = if (isSeriesStream) findNextEpisodeInMemoryQueue(effectiveStream) else null,
+            showNextEpisodePrompt = false,
+            nextEpisodeCountdownSec = 10,
             isBuffering = true,
             resolutionLabel = "",
             videoCodecLabel = "",
@@ -447,6 +637,14 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application) 
         } else {
             _zapperChannelList.value = emptyList()
             startSubtitleLanguagePromptCountdown()
+            if (isSeriesStream) {
+                viewModelScope.launch {
+                    val resolvedNext = resolveNextEpisodeForCurrentStream(effectiveStream)
+                    if (resolvedNext != null && _uiState.value.currentStream?.streamId == effectiveStream.streamId) {
+                        _uiState.value = _uiState.value.copy(nextSeriesEpisodeStream = resolvedNext)
+                    }
+                }
+            }
         }
 
         player.setMediaItem(mediaItemBuilder.build())
@@ -638,8 +836,12 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application) 
         subtitleBannerFadeJob?.cancel()
         subtitlePromptCountdownJob?.cancel()
         liveAutoReconnectJob?.cancel()
+        qualityFallbackNoticeFadeJob?.cancel()
+        nextEpisodeCountdownJob?.cancel()
         halftimeTimerJob?.cancel()
         hasAutoRetriedCurrentLiveStream = false
+        triedFallbackStreamIds.clear()
+        dismissedUpNextForStreamId = null
         try {
             loudnessEnhancer?.enabled = false
         } catch (_: Exception) {}
@@ -651,6 +853,11 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application) 
             isPlaying = false,
             isBuffering = false,
             error = null,
+            reconnectStage = 0,
+            qualityFallbackNotice = null,
+            nextSeriesEpisodeStream = null,
+            showNextEpisodePrompt = false,
+            nextEpisodeCountdownSec = 10,
             isChannelZapperOpen = false,
             isTouchLocked = false,
             videoZoomScale = 1.0f,
@@ -673,6 +880,148 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application) 
             halftimeSavedStream = null,
             halftimeSavedPlaylist = null,
             showHalftimeReturnPrompt = false
+        )
+    }
+
+    /**
+     * Populates the ordered list of episodes across all seasons for the active series
+     * so 90% / last-45s "Up Next" auto-play can advance seamlessly from episode to episode
+     * (including across season boundaries).
+     */
+    fun setSeriesEpisodeQueue(episodes: List<StreamEntity>) {
+        seriesEpisodeQueue = episodes
+        val current = _uiState.value.currentStream
+        if (current != null && current.streamType.equals("series", ignoreCase = true)) {
+            val nextInMemory = findNextEpisodeInMemoryQueue(current)
+            if (nextInMemory != null) {
+                _uiState.value = _uiState.value.copy(nextSeriesEpisodeStream = nextInMemory)
+            }
+        }
+    }
+
+    internal fun setAlternateQualityFeedsForTesting(feeds: List<StreamEntity>) {
+        _uiState.value = _uiState.value.copy(alternateQualityFeeds = feeds)
+    }
+
+    private fun extractSeriesEpisodeTripletKey(epgChannelId: String): String {
+        val parts = epgChannelId.trim().split(":")
+        return if (parts.size >= 3) "${parts[0]}:${parts[1]}:${parts[2]}" else ""
+    }
+
+    private fun findNextEpisodeInMemoryQueue(current: StreamEntity): StreamEntity? {
+        if (seriesEpisodeQueue.isEmpty()) return null
+        val targetTriplet = extractSeriesEpisodeTripletKey(current.epgChannelId)
+        val idx = seriesEpisodeQueue.indexOfFirst { candidate ->
+            candidate.streamId == current.streamId ||
+                (targetTriplet.isNotEmpty() && extractSeriesEpisodeTripletKey(candidate.epgChannelId) == targetTriplet)
+        }
+        return if (idx >= 0 && idx + 1 < seriesEpisodeQueue.size) {
+            seriesEpisodeQueue[idx + 1]
+        } else {
+            null
+        }
+    }
+
+    suspend fun resolveNextEpisodeForCurrentStream(current: StreamEntity? = _uiState.value.currentStream): StreamEntity? {
+        val target = current ?: return null
+        if (!target.streamType.equals("series", ignoreCase = true)) return null
+        findNextEpisodeInMemoryQueue(target)?.let { return it }
+        return runCatching {
+            database.streamDao().getNextSeriesStreamFallback(
+                playlistId = target.playlistId,
+                categoryId = target.categoryId,
+                currentStreamId = target.streamId
+            )
+        }.getOrNull()
+    }
+
+    /**
+     * Evaluates whether a Series episode has reached >= 90% completion (or the final 45 seconds),
+     * resolves `nextSeriesEpisodeStream` if needed, displays the "Up Next" prompt card, and starts
+     * the 10-second auto-play countdown.
+     */
+    fun evaluateSeriesUpNextTrigger(positionMs: Long, durationMs: Long) {
+        val state = _uiState.value
+        val current = state.currentStream ?: return
+        if (!current.streamType.equals("series", ignoreCase = true) || durationMs <= 0L) return
+        if (dismissedUpNextForStreamId == current.streamId) return
+        if (state.showNextEpisodePrompt) return
+
+        val progressRatio = positionMs.toDouble() / durationMs.toDouble()
+        val remainingMs = durationMs - positionMs
+        val shouldTrigger = progressRatio >= 0.90 || remainingMs in 1..45_000L
+        if (!shouldTrigger) return
+
+        val immediateNext = state.nextSeriesEpisodeStream ?: findNextEpisodeInMemoryQueue(current)
+        if (immediateNext != null) {
+            _uiState.value = _uiState.value.copy(
+                nextSeriesEpisodeStream = immediateNext,
+                showNextEpisodePrompt = true,
+                nextEpisodeCountdownSec = 10
+            )
+            startNextEpisodeCountdown(current.streamId)
+        } else {
+            viewModelScope.launch {
+                val resolved = resolveNextEpisodeForCurrentStream(current) ?: return@launch
+                if (_uiState.value.currentStream?.streamId == current.streamId &&
+                    dismissedUpNextForStreamId != current.streamId &&
+                    !_uiState.value.showNextEpisodePrompt
+                ) {
+                    _uiState.value = _uiState.value.copy(
+                        nextSeriesEpisodeStream = resolved,
+                        showNextEpisodePrompt = true,
+                        nextEpisodeCountdownSec = 10
+                    )
+                    startNextEpisodeCountdown(current.streamId)
+                }
+            }
+        }
+    }
+
+    private fun startNextEpisodeCountdown(forStreamId: Long) {
+        nextEpisodeCountdownJob?.cancel()
+        nextEpisodeCountdownJob = viewModelScope.launch {
+            var remaining = 10
+            while (remaining > 0 && isActive) {
+                delay(1000L)
+                val currentState = _uiState.value
+                if (!currentState.showNextEpisodePrompt || currentState.currentStream?.streamId != forStreamId) {
+                    return@launch
+                }
+                remaining--
+                _uiState.value = currentState.copy(nextEpisodeCountdownSec = remaining)
+            }
+            if (remaining <= 0 && _uiState.value.showNextEpisodePrompt && _uiState.value.currentStream?.streamId == forStreamId) {
+                playNextSeriesEpisode()
+            }
+        }
+    }
+
+    fun playNextSeriesEpisode() {
+        nextEpisodeCountdownJob?.cancel()
+        val nextEpisode = _uiState.value.nextSeriesEpisodeStream ?: return
+        val playlist = activePlaylistCache ?: PlaylistEntity(
+            id = nextEpisode.playlistId,
+            name = "Active Vault",
+            serverUrl = "http://localhost",
+            username = "user",
+            password = "pass",
+            isActive = true
+        )
+        dismissedUpNextForStreamId = null
+        _uiState.value = _uiState.value.copy(
+            showNextEpisodePrompt = false,
+            nextEpisodeCountdownSec = 10
+        )
+        playStream(nextEpisode, playlist)
+    }
+
+    fun cancelNextEpisodePrompt() {
+        nextEpisodeCountdownJob?.cancel()
+        dismissedUpNextForStreamId = _uiState.value.currentStream?.streamId
+        _uiState.value = _uiState.value.copy(
+            showNextEpisodePrompt = false,
+            nextEpisodeCountdownSec = 10
         )
     }
 
@@ -1376,6 +1725,9 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application) 
                             currentSubtitleText = activeCueText
                         )
                     }
+                    if (!state.isLive && dur > 0L) {
+                        evaluateSeriesUpNextTrigger(pos, dur)
+                    }
                     tickCount++
                     if (tickCount % 20 == 0 && !state.isLive) {
                         state.currentStream?.let { s ->
@@ -1403,6 +1755,10 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application) 
         subtitleDownloadJob?.cancel()
         subtitleBannerFadeJob?.cancel()
         subtitlePromptCountdownJob?.cancel()
+        liveAutoReconnectJob?.cancel()
+        qualityFallbackNoticeFadeJob?.cancel()
+        nextEpisodeCountdownJob?.cancel()
+        halftimeTimerJob?.cancel()
         try {
             loudnessEnhancer?.release()
         } catch (_: Exception) {}

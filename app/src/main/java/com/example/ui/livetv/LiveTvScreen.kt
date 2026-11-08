@@ -41,6 +41,7 @@ import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.LiveTv
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Sensors
 import androidx.compose.material.icons.filled.Star
@@ -49,6 +50,7 @@ import androidx.compose.material.icons.filled.Tv
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.OutlinedButton
@@ -148,6 +150,7 @@ fun LiveTvScreen(
     val channelFilterQuery by viewModel.channelFilterQuery.collectAsStateWithLifecycle()
     val channels by viewModel.channels.collectAsStateWithLifecycle()
     val currentLimit by viewModel.currentLimit.collectAsStateWithLifecycle()
+    val isRefreshing by viewModel.isRefreshing.collectAsStateWithLifecycle()
 
     // Pulsing broadcast signal animation for Live TV Studio identity
     val infiniteTransition = rememberInfiniteTransition(label = "live_pulse")
@@ -250,18 +253,63 @@ fun LiveTvScreen(
                             )
                         }
 
-                        Surface(
-                            color = Color.White.copy(alpha = 0.08f),
-                            shape = RoundedCornerShape(50),
-                            border = BorderStroke(0.6.dp, PaleGold.copy(alpha = 0.35f))
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(6.dp)
                         ) {
-                            Text(
-                                text = "${categories.size} BOUQUETS",
-                                color = PaleGold,
-                                fontSize = 9.sp,
-                                fontWeight = FontWeight.ExtraBold,
-                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.5.dp)
-                            )
+                            Surface(
+                                color = Color.White.copy(alpha = 0.08f),
+                                shape = RoundedCornerShape(50),
+                                border = BorderStroke(0.6.dp, PaleGold.copy(alpha = 0.35f))
+                            ) {
+                                Text(
+                                    text = "${categories.size} BOUQUETS",
+                                    color = PaleGold,
+                                    fontSize = 9.sp,
+                                    fontWeight = FontWeight.ExtraBold,
+                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.5.dp)
+                                )
+                            }
+
+                            Surface(
+                                color = TvBroadcastScarlet.copy(alpha = 0.18f),
+                                shape = RoundedCornerShape(50),
+                                border = BorderStroke(0.7.dp, TvCrimsonRose.copy(alpha = 0.55f)),
+                                modifier = Modifier
+                                    .height(24.dp)
+                                    .tvFocusablePill(
+                                        accentColor = TvCrimsonRose,
+                                        onClick = { viewModel.refreshLiveTv(activePlaylist) }
+                                    )
+                                    .testTag("section_refresh_button")
+                            ) {
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(4.dp),
+                                    modifier = Modifier.padding(horizontal = 8.dp)
+                                ) {
+                                    if (isRefreshing) {
+                                        CircularProgressIndicator(
+                                            color = TvCrimsonRose,
+                                            strokeWidth = 1.5.dp,
+                                            modifier = Modifier.size(11.dp)
+                                        )
+                                    } else {
+                                        Icon(
+                                            imageVector = Icons.Default.Refresh,
+                                            contentDescription = "Refresh Live TV",
+                                            tint = TvCrimsonRose,
+                                            modifier = Modifier.size(12.dp)
+                                        )
+                                    }
+                                    Text(
+                                        text = if (isRefreshing) "Syncing…" else "Refresh",
+                                        color = Color.White,
+                                        fontSize = 9.sp,
+                                        fontWeight = FontWeight.ExtraBold
+                                    )
+                                }
+                            }
                         }
                     }
                 }

@@ -140,19 +140,71 @@ object StreamMetadataParser {
      * Compacts verbose live football broadcaster labels for match cards and capsules:
      * - Strips leading decorative symbols and country/region tags via [cleanDisplayTitle]
      * - Strips trailing bracketed or parenthesized fixture descriptions (e.g. `[LaLiga: Malaga vs. Racing Santander...]`)
+     * - Appends ` • $region` when a regional prefix is present (e.g. `"CA| TSN+ 002 [LaLiga: ...]"` -> `"TSN+ 002 • CA"`).
      * - Truncates cleanly at 24 characters with `…` if still overly long.
      */
     fun compactBroadcastChannelLabel(rawLabel: String): String {
+        val regionTag = extractRegionOrLangBadge(rawLabel)
         val withoutFixtureSuffix = rawLabel
             .replace(Regex("""\s*\[[^\]]*vs\.?[^\]]*].*$""", RegexOption.IGNORE_CASE), "")
             .replace(Regex("""\s*\[[^\]]*:[^\]]*].*$"""), "")
             .replace(Regex("""\s*\([^\)]*vs\.?[^\)]*\).*$""", RegexOption.IGNORE_CASE), "")
             .trim()
         val base = cleanDisplayTitle(withoutFixtureSuffix.ifBlank { rawLabel })
-        return if (base.length > 24) {
-            base.take(23).trimEnd() + "…"
+        val withRegion = if (!regionTag.isNullOrBlank() &&
+            !base.endsWith("• $regionTag", ignoreCase = true) &&
+            !base.equals(regionTag, ignoreCase = true)
+        ) {
+            "$base • $regionTag"
         } else {
             base
+        }
+        return if (withRegion.length > 24) {
+            withRegion.take(23).trimEnd() + "…"
+        } else {
+            withRegion
+        }
+    }
+
+    /**
+     * Formats verbose raw series episode titles (e.g. `"FR| Breaking Bad - S01E01 - Pilot"`)
+     * into a clean, canonical episode header (`"S1 • E01 — Pilot"`).
+     */
+    fun formatCleanEpisodeTitle(
+        rawEpisodeTitle: String,
+        seasonNumber: Int,
+        episodeNumber: Int
+    ): String {
+        val prefix = "S$seasonNumber • E${String.format(java.util.Locale.US, "%02d", episodeNumber)}"
+        val cleaned = cleanDisplayTitle(rawEpisodeTitle)
+        if (cleaned.isBlank()) return prefix
+
+        // Strip leading show title + SxxExx / Episode xx markers
+        val withoutShowAndSeasonEp = cleaned
+            .replace(
+                Regex("""^.*?\bS0*\d+\s*[•\-_.]?\s*E0*\d+\b\s*(?:[-–—:|•]+\s*)?""", RegexOption.IGNORE_CASE),
+                ""
+            )
+            .replace(
+                Regex("""^.*?\b(?:Season\s+0*\d+\s*)?Episode\s+0*\d+\b\s*(?:[-–—:|•]+\s*)?""", RegexOption.IGNORE_CASE),
+                ""
+            )
+            .replace(
+                Regex("""^\s*E0*\d+\b\s*(?:[-–—:|•]+\s*)?""", RegexOption.IGNORE_CASE),
+                ""
+            )
+            .trim()
+
+        val subtitle = withoutShowAndSeasonEp.trim('-', '–', '—', ':', '|', '•', ' ')
+        val isRedundantNumberOnly = subtitle.isBlank() ||
+            subtitle.equals("Episode $episodeNumber", ignoreCase = true) ||
+            subtitle.equals("Ep $episodeNumber", ignoreCase = true) ||
+            subtitle.matches(Regex("""^S0*\d+\s*E0*\d+$""", RegexOption.IGNORE_CASE))
+
+        return if (isRedundantNumberOnly) {
+            prefix
+        } else {
+            "$prefix — $subtitle"
         }
     }
 

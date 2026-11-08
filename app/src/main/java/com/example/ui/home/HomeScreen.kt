@@ -321,7 +321,7 @@ fun HomeScreen(
                 liveMatchesCount = liveMatchesCount,
                 isLoadingMatches = isLoadingMatches,
                 liveScoreSyncState = liveScoreSyncState,
-                onRefreshMatches = { mainViewModel.refreshFootballSchedules() },
+                onRefreshMatches = { mainViewModel.refreshKickOffMatches(selectedMatchDay) },
                 onOpenCountryZoneModal = { mainViewModel.openCountryZoneModal() },
                 onOpenCustomizeModal = { mainViewModel.openCustomizeTeamsModal() },
                 onToggleLiveFilter = {

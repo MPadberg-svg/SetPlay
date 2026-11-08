@@ -306,6 +306,9 @@ android {
   testOptions {
     unitTests {
       isIncludeAndroidResources = true
+      all {
+        it.systemProperty("robolectric.dependency.repo.url", "https://maven-central.storage-download.googleapis.com/maven2/")
+      }
     }
   }
 }
@@ -362,31 +365,42 @@ EOF
   sed -i 's/fallbackToDestructiveMigration(dropAllTables = true)/fallbackToDestructiveMigration()/g' app/src/main/java/com/example/data/local/StreamVaultDatabase.kt 2>/dev/null || true
 fi
 
-# 3. Ensure Gradle 8.11.1 binary is available with robust retries and ZIP validation
+# 3. Ensure Gradle 8.11.1 binary is available (cached in ~/.gradle/wrapper/dists for actions/setup-java@v4)
 GRADLE_VERSION="8.11.1"
-GRADLE_DIR="/tmp/gradle-${GRADLE_VERSION}"
-GRADLE_ZIP="/tmp/gradle-${GRADLE_VERSION}.zip"
+GRADLE_CACHE_ROOT="${HOME:-/tmp}/.gradle/wrapper/dists/setplay-gradle-${GRADLE_VERSION}"
+GRADLE_DIR="${GRADLE_CACHE_ROOT}/gradle-${GRADLE_VERSION}"
+GRADLE_ZIP="${GRADLE_CACHE_ROOT}/gradle-${GRADLE_VERSION}-bin.zip"
 
 if [ ! -x "${GRADLE_DIR}/bin/gradle" ]; then
-  echo ">>> [SetPlay Gradle Wrapper] Downloading Gradle ${GRADLE_VERSION} with auto-retry..."
-  
-  # Download with fail-on-HTTP-error, resume support, 5 retries, and redirect following
-  curl --fail --show-error --location --retry 5 --retry-delay 2 --retry-connrefused \
+  mkdir -p "${GRADLE_CACHE_ROOT}"
+  DOWNLOAD_OK=0
+  for MIRROR_URL in \
     "https://services.gradle.org/distributions/gradle-${GRADLE_VERSION}-bin.zip" \
-    -o "${GRADLE_ZIP}"
-
-  # Validate ZIP archive integrity before attempting extraction
-  if ! unzip -tq "${GRADLE_ZIP}" >/dev/null 2>&1; then
-    echo ">>> [SetPlay Gradle Wrapper] Downloaded ZIP is corrupt or incomplete. Retrying download..."
+    "https://downloads.gradle.org/distributions/gradle-${GRADLE_VERSION}-bin.zip"; do
+    echo ">>> [SetPlay Gradle Wrapper] Downloading Gradle ${GRADLE_VERSION} from ${MIRROR_URL}..."
     rm -f "${GRADLE_ZIP}"
-    curl --fail --show-error --location --retry 5 --retry-delay 3 \
-      "https://services.gradle.org/distributions/gradle-${GRADLE_VERSION}-bin.zip" \
-      -o "${GRADLE_ZIP}"
-  fi
+    if curl --fail --location --retry 5 --retry-delay 3 --retry-all-errors -sS "${MIRROR_URL}" -o "${GRADLE_ZIP}"; then
+      if unzip -tq "${GRADLE_ZIP}" >/dev/null 2>&1; then
+        DOWNLOAD_OK=1
+        break
+      else
+        echo ">>> [SetPlay Gradle Wrapper] Archive validation failed for ${MIRROR_URL}, trying next mirror..."
+        rm -f "${GRADLE_ZIP}"
+      fi
+    fi
+  done
 
-  unzip -q -o "${GRADLE_ZIP}" -d /tmp
-  rm -f "${GRADLE_ZIP}"
-  chmod +x "${GRADLE_DIR}/bin/gradle"
+  if [ "$DOWNLOAD_OK" -eq 1 ]; then
+    unzip -q -o "${GRADLE_ZIP}" -d "${GRADLE_CACHE_ROOT}"
+    chmod +x "${GRADLE_DIR}/bin/gradle"
+    rm -f "${GRADLE_ZIP}"
+  elif command -v gradle >/dev/null 2>&1; then
+    echo ">>> [SetPlay Gradle Wrapper] Falling back to system gradle..."
+    exec gradle "$@"
+  else
+    echo ">>> [SetPlay Gradle Wrapper] ERROR: Failed to download valid Gradle ${GRADLE_VERSION} archive and no system gradle found." >&2
+    exit 1
+  fi
 fi
 
 exec "${GRADLE_DIR}/bin/gradle" "$@"

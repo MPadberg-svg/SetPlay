@@ -4935,5 +4935,128 @@ class FootballRepository(
             }
             return false
         }
+
+        private val STOPPAGE_CLOCK_REGEX = Regex("""^(1H\s*•\s*|2H\s*•\s*)?(\d+)\s*\+\s*(\d+)'?$""", RegexOption.IGNORE_CASE)
+        private val STANDARD_CLOCK_REGEX = Regex("""^(1H\s*•\s*|2H\s*•\s*)?(\d+)'?$""", RegexOption.IGNORE_CASE)
+
+        internal fun extractMatchMinuteForHorizon(liveMinuteOrBadge: String): Int? {
+            val clean = liveMinuteOrBadge.trim()
+            if (clean.isEmpty() || clean.equals("HT", ignoreCase = true) || clean.equals("FT", ignoreCase = true)) {
+                return null
+            }
+            STOPPAGE_CLOCK_REGEX.matchEntire(clean)?.let { m ->
+                val base = m.groupValues[2].toIntOrNull() ?: return null
+                val added = m.groupValues[3].toIntOrNull() ?: 0
+                return if (base <= 45) {
+                    (base + added).coerceIn(45, 48)
+                } else {
+                    base + added
+                }
+            }
+            STANDARD_CLOCK_REGEX.matchEntire(clean)?.let { m ->
+                return m.groupValues[2].toIntOrNull()
+            }
+            val afterBullet = clean.substringAfterLast("•").trim()
+            val fallbackDigits = Regex("""(\d+)""").find(afterBullet)?.groupValues?.getOrNull(1)?.toIntOrNull()
+            return fallbackDigits
+        }
+
+        /**
+         * Adaptive Event-Horizon Live Poll Interval Calculator:
+         * - If no matches are `LIVE` or `HALFTIME`, returns `0L` (polling off).
+         * - If all in-play matches are in `MatchStatus.HALFTIME` (`liveMinuteOrBadge == "HT"`), returns `180_000L` (3 minutes).
+         * - Critical Event Horizons (`minute in 40..48` or `minute >= 85`): returns `30_000L` (30s fast polling for stoppage time, late goals & FT whistle).
+         * - Calm Match Windows (`minute in 1..39` or `minute in 49..84`): returns `180_000L` (3-minute interval, saving 85%+ of API quota).
+         */
+        fun calculateAdaptiveLivePollIntervalMs(matches: List<FootballMatch>): Long {
+            val inPlay = matches.filter { it.status == MatchStatus.LIVE || it.status == MatchStatus.HALFTIME }
+            if (inPlay.isEmpty()) return 0L
+
+            val activeLive = inPlay.filter {
+                it.status == MatchStatus.LIVE && !it.liveMinuteOrBadge.trim().equals("HT", ignoreCase = true)
+            }
+            if (activeLive.isEmpty()) {
+                // All in-play matches are in HALFTIME break
+                return 180_000L
+            }
+
+            val hasCriticalHorizonMatch = activeLive.any { match ->
+                val minute = extractMatchMinuteForHorizon(match.liveMinuteOrBadge)
+                minute != null && (minute in 40..48 || minute >= 85)
+            }
+            return if (hasCriticalHorizonMatch) 30_000L else 180_000L
+        }
+
+        /**
+         * Advances the minute in `liveMinuteOrBadge` (`"1H • 37'"` -> `"1H • 38'"`, capping 1st half at `"1H • 45+3'"`
+         * and 2nd half at `"2H • 90+5'"`) once every 60 seconds between network polls so live match clocks tick
+         * smoothly on screen with zero API calls.
+         */
+        fun advanceClientSideLiveMatchClocks(matches: List<FootballMatch>): List<FootballMatch> {
+            return matches.map { match ->
+                if (match.status != MatchStatus.LIVE) {
+                    return@map match
+                }
+                val clean = match.liveMinuteOrBadge.trim()
+                if (clean.isEmpty() || clean.equals("HT", ignoreCase = true) || clean.equals("FT", ignoreCase = true)) {
+                    return@map match
+                }
+
+                val updatedBadge = STOPPAGE_CLOCK_REGEX.matchEntire(clean)?.let { m ->
+                    val rawPrefix = m.groupValues[1]
+                    val base = m.groupValues[2].toIntOrNull() ?: return@let null
+                    val added = m.groupValues[3].toIntOrNull() ?: 0
+                    val isFirstHalf = rawPrefix.contains("1H", ignoreCase = true) ||
+                        (!rawPrefix.contains("2H", ignoreCase = true) && base <= 45)
+                    val normalizedPrefix = when {
+                        rawPrefix.isNotEmpty() -> if (rawPrefix.contains("1H", true)) "1H • " else "2H • "
+                        isFirstHalf -> "1H • "
+                        else -> "2H • "
+                    }
+                    if (isFirstHalf) {
+                        val nextAdded = (added + 1).coerceAtMost(3)
+                        "${normalizedPrefix}45+${nextAdded}'"
+                    } else {
+                        val nextAdded = (added + 1).coerceAtMost(5)
+                        "${normalizedPrefix}90+${nextAdded}'"
+                    }
+                } ?: STANDARD_CLOCK_REGEX.matchEntire(clean)?.let { m ->
+                    val rawPrefix = m.groupValues[1]
+                    val minute = m.groupValues[2].toIntOrNull() ?: return@let null
+                    val isFirstHalf = rawPrefix.contains("1H", ignoreCase = true) ||
+                        (!rawPrefix.contains("2H", ignoreCase = true) && minute <= 45)
+                    val normalizedPrefix = when {
+                        rawPrefix.isNotEmpty() -> if (rawPrefix.contains("1H", true)) "1H • " else "2H • "
+                        isFirstHalf -> "1H • "
+                        else -> "2H • "
+                    }
+                    if (isFirstHalf) {
+                        if (minute < 45) {
+                            "$normalizedPrefix${minute + 1}'"
+                        } else {
+                            "${normalizedPrefix}45+1'"
+                        }
+                    } else {
+                        if (minute < 90) {
+                            "$normalizedPrefix${minute + 1}'"
+                        } else {
+                            "${normalizedPrefix}90+1'"
+                        }
+                    }
+                } ?: clean
+
+                if (updatedBadge != match.liveMinuteOrBadge) {
+                    match.copy(liveMinuteOrBadge = updatedBadge)
+                } else {
+                    match
+                }
+            }
+        }
     }
+
+    fun calculateAdaptiveLivePollIntervalMs(matches: List<FootballMatch>): Long =
+        Companion.calculateAdaptiveLivePollIntervalMs(matches)
+
+    fun advanceClientSideLiveMatchClocks(matches: List<FootballMatch>): List<FootballMatch> =
+        Companion.advanceClientSideLiveMatchClocks(matches)
 }

@@ -116,6 +116,21 @@ class LiveTvViewModel(application: Application) : AndroidViewModel(application) 
         loadMore()
     }
 
+    private val _isRefreshing = MutableStateFlow(false)
+    val isRefreshing: StateFlow<Boolean> = _isRefreshing.asStateFlow()
+
+    fun refreshLiveTv(playlist: com.example.data.model.PlaylistEntity? = null) {
+        viewModelScope.launch {
+            val target = playlist ?: repository.getActivePlaylistOnce() ?: return@launch
+            _isRefreshing.value = true
+            try {
+                repository.syncPlaylistSection(target, "LIVE")
+            } finally {
+                _isRefreshing.value = false
+            }
+        }
+    }
+
     fun toggleFavorite(streamId: Long, currentFav: Boolean) {
         viewModelScope.launch {
             repository.toggleFavorite(streamId, !currentFav)

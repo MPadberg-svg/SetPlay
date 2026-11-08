@@ -477,6 +477,23 @@ class IptvRepository(
     }
 
     /**
+     * Executes automatic SQLite database housekeeping:
+     * 1. Clears watch history and resume positions older than 60 days without deleting catalog streams.
+     * 2. Deletes orphan streams and categories belonging to deleted playlists.
+     * 3. Deletes expired EPG program cache rows (`endEpoch < nowEpochSec`).
+     * 4. Purges any cached adult/+18 categories and streams.
+     */
+    suspend fun purgeExpiredHousekeepingData(nowEpochMs: Long = System.currentTimeMillis()) = withContext(Dispatchers.IO) {
+        val sixtyDaysAgoMs = nowEpochMs - 60L * 24L * 60L * 60L * 1000L
+        val nowEpochSec = nowEpochMs / 1000L
+        streamDao.clearExpiredWatchHistory(sixtyDaysAgoMs)
+        streamDao.purgeOrphanStreams()
+        categoryDao.purgeOrphanCategories()
+        epgDao.purgeExpiredEpgPrograms(nowEpochSec)
+        purgeAllAdultContent()
+    }
+
+    /**
      * Synchronizes the account catalog with streaming bounded batches.
      * Prevents race conditions and preserves previous catalog on failure.
      */
@@ -711,6 +728,134 @@ class IptvRepository(
             isSyncInProgress.set(false)
         }
     }
+
+    /**
+     * Granular per-section catalog refresh (`"LIVE"`, `"MOVIE"`, or `"SERIES"`).
+     * Syncs ONLY the requested section's categories and streams while preserving favorites,
+     * playback positions, and all other catalog sections untouched.
+     */
+    suspend fun syncPlaylistSection(playlist: PlaylistEntity, sectionType: String): Result<Unit> = withContext(Dispatchers.IO) {
+        val normalizedSection = sectionType.trim().uppercase()
+        val (catAction, catType, streamAction, streamType, sectionLabel) = when (normalizedSection) {
+            "LIVE", "LIVE_TV" -> SectionSyncSpec("get_live_categories", "LIVE", "get_live_streams", "live", "Live TV")
+            "MOVIE", "MOVIES", "VOD" -> SectionSyncSpec("get_vod_categories", "MOVIE", "get_vod_streams", "movie", "Movies")
+            "SERIES" -> SectionSyncSpec("get_series_categories", "SERIES", "get_series", "series", "Series")
+            else -> return@withContext Result.failure(IllegalArgumentException("Unsupported sectionType: $sectionType"))
+        }
+
+        if (!isSyncInProgress.compareAndSet(false, true)) {
+            return@withContext Result.failure(IllegalStateException("A synchronization job is already running"))
+        }
+
+        _syncProgress.value = SyncProgress(isSyncing = true, phase = "Refreshing $sectionLabel…")
+        val plainPassword = SecurityManager.decryptCredential(playlist.password)
+
+        try {
+            val authResult = xtreamClient.authenticate(
+                playlist.serverUrl,
+                playlist.username,
+                plainPassword
+            )
+            if (authResult.isFailure) {
+                val rawErr = authResult.exceptionOrNull()?.message ?: "Authentication failed"
+                val safeErr = SecurityManager.redactSensitiveText(rawErr, playlist.username, plainPassword)
+                _syncProgress.value = SyncProgress(isSyncing = false, error = safeErr)
+                return@withContext Result.failure(Exception(safeErr))
+            }
+
+            val authData = authResult.getOrNull()
+            val resolvedServerUrl = authData?.resolvedServerUrl?.takeIf { it.isNotBlank() } ?: playlist.serverUrl.trim()
+
+            // 1. Fetch & replace ONLY this section's categories
+            val sectionCats = xtreamClient.fetchCategories(
+                resolvedServerUrl, playlist.username, plainPassword,
+                action = catAction, categoryType = catType, playlistId = playlist.id
+            ).filterNot { SecurityManager.isAdultContent(it.categoryName) }
+            val allowedCatIds = sectionCats.map { it.categoryId }.toSet()
+
+            if (sectionCats.isNotEmpty()) {
+                categoryDao.clearCategoriesByType(playlist.id, catType)
+                categoryDao.insertCategories(sectionCats)
+                restoreLockedCategories(playlist.id)
+            }
+
+            // 2. Snapshot favorites & positions for this section's streamType
+            val favIds = streamDao.getFavoriteProviderIds(playlist.id, streamType)
+            val savedPositions = streamDao.getSavedStreamPositions(playlist.id, streamType)
+
+            // 3. Stream & replace ONLY this section's catalog entries
+            var firstBatchCleared = false
+            var insertedCount = 0
+            xtreamClient.streamCatalogEntries(
+                serverUrl = resolvedServerUrl,
+                username = playlist.username,
+                password = plainPassword,
+                action = streamAction,
+                streamType = streamType,
+                playlistId = playlist.id,
+                batchSize = 500
+            ) { batch, _ ->
+                if (!firstBatchCleared) {
+                    streamDao.deleteStreamsByType(playlist.id, streamType)
+                    firstBatchCleared = true
+                }
+                val safeBatch = batch.filter { item ->
+                    !SecurityManager.isAdultContent(item.name) &&
+                        (allowedCatIds.isEmpty() || item.categoryId.isBlank() || item.categoryId in allowedCatIds)
+                }
+                if (safeBatch.isNotEmpty()) {
+                    streamDao.insertStreamsBatch(safeBatch)
+                    insertedCount += safeBatch.size
+                }
+                _syncProgress.value = SyncProgress(
+                    isSyncing = true,
+                    phase = "Refreshing $sectionLabel ($insertedCount items)…",
+                    itemsProcessed = insertedCount
+                )
+            }
+
+            if (favIds.isNotEmpty()) {
+                favIds.chunked(400).forEach { chunk ->
+                    streamDao.restoreFavorites(playlist.id, streamType, chunk)
+                }
+            }
+            savedPositions.forEach { snap ->
+                streamDao.restoreStreamPosition(playlist.id, streamType, snap.streamId, snap.lastPositionMs, snap.watchHistoryTimestamp)
+            }
+
+            purgeAllAdultContent()
+
+            val currentStored = playlistDao.getPlaylistById(playlist.id) ?: playlist.encryptedForStorage()
+            val updatedPlaylist = when (catType) {
+                "LIVE" -> currentStored.copy(channelCount = insertedCount, lastSyncTimestamp = System.currentTimeMillis())
+                "MOVIE" -> currentStored.copy(vodCount = insertedCount, lastSyncTimestamp = System.currentTimeMillis())
+                else -> currentStored.copy(seriesCount = insertedCount, lastSyncTimestamp = System.currentTimeMillis())
+            }
+            playlistDao.updatePlaylist(updatedPlaylist)
+
+            _syncProgress.value = SyncProgress(
+                isSyncing = false,
+                phase = "Complete! Refreshed $insertedCount $sectionLabel items.",
+                itemsProcessed = insertedCount
+            )
+            Result.success(Unit)
+        } catch (e: Exception) {
+            val safeErr = SecurityManager.redactSensitiveText(e.message, playlist.username, plainPassword)
+            Log.e("IptvRepository", "Section sync ($sectionType) failed: $safeErr")
+            _syncProgress.value = SyncProgress(isSyncing = false, error = safeErr)
+            Result.failure(Exception(safeErr))
+        } finally {
+            isSyncInProgress.set(false)
+        }
+    }
+
+    private data class SectionSyncSpec(
+        val catAction: String,
+        val catType: String,
+        val streamAction: String,
+        val streamType: String,
+        val sectionLabel: String
+    )
 
     companion object {
         const val DEFAULT_PAGE_SIZE = 180

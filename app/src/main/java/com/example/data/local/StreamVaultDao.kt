@@ -111,6 +111,9 @@ interface CategoryDao {
     @Query("DELETE FROM categories WHERE playlistId = :playlistId")
     suspend fun clearCategoriesForPlaylist(playlistId: Long)
 
+    @Query("DELETE FROM categories WHERE playlistId = :playlistId AND type = :type")
+    suspend fun clearCategoriesByType(playlistId: Long, type: String)
+
     @Query("UPDATE categories SET isLocked = :isLocked WHERE playlistId = :playlistId AND categoryId = :categoryId")
     suspend fun setCategoryLocked(playlistId: Long, categoryId: String, isLocked: Boolean)
 
@@ -132,6 +135,9 @@ interface CategoryDao {
            OR categoryName LIKE '%للكبار%'
     """)
     suspend fun purgeAdultCategories(): Int
+
+    @Query("DELETE FROM categories WHERE playlistId NOT IN (SELECT id FROM playlists)")
+    suspend fun purgeOrphanCategories(): Int
 }
 
 data class StreamPositionSnapshot(
@@ -321,6 +327,15 @@ interface StreamDao {
         LIMIT 200
     """)
     suspend fun searchLiveStreamsByKeyword(playlistId: Long, keyword: String): List<StreamEntity>
+
+    @Query("SELECT * FROM streams WHERE playlistId = :playlistId AND streamType = 'series' AND categoryId = :categoryId AND streamId > :currentStreamId ORDER BY streamId ASC LIMIT 1")
+    suspend fun getNextSeriesStreamFallback(playlistId: Long, categoryId: String, currentStreamId: Long): StreamEntity?
+
+    @Query("UPDATE streams SET watchHistoryTimestamp = 0, lastPositionMs = 0 WHERE watchHistoryTimestamp > 0 AND watchHistoryTimestamp < :sixtyDaysAgoMs")
+    suspend fun clearExpiredWatchHistory(sixtyDaysAgoMs: Long): Int
+
+    @Query("DELETE FROM streams WHERE playlistId NOT IN (SELECT id FROM playlists)")
+    suspend fun purgeOrphanStreams(): Int
 }
 
 @Dao
@@ -339,6 +354,9 @@ interface EpgDao {
 
     @Query("DELETE FROM epg_programs WHERE playlistId = :playlistId")
     suspend fun clearEpgForPlaylist(playlistId: Long)
+
+    @Query("DELETE FROM epg_programs WHERE endEpoch < :nowEpochSec")
+    suspend fun purgeExpiredEpgPrograms(nowEpochSec: Long): Int
 }
 
 @Dao

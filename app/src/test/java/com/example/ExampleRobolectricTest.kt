@@ -2945,11 +2945,505 @@ class ExampleRobolectricTest {
             com.example.util.StreamMetadataParser.cleanDisplayTitle("AR| Mr. Robot")
         )
         assertEquals(
-            "beIN Sports 2",
+            "beIN Sports 2 • ES",
             com.example.util.StreamMetadataParser.compactBroadcastChannelLabel(
                 "✦●✦| ES | beIN Sports 2 FHD [LaLiga: Malaga vs. Racing Santander]"
             )
         )
+        assertEquals(
+            "TSN+ 002 • CA",
+            com.example.util.StreamMetadataParser.compactBroadcastChannelLabel(
+                "CA| TSN+ 002 [LaLiga: Malaga vs. Racing Santander...]"
+            )
+        )
+        assertEquals(
+            "S1 • E01 — Pilot",
+            com.example.util.StreamMetadataParser.formatCleanEpisodeTitle(
+                rawEpisodeTitle = "FR| Breaking Bad - S01E01 - Pilot",
+                seasonNumber = 1,
+                episodeNumber = 1
+            )
+        )
+    }
+
+    @Test
+    fun `test 3-Stage ExoPlayer Reconnect and Quality-Tier Fallback in PlayerViewModel`() = runBlocking {
+        val application = ApplicationProvider.getApplicationContext<Application>()
+        val playerVm = com.example.ui.player.PlayerViewModel(application)
+        try {
+            val playlist = PlaylistEntity(
+                id = 1L,
+                name = "Test Vault",
+                serverUrl = "http://live.example.com:8080",
+                username = "u",
+                password = "p",
+                isActive = true
+            )
+            val stream4K = StreamEntity(
+                id = 101L,
+                playlistId = 1L,
+                streamId = 101L,
+                name = "EN | Sky Sports Main Event 4K UHD",
+                streamType = "live",
+                categoryId = "sports",
+                containerExtension = "ts"
+            )
+            val streamFhd = StreamEntity(
+                id = 102L,
+                playlistId = 1L,
+                streamId = 102L,
+                name = "EN | Sky Sports Main Event 1080p FHD",
+                streamType = "live",
+                categoryId = "sports",
+                containerExtension = "ts"
+            )
+            val streamHd = StreamEntity(
+                id = 103L,
+                playlistId = 1L,
+                streamId = 103L,
+                name = "EN | Sky Sports Main Event HD",
+                streamType = "live",
+                categoryId = "sports",
+                containerExtension = "ts"
+            )
+
+            playerVm.playStream(
+                stream = stream4K,
+                playlist = playlist
+            )
+            playerVm.setAlternateQualityFeedsForTesting(listOf(stream4K, streamFhd, streamHd))
+            assertEquals(0, playerVm.uiState.value.reconnectStage)
+            assertNull(playerVm.uiState.value.error)
+
+            // Stage 1: Immediate Re-Arm (no user-facing error banner)
+            playerVm.handlePlayerErrorRecovery("Source error 1", skipDelaysForTesting = true)
+            assertEquals(1, playerVm.uiState.value.reconnectStage)
+            assertNull(playerVm.uiState.value.error)
+            assertEquals(101L, playerVm.uiState.value.currentStream?.streamId)
+
+            // Stage 2: Fresh Session & Header Rebuild (no user-facing error banner)
+            playerVm.handlePlayerErrorRecovery("Source error 2", skipDelaysForTesting = true)
+            assertEquals(2, playerVm.uiState.value.reconnectStage)
+            assertNull(playerVm.uiState.value.error)
+            assertEquals(101L, playerVm.uiState.value.currentStream?.streamId)
+
+            // Stage 3: Automatic Quality-Tier Step-Down (4K UHD -> 1080p FHD)
+            playerVm.handlePlayerErrorRecovery("Source error 3", skipDelaysForTesting = true)
+            assertEquals(3, playerVm.uiState.value.reconnectStage)
+            assertNull(playerVm.uiState.value.error)
+            assertEquals(102L, playerVm.uiState.value.currentStream?.streamId)
+            assertTrue(
+                playerVm.uiState.value.qualityFallbackNotice?.contains("Quality adjusted to FHD") == true
+            )
+        } finally {
+            playerVm.stopAndClosePlayer()
+        }
+    }
+
+    @Test
+    fun `test Series 90 percent Up Next trigger and DAO fallback in PlayerViewModel`() = runBlocking {
+        val application = ApplicationProvider.getApplicationContext<Application>()
+        val db = Room.inMemoryDatabaseBuilder(application, StreamVaultDatabase::class.java)
+            .allowMainThreadQueries()
+            .build()
+        val playerVm = com.example.ui.player.PlayerViewModel(application)
+        try {
+            val playlistId = db.playlistDao().insertPlaylist(
+                PlaylistEntity(
+                    name = "Series Vault",
+                    serverUrl = "http://vod.example.com:8080",
+                    username = "u",
+                    password = "p",
+                    isActive = true
+                )
+            )
+            val ep1 = StreamEntity(
+                id = 501L,
+                playlistId = playlistId,
+                streamId = 501L,
+                name = "EN | Severance S01E01",
+                streamType = "series",
+                categoryId = "cat_scifi",
+                containerExtension = "mp4"
+            )
+            val ep2 = StreamEntity(
+                id = 502L,
+                playlistId = playlistId,
+                streamId = 502L,
+                name = "EN | Severance S01E02",
+                streamType = "series",
+                categoryId = "cat_scifi",
+                containerExtension = "mp4"
+            )
+            db.streamDao().insertStreamsBatch(listOf(ep1, ep2))
+
+            // Verify DAO fallback query
+            val daoNext = db.streamDao().getNextSeriesStreamFallback(
+                playlistId = playlistId,
+                categoryId = "cat_scifi",
+                currentStreamId = 501L
+            )
+            assertNotNull(daoNext)
+            assertEquals(502L, daoNext?.streamId)
+
+            val playlist = db.playlistDao().getPlaylistById(playlistId)!!
+            playerVm.setSeriesEpisodeQueue(listOf(ep1, ep2))
+            playerVm.playStream(stream = ep1, playlist = playlist)
+
+            assertEquals(502L, playerVm.uiState.value.nextSeriesEpisodeStream?.streamId)
+            assertFalse(playerVm.uiState.value.showNextEpisodePrompt)
+
+            // Below 90% threshold -> prompt stays hidden
+            playerVm.evaluateSeriesUpNextTrigger(positionMs = 800_000L, durationMs = 1_000_000L)
+            assertFalse(playerVm.uiState.value.showNextEpisodePrompt)
+
+            // At 91% threshold -> prompt appears with 10s countdown
+            playerVm.evaluateSeriesUpNextTrigger(positionMs = 910_000L, durationMs = 1_000_000L)
+            assertTrue(playerVm.uiState.value.showNextEpisodePrompt)
+            assertEquals(10, playerVm.uiState.value.nextEpisodeCountdownSec)
+
+            // Cancel hides prompt and prevents re-triggering for the same episode
+            playerVm.cancelNextEpisodePrompt()
+            assertFalse(playerVm.uiState.value.showNextEpisodePrompt)
+            playerVm.evaluateSeriesUpNextTrigger(positionMs = 950_000L, durationMs = 1_000_000L)
+            assertFalse(playerVm.uiState.value.showNextEpisodePrompt)
+
+            // Play Next Episode transitions seamlessly to S01E02
+            playerVm.playNextSeriesEpisode()
+            assertEquals(502L, playerVm.uiState.value.currentStream?.streamId)
+        } finally {
+            playerVm.stopAndClosePlayer()
+            db.close()
+        }
+    }
+
+    @Test
+    fun `test Database Housekeeping purges expired history orphans EPG and adult content`() = runBlocking {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val db = Room.inMemoryDatabaseBuilder(context, StreamVaultDatabase::class.java)
+            .allowMainThreadQueries()
+            .build()
+        try {
+            val repo = IptvRepository(
+                playlistDao = db.playlistDao(),
+                categoryDao = db.categoryDao(),
+                streamDao = db.streamDao(),
+                epgDao = db.epgDao(),
+                parentalDao = db.parentalSettingsDao()
+            )
+            val nowMs = 1_800_000_000_000L
+            val seventyDaysAgoMs = nowMs - (70L * 24L * 60L * 60L * 1000L)
+            val tenDaysAgoMs = nowMs - (10L * 24L * 60L * 60L * 1000L)
+
+            val playlistId = db.playlistDao().insertPlaylist(
+                PlaylistEntity(
+                    name = "Active Server",
+                    serverUrl = "http://live.example.com:8080",
+                    username = "u",
+                    password = "p",
+                    isActive = true
+                )
+            )
+
+            // Insert streams: 1 expired watch history (>60d), 1 recent watch history, 1 orphan playlist stream, 1 adult stream
+            db.streamDao().insertStreamsBatch(
+                listOf(
+                    StreamEntity(
+                        id = 1L,
+                        playlistId = playlistId,
+                        streamId = 1L,
+                        name = "Inception (2010)",
+                        streamType = "movie",
+                        categoryId = "cat_1",
+                        watchHistoryTimestamp = seventyDaysAgoMs,
+                        lastPositionMs = 450_000L
+                    ),
+                    StreamEntity(
+                        id = 2L,
+                        playlistId = playlistId,
+                        streamId = 2L,
+                        name = "Interstellar (2014)",
+                        streamType = "movie",
+                        categoryId = "cat_1",
+                        watchHistoryTimestamp = tenDaysAgoMs,
+                        lastPositionMs = 300_000L
+                    ),
+                    StreamEntity(
+                        id = 3L,
+                        playlistId = 999L, // Orphan playlistId
+                        streamId = 3L,
+                        name = "Orphan Channel HD",
+                        streamType = "live",
+                        categoryId = "cat_orphan"
+                    ),
+                    StreamEntity(
+                        id = 4L,
+                        playlistId = playlistId,
+                        streamId = 4L,
+                        name = "XXX Adult Forbidden 18+",
+                        streamType = "live",
+                        categoryId = "cat_1"
+                    )
+                )
+            )
+            db.categoryDao().insertCategories(
+                listOf(
+                    CategoryEntity(
+                        playlistId = playlistId,
+                        categoryId = "cat_1",
+                        categoryName = "Movies",
+                        type = "MOVIE"
+                    ),
+                    CategoryEntity(
+                        playlistId = 999L,
+                        categoryId = "cat_orphan",
+                        categoryName = "Orphan Category",
+                        type = "LIVE"
+                    )
+                )
+            )
+            val nowSec = nowMs / 1000L
+            db.epgDao().insertEpgPrograms(
+                listOf(
+                    com.example.data.model.EpgProgramEntity(
+                        playlistId = playlistId,
+                        streamId = 10L,
+                        epgChannelId = "ch1",
+                        title = "Old News",
+                        description = "",
+                        startEpoch = nowSec - 7_200L,
+                        endEpoch = nowSec - 3_600L
+                    ),
+                    com.example.data.model.EpgProgramEntity(
+                        playlistId = playlistId,
+                        streamId = 10L,
+                        epgChannelId = "ch1",
+                        title = "Live Match",
+                        description = "",
+                        startEpoch = nowSec - 1_800L,
+                        endEpoch = nowSec + 1_800L
+                    )
+                )
+            )
+
+            repo.purgeExpiredHousekeepingData(nowEpochMs = nowMs)
+
+            // 1. Expired watch history (>60d) cleared while keeping the stream in the catalog
+            val inception = db.streamDao().getStreamByProviderId(playlistId, 1L)
+            assertNotNull(inception)
+            assertEquals(0L, inception?.watchHistoryTimestamp)
+            assertEquals(0L, inception?.lastPositionMs)
+
+            // 2. Recent watch history (<60d) preserved
+            val interstellar = db.streamDao().getStreamByProviderId(playlistId, 2L)
+            assertEquals(tenDaysAgoMs, interstellar?.watchHistoryTimestamp)
+            assertEquals(300_000L, interstellar?.lastPositionMs)
+
+            // 3. Orphan stream & category removed
+            assertNull(db.streamDao().getStreamByProviderId(999L, 3L))
+            assertTrue(db.categoryDao().getCategories(999L, "LIVE").first().isEmpty())
+
+            // 4. Adult stream purged
+            assertNull(db.streamDao().getStreamByProviderId(playlistId, 4L))
+
+            // 5. Expired EPG program purged while active program remains
+            assertNull(db.epgDao().getCurrentProgram(playlistId, 10L, nowSec - 5_000L))
+            assertNotNull(db.epgDao().getCurrentProgram(playlistId, 10L, nowSec))
+        } finally {
+            db.close()
+        }
+    }
+
+    @Test
+    fun `test KickOff Anchor-and-Tick client clock and adaptive event-horizon polling`() {
+        fun sampleMatch(
+            status: com.example.data.repository.MatchStatus,
+            badge: String
+        ): com.example.data.repository.FootballMatch {
+            return com.example.data.repository.FootballMatch(
+                matchId = "m_${badge.hashCode()}",
+                tournamentId = "ucl",
+                tournamentName = "UEFA Champions League",
+                tournamentRegion = "Europe",
+                dayTab = com.example.data.repository.MatchDayTab.TODAY,
+                kickoffTimeFormatted = "20:00",
+                kickoffDateFormatted = "Today • GMT+1",
+                status = status,
+                liveMinuteOrBadge = badge,
+                homeTeamId = "rma",
+                homeTeamName = "Real Madrid",
+                homeTeamBadge = "",
+                homeScore = 1,
+                awayTeamId = "mci",
+                awayTeamName = "Manchester City",
+                awayTeamBadge = "",
+                awayScore = 1,
+                stadiumName = "Bernabeu",
+                cityName = "Madrid",
+                beinChannel = "beIN Sports 1 HD",
+                beinChannelNumberHint = "1"
+            )
+        }
+
+        // 1. Zero LIVE or HALFTIME matches -> 0L (sleep)
+        assertEquals(
+            0L,
+            com.example.data.repository.FootballRepository.calculateAdaptiveLivePollIntervalMs(
+                listOf(
+                    sampleMatch(com.example.data.repository.MatchStatus.UPCOMING, "20:00"),
+                    sampleMatch(com.example.data.repository.MatchStatus.FINISHED, "FT")
+                )
+            )
+        )
+
+        // 2. All in-play matches at Halftime (HT) -> 180_000L (3 min)
+        assertEquals(
+            180_000L,
+            com.example.data.repository.FootballRepository.calculateAdaptiveLivePollIntervalMs(
+                listOf(sampleMatch(com.example.data.repository.MatchStatus.HALFTIME, "HT"))
+            )
+        )
+
+        // 3. Live match in critical transition window (minute 40..48 or >= 85) -> 30_000L (30s)
+        assertEquals(
+            30_000L,
+            com.example.data.repository.FootballRepository.calculateAdaptiveLivePollIntervalMs(
+                listOf(sampleMatch(com.example.data.repository.MatchStatus.LIVE, "1H • 44'"))
+            )
+        )
+        assertEquals(
+            30_000L,
+            com.example.data.repository.FootballRepository.calculateAdaptiveLivePollIntervalMs(
+                listOf(sampleMatch(com.example.data.repository.MatchStatus.LIVE, "2H • 88'"))
+            )
+        )
+
+        // 4. Live match in standard play window (minute 1..39 or 49..84) -> 180_000L (3 min)
+        assertEquals(
+            180_000L,
+            com.example.data.repository.FootballRepository.calculateAdaptiveLivePollIntervalMs(
+                listOf(
+                    sampleMatch(com.example.data.repository.MatchStatus.LIVE, "1H • 22'"),
+                    sampleMatch(com.example.data.repository.MatchStatus.LIVE, "2H • 64'")
+                )
+            )
+        )
+
+        // 5. Client-side Anchor-and-Tick minute advancement and stoppage-time caps
+        val initialMatches = listOf(
+            sampleMatch(com.example.data.repository.MatchStatus.LIVE, "1H • 37'"),
+            sampleMatch(com.example.data.repository.MatchStatus.LIVE, "1H • 45+2'"),
+            sampleMatch(com.example.data.repository.MatchStatus.LIVE, "1H • 45+3'"),
+            sampleMatch(com.example.data.repository.MatchStatus.LIVE, "2H • 90'"),
+            sampleMatch(com.example.data.repository.MatchStatus.LIVE, "2H • 90+5'"),
+            sampleMatch(com.example.data.repository.MatchStatus.HALFTIME, "HT")
+        )
+        val ticked = com.example.data.repository.FootballRepository.advanceClientSideLiveMatchClocks(initialMatches)
+        assertEquals("1H • 38'", ticked[0].liveMinuteOrBadge)
+        assertEquals("1H • 45+3'", ticked[1].liveMinuteOrBadge)
+        assertEquals("1H • 45+3'", ticked[2].liveMinuteOrBadge) // Capped at 45+3'
+        assertEquals("2H • 90+1'", ticked[3].liveMinuteOrBadge)
+        assertEquals("2H • 90+5'", ticked[4].liveMinuteOrBadge) // Capped at 90+5'
+        assertEquals("HT", ticked[5].liveMinuteOrBadge)
+    }
+
+    @Test
+    fun `test Granular Per-Section Refresh syncPlaylistSection preserves other sections and favorites`() = runBlocking {
+        val serverSocket = java.net.ServerSocket(0)
+        val port = serverSocket.localPort
+        val serverThread = Thread {
+            try {
+                while (!serverSocket.isClosed) {
+                    val socket = serverSocket.accept()
+                    val reader = socket.getInputStream().bufferedReader(Charsets.UTF_8)
+                    val requestLine = reader.readLine().orEmpty()
+                    while (reader.readLine()?.isNotEmpty() == true) {
+                        // consume headers
+                    }
+                    val body = when {
+                        requestLine.contains("action=get_live_categories") ->
+                            """[{"category_id":"cat_live_1","category_name":"Sports HD"}]"""
+                        requestLine.contains("action=get_live_streams") ->
+                            """[{"stream_id":101,"name":"beIN Sports 1 FHD","category_id":"cat_live_1","container_extension":"ts"},{"stream_id":102,"name":"Sky Sports Main Event 4K","category_id":"cat_live_1","container_extension":"ts"}]"""
+                        requestLine.contains("action=get_vod_categories") ->
+                            """[{"category_id":"cat_vod_1","category_name":"Sci-Fi Movies"}]"""
+                        requestLine.contains("action=get_vod_streams") ->
+                            """[{"stream_id":201,"name":"EN| Dune: Part Two","category_id":"cat_vod_1","container_extension":"mp4"}]"""
+                        requestLine.contains("action=get_series_categories") ->
+                            """[{"category_id":"cat_ser_1","category_name":"Apple TV+ Series"}]"""
+                        requestLine.contains("action=get_series") ->
+                            """[{"series_id":301,"name":"FR| Severance","category_id":"cat_ser_1"}]"""
+                        else ->
+                            """{"user_info":{"auth":1,"status":"Active","exp_date":"1893456000","max_connections":"1"}}"""
+                    }
+                    val bytes = body.toByteArray(Charsets.UTF_8)
+                    val out = socket.getOutputStream()
+                    val header = "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: ${bytes.size}\r\nConnection: close\r\n\r\n"
+                    out.write(header.toByteArray(Charsets.UTF_8))
+                    out.write(bytes)
+                    out.flush()
+                    socket.close()
+                }
+            } catch (_: Exception) {}
+        }.apply { isDaemon = true; start() }
+
+        try {
+            val repo = IptvRepository(
+                playlistDao = database.playlistDao(),
+                categoryDao = database.categoryDao(),
+                streamDao = database.streamDao(),
+                epgDao = database.epgDao(),
+                parentalDao = database.parentalSettingsDao()
+            )
+            val playlistId = repo.addOrUpdatePlaylist(
+                PlaylistEntity(
+                    name = "Granular Sync Vault",
+                    serverUrl = "http://127.0.0.1:$port",
+                    username = "u",
+                    password = "p",
+                    isActive = true,
+                    channelCount = 1,
+                    vodCount = 1,
+                    seriesCount = 1
+                )
+            )
+            // Seed initial Live, Movie, and Series items (with streamId 101 marked Favorite)
+            database.categoryDao().insertCategories(
+                listOf(
+                    CategoryEntity(playlistId = playlistId, categoryId = "cat_live_old", categoryName = "Old Live", type = "LIVE"),
+                    CategoryEntity(playlistId = playlistId, categoryId = "cat_vod_1", categoryName = "Sci-Fi Movies", type = "MOVIE"),
+                    CategoryEntity(playlistId = playlistId, categoryId = "cat_ser_1", categoryName = "Apple TV+ Series", type = "SERIES")
+                )
+            )
+            database.streamDao().insertStreamsBatch(
+                listOf(
+                    StreamEntity(playlistId = playlistId, streamId = 101L, categoryId = "cat_live_old", name = "beIN Sports 1 Old", streamType = "live", isFavorite = true),
+                    StreamEntity(playlistId = playlistId, streamId = 201L, categoryId = "cat_vod_1", name = "EN| Dune: Part Two", streamType = "movie", isFavorite = true, lastPositionMs = 120_000L),
+                    StreamEntity(playlistId = playlistId, streamId = 301L, categoryId = "cat_ser_1", name = "FR| Severance", streamType = "series", isFavorite = true)
+                )
+            )
+
+            val activePlaylist = repo.getPlaylistById(playlistId)!!
+            val liveSyncResult = repo.syncPlaylistSection(activePlaylist, "LIVE")
+            assertTrue(liveSyncResult.isSuccess)
+
+            // 1. Live TV section updated (2 channels, favorite preserved on streamId 101)
+            val liveStreams = database.streamDao().getStreamsInitial(playlistId, "live", 50).first()
+            assertEquals(2, liveStreams.size)
+            assertTrue(liveStreams.first { it.streamId == 101L }.isFavorite)
+
+            // 2. Movies and Series sections were NOT wiped or modified during Live TV section sync
+            val movieStreams = database.streamDao().getStreamsInitial(playlistId, "movie", 50).first()
+            assertEquals(1, movieStreams.size)
+            assertEquals(120_000L, movieStreams.first().lastPositionMs)
+            assertTrue(movieStreams.first().isFavorite)
+
+            val seriesStreams = database.streamDao().getStreamsInitial(playlistId, "series", 50).first()
+            assertEquals(1, seriesStreams.size)
+            assertTrue(seriesStreams.first().isFavorite)
+        } finally {
+            runCatching { serverSocket.close() }
+        }
     }
 }
 

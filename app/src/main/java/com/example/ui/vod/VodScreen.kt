@@ -41,6 +41,7 @@ import androidx.compose.material.icons.filled.LocalMovies
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.Movie
 import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Star
 import androidx.compose.material.icons.filled.StarBorder
@@ -119,6 +120,7 @@ fun VodScreen(
     isParentalUnlocked: Boolean = false,
     onRequestUnlockCategory: ((String, () -> Unit) -> Unit)? = null,
     recentlyWatched: List<StreamEntity>? = null,
+    onSeriesEpisodeQueueBuilt: ((List<StreamEntity>) -> Unit)? = null,
     modifier: Modifier = Modifier
 ) {
     val isMovies = sectionTab == VodTab.MOVIES
@@ -193,30 +195,45 @@ fun VodScreen(
                 viewModel.toggleFavorite(selectedSeriesStream!!.id, selectedSeriesStream!!.isFavorite)
             },
             onPlayEpisode = { episode ->
-                val savedEpPositionMs = viewModel.repository.getEpisodePositionMs(
-                    playlistId = activePlaylist.id,
-                    episodeId = episode.episodeId
-                )
+                val parentSeries = selectedSeriesStream!!
                 val seriesMediaId = seriesDetails?.tmdbOrImdbId?.trim().orEmpty()
-                val encodedEpgChannelId = if (seriesMediaId.isNotBlank()) {
-                    "${selectedSeriesStream!!.streamId}:${episode.seasonNumber}:${episode.episodeNumber}:$seriesMediaId"
-                } else {
-                    "${selectedSeriesStream!!.streamId}:${episode.seasonNumber}:${episode.episodeNumber}"
+                fun buildEpisodeStream(ep: SeriesEpisode): StreamEntity {
+                    val savedPos = viewModel.repository.getEpisodePositionMs(
+                        playlistId = activePlaylist.id,
+                        episodeId = ep.episodeId
+                    )
+                    val encodedEpgChannelId = if (seriesMediaId.isNotBlank()) {
+                        "${parentSeries.streamId}:${ep.seasonNumber}:${ep.episodeNumber}:$seriesMediaId"
+                    } else {
+                        "${parentSeries.streamId}:${ep.seasonNumber}:${ep.episodeNumber}"
+                    }
+                    return StreamEntity(
+                        id = parentSeries.id,
+                        playlistId = activePlaylist.id,
+                        streamId = ep.episodeId,
+                        name = "${parentSeries.name} • S${ep.seasonNumber}E${ep.episodeNumber} - ${ep.title}",
+                        streamType = "series",
+                        streamIcon = ep.thumbnail.ifBlank { parentSeries.streamIcon },
+                        epgChannelId = encodedEpgChannelId,
+                        categoryId = parentSeries.categoryId,
+                        containerExtension = ep.containerExtension.ifBlank { "mp4" },
+                        isFavorite = parentSeries.isFavorite,
+                        rating = ep.rating.ifBlank { parentSeries.rating },
+                        lastPositionMs = savedPos
+                    )
                 }
-                val playableEpisodeStream = StreamEntity(
-                    id = selectedSeriesStream!!.id,
-                    playlistId = activePlaylist.id,
-                    streamId = episode.episodeId,
-                    name = "${selectedSeriesStream!!.name} • S${episode.seasonNumber}E${episode.episodeNumber} - ${episode.title}",
-                    streamType = "series",
-                    streamIcon = episode.thumbnail.ifBlank { selectedSeriesStream!!.streamIcon },
-                    epgChannelId = encodedEpgChannelId,
-                    categoryId = selectedSeriesStream!!.categoryId,
-                    containerExtension = episode.containerExtension.ifBlank { "mp4" },
-                    isFavorite = selectedSeriesStream!!.isFavorite,
-                    rating = episode.rating.ifBlank { selectedSeriesStream!!.rating },
-                    lastPositionMs = savedEpPositionMs
-                )
+
+                val allSeriesEpisodeStreams = seriesDetails?.seasons
+                    ?.sortedBy { it.seasonNumber }
+                    ?.flatMap { season ->
+                        season.episodes.sortedBy { it.episodeNumber }.map { buildEpisodeStream(it) }
+                    }
+                    .orEmpty()
+                if (allSeriesEpisodeStreams.isNotEmpty()) {
+                    onSeriesEpisodeQueueBuilt?.invoke(allSeriesEpisodeStreams)
+                }
+
+                val playableEpisodeStream = buildEpisodeStream(episode)
                 onItemClick(playableEpisodeStream)
             },
             modifier = modifier
@@ -228,6 +245,7 @@ fun VodScreen(
     val items by (if (isMovies) viewModel.movieItems else viewModel.seriesItems).collectAsStateWithLifecycle()
     val selectedCatId by (if (isMovies) viewModel.selectedMovieCategoryId else viewModel.selectedSeriesCategoryId).collectAsStateWithLifecycle()
     val searchQuery by (if (isMovies) viewModel.movieSearchQuery else viewModel.seriesSearchQuery).collectAsStateWithLifecycle()
+    val isRefreshing by (if (isMovies) viewModel.isRefreshingMovies else viewModel.isRefreshingSeries).collectAsStateWithLifecycle()
 
     val resolvedRecentlyWatched = recentlyWatched ?: fallbackRecentlyWatched
     val targetStreamType = if (isMovies) "movie" else "series"
@@ -353,18 +371,69 @@ fun VodScreen(
                     )
                 }
 
-                Surface(
-                    color = Color.White.copy(alpha = 0.08f),
-                    shape = RoundedCornerShape(50),
-                    border = BorderStroke(0.6.dp, sectionHighlight.copy(alpha = 0.35f))
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
                 ) {
-                    Text(
-                        text = "${categories.size} GENRES",
-                        color = sectionHighlight,
-                        fontSize = 9.sp,
-                        fontWeight = FontWeight.ExtraBold,
-                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.5.dp)
-                    )
+                    Surface(
+                        color = Color.White.copy(alpha = 0.08f),
+                        shape = RoundedCornerShape(50),
+                        border = BorderStroke(0.6.dp, sectionHighlight.copy(alpha = 0.35f))
+                    ) {
+                        Text(
+                            text = "${categories.size} GENRES",
+                            color = sectionHighlight,
+                            fontSize = 9.sp,
+                            fontWeight = FontWeight.ExtraBold,
+                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.5.dp)
+                        )
+                    }
+
+                    Surface(
+                        color = sectionPrimaryAccent.copy(alpha = 0.22f),
+                        shape = RoundedCornerShape(50),
+                        border = BorderStroke(0.7.dp, sectionHighlight.copy(alpha = 0.55f)),
+                        modifier = Modifier
+                            .height(24.dp)
+                            .tvFocusablePill(
+                                accentColor = sectionHighlight,
+                                onClick = {
+                                    if (isMovies) {
+                                        viewModel.refreshMovies(activePlaylist)
+                                    } else {
+                                        viewModel.refreshSeries(activePlaylist)
+                                    }
+                                }
+                            )
+                            .testTag("section_refresh_button")
+                    ) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(4.dp),
+                            modifier = Modifier.padding(horizontal = 8.dp)
+                        ) {
+                            if (isRefreshing) {
+                                CircularProgressIndicator(
+                                    color = sectionHighlight,
+                                    strokeWidth = 1.5.dp,
+                                    modifier = Modifier.size(11.dp)
+                                )
+                            } else {
+                                Icon(
+                                    imageVector = Icons.Default.Refresh,
+                                    contentDescription = if (isMovies) "Refresh Movies" else "Refresh Series",
+                                    tint = sectionHighlight,
+                                    modifier = Modifier.size(12.dp)
+                                )
+                            }
+                            Text(
+                                text = if (isRefreshing) "Syncing…" else "Refresh",
+                                color = Color.White,
+                                fontSize = 9.sp,
+                                fontWeight = FontWeight.ExtraBold
+                            )
+                        }
+                    }
                 }
             }
         }
@@ -2233,7 +2302,11 @@ fun SeriesEpisodeCard(
 
                 Column(modifier = Modifier.weight(1f)) {
                     Text(
-                        text = episode.title,
+                        text = StreamMetadataParser.formatCleanEpisodeTitle(
+                            rawEpisodeTitle = episode.title,
+                            seasonNumber = episode.seasonNumber,
+                            episodeNumber = episode.episodeNumber
+                        ),
                         color = Color.White,
                         fontSize = 14.sp,
                         fontWeight = FontWeight.SemiBold,

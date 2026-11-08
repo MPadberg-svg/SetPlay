@@ -215,6 +215,36 @@ class VodViewModel(application: Application) : AndroidViewModel(application) {
         _isLoadingSeriesDetails.value = false
     }
 
+    private val _isRefreshingMovies = MutableStateFlow(false)
+    val isRefreshingMovies: StateFlow<Boolean> = _isRefreshingMovies.asStateFlow()
+
+    private val _isRefreshingSeries = MutableStateFlow(false)
+    val isRefreshingSeries: StateFlow<Boolean> = _isRefreshingSeries.asStateFlow()
+
+    fun refreshMovies(playlist: PlaylistEntity? = null) {
+        viewModelScope.launch {
+            val target = playlist ?: repository.getActivePlaylistOnce() ?: return@launch
+            _isRefreshingMovies.value = true
+            try {
+                repository.syncPlaylistSection(target, "MOVIE")
+            } finally {
+                _isRefreshingMovies.value = false
+            }
+        }
+    }
+
+    fun refreshSeries(playlist: PlaylistEntity? = null) {
+        viewModelScope.launch {
+            val target = playlist ?: repository.getActivePlaylistOnce() ?: return@launch
+            _isRefreshingSeries.value = true
+            try {
+                repository.syncPlaylistSection(target, "SERIES")
+            } finally {
+                _isRefreshingSeries.value = false
+            }
+        }
+    }
+
     fun toggleFavorite(streamId: Long, currentFav: Boolean) {
         viewModelScope.launch {
             repository.toggleFavorite(streamId, !currentFav)

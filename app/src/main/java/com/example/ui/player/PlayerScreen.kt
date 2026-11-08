@@ -985,6 +985,126 @@ fun PlayerScreen(
             }
         }
 
+        // 3f. 3-Stage Quality-Tier Fallback Notice Pill ("⚡ Quality adjusted to ... for stream stability")
+        if (!uiState.qualityFallbackNotice.isNullOrBlank()) {
+            Surface(
+                color = Color(0xEB0A141E),
+                shape = RoundedCornerShape(50),
+                border = BorderStroke(1.dp, AmberGold.copy(alpha = 0.65f)),
+                shadowElevation = 12.dp,
+                modifier = Modifier
+                    .align(Alignment.TopCenter)
+                    .displayCutoutPadding()
+                    .padding(top = 64.dp, start = 20.dp, end = 20.dp)
+                    .testTag("player_quality_fallback_notice")
+            ) {
+                Text(
+                    text = uiState.qualityFallbackNotice!!,
+                    color = PaleGold,
+                    fontSize = 12.sp,
+                    fontWeight = FontWeight.Bold,
+                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)
+                )
+            }
+        }
+
+        // 3g. Series 90% "Up Next" 10-Second Countdown & Auto-Play Card (`player_next_episode_card`)
+        val nextEpPlayNowFocusRequester = remember { FocusRequester() }
+        LaunchedEffect(uiState.showNextEpisodePrompt, uiState.nextSeriesEpisodeStream?.streamId, activeEdition) {
+            if (uiState.showNextEpisodePrompt && uiState.nextSeriesEpisodeStream != null && activeEdition == SetPlayEdition.TV) {
+                runCatching { nextEpPlayNowFocusRequester.requestFocus() }
+            }
+        }
+        AnimatedVisibility(
+            visible = uiState.showNextEpisodePrompt && uiState.nextSeriesEpisodeStream != null,
+            enter = fadeIn(tween(200)) + slideInHorizontally(initialOffsetX = { it / 2 }),
+            exit = fadeOut(tween(200)) + slideOutHorizontally(targetOffsetX = { it / 2 }),
+            modifier = Modifier
+                .align(Alignment.BottomEnd)
+                .displayCutoutPadding()
+                .padding(
+                    end = 24.dp,
+                    start = 24.dp,
+                    bottom = if (uiState.isControlsVisible && !uiState.isTouchLocked) 104.dp else 32.dp
+                )
+                .testTag("player_next_episode_card")
+        ) {
+            uiState.nextSeriesEpisodeStream?.let { nextStream ->
+                val cleanNextTitle = remember(nextStream.name) {
+                    StreamMetadataParser.cleanDisplayTitle(nextStream.name).ifBlank { nextStream.name }
+                }
+                Surface(
+                    color = Color(0xF20B1622),
+                    shape = RoundedCornerShape(16.dp),
+                    border = BorderStroke(1.2.dp, AmberGold),
+                    shadowElevation = 16.dp,
+                    modifier = Modifier.widthIn(max = 420.dp)
+                ) {
+                    Column(
+                        modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp),
+                        verticalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                        Text(
+                            text = "Up Next (${uiState.nextEpisodeCountdownSec}s): $cleanNextTitle",
+                            color = PlayerTextPrimary,
+                            fontSize = 13.sp,
+                            fontWeight = FontWeight.ExtraBold,
+                            maxLines = 2,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                        Row(
+                            horizontalArrangement = Arrangement.spacedBy(10.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Surface(
+                                color = AmberGold,
+                                shape = RoundedCornerShape(50),
+                                modifier = Modifier
+                                    .clip(RoundedCornerShape(50))
+                                    .focusRequester(nextEpPlayNowFocusRequester)
+                                    .tvFocusablePill(
+                                        accentColor = AmberGold,
+                                        shape = RoundedCornerShape(50),
+                                        onClick = { viewModel.playNextSeriesEpisode() }
+                                    )
+                                    .testTag("player_next_episode_play_now_btn")
+                            ) {
+                                Text(
+                                    text = "▶ Play Now",
+                                    color = Color.Black,
+                                    fontSize = 12.sp,
+                                    fontWeight = FontWeight.ExtraBold,
+                                    modifier = Modifier.padding(horizontal = 14.dp, vertical = 7.dp)
+                                )
+                            }
+
+                            Surface(
+                                color = Color.White.copy(alpha = 0.10f),
+                                shape = RoundedCornerShape(50),
+                                border = BorderStroke(0.8.dp, Color.White.copy(alpha = 0.25f)),
+                                modifier = Modifier
+                                    .clip(RoundedCornerShape(50))
+                                    .tvFocusablePill(
+                                        accentColor = AmberGold,
+                                        shape = RoundedCornerShape(50),
+                                        onClick = { viewModel.cancelNextEpisodePrompt() }
+                                    )
+                                    .testTag("player_next_episode_cancel_btn")
+                            ) {
+                                Text(
+                                    text = "Cancel",
+                                    color = PlayerTextSecondary,
+                                    fontSize = 12.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    modifier = Modifier.padding(horizontal = 14.dp, vertical = 7.dp)
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
         // 4. Minimal Gesture Feedback Pill (only visible while swiping Brightness, Volume, or Scrubbing)
         if (uiState.gestureBrightness != null) {
             MinimalGesturePill(

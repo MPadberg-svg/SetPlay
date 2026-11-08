@@ -676,7 +676,10 @@ fun MainAppContent(
                             onItemClick = requestPlayStream,
                             isParentalUnlocked = isParentalUnlocked,
                             onRequestUnlockCategory = requestUnlockCategory,
-                            recentlyWatched = recentlyWatched
+                            recentlyWatched = recentlyWatched,
+                            onSeriesEpisodeQueueBuilt = { queue ->
+                                playerViewModel.setSeriesEpisodeQueue(queue)
+                            }
                         )
                         AppScreen.FAVORITES -> FavoritesScreen(
                             viewModel = mainViewModel,

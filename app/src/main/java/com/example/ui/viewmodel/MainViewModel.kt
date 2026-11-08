@@ -27,6 +27,7 @@ import com.example.data.sync.SyncRole
 import com.example.data.sync.TvSyncManager
 import com.example.data.sync.TvSyncSessionState
 import com.example.data.sync.VaultSyncPayload
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.async
@@ -304,6 +305,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 }
             }
         }
+        viewModelScope.launch(Dispatchers.IO) {
+            runCatching { repository.purgeExpiredHousekeepingData() }
+        }
         viewModelScope.launch {
             runCatching { repository.purgeAllAdultContent() }
             footballRepository.ensureDefaultTournamentsInitialized()
@@ -436,10 +440,21 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 val todayList = _matchesByDay.value[MatchDayTab.TODAY].orEmpty()
                 val activeDayList = _matchesByDay.value[activeDay].orEmpty()
 
-                val isFastLiveWindow = hasLiveOrImminentKickoffMatches(todayList, MatchDayTab.TODAY) ||
+                val combinedCandidateList = if (activeDay == MatchDayTab.TODAY) {
+                    todayList
+                } else {
+                    todayList + activeDayList
+                }
+                val adaptiveIntervalMs = footballRepository.calculateAdaptiveLivePollIntervalMs(combinedCandidateList)
+                val isFastLiveWindow = adaptiveIntervalMs > 0L ||
+                    hasLiveOrImminentKickoffMatches(todayList, MatchDayTab.TODAY) ||
                     hasLiveOrImminentKickoffMatches(activeDayList, activeDay)
 
-                val pollIntervalMs = if (isFastLiveWindow) 30_000L else 60_000L
+                val pollIntervalMs = when {
+                    adaptiveIntervalMs > 0L -> adaptiveIntervalMs
+                    isFastLiveWindow -> 60_000L
+                    else -> 180_000L
+                }
                 _liveScoreSyncState.value = _liveScoreSyncState.value.copy(
                     isPollingActive = _currentScreen.value == AppScreen.HOME || isFastLiveWindow,
                     activeLiveMatchesCount = todayList.count {
@@ -447,7 +462,22 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     }
                 )
 
-                delay(pollIntervalMs)
+                var remainingDelayMs = pollIntervalMs
+                while (remainingDelayMs > 0L) {
+                    val stepMs = minOf(remainingDelayMs, 60_000L)
+                    delay(stepMs)
+                    remainingDelayMs -= stepMs
+                    if (remainingDelayMs > 0L && stepMs == 60_000L) {
+                        val currentMap = _matchesByDay.value.toMutableMap()
+                        val currentToday = currentMap[MatchDayTab.TODAY].orEmpty()
+                        if (currentToday.any { it.status == MatchStatus.LIVE }) {
+                            val tickedToday = footballRepository.advanceClientSideLiveMatchClocks(currentToday)
+                            currentMap[MatchDayTab.TODAY] = tickedToday
+                            _todayMatches.value = tickedToday
+                            _matchesByDay.value = currentMap
+                        }
+                    }
+                }
 
                 val currentActiveDay = _selectedMatchDay.value
                 val shouldPollToday = isFastLiveWindow || currentActiveDay == MatchDayTab.TODAY
@@ -556,6 +586,42 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 _tomorrowMatches.value = updatedMap[MatchDayTab.TOMORROW].orEmpty()
                 val nowMs = System.currentTimeMillis()
                 val liveCount = updatedMap[_selectedMatchDay.value].orEmpty().count {
+                    it.status == MatchStatus.LIVE || it.status == MatchStatus.HALFTIME
+                }
+                _liveScoreSyncState.value = _liveScoreSyncState.value.copy(
+                    isPollingActive = true,
+                    isSyncingDelta = false,
+                    lastSyncedEpochMs = nowMs,
+                    lastSyncedTimeFormatted = formatCurrentZoneSyncTime(nowMs),
+                    activeLiveMatchesCount = liveCount
+                )
+            } finally {
+                _isLoadingMatches.value = false
+            }
+        }
+    }
+
+    /**
+     * Granular KickOff section refresh: refreshes ONLY the football fixtures for [dayTab].
+     */
+    fun refreshKickOffMatches(dayTab: MatchDayTab = _selectedMatchDay.value) {
+        viewModelScope.launch {
+            _isLoadingMatches.value = true
+            try {
+                val refreshed = footballRepository.fetchMatchesForDay(
+                    dayTab = dayTab,
+                    forceLiveRefresh = true
+                )
+                val updatedMap = _matchesByDay.value.toMutableMap()
+                updatedMap[dayTab] = refreshed
+                _matchesByDay.value = updatedMap
+                if (dayTab == MatchDayTab.TODAY) {
+                    _todayMatches.value = refreshed
+                } else if (dayTab == MatchDayTab.TOMORROW) {
+                    _tomorrowMatches.value = refreshed
+                }
+                val nowMs = System.currentTimeMillis()
+                val liveCount = refreshed.count {
                     it.status == MatchStatus.LIVE || it.status == MatchStatus.HALFTIME
                 }
                 _liveScoreSyncState.value = _liveScoreSyncState.value.copy(
