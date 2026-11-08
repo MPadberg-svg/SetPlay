@@ -42,6 +42,7 @@ import androidx.compose.material.icons.filled.SwapVert
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.Dp
 import coil.compose.SubcomposeAsyncImage
 import coil.request.ImageRequest
@@ -81,16 +82,21 @@ import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import com.example.data.repository.H2HMeetingItem
 import com.example.data.repository.LeagueStandingRow
+import androidx.compose.ui.graphics.PathEffect
+import com.example.data.repository.MatchCenterEnricher
 import com.example.data.repository.MatchCenterTab
 import com.example.data.repository.MatchEventType
 import com.example.data.repository.MatchFullDossier
 import com.example.data.repository.MatchLineupsData
+import com.example.data.repository.MatchShotPoint
 import com.example.data.repository.MatchStatComparison
 import com.example.data.repository.MatchStatus
 import com.example.data.repository.MatchTeamSide
 import com.example.data.repository.MatchTimelineEvent
 import com.example.data.repository.MenaBroadcastChannelInfo
+import com.example.data.repository.MomentumMinutePoint
 import com.example.data.repository.PitchPlayerNode
+import com.example.data.repository.ShotOutcome
 import com.example.ui.theme.AmberGold
 import com.example.ui.theme.ArenaFloodlightLime
 import com.example.ui.theme.ArenaPitchGreen
@@ -743,6 +749,18 @@ private fun MatchSummaryTabContent(
         contentPadding = PaddingValues(14.dp),
         verticalArrangement = Arrangement.spacedBy(10.dp)
     ) {
+        if (dossier.momentumPoints.isNotEmpty()) {
+            item {
+                AttackMomentumWaveCard(dossier = dossier)
+            }
+        }
+
+        if (dossier.matchBuzzInsights.isNotEmpty()) {
+            item {
+                MatchBuzzInsightsCard(insights = dossier.matchBuzzInsights)
+            }
+        }
+
         if (dossier.timelineEvents.isEmpty()) {
             // Upcoming Match Pre-Game Summary Card
             item {
@@ -2457,10 +2475,16 @@ private fun PlayerCircularAvatarMedallion(
     sizeDp: Int
 ) {
     val context = LocalContext.current
-    val imageRequest = remember(photoUrl, context) {
+    val targetPx = with(LocalDensity.current) { sizeDp.dp.roundToPx().coerceAtLeast(64) }
+    val imageRequest = remember(photoUrl, context, targetPx) {
         if (photoUrl.isNotBlank()) {
             ImageRequest.Builder(context)
                 .data(photoUrl)
+                .size(targetPx, targetPx)
+                .precision(coil.size.Precision.EXACT)
+                .bitmapConfig(android.graphics.Bitmap.Config.RGB_565)
+                .memoryCachePolicy(coil.request.CachePolicy.ENABLED)
+                .diskCachePolicy(coil.request.CachePolicy.ENABLED)
                 .addHeader(
                     "User-Agent",
                     "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 Chrome/126.0.0.0 Mobile Safari/537.36"
@@ -2795,14 +2819,29 @@ private fun PlayerTacticalSpotlightCard(
 ) {
     val accentColor = if (isHomeTeam) ArenaFloodlightLime else AmberGold
     val seed = remember(player.playerId) { kotlin.math.abs(player.name.hashCode()) }
-    val touches = 38 + (seed % 42)
-    val passAccuracy = 81 + (seed % 14)
-    val duelsWon = 3 + (seed % 7)
-    val keyActionLabel = when {
-        player.positionCode == "GK" -> "Saves: ${2 + (seed % 4)}"
-        player.rowIndex == 1 -> "Interceptions: ${2 + (seed % 5)}"
-        player.rowIndex in 2..3 -> "Key Passes: ${1 + (seed % 4)}"
-        else -> "Shots: ${1 + player.goals + (seed % 3)}"
+    val displayMinutes = if (player.minutesPlayed > 0) "${player.minutesPlayed}'" else "90'"
+    val displayGoalsAssists = "${player.goals} / ${player.assists}"
+    val displayXg = if (player.expectedGoals > 0.0 || player.expectedGoalsOnTarget > 0.0) {
+        "${String.format(Locale.US, "%.2f", player.expectedGoals)} / ${String.format(Locale.US, "%.2f", player.expectedGoalsOnTarget)}"
+    } else {
+        String.format(Locale.US, "%.2f", player.expectedGoals)
+    }
+    val displayShots = "${player.shotsTotal} (${player.shotsOnTarget})"
+    val displayPasses = if (player.passesTotal > 0) {
+        "${player.passesAccurate}/${player.passesTotal}"
+    } else {
+        "${81 + (seed % 14)}%"
+    }
+    val displayTouchesDuels = if (player.touches > 0 || player.duelsWon > 0) {
+        "${player.touches} • ${player.duelsWon} won"
+    } else {
+        "${38 + (seed % 42)} • ${3 + (seed % 7)} won"
+    }
+
+    val subBadgeText = when {
+        player.subbedOnMinute != null -> "🔄 In ${player.subbedOnMinute}"
+        player.subbedOffMinute != null -> "🔄 Out ${player.subbedOffMinute}"
+        else -> null
     }
 
     Surface(
@@ -2816,7 +2855,8 @@ private fun PlayerTacticalSpotlightCard(
         Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(12.dp),
+                .padding(12.dp)
+                .testTag("player_tactical_spotlight_card"),
             verticalArrangement = Arrangement.spacedBy(10.dp)
         ) {
             Row(
@@ -2838,7 +2878,10 @@ private fun PlayerTacticalSpotlightCard(
                     )
                     Spacer(modifier = Modifier.width(10.dp))
                     Column(modifier = Modifier.weight(1f)) {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
                             if (player.isMvp && isPlayedOrLive) {
                                 Surface(
                                     color = AmberGold.copy(alpha = 0.20f),
@@ -2846,14 +2889,13 @@ private fun PlayerTacticalSpotlightCard(
                                     border = BorderStroke(0.6.dp, AmberGold)
                                 ) {
                                     Text(
-                                        text = "★ STAR OF THE MATCH",
+                                        text = "★ POTM • STAR OF THE MATCH",
                                         color = AmberGold,
                                         fontSize = 8.sp,
                                         fontWeight = FontWeight.ExtraBold,
                                         modifier = Modifier.padding(horizontal = 5.dp, vertical = 1.dp)
                                     )
                                 }
-                                Spacer(modifier = Modifier.width(6.dp))
                             }
                             Text(
                                 text = "#${player.jerseyNumber} • ${player.positionCode}",
@@ -2861,6 +2903,21 @@ private fun PlayerTacticalSpotlightCard(
                                 fontSize = 10.sp,
                                 fontWeight = FontWeight.ExtraBold
                             )
+                            if (subBadgeText != null && isPlayedOrLive) {
+                                Surface(
+                                    color = KickoffTropicalTeal.copy(alpha = 0.16f),
+                                    shape = RoundedCornerShape(4.dp),
+                                    border = BorderStroke(0.5.dp, KickoffTropicalTeal.copy(alpha = 0.6f))
+                                ) {
+                                    Text(
+                                        text = subBadgeText,
+                                        color = KickoffPeachCream,
+                                        fontSize = 8.sp,
+                                        fontWeight = FontWeight.ExtraBold,
+                                        modifier = Modifier.padding(horizontal = 4.5.dp, vertical = 1.dp)
+                                    )
+                                }
+                            }
                         }
                         Text(
                             text = if (player.isCaptain) "${player.name} (Captain)" else player.name,
@@ -2920,33 +2977,53 @@ private fun PlayerTacticalSpotlightCard(
                 }
             }
 
-            // Player Telemetry Strip (4 tactical metrics)
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(6.dp)
-            ) {
-                listOf(
-                    if (isPlayedOrLive) "Touches: $touches" else "Avg Touches: $touches",
-                    "Pass Acc: $passAccuracy%",
-                    if (isPlayedOrLive) "Duels Won: $duelsWon" else "Duels/90: $duelsWon",
-                    keyActionLabel
-                ).forEach { metric ->
-                    Surface(
-                        color = DarkGraphite,
-                        shape = RoundedCornerShape(7.dp),
-                        border = BorderStroke(0.5.dp, Color.White.copy(alpha = 0.08f)),
-                        modifier = Modifier.weight(1f)
+            // 365Scores / Flashscore Deep Match Performance 6-Cell Grid (2 rows x 3 columns)
+            val perfItems = listOf(
+                "Minutes" to displayMinutes,
+                "Goals / Assists" to displayGoalsAssists,
+                "xG / xGOT" to displayXg,
+                "Shots (On Target)" to displayShots,
+                "Passes" to displayPasses,
+                "Touches & Duels" to displayTouchesDuels
+            )
+            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                perfItems.chunked(3).forEach { rowCells ->
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
                     ) {
-                        Text(
-                            text = metric,
-                            color = Champagne,
-                            fontSize = 9.sp,
-                            fontWeight = FontWeight.SemiBold,
-                            textAlign = TextAlign.Center,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                            modifier = Modifier.padding(vertical = 5.dp, horizontal = 4.dp)
-                        )
+                        rowCells.forEach { (label, value) ->
+                            Surface(
+                                color = DarkGraphite,
+                                shape = RoundedCornerShape(8.dp),
+                                border = BorderStroke(0.6.dp, Color.White.copy(alpha = 0.09f)),
+                                modifier = Modifier.weight(1f)
+                            ) {
+                                Column(
+                                    horizontalAlignment = Alignment.CenterHorizontally,
+                                    modifier = Modifier.padding(vertical = 6.dp, horizontal = 4.dp)
+                                ) {
+                                    Text(
+                                        text = label.uppercase(),
+                                        color = ChampagneMuted,
+                                        fontSize = 8.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                    Spacer(modifier = Modifier.height(2.dp))
+                                    Text(
+                                        text = value,
+                                        color = PaleGold,
+                                        fontSize = 11.sp,
+                                        fontWeight = FontWeight.ExtraBold,
+                                        style = TabularNumeralTextStyle,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -3038,17 +3115,83 @@ private fun BenchPlayerCell(
 }
 
 // =============================================================================
-// TAB 3: STATS (DUAL-DIRECTION COMPARISON BARS)
+// TAB 3: STATS (ATTACK MOMENTUM WAVE, SHOT MAP & CATEGORIZED COMPARISON BARS)
 // =============================================================================
+private val STAT_CATEGORY_FILTERS = listOf(
+    "All",
+    "Top Stats",
+    "Shots & xG",
+    "Passes",
+    "Defense & Duels",
+    "Goalkeeping"
+)
+
 @Composable
 private fun MatchStatsTabContent(
     dossier: MatchFullDossier
 ) {
+    var selectedCategory by remember { mutableStateOf("All") }
+    val filteredStats = remember(dossier.stats, selectedCategory) {
+        when (selectedCategory) {
+            "All" -> dossier.stats
+            "Top Stats" -> dossier.stats.filter { it.category == "Top Stats" || it.isKeyMetric }
+            else -> dossier.stats.filter { it.category.equals(selectedCategory, ignoreCase = true) }
+        }
+    }
+
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
         contentPadding = PaddingValues(14.dp),
         verticalArrangement = Arrangement.spacedBy(10.dp)
     ) {
+        // 1. Categorized Stat Filter Pills Row
+        item {
+            LazyRow(
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .testTag("match_stats_category_row")
+            ) {
+                items(STAT_CATEGORY_FILTERS, key = { it }) { cat ->
+                    val isSelected = selectedCategory == cat
+                    Surface(
+                        color = if (isSelected) KickoffTropicalTeal else MetalCharcoal,
+                        shape = RoundedCornerShape(50),
+                        border = BorderStroke(
+                            width = 0.8.dp,
+                            color = if (isSelected) KickoffPeachCream else ChampagneSubtleBorder
+                        ),
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(50))
+                            .clickable { selectedCategory = cat }
+                            .testTag("stat_cat_chip_${cat.lowercase(Locale.ROOT).replace(" ", "_").replace("&", "and")}")
+                    ) {
+                        Text(
+                            text = cat,
+                            color = if (isSelected) DarkGraphite else Champagne,
+                            fontSize = 10.5.sp,
+                            fontWeight = FontWeight.ExtraBold,
+                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp)
+                        )
+                    }
+                }
+            }
+        }
+
+        // 2. Attack Momentum / Pressure Wave Graph
+        if (dossier.momentumPoints.isNotEmpty() && (selectedCategory == "All" || selectedCategory == "Top Stats")) {
+            item {
+                AttackMomentumWaveCard(dossier = dossier)
+            }
+        }
+
+        // 3. Visual Half-Pitch Shot Map (xG & xGOT)
+        if (dossier.shotMap.isNotEmpty() && (selectedCategory == "All" || selectedCategory == "Shots & xG" || selectedCategory == "Top Stats")) {
+            item {
+                ShotMapVisualCard(dossier = dossier)
+            }
+        }
+
         item {
             Row(
                 modifier = Modifier
@@ -3063,7 +3206,7 @@ private fun MatchStatsTabContent(
                     fontWeight = FontWeight.ExtraBold
                 )
                 Text(
-                    text = "TEAM STATISTICS",
+                    text = "${selectedCategory.uppercase()} METRICS",
                     color = Champagne,
                     fontSize = 11.sp,
                     fontWeight = FontWeight.Bold
@@ -3077,8 +3220,427 @@ private fun MatchStatsTabContent(
             }
         }
 
-        items(dossier.stats, key = { it.statLabel }) { stat ->
-            StatComparisonBarCard(stat = stat)
+        if (filteredStats.isEmpty()) {
+            item {
+                Surface(
+                    color = MetalCharcoal,
+                    shape = RoundedCornerShape(12.dp),
+                    border = BorderStroke(0.7.dp, ChampagneSubtleBorder),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text(
+                        text = if (dossier.stats.isEmpty()) {
+                            "Official team statistics will appear here once published by the live match feed."
+                        } else {
+                            "No $selectedCategory metrics recorded yet for this fixture."
+                        },
+                        color = ChampagneMuted,
+                        fontSize = 11.5.sp,
+                        modifier = Modifier.padding(14.dp)
+                    )
+                }
+            }
+        } else {
+            items(filteredStats, key = { it.statLabel }) { stat ->
+                StatComparisonBarCard(stat = stat)
+            }
+        }
+    }
+}
+
+@Composable
+internal fun AttackMomentumWaveCard(
+    dossier: MatchFullDossier
+) {
+    val points = dossier.momentumPoints
+    val goalEvents = remember(dossier.timelineEvents) {
+        dossier.timelineEvents.filter {
+            it.eventType == MatchEventType.GOAL || it.eventType == MatchEventType.PENALTY_GOAL
+        }
+    }
+
+    Card(
+        colors = CardDefaults.cardColors(containerColor = MetalCharcoal),
+        shape = RoundedCornerShape(14.dp),
+        border = BorderStroke(0.9.dp, KickoffTropicalTeal.copy(alpha = 0.45f)),
+        modifier = Modifier
+            .fillMaxWidth()
+            .testTag("match_momentum_wave_chart")
+    ) {
+        Column(modifier = Modifier.padding(12.dp)) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Box(
+                        modifier = Modifier
+                            .size(8.dp)
+                            .clip(CircleShape)
+                            .background(KickoffTropicalTeal)
+                    )
+                    Spacer(modifier = Modifier.width(5.dp))
+                    Text(
+                        text = dossier.match.homeTeamName.uppercase(),
+                        color = KickoffTropicalTeal,
+                        fontSize = 10.sp,
+                        fontWeight = FontWeight.ExtraBold,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+                Text(
+                    text = "⚡ ATTACK MOMENTUM WAVE",
+                    color = PaleGold,
+                    fontSize = 10.5.sp,
+                    fontWeight = FontWeight.ExtraBold
+                )
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        text = dossier.match.awayTeamName.uppercase(),
+                        color = AmberGold,
+                        fontSize = 10.sp,
+                        fontWeight = FontWeight.ExtraBold,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                    Spacer(modifier = Modifier.width(5.dp))
+                    Box(
+                        modifier = Modifier
+                            .size(8.dp)
+                            .clip(CircleShape)
+                            .background(AmberGold)
+                    )
+                }
+            }
+
+            Spacer(modifier = Modifier.height(8.dp))
+
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(110.dp)
+                    .clip(RoundedCornerShape(10.dp))
+                    .background(Color(0xFF0A141D))
+                    .border(0.7.dp, Color.White.copy(alpha = 0.08f), RoundedCornerShape(10.dp))
+                    .padding(horizontal = 6.dp, vertical = 8.dp)
+            ) {
+                Canvas(modifier = Modifier.fillMaxSize()) {
+                    val centerY = size.height / 2f
+                    val maxHalfHeight = (size.height / 2f) * 0.88f
+                    val totalMinutes = maxOf(90, points.maxOfOrNull { it.minute } ?: 90)
+                    val slotWidth = size.width / totalMinutes.toFloat()
+                    val barWidth = (slotWidth * 0.72f).coerceAtLeast(1.8f)
+
+                    // Center horizontal zero-axis
+                    drawLine(
+                        color = Color.White.copy(alpha = 0.22f),
+                        start = Offset(0f, centerY),
+                        end = Offset(size.width, centerY),
+                        strokeWidth = 1.2f
+                    )
+
+                    // HT (45') vertical dashed divider
+                    val htX = (45f / totalMinutes.toFloat()) * size.width
+                    drawLine(
+                        color = ChampagneMuted.copy(alpha = 0.45f),
+                        start = Offset(htX, 0f),
+                        end = Offset(htX, size.height),
+                        strokeWidth = 1.3f,
+                        pathEffect = PathEffect.dashPathEffect(floatArrayOf(6f, 5f), 0f)
+                    )
+
+                    // Pressure wave bars per minute
+                    points.forEach { pt ->
+                        val fraction = (pt.value / 100f).coerceIn(-1f, 1f)
+                        val barH = (kotlin.math.abs(fraction) * maxHalfHeight).coerceAtLeast(2f)
+                        val x = ((pt.minute - 1).coerceAtLeast(0).toFloat() / totalMinutes.toFloat()) * size.width
+                        if (fraction >= 0f) {
+                            drawRoundRect(
+                                color = KickoffTropicalTeal.copy(alpha = 0.88f),
+                                topLeft = Offset(x, centerY - barH),
+                                size = Size(barWidth, barH),
+                                cornerRadius = CornerRadius(2f, 2f)
+                            )
+                        } else {
+                            drawRoundRect(
+                                color = AmberGold.copy(alpha = 0.88f),
+                                topLeft = Offset(x, centerY),
+                                size = Size(barWidth, barH),
+                                cornerRadius = CornerRadius(2f, 2f)
+                            )
+                        }
+                    }
+
+                    // Plot goal highlight markers on scoring minutes
+                    goalEvents.forEach { goal ->
+                        val gx = ((goal.minute.coerceIn(1, totalMinutes) - 0.5f) / totalMinutes.toFloat()) * size.width
+                        val gy = if (goal.teamSide == MatchTeamSide.HOME) 9f else size.height - 9f
+                        drawCircle(
+                            color = if (goal.teamSide == MatchTeamSide.HOME) ArenaFloodlightLime else AmberGold,
+                            radius = 5.5f,
+                            center = Offset(gx, gy)
+                        )
+                        drawCircle(
+                            color = DarkGraphite,
+                            radius = 2.4f,
+                            center = Offset(gx, gy)
+                        )
+                    }
+                }
+            }
+
+            Spacer(modifier = Modifier.height(4.dp))
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text("1'", color = ChampagneMuted, fontSize = 9.sp, fontWeight = FontWeight.Bold)
+                Text("HT (45')", color = Champagne, fontSize = 9.sp, fontWeight = FontWeight.ExtraBold)
+                if (goalEvents.isNotEmpty()) {
+                    Text(
+                        text = goalEvents.joinToString(" • ") { "⚽ ${it.minute}'" },
+                        color = KickoffPeachCream,
+                        fontSize = 9.sp,
+                        fontWeight = FontWeight.ExtraBold,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+                Text("90'", color = ChampagneMuted, fontSize = 9.sp, fontWeight = FontWeight.Bold)
+            }
+        }
+    }
+}
+
+@Composable
+internal fun ShotMapVisualCard(
+    dossier: MatchFullDossier
+) {
+    val shots = dossier.shotMap
+    val homeShots = remember(shots) { shots.filter { it.teamSide == MatchTeamSide.HOME } }
+    val awayShots = remember(shots) { shots.filter { it.teamSide == MatchTeamSide.AWAY } }
+    val homeXg = remember(homeShots) { homeShots.sumOf { it.xg } }
+    val awayXg = remember(awayShots) { awayShots.sumOf { it.xg } }
+    val homeXgot = remember(homeShots) { homeShots.sumOf { it.xgot } }
+    val awayXgot = remember(awayShots) { awayShots.sumOf { it.xgot } }
+
+    Card(
+        colors = CardDefaults.cardColors(containerColor = MetalCharcoal),
+        shape = RoundedCornerShape(14.dp),
+        border = BorderStroke(0.9.dp, ArenaPitchGreen.copy(alpha = 0.5f)),
+        modifier = Modifier
+            .fillMaxWidth()
+            .testTag("match_shotmap_canvas")
+    ) {
+        Column(modifier = Modifier.padding(12.dp)) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column {
+                    Text(
+                        text = dossier.match.homeTeamName.uppercase(),
+                        color = ArenaFloodlightLime,
+                        fontSize = 10.sp,
+                        fontWeight = FontWeight.ExtraBold
+                    )
+                    Text(
+                        text = "xG ${String.format(Locale.US, "%.2f", homeXg)} • xGOT ${String.format(Locale.US, "%.2f", homeXgot)}",
+                        color = Champagne,
+                        fontSize = 9.5.sp,
+                        fontWeight = FontWeight.Bold,
+                        style = TabularNumeralTextStyle
+                    )
+                }
+
+                Text(
+                    text = "🎯 HALF-PITCH SHOT MAP",
+                    color = PaleGold,
+                    fontSize = 11.sp,
+                    fontWeight = FontWeight.ExtraBold
+                )
+
+                Column(horizontalAlignment = Alignment.End) {
+                    Text(
+                        text = dossier.match.awayTeamName.uppercase(),
+                        color = AmberGold,
+                        fontSize = 10.sp,
+                        fontWeight = FontWeight.ExtraBold
+                    )
+                    Text(
+                        text = "xG ${String.format(Locale.US, "%.2f", awayXg)} • xGOT ${String.format(Locale.US, "%.2f", awayXgot)}",
+                        color = Champagne,
+                        fontSize = 9.5.sp,
+                        fontWeight = FontWeight.Bold,
+                        style = TabularNumeralTextStyle
+                    )
+                }
+            }
+
+            Spacer(modifier = Modifier.height(8.dp))
+
+            // Half-Pitch Penalty Box Canvas
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(145.dp)
+                    .clip(RoundedCornerShape(10.dp))
+                    .background(Color(0xFF0B291C))
+                    .border(0.9.dp, ArenaPitchGreen.copy(alpha = 0.55f), RoundedCornerShape(10.dp))
+            ) {
+                Canvas(modifier = Modifier.fillMaxSize()) {
+                    val lineStroke = Stroke(width = 1.6f)
+                    val lineColor = Color.White.copy(alpha = 0.28f)
+
+                    // Goal mouth at top center
+                    val goalWidth = size.width * 0.22f
+                    val goalLeft = (size.width - goalWidth) / 2f
+                    drawRect(
+                        color = Color.White.copy(alpha = 0.65f),
+                        topLeft = Offset(goalLeft, 0f),
+                        size = Size(goalWidth, 6f),
+                        style = lineStroke
+                    )
+
+                    // 6-yard box
+                    val sixYardW = size.width * 0.38f
+                    val sixYardH = size.height * 0.22f
+                    drawRect(
+                        color = lineColor,
+                        topLeft = Offset((size.width - sixYardW) / 2f, 0f),
+                        size = Size(sixYardW, sixYardH),
+                        style = lineStroke
+                    )
+
+                    // 18-yard penalty box
+                    val penBoxW = size.width * 0.68f
+                    val penBoxH = size.height * 0.56f
+                    drawRect(
+                        color = lineColor,
+                        topLeft = Offset((size.width - penBoxW) / 2f, 0f),
+                        size = Size(penBoxW, penBoxH),
+                        style = lineStroke
+                    )
+
+                    // Penalty spot
+                    drawCircle(
+                        color = lineColor,
+                        radius = 3f,
+                        center = Offset(size.width / 2f, size.height * 0.38f)
+                    )
+
+                    // Plot each shot sized proportionally to xG
+                    shots.forEach { shot ->
+                        val cx = (shot.normalizedX.coerceIn(0.08f, 0.92f)) * size.width
+                        val cy = (shot.normalizedY.coerceIn(0.08f, 0.90f)) * size.height
+                        val baseRadius = (5.5f + (shot.xg.toFloat().coerceIn(0.04f, 0.85f) * 12f))
+                        val shotColor = when (shot.outcome) {
+                            ShotOutcome.GOAL -> AmberGold
+                            ShotOutcome.ON_TARGET_SAVED -> ArenaFloodlightLime
+                            ShotOutcome.BLOCKED -> Color(0xFF94A3B8)
+                            ShotOutcome.OFF_TARGET -> Color(0xFF64748B)
+                        }
+                        drawCircle(
+                            color = shotColor.copy(alpha = if (shot.outcome == ShotOutcome.GOAL) 0.95f else 0.78f),
+                            radius = baseRadius,
+                            center = Offset(cx, cy)
+                        )
+                        drawCircle(
+                            color = if (shot.teamSide == MatchTeamSide.HOME) KickoffTropicalTeal else Color.White,
+                            radius = baseRadius,
+                            center = Offset(cx, cy),
+                            style = Stroke(width = 1.8f)
+                        )
+                    }
+                }
+            }
+
+            Spacer(modifier = Modifier.height(8.dp))
+
+            // Shot Map Legend
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    ShotLegendItem(color = AmberGold, label = "Goal (${shots.count { it.outcome == ShotOutcome.GOAL }})")
+                    ShotLegendItem(color = ArenaFloodlightLime, label = "On Target (${shots.count { it.outcome == ShotOutcome.ON_TARGET_SAVED }})")
+                    ShotLegendItem(color = Color(0xFF94A3B8), label = "Off/Blocked (${shots.count { it.outcome == ShotOutcome.OFF_TARGET || it.outcome == ShotOutcome.BLOCKED }})")
+                }
+                Text(
+                    text = "Size = xG Value",
+                    color = ChampagneMuted,
+                    fontSize = 9.sp,
+                    fontWeight = FontWeight.SemiBold
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun ShotLegendItem(color: Color, label: String) {
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Box(
+            modifier = Modifier
+                .size(8.dp)
+                .clip(CircleShape)
+                .background(color)
+        )
+        Spacer(modifier = Modifier.width(4.dp))
+        Text(
+            text = label,
+            color = Champagne,
+            fontSize = 9.5.sp,
+            fontWeight = FontWeight.Bold
+        )
+    }
+}
+
+@Composable
+internal fun MatchBuzzInsightsCard(
+    insights: List<String>
+) {
+    Card(
+        colors = CardDefaults.cardColors(containerColor = MetalCharcoal),
+        shape = RoundedCornerShape(14.dp),
+        border = BorderStroke(0.9.dp, AmberGold.copy(alpha = 0.55f)),
+        modifier = Modifier
+            .fillMaxWidth()
+            .testTag("match_buzz_insights_card")
+    ) {
+        Column(
+            modifier = Modifier.padding(12.dp),
+            verticalArrangement = Arrangement.spacedBy(6.dp)
+        ) {
+            Text(
+                text = "🔥 365SCORES MATCH BUZZ & H2H INSIGHTS",
+                color = AmberGold,
+                fontSize = 11.sp,
+                fontWeight = FontWeight.ExtraBold
+            )
+            insights.forEach { insight ->
+                Surface(
+                    color = DarkGraphite,
+                    shape = RoundedCornerShape(8.dp),
+                    border = BorderStroke(0.6.dp, ChampagneSubtleBorder),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text(
+                        text = insight,
+                        color = PaleGold,
+                        fontSize = 11.5.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 7.dp)
+                    )
+                }
+            }
         }
     }
 }
@@ -3151,17 +3713,35 @@ private fun StatComparisonBarCard(
 }
 
 // =============================================================================
-// TAB 4: H2H & STANDINGS TABLE
+// TAB 4: H2H & STANDINGS TABLE (WITH FLASHSCORE LIVE TABLE & 365SCORES BUZZ)
 // =============================================================================
 @Composable
 private fun MatchH2HAndStandingsTabContent(
     dossier: MatchFullDossier
 ) {
+    val hasLiveOrPlayedScore = dossier.match.homeScore != null && dossier.match.awayScore != null
+    var showLiveTable by remember { mutableStateOf(hasLiveOrPlayedScore) }
+    val enricher = remember { MatchCenterEnricher(okhttp3.OkHttpClient()) }
+    val displayedStandings = remember(dossier.standingsTable, dossier.match, showLiveTable) {
+        if (showLiveTable && hasLiveOrPlayedScore) {
+            enricher.computeLiveInPlayStandings(dossier.standingsTable, dossier.match)
+        } else {
+            dossier.standingsTable
+        }
+    }
+
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
         contentPadding = PaddingValues(14.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
+        // 0. 365Scores Pre-Match Buzz & H2H Streaks Card
+        if (dossier.matchBuzzInsights.isNotEmpty()) {
+            item {
+                MatchBuzzInsightsCard(insights = dossier.matchBuzzInsights)
+            }
+        }
+
         // 1. Team Form (Last 5 Matches)
         item {
             Card(
@@ -3224,7 +3804,7 @@ private fun MatchH2HAndStandingsTabContent(
             }
         }
 
-        // 3. Competition Standings Table
+        // 3. Competition Standings Table (with Official Table | 🔴 Live Table toggle)
         item {
             Card(
                 colors = CardDefaults.cardColors(containerColor = MetalCharcoal),
@@ -3233,15 +3813,48 @@ private fun MatchH2HAndStandingsTabContent(
                 modifier = Modifier.fillMaxWidth()
             ) {
                 Column(modifier = Modifier.padding(12.dp)) {
-                    Text(
-                        text = "${dossier.match.tournamentName.uppercase()} STANDINGS",
-                        color = ArenaFloodlightLime,
-                        fontSize = 11.sp,
-                        fontWeight = FontWeight.ExtraBold
-                    )
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            text = "${dossier.match.tournamentName.uppercase()} STANDINGS",
+                            color = ArenaFloodlightLime,
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.ExtraBold,
+                            modifier = Modifier.weight(1f)
+                        )
+
+                        // Flashscore [ Official Table | 🔴 Live Table ] Toggle Pill
+                        Surface(
+                            color = DarkGraphite,
+                            shape = RoundedCornerShape(50),
+                            border = BorderStroke(
+                                0.8.dp,
+                                if (showLiveTable) LiveCrimson.copy(alpha = 0.75f) else ChampagneSubtleBorder
+                            ),
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(50))
+                                .clickable { showLiveTable = !showLiveTable }
+                                .testTag("standings_live_table_toggle")
+                        ) {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                            ) {
+                                Text(
+                                    text = if (showLiveTable) "🔴 Live Table" else "Official Table",
+                                    color = if (showLiveTable) KickoffPeachCream else Champagne,
+                                    fontSize = 9.5.sp,
+                                    fontWeight = FontWeight.ExtraBold
+                                )
+                            }
+                        }
+                    }
                     Spacer(modifier = Modifier.height(8.dp))
 
-                    if (dossier.standingsTable.isEmpty()) {
+                    if (displayedStandings.isEmpty()) {
                         Text(
                             text = "Official live competition standings table is not available from the upstream feed right now.",
                             color = ChampagneMuted,
@@ -3256,7 +3869,7 @@ private fun MatchH2HAndStandingsTabContent(
                                 .padding(vertical = 4.dp),
                             verticalAlignment = Alignment.CenterVertically
                         ) {
-                            Text("#", color = ChampagneMuted, fontSize = 10.sp, fontWeight = FontWeight.Bold, modifier = Modifier.width(22.dp))
+                            Text("#", color = ChampagneMuted, fontSize = 10.sp, fontWeight = FontWeight.Bold, modifier = Modifier.width(36.dp))
                             Text("TEAM", color = ChampagneMuted, fontSize = 10.sp, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
                             Text("P", color = ChampagneMuted, fontSize = 10.sp, fontWeight = FontWeight.Bold, modifier = Modifier.width(24.dp), textAlign = TextAlign.Center)
                             Text("W-D-L", color = ChampagneMuted, fontSize = 10.sp, fontWeight = FontWeight.Bold, modifier = Modifier.width(46.dp), textAlign = TextAlign.Center)
@@ -3266,8 +3879,8 @@ private fun MatchH2HAndStandingsTabContent(
 
                         HorizontalDivider(color = ChampagneSubtleBorder, thickness = 0.6.dp)
 
-                        dossier.standingsTable.forEach { row ->
-                            StandingsTableRow(row = row)
+                        displayedStandings.forEach { row ->
+                            StandingsTableRow(row = row, showLiveDelta = showLiveTable)
                         }
                     }
                 }
@@ -3344,7 +3957,10 @@ private fun H2HMeetingRow(item: H2HMeetingItem) {
 }
 
 @Composable
-private fun StandingsTableRow(row: LeagueStandingRow) {
+private fun StandingsTableRow(
+    row: LeagueStandingRow,
+    showLiveDelta: Boolean = false
+) {
     val isHighlighted = row.isHomeTeam || row.isAwayTeam
     val rowBg = when {
         row.isHomeTeam -> ArenaPitchGreen.copy(alpha = 0.22f)
@@ -3359,13 +3975,27 @@ private fun StandingsTableRow(row: LeagueStandingRow) {
             .padding(vertical = 6.dp, horizontal = 4.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        Text(
-            text = row.rank.toString(),
-            color = if (row.rank <= 4) ArenaFloodlightLime else Champagne,
-            fontSize = 11.sp,
-            fontWeight = FontWeight.ExtraBold,
-            modifier = Modifier.width(22.dp)
-        )
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            modifier = Modifier.width(36.dp)
+        ) {
+            Text(
+                text = row.rank.toString(),
+                color = if (row.rank <= 4) ArenaFloodlightLime else Champagne,
+                fontSize = 11.sp,
+                fontWeight = FontWeight.ExtraBold
+            )
+            if (showLiveDelta && row.liveRankDelta != 0) {
+                Spacer(modifier = Modifier.width(2.dp))
+                val isUp = row.liveRankDelta > 0
+                Text(
+                    text = if (isUp) "▲+${row.liveRankDelta}" else "▼${row.liveRankDelta}",
+                    color = if (isUp) Color(0xFF10B981) else Color(0xFFEF4444),
+                    fontSize = 8.5.sp,
+                    fontWeight = FontWeight.ExtraBold
+                )
+            }
+        }
         Text(
             text = row.teamName,
             color = if (isHighlighted) PaleGold else Champagne,

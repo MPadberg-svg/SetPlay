@@ -223,6 +223,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val _collapsedTournamentIds = MutableStateFlow<Set<String>>(emptySet())
     val collapsedTournamentIds: StateFlow<Set<String>> = _collapsedTournamentIds.asStateFlow()
 
+    private val kickoffPrefs = application.getSharedPreferences(KICKOFF_PINNED_PREFS_NAME, android.content.Context.MODE_PRIVATE)
+    private val _pinnedMatchIds = MutableStateFlow<Set<String>>(
+        kickoffPrefs.getStringSet(KEY_PINNED_MATCH_IDS, emptySet())?.toSet() ?: emptySet()
+    )
+    val pinnedMatchIds: StateFlow<Set<String>> = _pinnedMatchIds.asStateFlow()
+
     private val _matchesByDay = MutableStateFlow<Map<MatchDayTab, List<FootballMatch>>>(emptyMap())
     val matchesByDay: StateFlow<Map<MatchDayTab, List<FootballMatch>>> = _matchesByDay.asStateFlow()
 
@@ -358,18 +364,19 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     /**
      * Compares `previousMatches` and `updatedMatches` on `TODAY` to detect live score increments.
-     * Prioritizes matches involving a user's Favorite Team first, or any live match on `TODAY`.
+     * Prioritizes pinned matches (`pinnedMatchIds`) and matches involving a user's Favorite Team first, or any live match on `TODAY`.
      */
     internal fun detectGoalScoredAlert(
         previousMatches: List<FootballMatch>,
         updatedMatches: List<FootballMatch>,
         favoriteTeamIds: Set<String> = favoriteTeams.value.map { it.teamId.lowercase(Locale.ROOT) }.toSet(),
-        favoriteTeamNames: Set<String> = favoriteTeams.value.map { it.teamName.lowercase(Locale.ROOT) }.toSet()
+        favoriteTeamNames: Set<String> = favoriteTeams.value.map { it.teamName.lowercase(Locale.ROOT) }.toSet(),
+        pinnedIds: Set<String> = _pinnedMatchIds.value
     ): LiveGoalAlertEvent? {
         if (previousMatches.isEmpty() || updatedMatches.isEmpty()) return null
 
         val prevById = previousMatches.associateBy { it.matchId }
-        val detectedAlerts = mutableListOf<LiveGoalAlertEvent>()
+        val detectedAlerts = mutableListOf<Pair<Int, LiveGoalAlertEvent>>()
 
         for (updated in updatedMatches) {
             val prev = prevById[updated.matchId] ?: previousMatches.find {
@@ -386,14 +393,22 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             val awayIncremented = newAway > oldAway
             if (!homeIncremented && !awayIncremented) continue
 
-            val isFavMatch = updated.homeTeamId.lowercase(Locale.ROOT) in favoriteTeamIds ||
+            val isPinned = updated.matchId in pinnedIds
+            val isFavMatch = isPinned ||
+                updated.homeTeamId.lowercase(Locale.ROOT) in favoriteTeamIds ||
                 updated.awayTeamId.lowercase(Locale.ROOT) in favoriteTeamIds ||
                 updated.homeTeamName.lowercase(Locale.ROOT) in favoriteTeamNames ||
                 updated.awayTeamName.lowercase(Locale.ROOT) in favoriteTeamNames
 
+            val priorityScore = when {
+                isPinned -> 2
+                isFavMatch -> 1
+                else -> 0
+            }
+
             val scoringTeam = if (homeIncremented) updated.homeTeamName else updated.awayTeamName
             detectedAlerts.add(
-                LiveGoalAlertEvent(
+                priorityScore to LiveGoalAlertEvent(
                     alertId = "${updated.matchId}_${newHome}_${newAway}",
                     match = updated,
                     scoringTeamName = scoringTeam,
@@ -407,7 +422,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             )
         }
 
-        return detectedAlerts.sortedByDescending { it.isFavoriteTeamGoal }.firstOrNull()
+        return detectedAlerts.sortedByDescending { it.first }.firstOrNull()?.second
     }
 
     fun triggerGoalAlert(alert: LiveGoalAlertEvent) {
@@ -536,7 +551,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         }
                         if (updatedMatch != null) {
                             runCatching {
-                                footballRepository.fetchMatchFullDossier(updatedMatch, forceRefresh = true)
+                                footballRepository.fetchMatchFullDossier(updatedMatch, forceRefresh = false)
                             }.onSuccess { refreshedDossier ->
                                 _selectedMatchDossier.value = refreshedDossier
                             }
@@ -756,6 +771,24 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             current.add(tournamentId)
         }
         _collapsedTournamentIds.value = current
+    }
+
+    fun togglePinMatch(matchId: String) {
+        val cleanId = matchId.trim()
+        if (cleanId.isBlank()) return
+        val updated = _pinnedMatchIds.value.toMutableSet()
+        if (updated.contains(cleanId)) {
+            updated.remove(cleanId)
+        } else {
+            updated.add(cleanId)
+        }
+        _pinnedMatchIds.value = updated.toSet()
+        kickoffPrefs.edit().putStringSet(KEY_PINNED_MATCH_IDS, updated.toSet()).apply()
+    }
+
+    companion object {
+        const val KICKOFF_PINNED_PREFS_NAME = "setplay_kickoff_pinned_prefs"
+        const val KEY_PINNED_MATCH_IDS = "pinned_match_ids"
     }
 
     fun updateTeamSearchQuery(query: String) {

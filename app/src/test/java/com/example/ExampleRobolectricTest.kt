@@ -3613,7 +3613,516 @@ class TvSyncDeviceSeparationComposeTest {
             playerVm.stopAndClosePlayer()
         }
     }
+
+    @Test
+    fun `testKickOffPremierPart1PlayerCutoutsDeepStatsDossierCacheAnd365ScoresParsing`() = runBlocking {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val db = Room.inMemoryDatabaseBuilder(context, StreamVaultDatabase::class.java)
+            .allowMainThreadQueries()
+            .build()
+        val footballRepository = com.example.data.repository.FootballRepository(
+            context = context,
+            favoriteTeamDao = db.favoriteTeamDao(),
+            tournamentPreferenceDao = db.tournamentPreferenceDao(),
+            streamDao = db.streamDao()
+        )
+        com.example.data.repository.FootballRepository.resetSharedSportsDbRateLimiterForTests()
+
+        // 1. Verify Strategic API_FOOTBALL_KEY Reservation (4 background schedule calls max, 96 reserved for dossiers)
+        assertEquals(4, com.example.data.repository.FootballRepository.MAX_BACKGROUND_SCHEDULE_CALLS_PER_DAY)
+        assertEquals(96, com.example.data.repository.FootballRepository.API_FOOTBALL_RESERVED_FOR_DOSSIERS)
+        repeat(4) {
+            assertTrue(com.example.data.repository.FootballRepository.tryAcquireSharedApiFootballPermit(isMatchCenterDossier = false))
+        }
+        assertFalse(com.example.data.repository.FootballRepository.tryAcquireSharedApiFootballPermit(isMatchCenterDossier = false))
+        assertTrue(com.example.data.repository.FootballRepository.tryAcquireSharedApiFootballPermit(isMatchCenterDossier = true))
+        com.example.data.repository.FootballRepository.resetSharedSportsDbRateLimiterForTests()
+
+        // 2. Verify 4-Tier Player Cutout URL Generation & Per-Player Deep Telemetry Parsing (API-Football & Sofascore)
+        val enricher = com.example.data.repository.MatchCenterEnricher(okhttp3.OkHttpClient())
+        assertEquals(
+            "https://media.api-sports.io/football/players/278.png",
+            enricher.buildApiSportsPlayerPhotoUrl(278L)
+        )
+        assertEquals(
+            "https://api.sofascore.com/api/v1/player/814594/image",
+            enricher.buildSofascorePlayerPhotoUrl(814594L)
+        )
+        assertEquals(
+            "https://imagecache.365scores.com/image/upload/f_png,w_120,h_120,c_limit,q_auto:eco/v1/Athletes/55123",
+            enricher.build365ScoresAthletePhotoUrl(55123L)
+        )
+
+        val sofascoreSideJson = org.json.JSONObject(
+            """
+            {
+              "formation": "4-3-3",
+              "players": [
+                {
+                  "player": { "id": 814594, "name": "Achraf Hakimi", "shirtNumber": 2, "position": "D" },
+                  "shirtNumber": 2,
+                  "position": "D",
+                  "substitute": false,
+                  "captain": true,
+                  "statistics": {
+                    "rating": 8.4,
+                    "goals": 1,
+                    "goalAssist": 1,
+                    "minutesPlayed": 90,
+                    "totalShots": 4,
+                    "onTargetScoringAttempt": 2,
+                    "expectedGoals": 0.48,
+                    "expectedGoalsOnTarget": 0.72,
+                    "accuratePass": 64,
+                    "totalPass": 71,
+                    "touches": 93,
+                    "duelWon": 8,
+                    "saves": 0
+                  }
+                }
+              ]
+            }
+            """.trimIndent()
+        )
+        val (sofaStarters, _) = enricher.parseSofascoreSideEntries(sofascoreSideJson)
+        assertEquals(1, sofaStarters.size)
+        val hakimiEntry = sofaStarters.first()
+        assertEquals("https://api.sofascore.com/api/v1/player/814594/image", hakimiEntry.photoUrl)
+        assertEquals(90, hakimiEntry.minutesPlayed)
+        assertEquals(4, hakimiEntry.shotsTotal)
+        assertEquals(2, hakimiEntry.shotsOnTarget)
+        assertEquals(0.48, hakimiEntry.expectedGoals, 0.001)
+        assertEquals(0.72, hakimiEntry.expectedGoalsOnTarget, 0.001)
+        assertEquals(64, hakimiEntry.passesAccurate)
+        assertEquals(71, hakimiEntry.passesTotal)
+        assertEquals(93, hakimiEntry.touches)
+        assertEquals(8, hakimiEntry.duelsWon)
+
+        // Verify API-Football deep player telemetry flows into PitchPlayerNode
+        val homeXi = (1..11).joinToString(",") { idx ->
+            val pId = 3000 + idx
+            val pName = if (idx == 9) "Mohamed Salah" else "Home Starter $idx"
+            val pos = if (idx == 1) "G" else if (idx <= 5) "D" else if (idx <= 8) "M" else "F"
+            """{"player":{"id":$pId,"name":"$pName","number":$idx,"pos":"$pos"}}"""
+        }
+        val awayXi = (1..11).joinToString(",") { idx ->
+            val pId = 4000 + idx
+            val pName = "Away Starter $idx"
+            val pos = if (idx == 1) "G" else if (idx <= 5) "D" else if (idx <= 8) "M" else "F"
+            """{"player":{"id":$pId,"name":"$pName","number":$idx,"pos":"$pos"}}"""
+        }
+        val apifDeepStatsJson = org.json.JSONObject(
+            """
+            {
+              "fixture": { "id": 990011, "referee": "Michael Oliver" },
+              "lineups": [
+                {
+                  "team": { "id": 40, "name": "Liverpool" },
+                  "coach": { "name": "Arne Slot" },
+                  "formation": "4-3-3",
+                  "startXI": [$homeXi],
+                  "substitutes": []
+                },
+                {
+                  "team": { "id": 42, "name": "Arsenal" },
+                  "coach": { "name": "Mikel Arteta" },
+                  "formation": "4-3-3",
+                  "startXI": [$awayXi],
+                  "substitutes": []
+                }
+              ],
+              "players": [
+                {
+                  "team": { "id": 40, "name": "Liverpool" },
+                  "players": [
+                    {
+                      "player": { "id": 3009, "name": "Mohamed Salah" },
+                      "statistics": [
+                        {
+                          "games": { "minutes": 88, "rating": "8.7", "captain": false },
+                          "goals": { "total": 1, "assists": 1, "saves": 0 },
+                          "shots": { "total": 5, "on": 3 },
+                          "passes": { "total": 42, "accuracy": "36" },
+                          "duels": { "won": 7 },
+                          "expected_goals": 0.64
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            }
+            """.trimIndent()
+        )
+
+        // 3. Verify 365Scores allscores JSON parsing into FootballMatch items
+        val sample365ScoresJson = """
+            {
+              "games": [
+                {
+                  "id": 4192831,
+                  "competitionId": 552,
+                  "competitionDisplayName": "Botola Pro Inwi",
+                  "startTime": "2025-05-11T20:00:00Z",
+                  "statusText": "2nd Half",
+                  "gameTime": 68,
+                  "homeCompetitor": {
+                    "id": 7211,
+                    "name": "Raja Casablanca",
+                    "score": 2.0,
+                    "redCards": 0
+                  },
+                  "awayCompetitor": {
+                    "id": 7212,
+                    "name": "Wydad AC",
+                    "score": 1.0,
+                    "redCards": 1
+                  },
+                  "tvNetworks": [
+                    { "id": 1, "name": "Arryadia HD" },
+                    { "id": 2, "name": "Arryadia TNT" }
+                  ]
+                },
+                {
+                  "id": 4192832,
+                  "competitionId": 7,
+                  "competitionDisplayName": "Premier League",
+                  "startTime": "2025-05-11T16:30:00Z",
+                  "statusText": "1st Half",
+                  "gameTime": 34,
+                  "homeCompetitor": {
+                    "id": 108,
+                    "name": "Liverpool",
+                    "score": 1.0,
+                    "redCards": 0
+                  },
+                  "awayCompetitor": {
+                    "id": 104,
+                    "name": "Arsenal",
+                    "score": 0.0,
+                    "redCards": 0
+                  },
+                  "tvNetworks": [
+                    { "id": 10, "name": "beIN Sports 1 HD" }
+                  ]
+                }
+              ]
+            }
+        """.trimIndent()
+        val parsed365 = footballRepository.parse365ScoresAllScoresJson(
+            rawJson = sample365ScoresJson,
+            dayTab = com.example.data.repository.MatchDayTab.TODAY
+        )
+        assertEquals(2, parsed365.size)
+        val derbyMatch = parsed365[0]
+        assertEquals("botola_pro", derbyMatch.tournamentId)
+        assertEquals("Raja Casablanca", derbyMatch.homeTeamName)
+        assertEquals("Wydad AC", derbyMatch.awayTeamName)
+        assertEquals(com.example.data.repository.MatchStatus.LIVE, derbyMatch.status)
+        assertEquals("2H • 68'", derbyMatch.liveMinuteOrBadge)
+        assertEquals(2, derbyMatch.homeScore)
+        assertEquals(1, derbyMatch.awayScore)
+        assertEquals(1, derbyMatch.awayRedCards)
+        assertTrue(derbyMatch.sourceTvChannels.contains("Arryadia HD"))
+
+        val eplMatch = parsed365[1]
+        val apifDossier = enricher.buildCompleteDossier(
+            match = eplMatch,
+            raw = com.example.data.repository.MatchCenterEnricher.LiveDossierRawPayload(
+                apiFootballFixtureJson = apifDeepStatsJson
+            )
+        )
+        val salahNode = apifDossier.lineups.homeStartingXI.first { it.name == "Mohamed Salah" }
+        assertEquals("https://media.api-sports.io/football/players/3009.png", salahNode.photoUrl)
+        assertEquals(88, salahNode.minutesPlayed)
+        assertEquals(5, salahNode.shotsTotal)
+        assertEquals(3, salahNode.shotsOnTarget)
+        assertEquals(0.64, salahNode.expectedGoals, 0.001)
+        assertEquals(36, salahNode.passesAccurate)
+        assertEquals(42, salahNode.passesTotal)
+        assertEquals(7, salahNode.duelsWon)
+
+        // 4. Verify 2-Hour Dossier Cache hit (0 redundant network calls when matchScoreSignature is unchanged)
+        // and automatic cache invalidation when a live goal increments the score
+        val zone = com.example.data.repository.UserZoneRegistry.getZoneByCode("MA")
+        val cacheKey = "${eplMatch.matchId}_${zone.countryCode}"
+        enricher.dossierCache[cacheKey] = com.example.data.repository.CachedMatchDossier(
+            timestampMs = System.currentTimeMillis(),
+            matchScoreSignature = enricher.buildMatchScoreSignature(eplMatch),
+            dossier = apifDossier
+        )
+        val initialNetworkCalls = enricher.networkFetchInvocationCount.get()
+
+        // Re-opening same match with unchanged 1-0 score hits 2-hour cache in 0ms with 0 network calls
+        val cachedHitDossier = enricher.fetchMatchFullDossier(eplMatch, forceRefresh = false, countryZone = zone)
+        assertEquals(initialNetworkCalls, enricher.networkFetchInvocationCount.get())
+        assertEquals("Michael Oliver", cachedHitDossier.refereeName)
+
+        // Live goal increments score to 2-0 -> matchScoreSignature changes -> cache invalidates and refreshes
+        val eplMatchAfterGoal = eplMatch.copy(homeScore = 2)
+        val refreshedAfterGoal = enricher.fetchMatchFullDossier(eplMatchAfterGoal, forceRefresh = false, countryZone = zone)
+        assertEquals(initialNetworkCalls + 1, enricher.networkFetchInvocationCount.get())
+        assertEquals(2, refreshedAfterGoal.match.homeScore)
+
+        db.close()
+    }
+
+    @Test
+    fun `testKickOffPremierPart2MomentumWaveShotMapLiveStandingsAndPinnedMatches`() = runBlocking {
+        val app = ApplicationProvider.getApplicationContext<Application>()
+        val enricher = com.example.data.repository.MatchCenterEnricher(okhttp3.OkHttpClient())
+
+        // 1. Verify MomentumMinutePoint parsing from Sofascore /event/{id}/graph JSON
+        val sampleGraphJson = """
+            {
+              "graphPoints": [
+                { "minute": 1, "value": 18.5 },
+                { "minute": 15, "value": 64.0 },
+                { "minute": 32, "value": -42.5 },
+                { "minute": 45, "value": 12.0 },
+                { "minute": 67, "value": -85.0 },
+                { "minute": 89, "value": 92.0 }
+              ]
+            }
+        """.trimIndent()
+        val momentumPoints = enricher.parseSofascoreMomentumGraphJson(sampleGraphJson)
+        assertEquals(6, momentumPoints.size)
+        assertEquals(1, momentumPoints[0].minute)
+        assertEquals(18.5f, momentumPoints[0].value, 0.01f)
+        assertEquals(67, momentumPoints[4].minute)
+        assertEquals(-85.0f, momentumPoints[4].value, 0.01f)
+        assertEquals(89, momentumPoints[5].minute)
+        assertEquals(92.0f, momentumPoints[5].value, 0.01f)
+
+        // 2. Verify MatchShotPoint (xG / xGOT) parsing from Sofascore /event/{id}/shotmap JSON & Categorized Stats
+        val sampleShotMapJson = """
+            {
+              "shotmap": [
+                {
+                  "id": "s1",
+                  "player": { "name": "Mohamed Salah" },
+                  "isHome": true,
+                  "shotType": "goal",
+                  "xg": 0.44,
+                  "xgot": 0.78,
+                  "time": 24,
+                  "playerCoordinates": { "x": 11.5, "y": 54.0 }
+                },
+                {
+                  "id": "s2",
+                  "player": { "name": "Bukayo Saka" },
+                  "isHome": false,
+                  "shotType": "save",
+                  "xg": 0.22,
+                  "xgot": 0.35,
+                  "time": 51,
+                  "playerCoordinates": { "x": 16.0, "y": 38.0 }
+                },
+                {
+                  "id": "s3",
+                  "player": { "name": "Darwin Nunez" },
+                  "isHome": true,
+                  "shotType": "block",
+                  "xg": 0.09,
+                  "xgot": 0.0,
+                  "time": 73,
+                  "playerCoordinates": { "x": 20.0, "y": 48.0 }
+                }
+              ]
+            }
+        """.trimIndent()
+        val shotMap = enricher.parseSofascoreShotMapJson(sampleShotMapJson)
+        assertEquals(3, shotMap.size)
+        assertEquals(com.example.data.repository.ShotOutcome.GOAL, shotMap[0].outcome)
+        assertEquals(com.example.data.repository.MatchTeamSide.HOME, shotMap[0].teamSide)
+        assertEquals(0.44, shotMap[0].xg, 0.001)
+        assertEquals(0.78, shotMap[0].xgot, 0.001)
+        assertEquals(com.example.data.repository.ShotOutcome.ON_TARGET_SAVED, shotMap[1].outcome)
+        assertEquals(com.example.data.repository.MatchTeamSide.AWAY, shotMap[1].teamSide)
+        assertEquals(com.example.data.repository.ShotOutcome.BLOCKED, shotMap[2].outcome)
+
+        // Verify categorized stats tagging ("Top Stats", "Shots & xG", "Passes", "Defense & Duels", "Goalkeeping")
+        val apifStatsPayload = org.json.JSONObject(
+            """
+            {
+              "statistics": [
+                {
+                  "team": { "name": "Liverpool" },
+                  "statistics": [
+                    { "type": "Ball Possession", "value": "58%" },
+                    { "type": "expected_goals", "value": "2.14" },
+                    { "type": "xg_on_target", "value": "2.65" },
+                    { "type": "Total Shots", "value": "16" },
+                    { "type": "Shots on Goal", "value": "7" },
+                    { "type": "Big Chances", "value": "4" },
+                    { "type": "Shots insidebox", "value": "12" },
+                    { "type": "Passes %", "value": "88%" },
+                    { "type": "Duels Won", "value": "54" },
+                    { "type": "Goalkeeper Saves", "value": "3" }
+                  ]
+                },
+                {
+                  "team": { "name": "Arsenal" },
+                  "statistics": [
+                    { "type": "Ball Possession", "value": "42%" },
+                    { "type": "expected_goals", "value": "1.08" },
+                    { "type": "xg_on_target", "value": "1.12" },
+                    { "type": "Total Shots", "value": "9" },
+                    { "type": "Shots on Goal", "value": "4" },
+                    { "type": "Big Chances", "value": "2" },
+                    { "type": "Shots insidebox", "value": "6" },
+                    { "type": "Passes %", "value": "82%" },
+                    { "type": "Duels Won", "value": "46" },
+                    { "type": "Goalkeeper Saves", "value": "5" }
+                  ]
+                }
+              ]
+            }
+            """.trimIndent()
+        )
+        val liveMatch = com.example.data.repository.FootballMatch(
+            matchId = "epl_liv_ars",
+            tournamentId = "premier_league",
+            tournamentName = "Premier League",
+            tournamentRegion = "England",
+            dayTab = com.example.data.repository.MatchDayTab.TODAY,
+            kickoffTimeFormatted = "17:30",
+            kickoffDateFormatted = "Today • GMT+1",
+            status = com.example.data.repository.MatchStatus.LIVE,
+            liveMinuteOrBadge = "2H • 76'",
+            homeTeamId = "liv",
+            homeTeamName = "Liverpool",
+            homeTeamBadge = "",
+            homeScore = 2,
+            awayTeamId = "ars",
+            awayTeamName = "Arsenal",
+            awayTeamBadge = "",
+            awayScore = 1,
+            stadiumName = "Anfield",
+            cityName = "Liverpool",
+            beinChannel = "beIN Sports 1 HD",
+            beinChannelNumberHint = "1"
+        )
+        val fullDossier = enricher.buildCompleteDossier(
+            match = liveMatch,
+            raw = com.example.data.repository.MatchCenterEnricher.LiveDossierRawPayload(
+                sofascoreGraphJson = org.json.JSONObject(sampleGraphJson),
+                sofascoreShotmapJson = org.json.JSONObject(sampleShotMapJson),
+                apiFootballFixtureJson = apifStatsPayload
+            )
+        )
+        assertEquals(6, fullDossier.momentumPoints.size)
+        assertEquals(3, fullDossier.shotMap.size)
+        assertTrue(fullDossier.matchBuzzInsights.isNotEmpty())
+        val topStatsFiltered = fullDossier.stats.filter { it.category == "Top Stats" || it.isKeyMetric }
+        val shotsAndXgFiltered = fullDossier.stats.filter { it.category == "Shots & xG" }
+        assertTrue(topStatsFiltered.any { it.statLabel == "Ball Possession" })
+        assertTrue(shotsAndXgFiltered.any { it.statLabel == "Expected Goals (xG)" && it.homeValueText == "2.14" })
+        assertTrue(shotsAndXgFiltered.any { it.statLabel == "xG on Target (xGOT)" && it.homeValueText == "2.65" })
+        assertTrue(shotsAndXgFiltered.any { it.statLabel == "Big Chances" })
+        assertTrue(shotsAndXgFiltered.any { it.statLabel == "Touches in Penalty Box" })
+
+        // 3. Verify computeLiveInPlayStandings() live points and liveRankDelta (▲ +N / ▼ -N) calculation
+        val officialStandings = listOf(
+            com.example.data.repository.LeagueStandingRow(
+                rank = 1,
+                teamName = "Arsenal",
+                teamBadge = "",
+                played = 10,
+                wins = 7,
+                draws = 2,
+                losses = 1,
+                goalDiffFormatted = "+14",
+                points = 23,
+                formLast5 = listOf("W", "W", "D", "W", "W"),
+                isAwayTeam = true
+            ),
+            com.example.data.repository.LeagueStandingRow(
+                rank = 2,
+                teamName = "Manchester City",
+                teamBadge = "",
+                played = 10,
+                wins = 7,
+                draws = 1,
+                losses = 2,
+                goalDiffFormatted = "+12",
+                points = 22,
+                formLast5 = listOf("W", "L", "W", "W", "D")
+            ),
+            com.example.data.repository.LeagueStandingRow(
+                rank = 3,
+                teamName = "Liverpool",
+                teamBadge = "",
+                played = 10,
+                wins = 7,
+                draws = 0,
+                losses = 3,
+                goalDiffFormatted = "+11",
+                points = 21,
+                formLast5 = listOf("W", "W", "L", "W", "W"),
+                isHomeTeam = true
+            )
+        )
+        // Liverpool (21 pts, rank 3) is leading Arsenal (23 pts, rank 1) 2-1 live -> Liverpool jumps to 24 pts (rank 1, liveRankDelta = +2)!
+        val liveStandings = enricher.computeLiveInPlayStandings(officialStandings, liveMatch)
+        assertEquals(3, liveStandings.size)
+        val liveLeader = liveStandings[0]
+        assertEquals("Liverpool", liveLeader.teamName)
+        assertEquals(1, liveLeader.rank)
+        assertEquals(11, liveLeader.played)
+        assertEquals(8, liveLeader.wins)
+        assertEquals(24, liveLeader.points)
+        assertEquals("+12", liveLeader.goalDiffFormatted)
+        assertEquals(2, liveLeader.liveRankDelta) // Moved up +2 places (from #3 to #1)
+
+        val liveSecond = liveStandings[1]
+        assertEquals("Arsenal", liveSecond.teamName)
+        assertEquals(2, liveSecond.rank)
+        assertEquals(11, liveSecond.played)
+        assertEquals(23, liveSecond.points)
+        assertEquals(-1, liveSecond.liveRankDelta) // Dropped -1 place (from #1 to #2)
+
+        // 4. Verify togglePinMatch() persistence in SharedPreferences and priority goal alert detection
+        app.getSharedPreferences(com.example.ui.viewmodel.MainViewModel.KICKOFF_PINNED_PREFS_NAME, Context.MODE_PRIVATE)
+            .edit().clear().commit()
+        val mainVm = com.example.ui.viewmodel.MainViewModel(app)
+        assertTrue(mainVm.pinnedMatchIds.value.isEmpty())
+
+        mainVm.togglePinMatch("epl_liv_ars")
+        assertTrue(mainVm.pinnedMatchIds.value.contains("epl_liv_ars"))
+
+        // Recreate MainViewModel to verify SharedPreferences persistence across app restarts
+        val recreatedVm = com.example.ui.viewmodel.MainViewModel(app)
+        assertTrue(recreatedVm.pinnedMatchIds.value.contains("epl_liv_ars"))
+
+        // Verify pinned match gets priority in detectGoalScoredAlert when multiple matches score simultaneously
+        val otherMatchBefore = liveMatch.copy(
+            matchId = "other_match",
+            homeTeamName = "Chelsea",
+            awayTeamName = "Newcastle",
+            homeScore = 0,
+            awayScore = 0
+        )
+        val otherMatchAfter = otherMatchBefore.copy(homeScore = 1)
+        val pinnedBefore = liveMatch.copy(homeScore = 1, awayScore = 1)
+        val pinnedAfter = liveMatch.copy(homeScore = 2, awayScore = 1)
+
+        val prioritizedAlert = recreatedVm.detectGoalScoredAlert(
+            previousMatches = listOf(otherMatchBefore, pinnedBefore),
+            updatedMatches = listOf(otherMatchAfter, pinnedAfter)
+        )
+        assertNotNull(prioritizedAlert)
+        assertEquals("epl_liv_ars", prioritizedAlert?.match?.matchId)
+        assertEquals("Liverpool", prioritizedAlert?.scoringTeamName)
+        assertTrue(prioritizedAlert?.isFavoriteTeamGoal == true)
+
+        // Unpin match and verify removal
+        recreatedVm.togglePinMatch("epl_liv_ars")
+        assertFalse(recreatedVm.pinnedMatchIds.value.contains("epl_liv_ars"))
+    }
 }
+
+
 
 
 

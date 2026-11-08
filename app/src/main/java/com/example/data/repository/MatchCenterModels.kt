@@ -68,7 +68,23 @@ data class PitchPlayerNode(
     val subbedOnMinute: String? = null,
     val photoUrl: String = "",
     val isMvp: Boolean = false,
-    val isCaptain: Boolean = false
+    val isCaptain: Boolean = false,
+    val minutesPlayed: Int = 0,
+    val shotsTotal: Int = 0,
+    val shotsOnTarget: Int = 0,
+    val expectedGoals: Double = 0.0,
+    val expectedGoalsOnTarget: Double = 0.0,
+    val passesAccurate: Int = 0,
+    val passesTotal: Int = 0,
+    val touches: Int = 0,
+    val duelsWon: Int = 0,
+    val saves: Int = 0
+)
+
+data class CachedMatchDossier(
+    val timestampMs: Long,
+    val matchScoreSignature: String,
+    val dossier: MatchFullDossier
 )
 
 data class MissingPlayerItem(
@@ -97,12 +113,32 @@ data class MatchLineupsData(
     val ratingSourceLabel: String = "Sofascore • Season Form Index"
 )
 
+data class MomentumMinutePoint(
+    val minute: Int,
+    val value: Float // -100f..100f: positive = Home attacking pressure, negative = Away attacking pressure
+)
+
+enum class ShotOutcome { GOAL, ON_TARGET_SAVED, OFF_TARGET, BLOCKED }
+
+data class MatchShotPoint(
+    val id: String,
+    val minute: Int,
+    val playerName: String,
+    val teamSide: MatchTeamSide,
+    val outcome: ShotOutcome,
+    val xg: Double,
+    val xgot: Double = 0.0,
+    val normalizedX: Float, // 0.0f..1.0f across pitch width
+    val normalizedY: Float  // 0.0f..1.0f distance from goal line
+)
+
 data class MatchStatComparison(
     val statLabel: String,
     val homeValueText: String,
     val awayValueText: String,
     val homeRatio: Float,         // 0.0f..1.0f for dual comparison progress bar
-    val isKeyMetric: Boolean = false
+    val isKeyMetric: Boolean = false,
+    val category: String = "Top Stats" // "Top Stats", "Shots & xG", "Passes", "Defense & Duels", "Goalkeeping"
 )
 
 data class H2HMeetingItem(
@@ -127,7 +163,8 @@ data class LeagueStandingRow(
     val formLast5: List<String>,  // e.g. ["W", "W", "D", "L", "W"]
     val isHomeTeam: Boolean = false,
     val isAwayTeam: Boolean = false,
-    val zoneLabel: String? = null
+    val zoneLabel: String? = null,
+    val liveRankDelta: Int = 0    // +2 = moved up 2 places live, -1 = dropped 1 place live
 )
 
 data class MenaBroadcastChannelInfo(
@@ -154,7 +191,10 @@ data class MatchFullDossier(
     val h2hMeetings: List<H2HMeetingItem>,
     val standingsTable: List<LeagueStandingRow>,
     val menaBroadcastGuide: List<MenaBroadcastChannelInfo>,
-    val countryZone: UserCountryZone = UserZoneRegistry.getZoneByCode(UserZoneRegistry.DEFAULT_COUNTRY_CODE)
+    val countryZone: UserCountryZone = UserZoneRegistry.getZoneByCode(UserZoneRegistry.DEFAULT_COUNTRY_CODE),
+    val momentumPoints: List<MomentumMinutePoint> = emptyList(),
+    val shotMap: List<MatchShotPoint> = emptyList(),
+    val matchBuzzInsights: List<String> = emptyList()
 )
 
 /**
@@ -168,20 +208,51 @@ class MatchCenterEnricher(
     private val httpClient: OkHttpClient,
     private val canAcquireSportsDbPermit: () -> Boolean = { FootballRepository.tryAcquireSharedSportsDbPermit() }
 ) {
-    private val dossierCache = ConcurrentHashMap<String, MatchFullDossier>()
+    internal val dossierCache = ConcurrentHashMap<String, CachedMatchDossier>()
+    internal val networkFetchInvocationCount = AtomicInteger(0)
     private val teamSquadCache = ConcurrentHashMap<String, List<RawPlayerEntry>>()
     private val apiFootballFixtureCache = ConcurrentHashMap<String, JSONObject>()
     private val apiFootballDayFixturesCache = ConcurrentHashMap<String, org.json.JSONArray>()
+
+    internal fun buildMatchScoreSignature(match: FootballMatch): String =
+        "${match.homeScore ?: -1}-${match.awayScore ?: -1}-${match.status}"
+
+    fun buildApiSportsPlayerPhotoUrl(playerId: Long): String =
+        Companion.buildApiSportsPlayerPhotoUrl(playerId)
+
+    fun buildSofascorePlayerPhotoUrl(playerId: Long): String =
+        Companion.buildSofascorePlayerPhotoUrl(playerId)
+
+    fun build365ScoresAthletePhotoUrl(athleteId: Long): String =
+        Companion.build365ScoresAthletePhotoUrl(athleteId)
 
     suspend fun fetchMatchFullDossier(
         match: FootballMatch,
         forceRefresh: Boolean = false,
         countryZone: UserCountryZone = UserZoneRegistry.getZoneByCode(UserZoneRegistry.DEFAULT_COUNTRY_CODE)
     ): MatchFullDossier = withContext(Dispatchers.IO) {
-        val cacheKey = "${match.matchId}_${match.status}_${match.homeScore}_${match.awayScore}_${countryZone.countryCode}"
-        if (!forceRefresh) {
-            dossierCache[cacheKey]?.let { return@withContext it }
+        val nowMs = System.currentTimeMillis()
+        val cacheKey = "${match.matchId}_${countryZone.countryCode}"
+        val currentSignature = buildMatchScoreSignature(match)
+        val cachedEntry = dossierCache[cacheKey]
+        if (!forceRefresh && cachedEntry != null) {
+            if ((nowMs - cachedEntry.timestampMs) < DOSSIER_CACHE_TTL_MS &&
+                cachedEntry.matchScoreSignature == currentSignature
+            ) {
+                return@withContext cachedEntry.dossier
+            } else {
+                // Score or status changed (e.g. live goal scored) or TTL expired -> invalidate
+                dossierCache.remove(cacheKey)
+                val apifId = match.apiFootballFixtureId.ifBlank {
+                    if (match.matchId.startsWith("apif_")) match.matchId.removePrefix("apif_") else ""
+                }
+                if (apifId.isNotBlank()) {
+                    apiFootballFixtureCache.remove(apifId)
+                }
+            }
         }
+
+        networkFetchInvocationCount.incrementAndGet()
 
         // Fetch 1-call API-Football fixture dossier, live lineup, timeline, stats, Sofascore ratings, and standings in parallel (Promise.allSettled via supervisorScope)
         val tournament = FootballRepository.ALL_TOURNAMENTS.find { it.tournamentId == match.tournamentId }
@@ -243,15 +314,17 @@ class MatchCenterEnricher(
                 runCatching { fetchTeamSquadFromSportsDb(match.awayTeamName) }.getOrDefault(emptyList())
             }
 
-            val sofascorePair = sofascorePayloadDeferred.await()
+            val sofascoreBundle = sofascorePayloadDeferred.await()
             LiveDossierRawPayload(
                 tsdbLineupJson = tsdbLineupDeferred.await(),
                 tsdbTimelineJson = tsdbTimelineDeferred.await(),
                 tsdbStatsJson = tsdbStatsDeferred.await(),
                 tsdbTableJson = tsdbTableDeferred.await(),
                 espnSummaryJson = espnSummaryDeferred.await(),
-                sofascoreLineupsJson = sofascorePair?.first,
-                sofascoreTvChannels = sofascorePair?.second.orEmpty(),
+                sofascoreLineupsJson = sofascoreBundle?.lineupsJson,
+                sofascoreTvChannels = sofascoreBundle?.tvChannels.orEmpty(),
+                sofascoreGraphJson = sofascoreBundle?.graphJson,
+                sofascoreShotmapJson = sofascoreBundle?.shotmapJson,
                 tsdbHomeSquad = tsdbHomeSquadDeferred.await(),
                 tsdbAwaySquad = tsdbAwaySquadDeferred.await(),
                 apiFootballFixtureJson = apiFootballDeferred.await()
@@ -265,20 +338,33 @@ class MatchCenterEnricher(
             tsdbAwaySquad = livePayload.tsdbAwaySquad
         )
         val finalDossier = built.copy(lineups = enrichedLineups)
-        dossierCache[cacheKey] = finalDossier
+        dossierCache[cacheKey] = CachedMatchDossier(
+            timestampMs = System.currentTimeMillis(),
+            matchScoreSignature = currentSignature,
+            dossier = finalDossier
+        )
         finalDossier
     }
 
+    internal data class SofascoreEventBundle(
+        val lineupsJson: JSONObject? = null,
+        val tvChannels: List<String> = emptyList(),
+        val graphJson: JSONObject? = null,
+        val shotmapJson: JSONObject? = null
+    )
+
     /**
      * Queries Sofascore's public JSON API for event lineups, real-time player ratings (`statistics.rating`),
-     * official player headshot IDs (`https://api.sofascore.com/api/v1/player/{id}/image`), and official
-     * country TV broadcast channels (`https://api.sofascore.com/api/v1/tv/event/{id}/country-channels`).
+     * official player headshot IDs (`https://api.sofascore.com/api/v1/player/{id}/image`), official
+     * country TV broadcast channels (`https://api.sofascore.com/api/v1/tv/event/{id}/country-channels`),
+     * attack momentum wave (`https://api.sofascore.com/api/v1/event/{id}/graph`), and
+     * shot map (`https://api.sofascore.com/api/v1/event/{id}/shotmap`).
      * Gracefully returns null if Cloudflare blocks or the event isn't found.
      */
     private fun fetchSofascoreEventLineupsAndTv(
         match: FootballMatch,
         countryZone: UserCountryZone
-    ): Pair<JSONObject?, List<String>>? {
+    ): SofascoreEventBundle? {
         val dateParam = runCatching {
             val cal = java.util.Calendar.getInstance(java.util.TimeZone.getTimeZone("Africa/Casablanca"))
             cal.add(java.util.Calendar.DAY_OF_YEAR, match.dayTab.dayOffset)
@@ -307,12 +393,23 @@ class MatchCenterEnricher(
                     val tvJson = runCatching {
                         fetchJsonWithBrowserHeaders("https://api.sofascore.com/api/v1/tv/event/$eventId/country-channels")
                     }.getOrNull()
+                    val graphJson = runCatching {
+                        fetchJsonWithBrowserHeaders("https://api.sofascore.com/api/v1/event/$eventId/graph")
+                    }.getOrNull()
+                    val shotmapJson = runCatching {
+                        fetchJsonWithBrowserHeaders("https://api.sofascore.com/api/v1/event/$eventId/shotmap")
+                    }.getOrNull()
                     val tvChannels = if (tvJson != null) {
                         FootballRepository.parseSofascoreCountryChannelsJson(tvJson.toString(), countryZone)
                     } else {
                         emptyList()
                     }
-                    return Pair(lineupsJson, tvChannels)
+                    return SofascoreEventBundle(
+                        lineupsJson = lineupsJson,
+                        tvChannels = tvChannels,
+                        graphJson = graphJson,
+                        shotmapJson = shotmapJson
+                    )
                 }
             }
         }
@@ -490,26 +587,32 @@ class MatchCenterEnricher(
             teamSquad: List<RawPlayerEntry>,
             fallbackCounter: AtomicInteger
         ): PitchPlayerNode {
-            // 1. Match against single-call team squad cutout (`lookup_all_players.php?id={idTeam}`) first
-            val squadPhoto = resolvePlayerPhotoFromSquad(node.name, teamSquad)
-            if (squadPhoto.isNotBlank()) {
-                return node.copy(photoUrl = squadPhoto)
-            }
-
-            // 2. Check cached verified player photo
-            val cached = resolveCuratedOrCachedPlayerPhoto(node.name)
-            if (cached.isNotBlank()) {
-                return node.copy(photoUrl = cached)
-            }
-
-            // 3. If node already has an official API-Football (`media.api-sports.io`) or TheSportsDB cutout URL, preserve it
+            // 1. Preserve official Tier 1 (media.api-sports.io), Tier 2 (api.sofascore.com), or Tier 3 (imagecache.365scores.com) cutout URL if already resolved
             if (node.photoUrl.contains("media.api-sports.io", ignoreCase = true) ||
+                node.photoUrl.contains("imagecache.365scores.com", ignoreCase = true) ||
                 node.photoUrl.contains("thesportsdb.com", ignoreCase = true)
             ) {
                 return node
             }
 
-            // 4. Limit individual `searchplayers.php` fallback calls to at most 4 unmatched players per team
+            // 2. Match against single-call team squad cutout (`lookup_all_players.php?id={idTeam}` — Tier 4)
+            val squadPhoto = resolvePlayerPhotoFromSquad(node.name, teamSquad)
+            if (squadPhoto.isNotBlank()) {
+                return node.copy(photoUrl = squadPhoto)
+            }
+
+            // 3. Preserve existing verified Sofascore player cutout URL (Tier 2) if present on node
+            if (node.photoUrl.contains("api.sofascore.com", ignoreCase = true)) {
+                return node
+            }
+
+            // 4. Check cached verified player photo
+            val cached = resolveCuratedOrCachedPlayerPhoto(node.name)
+            if (cached.isNotBlank()) {
+                return node.copy(photoUrl = cached)
+            }
+
+            // 5. Limit individual `searchplayers.php` fallback calls to at most 4 unmatched players per team
             if (fallbackCounter.incrementAndGet() <= 4) {
                 val fetched = fetchPlayerPhotoFromSportsDb(node.name)
                 if (fetched.isNotBlank()) {
@@ -517,7 +620,7 @@ class MatchCenterEnricher(
                 }
             }
 
-            // 5. Preserve existing verified Sofascore player image if present
+            // 6. Fallback to verified Sofascore player image if present
             val finalUrl = node.photoUrl.ifBlank { resolveSofascoreFallbackPlayerPhoto(node.name) }
             return if (finalUrl.isNotBlank()) node.copy(photoUrl = finalUrl) else node
         }
@@ -733,6 +836,8 @@ class MatchCenterEnricher(
         val espnSummaryJson: JSONObject? = null,
         val sofascoreLineupsJson: JSONObject? = null,
         val sofascoreTvChannels: List<String> = emptyList(),
+        val sofascoreGraphJson: JSONObject? = null,
+        val sofascoreShotmapJson: JSONObject? = null,
         val tsdbHomeSquad: List<RawPlayerEntry> = emptyList(),
         val tsdbAwaySquad: List<RawPlayerEntry> = emptyList(),
         val apiFootballFixtureJson: JSONObject? = null
@@ -816,6 +921,27 @@ class MatchCenterEnricher(
         val (homeForm, awayForm, h2hList) = buildH2HAndForm(match, raw?.espnSummaryJson, seed)
         val standings = buildLeagueStandings(match, raw?.espnSummaryJson, raw?.tsdbTableJson, seed)
         val menaGuide = buildMenaBroadcastGuide(match, seed, countryZone, raw?.sofascoreTvChannels.orEmpty())
+        val momentumPoints = buildMomentumPointsForMatch(
+            match = match,
+            sofascoreGraphJson = raw?.sofascoreGraphJson,
+            timelineEvents = timeline,
+            stats = stats,
+            isPlayedOrLive = isPlayedOrLive
+        )
+        val shotMap = buildShotMapForMatch(
+            match = match,
+            sofascoreShotmapJson = raw?.sofascoreShotmapJson,
+            timelineEvents = timeline,
+            lineups = lineups,
+            isPlayedOrLive = isPlayedOrLive
+        )
+        val matchBuzzInsights = buildMatchBuzzInsights(
+            match = match,
+            homeFormLast5 = homeForm,
+            awayFormLast5 = awayForm,
+            h2hMeetings = h2hList,
+            standingsTable = standings
+        )
 
         val apiFootballReferee = raw?.apiFootballFixtureJson?.optJSONObject("fixture")?.optString("referee", "")?.trim().orEmpty()
         val gameInfoObj = raw?.espnSummaryJson?.optJSONObject("gameInfo")
@@ -852,7 +978,10 @@ class MatchCenterEnricher(
             h2hMeetings = h2hList,
             standingsTable = standings,
             menaBroadcastGuide = menaGuide,
-            countryZone = countryZone
+            countryZone = countryZone,
+            momentumPoints = momentumPoints,
+            shotMap = shotMap,
+            matchBuzzInsights = matchBuzzInsights
         )
     }
 
@@ -904,10 +1033,20 @@ class MatchCenterEnricher(
         val subbedOffMin: String? = null,
         val subbedOnMin: String? = null,
         val isCaptain: Boolean = false,
-        val sofascoreRating: Double? = null
+        val sofascoreRating: Double? = null,
+        val minutesPlayed: Int = 0,
+        val shotsTotal: Int = 0,
+        val shotsOnTarget: Int = 0,
+        val expectedGoals: Double = 0.0,
+        val expectedGoalsOnTarget: Double = 0.0,
+        val passesAccurate: Int = 0,
+        val passesTotal: Int = 0,
+        val touches: Int = 0,
+        val duelsWon: Int = 0,
+        val saves: Int = 0
     )
 
-    private fun parseSofascoreSideEntries(sideObj: JSONObject?): Pair<List<RawPlayerEntry>, List<RawPlayerEntry>> {
+    internal fun parseSofascoreSideEntries(sideObj: JSONObject?): Pair<List<RawPlayerEntry>, List<RawPlayerEntry>> {
         val starters = mutableListOf<RawPlayerEntry>()
         val bench = mutableListOf<RawPlayerEntry>()
         val playersArr = sideObj?.optJSONArray("players") ?: return starters to bench
@@ -917,6 +1056,7 @@ class MatchCenterEnricher(
             val pName = playerObj.optString("name", playerObj.optString("shortName", "")).trim()
             if (pName.isBlank()) continue
             val playerId = playerObj.optLong("id", 0L)
+            val athlete365Id = playerObj.optLong("athleteId", item.optLong("athleteId", 0L))
             val jersey = item.optInt("shirtNumber", playerObj.optInt("shirtNumber", i + 1))
             val pos = item.optString("position", playerObj.optString("position", "M")).uppercase(Locale.ROOT)
             val isSub = item.optBoolean("substitute", false)
@@ -925,8 +1065,22 @@ class MatchCenterEnricher(
             val rating = statsObj?.optDouble("rating", Double.NaN)?.takeIf { !it.isNaN() && it > 0.0 }
             val goals = statsObj?.optInt("goals", 0) ?: 0
             val assists = statsObj?.optInt("goalAssist", 0) ?: 0
-            val sofascoreImg = if (playerId > 0L) "https://api.sofascore.com/api/v1/player/$playerId/image" else ""
-            val resolvedPhoto = resolveCuratedOrCachedPlayerPhoto(pName).ifBlank { sofascoreImg }
+            val minutesPlayed = statsObj?.optInt("minutesPlayed", 0)?.coerceAtLeast(0) ?: 0
+            val shotsTotal = statsObj?.optInt("totalShots", statsObj.optInt("totalScoringAttempt", 0))?.coerceAtLeast(0) ?: 0
+            val shotsOnTarget = statsObj?.optInt("onTargetScoringAttempt", statsObj.optInt("shotsOnTarget", 0))?.coerceAtLeast(0) ?: 0
+            val expectedGoals = statsObj?.optDouble("expectedGoals", 0.0)?.takeIf { !it.isNaN() && it >= 0.0 } ?: 0.0
+            val expectedGoalsOnTarget = statsObj?.optDouble("expectedGoalsOnTarget", 0.0)?.takeIf { !it.isNaN() && it >= 0.0 } ?: 0.0
+            val passesAccurate = statsObj?.optInt("accuratePass", 0)?.coerceAtLeast(0) ?: 0
+            val passesTotal = statsObj?.optInt("totalPass", 0)?.coerceAtLeast(0) ?: 0
+            val touches = statsObj?.optInt("touches", 0)?.coerceAtLeast(0) ?: 0
+            val duelsWon = statsObj?.optInt("duelWon", 0)?.coerceAtLeast(0) ?: 0
+            val saves = statsObj?.optInt("saves", 0)?.coerceAtLeast(0) ?: 0
+
+            val sofascoreImg = buildSofascorePlayerPhotoUrl(playerId)
+            val scores365Img = build365ScoresAthletePhotoUrl(athlete365Id)
+            val resolvedPhoto = sofascoreImg
+                .ifBlank { scores365Img }
+                .ifBlank { resolveCuratedOrCachedPlayerPhoto(pName) }
             if (resolvedPhoto.isNotBlank()) {
                 playerPhotoCache[pName.lowercase(Locale.ROOT)] = resolvedPhoto
             }
@@ -938,7 +1092,17 @@ class MatchCenterEnricher(
                 goals = goals,
                 assists = assists,
                 isCaptain = isCap,
-                sofascoreRating = rating
+                sofascoreRating = rating,
+                minutesPlayed = minutesPlayed,
+                shotsTotal = shotsTotal,
+                shotsOnTarget = shotsOnTarget,
+                expectedGoals = expectedGoals,
+                expectedGoalsOnTarget = expectedGoalsOnTarget,
+                passesAccurate = passesAccurate,
+                passesTotal = passesTotal,
+                touches = touches,
+                duelsWon = duelsWon,
+                saves = saves
             )
             if (!isSub && starters.size < 11) {
                 starters.add(entry)
@@ -1169,8 +1333,8 @@ class MatchCenterEnricher(
                     homeStartingXI = homeStarting,
                     awayStartingXI = awayStarting,
                     homeBench = sofaHomeBench.take(9).mapIndexed { idx, entry ->
-                        val benchPhoto = resolvePlayerPhotoFromSquad(entry.name, tsdbHomeSquad)
-                            .ifBlank { entry.photoUrl }
+                        val benchPhoto = entry.photoUrl
+                            .ifBlank { resolvePlayerPhotoFromSquad(entry.name, tsdbHomeSquad) }
                             .ifBlank { resolveCuratedOrCachedPlayerPhoto(entry.name) }
                             .ifBlank { resolveSofascoreFallbackPlayerPhoto(entry.name) }
                         PitchPlayerNode(
@@ -1185,12 +1349,22 @@ class MatchCenterEnricher(
                             rating = entry.sofascoreRating ?: if (isPlayedOrLive) 6.7 else 0.0,
                             goals = if (isPlayedOrLive) entry.goals else 0,
                             assists = if (isPlayedOrLive) entry.assists else 0,
-                            photoUrl = benchPhoto
+                            photoUrl = benchPhoto,
+                            minutesPlayed = entry.minutesPlayed,
+                            shotsTotal = entry.shotsTotal,
+                            shotsOnTarget = entry.shotsOnTarget,
+                            expectedGoals = entry.expectedGoals,
+                            expectedGoalsOnTarget = entry.expectedGoalsOnTarget,
+                            passesAccurate = entry.passesAccurate,
+                            passesTotal = entry.passesTotal,
+                            touches = entry.touches,
+                            duelsWon = entry.duelsWon,
+                            saves = entry.saves
                         )
                     },
                     awayBench = sofaAwayBench.take(9).mapIndexed { idx, entry ->
-                        val benchPhoto = resolvePlayerPhotoFromSquad(entry.name, tsdbAwaySquad)
-                            .ifBlank { entry.photoUrl }
+                        val benchPhoto = entry.photoUrl
+                            .ifBlank { resolvePlayerPhotoFromSquad(entry.name, tsdbAwaySquad) }
                             .ifBlank { resolveCuratedOrCachedPlayerPhoto(entry.name) }
                             .ifBlank { resolveSofascoreFallbackPlayerPhoto(entry.name) }
                         PitchPlayerNode(
@@ -1205,7 +1379,17 @@ class MatchCenterEnricher(
                             rating = entry.sofascoreRating ?: if (isPlayedOrLive) 6.7 else 0.0,
                             goals = if (isPlayedOrLive) entry.goals else 0,
                             assists = if (isPlayedOrLive) entry.assists else 0,
-                            photoUrl = benchPhoto
+                            photoUrl = benchPhoto,
+                            minutesPlayed = entry.minutesPlayed,
+                            shotsTotal = entry.shotsTotal,
+                            shotsOnTarget = entry.shotsOnTarget,
+                            expectedGoals = entry.expectedGoals,
+                            expectedGoalsOnTarget = entry.expectedGoalsOnTarget,
+                            passesAccurate = entry.passesAccurate,
+                            passesTotal = entry.passesTotal,
+                            touches = entry.touches,
+                            duelsWon = entry.duelsWon,
+                            saves = entry.saves
                         )
                     },
                     missingPlayers = emptyList(),
@@ -1676,10 +1860,19 @@ class MatchCenterEnricher(
                     else -> 0.0
                 }
 
-                val resolvedPhoto = resolvePlayerPhotoFromSquad(entry.name, teamSquad)
-                    .ifBlank { entry.photoUrl }
-                    .ifBlank { resolveCuratedOrCachedPlayerPhoto(entry.name) }
-                    .ifBlank { resolveSofascoreFallbackPlayerPhoto(entry.name) }
+                // 4-Tier Player Cutout Waterfall:
+                // Tier 1 (media.api-sports.io) / Tier 2 (api.sofascore.com) / Tier 3 (imagecache.365scores.com) -> Tier 4 (TheSportsDB Squad Cutout)
+                val hasTier1To3Photo = entry.photoUrl.contains("media.api-sports.io", ignoreCase = true) ||
+                    entry.photoUrl.contains("api.sofascore.com", ignoreCase = true) ||
+                    entry.photoUrl.contains("imagecache.365scores.com", ignoreCase = true)
+                val resolvedPhoto = if (hasTier1To3Photo) {
+                    entry.photoUrl
+                } else {
+                    resolvePlayerPhotoFromSquad(entry.name, teamSquad)
+                        .ifBlank { entry.photoUrl }
+                        .ifBlank { resolveCuratedOrCachedPlayerPhoto(entry.name) }
+                        .ifBlank { resolveSofascoreFallbackPlayerPhoto(entry.name) }
+                }
 
                 nodes.add(
                     PitchPlayerNode(
@@ -1698,7 +1891,17 @@ class MatchCenterEnricher(
                         hasRedCard = isPlayedOrLive && entry.redCard,
                         subbedOffMinute = subbedOffMin,
                         photoUrl = resolvedPhoto,
-                        isCaptain = entry.isCaptain
+                        isCaptain = entry.isCaptain,
+                        minutesPlayed = entry.minutesPlayed,
+                        shotsTotal = entry.shotsTotal,
+                        shotsOnTarget = entry.shotsOnTarget,
+                        expectedGoals = entry.expectedGoals,
+                        expectedGoalsOnTarget = entry.expectedGoalsOnTarget,
+                        passesAccurate = entry.passesAccurate,
+                        passesTotal = entry.passesTotal,
+                        touches = entry.touches,
+                        duelsWon = entry.duelsWon,
+                        saves = entry.saves
                     )
                 )
                 playerCursor++
@@ -1744,7 +1947,7 @@ class MatchCenterEnricher(
             }
         }
 
-        // Index live player ratings, goals, assists & cards from `players` array in API-Football fixture response
+        // Index live player ratings, goals, assists, cards & deep telemetry from `players` array in API-Football fixture response
         data class ApiFootballPlayerTelemetry(
             val rating: Double?,
             val goals: Int,
@@ -1752,7 +1955,17 @@ class MatchCenterEnricher(
             val yellow: Boolean,
             val red: Boolean,
             val isCaptain: Boolean,
-            val photoUrl: String
+            val photoUrl: String,
+            val minutesPlayed: Int,
+            val shotsTotal: Int,
+            val shotsOnTarget: Int,
+            val expectedGoals: Double,
+            val expectedGoalsOnTarget: Double,
+            val passesAccurate: Int,
+            val passesTotal: Int,
+            val touches: Int,
+            val duelsWon: Int,
+            val saves: Int
         )
         val telemetryById = mutableMapOf<Int, ApiFootballPlayerTelemetry>()
         val telemetryByName = mutableMapOf<String, ApiFootballPlayerTelemetry>()
@@ -1766,14 +1979,30 @@ class MatchCenterEnricher(
                     val pId = pObj.optInt("id", 0)
                     val pName = pObj.optString("name", "").trim()
                     val pPhoto = pObj.optString("photo", "").takeIf { it.startsWith("http") }
-                        ?: if (pId > 0) "https://media.api-sports.io/football/players/$pId.png" else ""
+                        ?: buildApiSportsPlayerPhotoUrl(pId.toLong())
                     val st = pItem.optJSONArray("statistics")?.optJSONObject(0)
                     val gamesObj = st?.optJSONObject("games")
+                    val minutesVal = gamesObj?.optInt("minutes", 0)?.coerceAtLeast(0) ?: 0
                     val ratingVal = gamesObj?.optString("rating", "")?.toDoubleOrNull()
                     val isCap = gamesObj?.optBoolean("captain", false) ?: false
                     val goalsObj = st?.optJSONObject("goals")
                     val gCount = goalsObj?.optInt("total", 0)?.coerceAtLeast(0) ?: 0
                     val aCount = goalsObj?.optInt("assists", 0)?.coerceAtLeast(0) ?: 0
+                    val savesCount = goalsObj?.optInt("saves", 0)?.coerceAtLeast(0) ?: 0
+                    val shotsObj = st?.optJSONObject("shots")
+                    val shotsTotalVal = shotsObj?.optInt("total", 0)?.coerceAtLeast(0) ?: 0
+                    val shotsOnVal = shotsObj?.optInt("on", 0)?.coerceAtLeast(0) ?: 0
+                    val passesObj = st?.optJSONObject("passes")
+                    val passesTotalVal = passesObj?.optInt("total", 0)?.coerceAtLeast(0) ?: 0
+                    val passesAccVal = passesObj?.let { p ->
+                        p.optInt("accurate", -1).takeIf { it >= 0 }
+                            ?: p.optString("accuracy", "").replace("%", "").trim().toIntOrNull()
+                    }?.coerceAtLeast(0) ?: 0
+                    val duelsObj = st?.optJSONObject("duels")
+                    val duelsWonVal = duelsObj?.optInt("won", 0)?.coerceAtLeast(0) ?: 0
+                    val touchesVal = st?.optInt("touches", -1)?.takeIf { it >= 0 } ?: passesTotalVal
+                    val xgVal = st?.optDouble("expected_goals", Double.NaN)?.takeIf { !it.isNaN() && it >= 0.0 } ?: 0.0
+                    val xgotVal = st?.optDouble("expected_goals_on_target", Double.NaN)?.takeIf { !it.isNaN() && it >= 0.0 } ?: 0.0
                     val cardsObj = st?.optJSONObject("cards")
                     val yCount = cardsObj?.optInt("yellow", 0) ?: 0
                     val rCount = cardsObj?.optInt("red", 0) ?: 0
@@ -1784,7 +2013,17 @@ class MatchCenterEnricher(
                         yellow = yCount > 0,
                         red = rCount > 0,
                         isCaptain = isCap,
-                        photoUrl = pPhoto
+                        photoUrl = pPhoto,
+                        minutesPlayed = minutesVal,
+                        shotsTotal = shotsTotalVal,
+                        shotsOnTarget = shotsOnVal,
+                        expectedGoals = xgVal,
+                        expectedGoalsOnTarget = xgotVal,
+                        passesAccurate = passesAccVal,
+                        passesTotal = passesTotalVal,
+                        touches = touchesVal,
+                        duelsWon = duelsWonVal,
+                        saves = savesCount
                     )
                     if (pId > 0) telemetryById[pId] = tel
                     if (pName.isNotBlank()) telemetryByName[normalizePlayerNameForMatch(pName)] = tel
@@ -1814,7 +2053,7 @@ class MatchCenterEnricher(
                 }
                 val tel = (if (pId > 0) telemetryById[pId] else null) ?: telemetryByName[normalizePlayerNameForMatch(pName)]
                 val officialApiSportsPhoto = tel?.photoUrl?.takeIf { it.isNotBlank() }
-                    ?: if (pId > 0) "https://media.api-sports.io/football/players/$pId.png" else ""
+                    ?: buildApiSportsPlayerPhotoUrl(pId.toLong())
                 val resolvedPhoto = officialApiSportsPhoto
                     .ifBlank { resolvePlayerPhotoFromSquad(pName, squadFallback) }
                     .ifBlank { resolveCuratedOrCachedPlayerPhoto(pName) }
@@ -1831,7 +2070,17 @@ class MatchCenterEnricher(
                     yellowCard = tel?.yellow ?: false,
                     redCard = tel?.red ?: false,
                     isCaptain = tel?.isCaptain ?: false,
-                    sofascoreRating = tel?.rating
+                    sofascoreRating = tel?.rating,
+                    minutesPlayed = tel?.minutesPlayed ?: 0,
+                    shotsTotal = tel?.shotsTotal ?: 0,
+                    shotsOnTarget = tel?.shotsOnTarget ?: 0,
+                    expectedGoals = tel?.expectedGoals ?: 0.0,
+                    expectedGoalsOnTarget = tel?.expectedGoalsOnTarget ?: 0.0,
+                    passesAccurate = tel?.passesAccurate ?: 0,
+                    passesTotal = tel?.passesTotal ?: 0,
+                    touches = tel?.touches ?: 0,
+                    duelsWon = tel?.duelsWon ?: 0,
+                    saves = tel?.saves ?: 0
                 )
             }
 
@@ -1911,7 +2160,17 @@ class MatchCenterEnricher(
                     assists = if (isPlayedOrLive) entry.assists else 0,
                     hasYellowCard = isPlayedOrLive && entry.yellowCard,
                     hasRedCard = isPlayedOrLive && entry.redCard,
-                    photoUrl = entry.photoUrl
+                    photoUrl = entry.photoUrl,
+                    minutesPlayed = entry.minutesPlayed,
+                    shotsTotal = entry.shotsTotal,
+                    shotsOnTarget = entry.shotsOnTarget,
+                    expectedGoals = entry.expectedGoals,
+                    expectedGoalsOnTarget = entry.expectedGoalsOnTarget,
+                    passesAccurate = entry.passesAccurate,
+                    passesTotal = entry.passesTotal,
+                    touches = entry.touches,
+                    duelsWon = entry.duelsWon,
+                    saves = entry.saves
                 )
             },
             awayBench = awayBenchRaw.take(9).mapIndexed { idx, entry ->
@@ -1929,7 +2188,17 @@ class MatchCenterEnricher(
                     assists = if (isPlayedOrLive) entry.assists else 0,
                     hasYellowCard = isPlayedOrLive && entry.yellowCard,
                     hasRedCard = isPlayedOrLive && entry.redCard,
-                    photoUrl = entry.photoUrl
+                    photoUrl = entry.photoUrl,
+                    minutesPlayed = entry.minutesPlayed,
+                    shotsTotal = entry.shotsTotal,
+                    shotsOnTarget = entry.shotsOnTarget,
+                    expectedGoals = entry.expectedGoals,
+                    expectedGoalsOnTarget = entry.expectedGoalsOnTarget,
+                    passesAccurate = entry.passesAccurate,
+                    passesTotal = entry.passesTotal,
+                    touches = entry.touches,
+                    duelsWon = entry.duelsWon,
+                    saves = entry.saves
                 )
             },
             missingPlayers = emptyList(),
@@ -2242,6 +2511,17 @@ class MatchCenterEnricher(
         return list.sortedBy { it.minute }
     }
 
+    internal fun resolveStatCategory(label: String): String {
+        val l = label.lowercase(Locale.ROOT)
+        return when {
+            l.contains("xg") || l.contains("expected") || l.contains("shot") || l.contains("chance") || l.contains("box") -> "Shots & xG"
+            l.contains("pass") || l.contains("cross") || l.contains("accurate") -> "Passes"
+            l.contains("save") || l.contains("goalkeeper") || l.contains("prevented") -> "Goalkeeping"
+            l.contains("duel") || l.contains("tackle") || l.contains("foul") || l.contains("interception") || l.contains("clearance") || l.contains("card") || l.contains("offside") -> "Defense & Duels"
+            else -> "Top Stats"
+        }
+    }
+
     private fun buildStatsForMatch(
         match: FootballMatch,
         apiFootballFixtureJson: JSONObject? = null,
@@ -2287,7 +2567,13 @@ class MatchCenterEnricher(
             val aMap = extractApiFootballStatMap(awayStatsTeamObj)
             if (hMap.isNotEmpty() && aMap.isNotEmpty()) {
                 val apifStats = mutableListOf<MatchStatComparison>()
-                fun addApifStat(apiKey: String, label: String, isPercent: Boolean = false, isKey: Boolean = false) {
+                fun addApifStat(
+                    apiKey: String,
+                    label: String,
+                    isPercent: Boolean = false,
+                    isKey: Boolean = false,
+                    category: String = resolveStatCategory(label)
+                ) {
                     val hRaw = hMap[apiKey] ?: return
                     val aRaw = aMap[apiKey] ?: return
                     val hNum = hRaw.replace("%", "").toDoubleOrNull() ?: 0.0
@@ -2300,21 +2586,29 @@ class MatchCenterEnricher(
                             homeValueText = hText,
                             awayValueText = aText,
                             homeRatio = if (isPercent) (hNum / 100.0).toFloat().coerceIn(0.08f, 0.92f) else ratio(hNum, aNum),
-                            isKeyMetric = isKey
+                            isKeyMetric = isKey,
+                            category = category
                         )
                     )
                 }
-                addApifStat("Ball Possession", "Ball Possession", isPercent = true, isKey = true)
-                addApifStat("expected_goals", "Expected Goals (xG)", isKey = true)
-                addApifStat("Total Shots", "Total Shots", isKey = true)
-                addApifStat("Shots on Goal", "Shots on Target", isKey = true)
-                addApifStat("Corner Kicks", "Corner Kicks", isKey = true)
-                addApifStat("Passes %", "Pass Accuracy", isPercent = true)
-                addApifStat("Fouls", "Fouls Committed")
-                addApifStat("Offsides", "Offsides")
-                addApifStat("Goalkeeper Saves", "Goalkeeper Saves")
-                addApifStat("Yellow Cards", "Yellow Cards")
-                addApifStat("Red Cards", "Red Cards")
+                addApifStat("Ball Possession", "Ball Possession", isPercent = true, isKey = true, category = "Top Stats")
+                addApifStat("expected_goals", "Expected Goals (xG)", isKey = true, category = "Shots & xG")
+                addApifStat("xg_on_target", "xG on Target (xGOT)", isKey = true, category = "Shots & xG")
+                addApifStat("Total Shots", "Total Shots", isKey = true, category = "Shots & xG")
+                addApifStat("Shots on Goal", "Shots on Target", isKey = true, category = "Shots & xG")
+                addApifStat("Big Chances", "Big Chances", isKey = true, category = "Shots & xG")
+                addApifStat("Shots insidebox", "Touches in Penalty Box", category = "Shots & xG")
+                addApifStat("Blocked Shots", "Blocked Shots", category = "Shots & xG")
+                addApifStat("Corner Kicks", "Corner Kicks", isKey = true, category = "Top Stats")
+                addApifStat("Passes %", "Pass Accuracy", isPercent = true, category = "Passes")
+                addApifStat("Total passes", "Total Passes", category = "Passes")
+                addApifStat("Passes accurate", "Accurate Passes", category = "Passes")
+                addApifStat("Duels Won", "Duels Won", category = "Defense & Duels")
+                addApifStat("Fouls", "Fouls Committed", category = "Defense & Duels")
+                addApifStat("Offsides", "Offsides", category = "Defense & Duels")
+                addApifStat("Goalkeeper Saves", "Goalkeeper Saves", category = "Goalkeeping")
+                addApifStat("Yellow Cards", "Yellow Cards", category = "Defense & Duels")
+                addApifStat("Red Cards", "Red Cards", category = "Defense & Duels")
                 if (apifStats.size >= 3) {
                     return apifStats
                 }
@@ -2351,7 +2645,13 @@ class MatchCenterEnricher(
             if (hMap.isNotEmpty() && aMap.isNotEmpty()) {
                 val statsList = mutableListOf<MatchStatComparison>()
 
-                fun addStatIfPresent(key: String, label: String, isPercent: Boolean = false, isKey: Boolean = false) {
+                fun addStatIfPresent(
+                    key: String,
+                    label: String,
+                    isPercent: Boolean = false,
+                    isKey: Boolean = false,
+                    category: String = resolveStatCategory(label)
+                ) {
                     val hRaw = hMap[key] ?: return
                     val aRaw = aMap[key] ?: return
                     val hNum = hRaw.replace("%", "").toDoubleOrNull() ?: 0.0
@@ -2364,20 +2664,27 @@ class MatchCenterEnricher(
                             homeValueText = hText,
                             awayValueText = aText,
                             homeRatio = if (isPercent) (hNum / 100.0).toFloat().coerceIn(0.08f, 0.92f) else ratio(hNum, aNum),
-                            isKeyMetric = isKey
+                            isKeyMetric = isKey,
+                            category = category
                         )
                     )
                 }
 
-                addStatIfPresent("possessionPct", "Ball Possession", isPercent = true, isKey = true)
-                addStatIfPresent("totalShots", "Total Shots", isKey = true)
-                addStatIfPresent("shotsOnTarget", "Shots on Target", isKey = true)
-                addStatIfPresent("wonCorners", "Corner Kicks", isKey = true)
-                addStatIfPresent("foulsCommitted", "Fouls Committed")
-                addStatIfPresent("offsides", "Offsides")
-                addStatIfPresent("saves", "Goalkeeper Saves")
-                addStatIfPresent("yellowCards", "Yellow Cards")
-                addStatIfPresent("redCards", "Red Cards")
+                addStatIfPresent("possessionPct", "Ball Possession", isPercent = true, isKey = true, category = "Top Stats")
+                addStatIfPresent("expectedGoals", "Expected Goals (xG)", isKey = true, category = "Shots & xG")
+                addStatIfPresent("xgOnTarget", "xG on Target (xGOT)", isKey = true, category = "Shots & xG")
+                addStatIfPresent("totalShots", "Total Shots", isKey = true, category = "Shots & xG")
+                addStatIfPresent("shotsOnTarget", "Shots on Target", isKey = true, category = "Shots & xG")
+                addStatIfPresent("bigChances", "Big Chances", isKey = true, category = "Shots & xG")
+                addStatIfPresent("touchesInBox", "Touches in Penalty Box", category = "Shots & xG")
+                addStatIfPresent("wonCorners", "Corner Kicks", isKey = true, category = "Top Stats")
+                addStatIfPresent("passPct", "Pass Accuracy", isPercent = true, category = "Passes")
+                addStatIfPresent("duelsWon", "Duels Won", category = "Defense & Duels")
+                addStatIfPresent("foulsCommitted", "Fouls Committed", category = "Defense & Duels")
+                addStatIfPresent("offsides", "Offsides", category = "Defense & Duels")
+                addStatIfPresent("saves", "Goalkeeper Saves", category = "Goalkeeping")
+                addStatIfPresent("yellowCards", "Yellow Cards", category = "Defense & Duels")
+                addStatIfPresent("redCards", "Red Cards", category = "Defense & Duels")
 
                 if (statsList.size >= 4) {
                     return statsList
@@ -2404,7 +2711,8 @@ class MatchCenterEnricher(
                             homeValueText = if (isPoss && !hStr.endsWith("%")) "$hStr%" else hStr,
                             awayValueText = if (isPoss && !aStr.endsWith("%")) "$aStr%" else aStr,
                             homeRatio = ratio(hNum, aNum),
-                            isKeyMetric = i < 4
+                            isKeyMetric = i < 4,
+                            category = resolveStatCategory(label)
                         )
                     )
                 }
@@ -2417,6 +2725,334 @@ class MatchCenterEnricher(
             return emptyList()
         }
         return emptyList()
+    }
+
+    /**
+     * Parses Sofascore `/api/v1/event/{id}/graph` JSON (`graphPoints` array of `{ "minute": Int, "value": Float }`)
+     * into [MomentumMinutePoint] entries clamped to `-100f..100f`.
+     */
+    fun parseSofascoreMomentumGraphJson(rawJson: String): List<MomentumMinutePoint> {
+        if (rawJson.isBlank()) return emptyList()
+        val root = runCatching { JSONObject(rawJson) }.getOrNull() ?: return emptyList()
+        val arr = root.optJSONArray("graphPoints") ?: return emptyList()
+        val byMinute = LinkedHashMap<Int, MomentumMinutePoint>()
+        for (i in 0 until arr.length()) {
+            val pt = arr.optJSONObject(i) ?: continue
+            val min = pt.optDouble("minute", -1.0).toInt()
+            if (min < 1 || min > 125) continue
+            val value = pt.optDouble("value", 0.0).toFloat().coerceIn(-100f, 100f)
+            byMinute[min] = MomentumMinutePoint(minute = min, value = value)
+        }
+        return byMinute.values.sortedBy { it.minute }
+    }
+
+    internal fun buildMomentumPointsForMatch(
+        match: FootballMatch,
+        sofascoreGraphJson: JSONObject?,
+        timelineEvents: List<MatchTimelineEvent>,
+        stats: List<MatchStatComparison>,
+        isPlayedOrLive: Boolean
+    ): List<MomentumMinutePoint> {
+        if (sofascoreGraphJson != null) {
+            val parsed = parseSofascoreMomentumGraphJson(sofascoreGraphJson.toString())
+            if (parsed.isNotEmpty()) return parsed
+        }
+        if (!isPlayedOrLive) return emptyList()
+        if (timelineEvents.isEmpty() && stats.isEmpty() && (match.homeScore == null && match.awayScore == null)) {
+            return emptyList()
+        }
+
+        val maxMin = when (match.status) {
+            MatchStatus.FINISHED -> 90
+            MatchStatus.HALFTIME -> 45
+            MatchStatus.LIVE -> {
+                val m = Regex("(\\d{1,3})").find(match.liveMinuteOrBadge.replace(Regex("\\b[12]H\\b", RegexOption.IGNORE_CASE), ""))
+                    ?.groupValues?.getOrNull(1)?.toIntOrNull() ?: 60
+                m.coerceIn(15, 95)
+            }
+            else -> 0
+        }
+        if (maxMin <= 0) return emptyList()
+
+        val possRatio = stats.find { it.statLabel.contains("Possession", ignoreCase = true) }?.homeRatio ?: 0.5f
+        val baselineBias = ((possRatio - 0.5f) * 70f).coerceIn(-35f, 35f)
+        val seed = abs((match.homeTeamName + match.awayTeamName).hashCode())
+
+        val points = mutableListOf<MomentumMinutePoint>()
+        for (m in 1..maxMin) {
+            var impulse = baselineBias + kotlin.math.sin((m + (seed % 17)) * 0.32).toFloat() * 18f
+            for (ev in timelineEvents) {
+                val dist = abs(ev.minute - m)
+                if (dist <= 3) {
+                    val sign = if (ev.teamSide == MatchTeamSide.HOME) 1f else -1f
+                    val weight = when (ev.eventType) {
+                        MatchEventType.GOAL, MatchEventType.PENALTY_GOAL -> 62f
+                        MatchEventType.RED_CARD -> -38f
+                        MatchEventType.YELLOW_CARD -> -14f
+                        else -> 12f
+                    }
+                    val decay = (4 - dist) / 4f
+                    impulse += sign * weight * decay
+                }
+            }
+            val clamped = impulse.coerceIn(-100f, 100f)
+            points.add(MomentumMinutePoint(minute = m, value = if (abs(clamped) < 3f) 4f else clamped))
+        }
+        return points
+    }
+
+    /**
+     * Parses Sofascore `/api/v1/event/{id}/shotmap` JSON (`shotmap` or `shots` array)
+     * into [MatchShotPoint] entries with `xG`, `xGOT`, outcome, and normalized half-pitch coordinates.
+     */
+    fun parseSofascoreShotMapJson(rawJson: String): List<MatchShotPoint> {
+        if (rawJson.isBlank()) return emptyList()
+        val root = runCatching { JSONObject(rawJson) }.getOrNull() ?: return emptyList()
+        val arr = root.optJSONArray("shotmap") ?: root.optJSONArray("shots") ?: return emptyList()
+        val results = mutableListOf<MatchShotPoint>()
+        for (i in 0 until arr.length()) {
+            val s = arr.optJSONObject(i) ?: continue
+            val shotId = s.optString("id", "shot_$i").ifBlank { "shot_$i" }
+            val playerName = s.optJSONObject("player")?.optString("name", "")
+                ?.ifBlank { s.optString("playerName", "Player") }
+                ?: s.optString("playerName", "Player")
+            val isHome = s.optBoolean("isHome", true)
+            val shotType = s.optString("shotType", "miss").lowercase(Locale.ROOT)
+            val outcome = when {
+                shotType == "goal" -> ShotOutcome.GOAL
+                shotType == "save" || shotType == "post" -> ShotOutcome.ON_TARGET_SAVED
+                shotType == "block" || shotType == "blocked" -> ShotOutcome.BLOCKED
+                else -> ShotOutcome.OFF_TARGET
+            }
+            val xg = s.optDouble("xg", 0.0).let { if (it.isNaN() || it < 0.0) 0.08 else it }
+            val xgot = s.optDouble("xgot", 0.0).let { if (it.isNaN() || it < 0.0) 0.0 else it }
+            val minute = s.optInt("time", s.optInt("minute", 45)).coerceIn(1, 125)
+            val coords = s.optJSONObject("playerCoordinates")
+            // Sofascore playerCoordinates: x is distance from goal line (0 = goal line, 50 = midfield), y is lateral width (0..100)
+            val rawDistFromGoal = coords?.optDouble("x", 14.0)?.toFloat() ?: 14f
+            val rawLateralY = coords?.optDouble("y", 50.0)?.toFloat() ?: 50f
+            val normX = (rawLateralY / 100f).coerceIn(0.08f, 0.92f)
+            val normY = (rawDistFromGoal / 45f).coerceIn(0.06f, 0.92f)
+            results.add(
+                MatchShotPoint(
+                    id = shotId,
+                    minute = minute,
+                    playerName = playerName,
+                    teamSide = if (isHome) MatchTeamSide.HOME else MatchTeamSide.AWAY,
+                    outcome = outcome,
+                    xg = xg,
+                    xgot = xgot,
+                    normalizedX = normX,
+                    normalizedY = normY
+                )
+            )
+        }
+        return results.sortedBy { it.minute }
+    }
+
+    internal fun buildShotMapForMatch(
+        match: FootballMatch,
+        sofascoreShotmapJson: JSONObject?,
+        timelineEvents: List<MatchTimelineEvent>,
+        lineups: MatchLineupsData,
+        isPlayedOrLive: Boolean
+    ): List<MatchShotPoint> {
+        if (sofascoreShotmapJson != null) {
+            val parsed = parseSofascoreShotMapJson(sofascoreShotmapJson.toString())
+            if (parsed.isNotEmpty()) return parsed
+        }
+        if (!isPlayedOrLive) return emptyList()
+
+        val fallbackShots = mutableListOf<MatchShotPoint>()
+        val goalEvents = timelineEvents.filter {
+            it.eventType == MatchEventType.GOAL || it.eventType == MatchEventType.PENALTY_GOAL
+        }
+        goalEvents.forEachIndexed { idx, ev ->
+            val isPen = ev.eventType == MatchEventType.PENALTY_GOAL
+            val latOffset = ((idx * 19 + ev.minute * 7) % 44 - 22) / 100f
+            fallbackShots.add(
+                MatchShotPoint(
+                    id = "goal_${ev.minute}_$idx",
+                    minute = ev.minute,
+                    playerName = ev.primaryPlayer,
+                    teamSide = ev.teamSide,
+                    outcome = ShotOutcome.GOAL,
+                    xg = if (isPen) 0.79 else 0.36,
+                    xgot = if (isPen) 0.88 else 0.64,
+                    normalizedX = (0.50f + latOffset).coerceIn(0.22f, 0.78f),
+                    normalizedY = if (isPen) 0.24f else (0.18f + (idx % 3) * 0.08f).coerceIn(0.12f, 0.45f)
+                )
+            )
+        }
+
+        // Also include recorded shots from player statistics when available
+        val allPlayers = (lineups.homeStartingXI.map { it to MatchTeamSide.HOME } +
+            lineups.awayStartingXI.map { it to MatchTeamSide.AWAY })
+        allPlayers.forEachIndexed { idx, (player, side) ->
+            val nonGoalShots = (player.shotsTotal - player.goals).coerceAtLeast(0).coerceAtMost(3)
+            for (sIdx in 0 until nonGoalShots) {
+                val isOnTarget = sIdx < (player.shotsOnTarget - player.goals).coerceAtLeast(0)
+                val shotMin = ((idx * 11 + sIdx * 17 + 12) % 82) + 5
+                val normX = (0.20f + ((idx * 13 + sIdx * 23) % 60) / 100f).coerceIn(0.14f, 0.86f)
+                val normY = (0.16f + ((idx * 7 + sIdx * 19) % 52) / 100f).coerceIn(0.14f, 0.78f)
+                val perShotXg = if (player.expectedGoals > 0.0 && player.shotsTotal > 0) {
+                    (player.expectedGoals / player.shotsTotal).coerceIn(0.04, 0.65)
+                } else {
+                    if (isOnTarget) 0.16 else 0.07
+                }
+                fallbackShots.add(
+                    MatchShotPoint(
+                        id = "p_${player.playerId}_$sIdx",
+                        minute = shotMin,
+                        playerName = player.shortName.ifBlank { player.name },
+                        teamSide = side,
+                        outcome = if (isOnTarget) ShotOutcome.ON_TARGET_SAVED else ShotOutcome.OFF_TARGET,
+                        xg = perShotXg,
+                        xgot = if (isOnTarget) (perShotXg * 1.25).coerceAtMost(0.75) else 0.0,
+                        normalizedX = normX,
+                        normalizedY = normY
+                    )
+                )
+            }
+        }
+        return fallbackShots.sortedBy { it.minute }
+    }
+
+    /**
+     * Computes Flashscore-style Real-Time In-Play Standings (`🔴 LIVE TABLE`):
+     * When [match] has a live or finished score (`homeScore != null && awayScore != null`),
+     * adjusts the matched Home and Away rows' `played (+1)`, `wins/draws/losses`, `goalDiffFormatted`,
+     * and `points (+3 / +1 / +0)`, re-sorts by `points DESC` (then goal difference DESC),
+     * and sets `liveRankDelta = oldRank - newRank` (`+2` = moved up 2 places, `-1` = dropped 1 place).
+     */
+    fun computeLiveInPlayStandings(
+        officialStandings: List<LeagueStandingRow>,
+        match: FootballMatch
+    ): List<LeagueStandingRow> {
+        if (officialStandings.isEmpty()) return emptyList()
+        val hScore = match.homeScore ?: return officialStandings
+        val aScore = match.awayScore ?: return officialStandings
+
+        fun parseGoalDiff(gd: String): Int =
+            gd.replace("+", "").trim().toIntOrNull() ?: 0
+
+        fun formatGoalDiff(gd: Int): String =
+            if (gd > 0) "+$gd" else gd.toString()
+
+        val adjusted = officialStandings.map { row ->
+            val matchesHome = row.isHomeTeam || FootballRepository.areSameClubNames(row.teamName, match.homeTeamName)
+            val matchesAway = row.isAwayTeam || FootballRepository.areSameClubNames(row.teamName, match.awayTeamName)
+            when {
+                matchesHome -> {
+                    val winInc = if (hScore > aScore) 1 else 0
+                    val drawInc = if (hScore == aScore) 1 else 0
+                    val lossInc = if (hScore < aScore) 1 else 0
+                    val ptsInc = when {
+                        hScore > aScore -> 3
+                        hScore == aScore -> 1
+                        else -> 0
+                    }
+                    val newGd = parseGoalDiff(row.goalDiffFormatted) + (hScore - aScore)
+                    row.copy(
+                        played = row.played + 1,
+                        wins = row.wins + winInc,
+                        draws = row.draws + drawInc,
+                        losses = row.losses + lossInc,
+                        goalDiffFormatted = formatGoalDiff(newGd),
+                        points = row.points + ptsInc,
+                        isHomeTeam = true
+                    )
+                }
+                matchesAway -> {
+                    val winInc = if (aScore > hScore) 1 else 0
+                    val drawInc = if (aScore == hScore) 1 else 0
+                    val lossInc = if (aScore < hScore) 1 else 0
+                    val ptsInc = when {
+                        aScore > hScore -> 3
+                        aScore == hScore -> 1
+                        else -> 0
+                    }
+                    val newGd = parseGoalDiff(row.goalDiffFormatted) + (aScore - hScore)
+                    row.copy(
+                        played = row.played + 1,
+                        wins = row.wins + winInc,
+                        draws = row.draws + drawInc,
+                        losses = row.losses + lossInc,
+                        goalDiffFormatted = formatGoalDiff(newGd),
+                        points = row.points + ptsInc,
+                        isAwayTeam = true
+                    )
+                }
+                else -> row
+            }
+        }
+
+        val sorted = adjusted.sortedWith(
+            compareByDescending<LeagueStandingRow> { it.points }
+                .thenByDescending { parseGoalDiff(it.goalDiffFormatted) }
+                .thenByDescending { it.wins }
+                .thenBy { it.rank }
+        )
+
+        return sorted.mapIndexed { index, row ->
+            val newRank = index + 1
+            val delta = row.rank - newRank
+            row.copy(
+                rank = newRank,
+                liveRankDelta = delta
+            )
+        }
+    }
+
+    /**
+     * Computes up to 3 data-driven 365Scores-style "Pre-Match Buzz & H2H Streaks" insights
+     * from `homeFormLast5`, `awayFormLast5`, `h2hMeetings`, and `standingsTable`.
+     */
+    internal fun buildMatchBuzzInsights(
+        match: FootballMatch,
+        homeFormLast5: List<String>,
+        awayFormLast5: List<String>,
+        h2hMeetings: List<H2HMeetingItem>,
+        standingsTable: List<LeagueStandingRow>
+    ): List<String> {
+        val insights = mutableListOf<String>()
+
+        if (homeFormLast5.isNotEmpty()) {
+            val unbeatenCount = homeFormLast5.count { it == "W" || it == "D" }
+            val winCount = homeFormLast5.count { it == "W" }
+            if (winCount >= 3) {
+                insights.add("🔥 Form Streak: ${match.homeTeamName} won $winCount of their last ${homeFormLast5.size} matches")
+            } else if (unbeatenCount >= 3) {
+                insights.add("🔥 Form Streak: ${match.homeTeamName} unbeaten in $unbeatenCount of last ${homeFormLast5.size} matches")
+            }
+        }
+        if (awayFormLast5.isNotEmpty() && insights.isEmpty()) {
+            val unbeatenCount = awayFormLast5.count { it == "W" || it == "D" }
+            if (unbeatenCount >= 3) {
+                insights.add("🔥 Form Streak: ${match.awayTeamName} unbeaten in $unbeatenCount of last ${awayFormLast5.size} matches")
+            }
+        }
+
+        if (h2hMeetings.isNotEmpty()) {
+            val totalGoals = h2hMeetings.sumOf { it.homeScore + it.awayScore }
+            val avgGoals = String.format(Locale.US, "%.1f", totalGoals.toDouble() / h2hMeetings.size.toDouble())
+            insights.add("⚽ H2H Goal Avg: $avgGoals goals per match across last ${h2hMeetings.size} meetings")
+        }
+
+        if (standingsTable.isNotEmpty()) {
+            val homeRow = standingsTable.find { it.isHomeTeam || FootballRepository.areSameClubNames(it.teamName, match.homeTeamName) }
+            val awayRow = standingsTable.find { it.isAwayTeam || FootballRepository.areSameClubNames(it.teamName, match.awayTeamName) }
+            if (homeRow != null && awayRow != null) {
+                insights.add("🏆 Standings Clash: #${homeRow.rank} ${match.homeTeamName} (${homeRow.points} pts) vs #${awayRow.rank} ${match.awayTeamName} (${awayRow.points} pts)")
+            }
+        }
+
+        if (insights.isEmpty()) {
+            insights.add("🏟️ Featured Clash: ${match.homeTeamName} vs ${match.awayTeamName} in ${match.tournamentName}")
+            insights.add("📺 Official Broadcast: Live coverage on ${match.beinChannel} (${match.menaProviderName})")
+        }
+
+        return insights.take(3)
     }
 
     private fun buildH2HAndForm(
@@ -3334,5 +3970,18 @@ class MatchCenterEnricher(
                 )
             }
         }
+    }
+
+    companion object {
+        const val DOSSIER_CACHE_TTL_MS = 2 * 60 * 60 * 1000L
+
+        fun buildApiSportsPlayerPhotoUrl(playerId: Long): String =
+            if (playerId > 0L) "https://media.api-sports.io/football/players/$playerId.png" else ""
+
+        fun buildSofascorePlayerPhotoUrl(playerId: Long): String =
+            if (playerId > 0L) "https://api.sofascore.com/api/v1/player/$playerId/image" else ""
+
+        fun build365ScoresAthletePhotoUrl(athleteId: Long): String =
+            if (athleteId > 0L) "https://imagecache.365scores.com/image/upload/f_png,w_120,h_120,c_limit,q_auto:eco/v1/Athletes/$athleteId" else ""
     }
 }

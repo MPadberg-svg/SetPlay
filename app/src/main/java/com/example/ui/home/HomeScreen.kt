@@ -213,9 +213,17 @@ fun HomeScreen(
     val beinMatcherState by mainViewModel.beinChannelMatcherState.collectAsStateWithLifecycle()
     val selectedMatchDossier by mainViewModel.selectedMatchDossier.collectAsStateWithLifecycle()
     val liveScoreSyncState by mainViewModel.liveScoreSyncState.collectAsStateWithLifecycle()
+    val pinnedMatchIds by mainViewModel.pinnedMatchIds.collectAsStateWithLifecycle()
 
     val activeDayMatches = matchesByDay[selectedMatchDay].orEmpty()
     val liveMatchesCount = todayMatches.count { it.status == MatchStatus.LIVE || it.status == MatchStatus.HALFTIME }
+    val pinnedMatches = remember(matchesByDay, activeDayMatches, pinnedMatchIds) {
+        if (pinnedMatchIds.isEmpty()) emptyList()
+        else {
+            val allKnown = (activeDayMatches + matchesByDay.values.flatten()).distinctBy { it.matchId }
+            allKnown.filter { it.matchId in pinnedMatchIds }
+        }
+    }
 
     val enabledTournamentMap = remember(tournamentPreferences) {
         tournamentPreferences.associateBy { it.tournamentId }
@@ -333,6 +341,24 @@ fun HomeScreen(
                 onSyncPlaylist = { mainViewModel.syncActiveAccount() },
                 onSelectMatchDay = { mainViewModel.selectMatchDay(it) }
             )
+        }
+
+        // 2B. Flashscore "Pinned Matches (My Games)" Sticky Live Rail
+        if (pinnedMatches.isNotEmpty()) {
+            item(key = "pinned_matches_rail_item") {
+                PinnedMatchesStickyRail(
+                    pinnedMatches = pinnedMatches,
+                    onWatchMatch = { match ->
+                        mainViewModel.onWatchMatchOnBeinClicked(
+                            match = match,
+                            clickedChannelName = match.beinChannel,
+                            onAutoPlaySingleStream = onStreamClick
+                        )
+                    },
+                    onOpenDossier = { match -> mainViewModel.openMatchCenterDossier(match) },
+                    onUnpinMatch = { matchId -> mainViewModel.togglePinMatch(matchId) }
+                )
+            }
         }
 
         // 3 & 4. Sticky Frosted Matchday Scrubber + Tournament Filter Dock on Scroll
@@ -504,6 +530,8 @@ fun HomeScreen(
                                         onAutoPlaySingleStream = onStreamClick
                                     )
                                 },
+                                isMatchPinned = match.matchId in pinnedMatchIds,
+                                onTogglePinMatch = { mainViewModel.togglePinMatch(match.matchId) },
                                 isLastInSection = index == matchesInSection.lastIndex
                             )
                         }
@@ -2078,6 +2106,168 @@ private fun PinnedFavoriteTeamsSection(
 }
 
 @Composable
+private fun PinnedMatchesStickyRail(
+    pinnedMatches: List<FootballMatch>,
+    onWatchMatch: (FootballMatch) -> Unit,
+    onOpenDossier: (FootballMatch) -> Unit,
+    onUnpinMatch: (String) -> Unit
+) {
+    Surface(
+        color = Color(0xFF071722),
+        shape = RoundedCornerShape(14.dp),
+        border = BorderStroke(1.dp, AmberGold.copy(alpha = 0.60f)),
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp, vertical = 4.dp)
+            .testTag("pinned_matches_rail")
+    ) {
+        Column(modifier = Modifier.padding(vertical = 8.dp)) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 12.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(
+                        imageVector = Icons.Default.PushPin,
+                        contentDescription = null,
+                        tint = AmberGold,
+                        modifier = Modifier.size(14.dp)
+                    )
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text(
+                        text = "📌 PINNED MATCHES • MY GAMES (${pinnedMatches.size})",
+                        color = PaleGold,
+                        fontSize = 10.5.sp,
+                        fontWeight = FontWeight.ExtraBold
+                    )
+                }
+                Text(
+                    text = "LIVE GOAL ALERTS ACTIVE",
+                    color = KickoffTropicalTeal,
+                    fontSize = 8.5.sp,
+                    fontWeight = FontWeight.ExtraBold
+                )
+            }
+
+            Spacer(modifier = Modifier.height(6.dp))
+
+            LazyRow(
+                contentPadding = PaddingValues(horizontal = 12.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                items(pinnedMatches, key = { "pinned_${it.matchId}" }) { match ->
+                    val isLive = match.status == MatchStatus.LIVE || match.status == MatchStatus.HALFTIME
+                    val scoreText = if (match.homeScore != null && match.awayScore != null) {
+                        "${match.homeScore} - ${match.awayScore}"
+                    } else {
+                        "vs"
+                    }
+                    Surface(
+                        color = KickoffOceanElevated,
+                        shape = RoundedCornerShape(12.dp),
+                        border = BorderStroke(
+                            width = 0.9.dp,
+                            color = if (isLive) LiveCrimson.copy(alpha = 0.75f) else KickoffTropicalTeal.copy(alpha = 0.45f)
+                        ),
+                        modifier = Modifier.width(226.dp)
+                    ) {
+                        Column(modifier = Modifier.padding(10.dp)) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Surface(
+                                    color = if (isLive) LiveCrimson.copy(alpha = 0.24f) else DarkGraphite,
+                                    shape = RoundedCornerShape(4.dp)
+                                ) {
+                                    Text(
+                                        text = if (isLive) "● ${match.liveMinuteOrBadge}" else match.liveMinuteOrBadge.ifBlank { match.kickoffTimeFormatted },
+                                        color = if (isLive) KickoffPeachCream else Champagne,
+                                        fontSize = 8.5.sp,
+                                        fontWeight = FontWeight.ExtraBold,
+                                        modifier = Modifier.padding(horizontal = 5.dp, vertical = 1.5.dp)
+                                    )
+                                }
+                                IconButton(
+                                    onClick = { onUnpinMatch(match.matchId) },
+                                    modifier = Modifier.size(18.dp)
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.Close,
+                                        contentDescription = "Unpin Match",
+                                        tint = ChampagneMuted,
+                                        modifier = Modifier.size(12.dp)
+                                    )
+                                }
+                            }
+
+                            Spacer(modifier = Modifier.height(5.dp))
+
+                            Text(
+                                text = "${match.homeTeamName}  $scoreText  ${match.awayTeamName}",
+                                color = Color.White,
+                                fontSize = 11.5.sp,
+                                fontWeight = FontWeight.ExtraBold,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+
+                            Spacer(modifier = Modifier.height(6.dp))
+
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(6.dp)
+                            ) {
+                                Surface(
+                                    color = KickoffTropicalTeal.copy(alpha = 0.20f),
+                                    shape = RoundedCornerShape(6.dp),
+                                    border = BorderStroke(0.6.dp, KickoffTropicalTeal),
+                                    modifier = Modifier
+                                        .weight(1f)
+                                        .clip(RoundedCornerShape(6.dp))
+                                        .clickable { onWatchMatch(match) }
+                                ) {
+                                    Text(
+                                        text = "▶ Watch",
+                                        color = KickoffPeachCream,
+                                        fontSize = 9.5.sp,
+                                        fontWeight = FontWeight.ExtraBold,
+                                        textAlign = TextAlign.Center,
+                                        modifier = Modifier.padding(vertical = 4.dp)
+                                    )
+                                }
+                                Surface(
+                                    color = AmberGold.copy(alpha = 0.16f),
+                                    shape = RoundedCornerShape(6.dp),
+                                    border = BorderStroke(0.6.dp, AmberGold),
+                                    modifier = Modifier
+                                        .weight(1f)
+                                        .clip(RoundedCornerShape(6.dp))
+                                        .clickable { onOpenDossier(match) }
+                                ) {
+                                    Text(
+                                        text = "📊 Dossier",
+                                        color = AmberGold,
+                                        fontSize = 9.5.sp,
+                                        fontWeight = FontWeight.ExtraBold,
+                                        textAlign = TextAlign.Center,
+                                        modifier = Modifier.padding(vertical = 4.dp)
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
 private fun FlashscoreTournamentHeader(
     tournamentId: String,
     tournamentName: String,
@@ -2715,6 +2905,8 @@ private fun FlashscoreMatchCard(
     onToggleAwayFavorite: () -> Unit,
     onOpenDossier: () -> Unit,
     onWatchBeinClicked: (String) -> Unit,
+    isMatchPinned: Boolean = false,
+    onTogglePinMatch: () -> Unit = {},
     isInsidePinnedSection: Boolean = false,
     isLastInSection: Boolean = false
 ) {
@@ -3141,7 +3333,33 @@ private fun FlashscoreMatchCard(
                         }
                     }
 
-                    Spacer(modifier = Modifier.width(8.dp))
+                    Spacer(modifier = Modifier.width(6.dp))
+
+                    // Pin Match ("My Games") Toggle Button
+                    Surface(
+                        color = if (isMatchPinned) AmberGold.copy(alpha = 0.22f) else Color.White.copy(alpha = 0.06f),
+                        shape = CircleShape,
+                        border = BorderStroke(
+                            0.75.dp,
+                            if (isMatchPinned) AmberGold else Color.White.copy(alpha = 0.16f)
+                        ),
+                        modifier = Modifier
+                            .size(28.dp)
+                            .clip(CircleShape)
+                            .clickable { onTogglePinMatch() }
+                            .testTag("pin_match_btn_${match.matchId}")
+                    ) {
+                        Box(contentAlignment = Alignment.Center) {
+                            Icon(
+                                imageVector = Icons.Default.PushPin,
+                                contentDescription = if (isMatchPinned) "Unpin Match" else "Pin Match to My Games",
+                                tint = if (isMatchPinned) AmberGold else ChampagneMuted,
+                                modifier = Modifier.size(13.dp)
+                            )
+                        }
+                    }
+
+                    Spacer(modifier = Modifier.width(6.dp))
 
                     // Right: Status-Aware Action CTA Pill (WATCH LIVE / PRE-MATCH / MATCH STATS)
                     Surface(
