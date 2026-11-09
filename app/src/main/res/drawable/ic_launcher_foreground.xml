@@ -6,116 +6,185 @@
     android:viewportWidth="108"
     android:viewportHeight="108">
 
-    <!-- Elevated Metal Charcoal Emblem Medallion Base inside 66dp Safe Zone -->
+    <!-- 1. Recessed Smoked-Glass Dial Plate & Brushed Metallic Bezel (cx=54, cy=54, r=35.5) -->
     <path
-        android:fillColor="#1E2127"
-        android:strokeColor="#D4A238"
-        android:strokeWidth="2.0"
-        android:pathData="M54,22 C71.67,22 86,36.33 86,54 C86,71.67 71.67,86 54,86 C36.33,86 22,71.67 22,54 C22,36.33 36.33,22 54,22 Z" />
+        android:strokeColor="#B8C6D4"
+        android:strokeWidth="1.4"
+        android:pathData="M54,18.5 A35.5,35.5 0 1,1 53.99,18.5 Z">
+        <aapt:attr name="android:fillColor">
+            <gradient
+                android:centerX="54"
+                android:centerY="54"
+                android:gradientRadius="35.5"
+                android:type="radial">
+                <item android:color="#0D1F2D" android:offset="0.0" />
+                <item android:color="#061018" android:offset="1.0" />
+            </gradient>
+        </aapt:attr>
+    </path>
 
-    <!-- Inner Champagne Filigree Ring -->
+    <!-- 2. The 4 Glowing Neon Spectrum Quadrant Arcs (r=33.2 around 54,54) -->
+    <!-- Outer 28% Alpha Glow Paths (strokeWidth=4.2) -->
     <path
         android:fillColor="#00000000"
-        android:strokeColor="#66DFC69E"
-        android:strokeWidth="0.9"
-        android:pathData="M54,25.5 C69.74,25.5 82.5,38.26 82.5,54 C82.5,69.74 69.74,82.5 54,82.5 C38.26,82.5 25.5,69.74 25.5,54 C25.5,38.26 38.26,25.5 54,25.5 Z" />
+        android:strokeColor="#4700E5FF"
+        android:strokeWidth="4.2"
+        android:strokeLineCap="round"
+        android:pathData="M 20.9,51.7 A 33.2,33.2 0 0,1 51.7,20.9" />
+    <path
+        android:fillColor="#00000000"
+        android:strokeColor="#47FF4D5E"
+        android:strokeWidth="4.2"
+        android:strokeLineCap="round"
+        android:pathData="M 56.3,20.9 A 33.2,33.2 0 0,1 87.1,51.7" />
+    <path
+        android:fillColor="#00000000"
+        android:strokeColor="#4738E4AE"
+        android:strokeWidth="4.2"
+        android:strokeLineCap="round"
+        android:pathData="M 87.1,56.3 A 33.2,33.2 0 0,1 56.3,87.1" />
+    <path
+        android:fillColor="#00000000"
+        android:strokeColor="#47F5B041"
+        android:strokeWidth="4.2"
+        android:strokeLineCap="round"
+        android:pathData="M 51.7,87.1 A 33.2,33.2 0 0,1 20.9,56.3" />
 
-    <!-- IPTV Broadcast Signal Waves Radiating from the Play-Prism P (Top-Right Arcs) -->
+    <!-- Core Neon Quadrant Arcs (strokeWidth=2.2) -->
+    <!-- Top-Left Arc (184° to 266° — KickOff Cyan-Teal) -->
+    <path
+        android:fillColor="#00000000"
+        android:strokeWidth="2.2"
+        android:strokeLineCap="round"
+        android:pathData="M 20.9,51.7 A 33.2,33.2 0 0,1 51.7,20.9">
+        <aapt:attr name="android:strokeColor">
+            <gradient
+                android:startX="20.9"
+                android:startY="51.7"
+                android:endX="51.7"
+                android:endY="20.9"
+                android:type="linear">
+                <item android:color="#2EC4B6" android:offset="0.0" />
+                <item android:color="#00E5FF" android:offset="1.0" />
+            </gradient>
+        </aapt:attr>
+    </path>
+    <!-- Top-Right Arc (274° to 356° — Live TV Crimson-Scarlet) -->
+    <path
+        android:fillColor="#00000000"
+        android:strokeColor="#FF4D5E"
+        android:strokeWidth="2.2"
+        android:strokeLineCap="round"
+        android:pathData="M 56.3,20.9 A 33.2,33.2 0 0,1 87.1,51.7" />
+    <!-- Bottom-Right Arc (4° to 86° — Cinema Mint-Emerald) -->
+    <path
+        android:fillColor="#00000000"
+        android:strokeColor="#38E4AE"
+        android:strokeWidth="2.2"
+        android:strokeLineCap="round"
+        android:pathData="M 87.1,56.3 A 33.2,33.2 0 0,1 56.3,87.1" />
+    <!-- Bottom-Left Arc (94° to 176° — Favorites 24K Amber-Gold) -->
+    <path
+        android:fillColor="#00000000"
+        android:strokeColor="#F5B041"
+        android:strokeWidth="2.2"
+        android:strokeLineCap="round"
+        android:pathData="M 51.7,87.1 A 33.2,33.2 0 0,1 20.9,56.3" />
+
+    <!-- 3. Precision Chronograph Index Ticks (r=29.8 to 31.8) -->
+    <!-- Cardinal Ticks (12h, 3h, 6h, 9h) in #F6E8C8 -->
     <path
         android:fillColor="#00000000"
         android:strokeColor="#F6E8C8"
-        android:strokeWidth="2.1"
+        android:strokeWidth="1.3"
         android:strokeLineCap="round"
-        android:pathData="M71,36 A12,12 0 0,1 77,47" />
+        android:pathData="M54,19.5 V23 M88.5,54 H85 M54,88.5 V85 M19.5,54 H23" />
+    <!-- 30-Degree Major Chronograph Ticks (1h, 2h, 4h, 5h, 7h, 8h, 10h, 11h) in #88D0DCE5 -->
     <path
         android:fillColor="#00000000"
-        android:strokeColor="#D4A238"
-        android:strokeWidth="1.7"
+        android:strokeColor="#88D0DCE5"
+        android:strokeWidth="0.8"
         android:strokeLineCap="round"
-        android:pathData="M73.5,32 A17,17 0 0,1 81.5,47.5" />
+        android:pathData="M68.9,28.2 L69.9,26.5 M79.8,39.1 L81.5,38.1 M79.8,68.9 L81.5,69.9 M68.9,79.8 L69.9,81.5 M39.1,79.8 L38.1,81.5 M28.2,68.9 L26.5,69.9 M28.2,39.1 L26.5,38.1 M39.1,28.2 L38.1,26.5" />
 
-    <!-- 3D Drop Shadow for Interlocking S and Play-P -->
+    <!-- 4. Giant High-Relief 3D 24K Gold SP Monogram (x=25..82, y=32..76) -->
+    <!-- 3D Drop Shadow (+1.2, +1.8 in #B3020508) behind S and P -->
     <path
-        android:fillColor="#990B0C0E"
-        android:pathData="M48,35 H35 C31.7,35 29,37.7 29,41 V47 C29,50.3 31.7,53 35,53 H44 C45.1,53 46,53.9 46,55 V61 C46,62.1 45.1,63 44,63 H30 V69 H44 C48.4,69 52,65.4 52,61 V55 C52,50.6 48.4,47 44,47 H35 V41 H48 V35 Z" />
+        android:fillColor="#B3020508"
+        android:pathData="M50.2,34.8 H34.2 C29.8,34.8 27.2,37.6 27.2,41.8 V47.8 C27.2,52.0 29.8,54.8 34.2,54.8 H44.2 C45.4,54.8 46.2,55.6 46.2,56.8 V65.8 C46.2,67.0 45.4,67.8 44.2,67.8 H27.2 V75.8 H44.7 C49.4,75.8 52.2,72.8 52.2,67.8 V56.8 C52.2,51.8 49.4,48.8 44.7,48.8 H34.7 C33.7,48.8 33.2,48.2 33.2,47.2 V42.4 C33.2,41.4 33.7,40.8 34.7,40.8 H50.2 V34.8 Z" />
     <path
-        android:fillColor="#990B0C0E"
-        android:pathData="M51,35 V72 H57.5 V59.5 L77.5,47.5 L57.5,35 H51 Z" />
+        android:fillColor="#B3020508"
+        android:pathData="M54.2,34.8 V75.8 H61.0 V61.2 H68.7 C76.4,61.2 82.2,55.6 82.2,48.0 C82.2,40.4 76.4,34.8 68.7,34.8 H54.2 Z" />
 
-    <!-- 3D Sculpted Gold Letter 'S' (Left Interlocking Ribbon) -->
-    <path android:pathData="M47,33 H34 C30.7,33 28,35.7 28,39 V45.5 C28,48.8 30.7,51.5 34,51.5 H43 C44.4,51.5 45.5,52.6 45.5,54 V60 C45.5,61.4 44.4,62.5 43,62.5 H29 V68.5 H43 C47.7,68.5 51.5,64.7 51.5,60 V54 C51.5,49.3 47.7,45.5 43,45.5 H34 V39 H47 V33 Z">
+    <!-- Bold Sculpted 3D Gold 'S' (Left: x=26..51, y=33..74) -->
+    <path android:pathData="M49.0,33.0 H33.0 C28.6,33.0 26.0,35.8 26.0,40.0 V46.0 C26.0,50.2 28.6,53.0 33.0,53.0 H43.0 C44.2,53.0 45.0,53.8 45.0,55.0 V64.0 C45.0,65.2 44.2,66.0 43.0,66.0 H26.0 V74.0 H43.5 C48.2,74.0 51.0,71.0 51.0,66.0 V55.0 C51.0,50.0 48.2,47.0 43.5,47.0 H33.5 C32.5,47.0 32.0,46.4 32.0,45.4 V40.6 C32.0,39.6 32.5,39.0 33.5,39.0 H49.0 V33.0 Z">
         <aapt:attr name="android:fillColor">
             <gradient
-                android:startX="28"
+                android:startX="26"
                 android:startY="33"
-                android:endX="51.5"
-                android:endY="68.5"
+                android:endX="51"
+                android:endY="74"
                 android:type="linear">
-                <item android:color="#F6E8C8" android:offset="0.0" />
-                <item android:color="#DFC69E" android:offset="0.45" />
-                <item android:color="#D4A238" android:offset="1.0" />
+                <item android:color="#FFF8DC" android:offset="0.0" />
+                <item android:color="#F5B041" android:offset="0.42" />
+                <item android:color="#C88A1E" android:offset="0.78" />
+                <item android:color="#F6E8C8" android:offset="1.0" />
             </gradient>
         </aapt:attr>
     </path>
-
-    <!-- 'S' Bevel Top Highlight -->
+    <!-- 'S' Top/Inner Bevel Highlight Ridge -->
     <path
-        android:fillColor="#FFFDF5"
-        android:pathData="M47,33 H34 C30.7,33 28,35.7 28,39 V40.2 C28,36.9 30.7,34.2 34,34.2 H47 V33 Z" />
+        android:fillColor="#00000000"
+        android:strokeColor="#CCFFFDF5"
+        android:strokeWidth="0.9"
+        android:strokeLineCap="round"
+        android:pathData="M48.5,33.6 H33.0 C29.0,33.6 26.6,36.2 26.6,40.0 V45.5 M33.5,47.6 H43.5 C47.6,47.6 50.2,50.3 50.2,55.0" />
 
-    <!-- Interlocking Bridge Accent Linking 'S' into 'P' -->
-    <path
-        android:fillColor="#D4A238"
-        android:pathData="M43,45.5 H53 V51.5 H43 Z" />
-
-    <!-- Vertical Stem of Letter 'P' in Brushed Amber Gold -->
-    <path android:pathData="M50,33 H56.8 V71 H50 Z">
+    <!-- Bold Sculpted 3D Gold 'P' (Right: x=53..81, y=33..74) -->
+    <path android:pathData="M53.0,33.0 V74.0 H59.8 V59.8 H67.5 C75.2,59.8 81.0,54.0 81.0,46.4 C81.0,38.8 75.2,33.0 67.5,33.0 H53.0 Z">
         <aapt:attr name="android:fillColor">
             <gradient
-                android:startX="50"
+                android:startX="53"
                 android:startY="33"
-                android:endX="56.8"
-                android:endY="71"
+                android:endX="81"
+                android:endY="74"
                 android:type="linear">
-                <item android:color="#F6E8C8" android:offset="0.0" />
-                <item android:color="#D4A238" android:offset="0.55" />
-                <item android:color="#9C711B" android:offset="1.0" />
+                <item android:color="#FFF8DC" android:offset="0.0" />
+                <item android:color="#F5B041" android:offset="0.42" />
+                <item android:color="#C88A1E" android:offset="0.78" />
+                <item android:color="#F6E8C8" android:offset="1.0" />
             </gradient>
         </aapt:attr>
     </path>
-
-    <!-- Upper Bowl of 'P' Replaced by 3D Faceted Play Triangle Prism (▶) -->
-    <!-- Outer Facet of Play Prism -->
-    <path android:pathData="M55,33 L77.5,46.5 L55,60 Z">
-        <aapt:attr name="android:fillColor">
-            <gradient
-                android:startX="55"
-                android:startY="33"
-                android:endX="77.5"
-                android:endY="60"
-                android:type="linear">
-                <item android:color="#F6E8C8" android:offset="0.0" />
-                <item android:color="#E5B84B" android:offset="0.5" />
-                <item android:color="#D4A238" android:offset="1.0" />
-            </gradient>
-        </aapt:attr>
-    </path>
-
-    <!-- Upper Light Facet of 3D Play Prism -->
+    <!-- 'P' Top/Inner Bevel Highlight Ridge -->
     <path
-        android:fillColor="#F6E8C8"
-        android:pathData="M55,33 L77.5,46.5 L61.5,46.5 Z" />
+        android:fillColor="#00000000"
+        android:strokeColor="#CCFFFDF5"
+        android:strokeWidth="0.9"
+        android:strokeLineCap="round"
+        android:pathData="M53.6,73.2 V33.6 H67.5 C74.6,33.6 80.2,39.2 80.2,46.4" />
 
-    <!-- Lower Shadow Facet of 3D Play Prism -->
+    <!-- Cyan-Neon Inner Bowl Aura Inside the 'P' Counter (cx=65.5, cy=46.5) -->
     <path
-        android:fillColor="#B88622"
-        android:pathData="M61.5,46.5 L77.5,46.5 L55,60 Z" />
+        android:fillColor="#1F00E5FF"
+        android:strokeColor="#00E5FF"
+        android:strokeWidth="1.4"
+        android:pathData="M65.5,37.3 A9.2,9.2 0 1,1 65.49,37.3 Z" />
 
-    <!-- Inner Glowing Core Play Triangle inside 'P' Bowl -->
+    <!-- 3D Faceted Gold & Cyan-Neon Play Prism (▶) Inside the 'P' Loop -->
+    <!-- Outer Neon-Cyan Laser Border Triangle -->
     <path
-        android:fillColor="#141619"
-        android:pathData="M58.5,40.5 L69.5,46.5 L58.5,52.5 Z" />
+        android:fillColor="#081622"
+        android:strokeColor="#00E5FF"
+        android:strokeWidth="1.5"
+        android:strokeLineJoin="round"
+        android:pathData="M60.5,39.8 L73.2,46.8 L60.5,53.8 Z" />
+    <!-- Inner 3D Faceted 24K Gold Play Triangle: Upper Sunlit Facet -->
     <path
-        android:fillColor="#F6E8C8"
-        android:pathData="M60.2,42.5 L67.2,46.5 L60.2,50.5 Z" />
+        android:fillColor="#FFF6D6"
+        android:pathData="M61.5,41.2 L71.8,46.8 L61.5,46.8 Z" />
+    <!-- Inner 3D Faceted 24K Gold Play Triangle: Lower Shaded Gold Facet -->
+    <path
+        android:fillColor="#D49B27"
+        android:pathData="M61.5,46.8 L71.8,46.8 L61.5,52.4 Z" />
 </vector>

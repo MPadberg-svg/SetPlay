@@ -5,7 +5,8 @@
     android:height="108dp"
     android:viewportWidth="108"
     android:viewportHeight="108">
-    <!-- Deep Dark Graphite Luxury Canvas -->
+
+    <!-- 1. Midnight Obsidian-Sapphire Base Linear Gradient (0,0 to 108,108) -->
     <path android:pathData="M0,0h108v108h-108z">
         <aapt:attr name="android:fillColor">
             <gradient
@@ -14,21 +15,32 @@
                 android:endX="108"
                 android:endY="108"
                 android:type="linear">
-                <item android:color="#101215" android:offset="0.0" />
-                <item android:color="#141619" android:offset="0.55" />
-                <item android:color="#25282E" android:offset="1.0" />
+                <item android:color="#04090F" android:offset="0.0" />
+                <item android:color="#081420" android:offset="0.52" />
+                <item android:color="#040A10" android:offset="1.0" />
             </gradient>
         </aapt:attr>
     </path>
-    <!-- Subtle Royal Gold Ambient Glow Ring -->
+
+    <!-- 2. Center Radial Emerald-Cyan & Gold Ambient Glow (centerX=54, centerY=54, gradientRadius=46) -->
+    <path android:pathData="M0,0h108v108h-108z">
+        <aapt:attr name="android:fillColor">
+            <gradient
+                android:centerX="54"
+                android:centerY="54"
+                android:gradientRadius="46"
+                android:type="radial">
+                <item android:color="#242EC4B6" android:offset="0.0" />
+                <item android:color="#14F5B041" android:offset="0.55" />
+                <item android:color="#0004090F" android:offset="1.0" />
+            </gradient>
+        </aapt:attr>
+    </path>
+
+    <!-- 3. Subtle Outer Brushed Titanium Dial Ring (cx=54, cy=54, r=41) -->
     <path
         android:fillColor="#00000000"
-        android:strokeColor="#28D4A238"
-        android:strokeWidth="1.5"
-        android:pathData="M54,17 A37,37 0 1,1 53.9,17 Z" />
-    <path
-        android:fillColor="#00000000"
-        android:strokeColor="#1ADFC69E"
-        android:strokeWidth="0.8"
-        android:pathData="M54,21 A33,33 0 1,1 53.9,21 Z" />
+        android:strokeColor="#33A8B8C8"
+        android:strokeWidth="0.9"
+        android:pathData="M54,13 A41,41 0 1,1 53.99,13 Z" />
 </vector>

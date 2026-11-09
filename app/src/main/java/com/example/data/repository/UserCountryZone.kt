@@ -274,16 +274,31 @@ data class UserCountryZone(
     }
 
     /**
+     * Returns the exact GMT timezone ID (e.g., `"GMT+00:00"`, `"GMT+01:00"`, `"GMT+03:00"`, `"GMT-05:00"`)
+     * for this Country Zone according to seasonal time preference ([isSummer]).
+     */
+    fun getTimeZoneId(isSummer: Boolean): String {
+        val totalOffsetMinutes = if (hasSeasonalTimeChange) {
+            if (isSummer) summerUtcOffsetMinutes else winterUtcOffsetMinutes
+        } else {
+            winterUtcOffsetMinutes
+        }
+        val sign = if (totalOffsetMinutes >= 0) "+" else "-"
+        val absMins = abs(totalOffsetMinutes)
+        val hours = absMins / 60
+        val mins = absMins % 60
+        return String.format(Locale.US, "GMT%s%02d:%02d", sign, hours, mins)
+    }
+
+    /**
      * Builds a deterministic [TimeZone] matching the effective offset under [mode] at [epochMs].
      */
     fun getEffectiveTimeZone(
         mode: SeasonTimeMode = SeasonTimeMode.AUTO,
         epochMs: Long = System.currentTimeMillis()
     ): TimeZone {
-        if (mode == SeasonTimeMode.AUTO && countryCode !in setOf("MA", "EG")) {
-            return TimeZone.getTimeZone(timeZoneId)
-        }
-        return buildCustomGmtTimeZone(getEffectiveOffsetMinutes(mode, epochMs))
+        val isSummer = isSummerTimeActive(mode, epochMs)
+        return TimeZone.getTimeZone(getTimeZoneId(isSummer))
     }
 
     private fun buildCustomGmtTimeZone(totalOffsetMinutes: Int): TimeZone {
@@ -322,6 +337,11 @@ data class UserCountryZone(
         val targetMin = totalMinutes % 60
         return String.format(Locale.US, "%02d:%02d", targetHour, targetMin)
     }
+}
+
+fun formatDynamicKickoffTime(kickoffEpochMs: Long, zone: UserCountryZone, isSummer: Boolean): String {
+    val tz = TimeZone.getTimeZone(zone.getTimeZoneId(isSummer))
+    return SimpleDateFormat("HH:mm", Locale.US).apply { timeZone = tz }.format(Date(kickoffEpochMs))
 }
 
 object UserZoneRegistry {

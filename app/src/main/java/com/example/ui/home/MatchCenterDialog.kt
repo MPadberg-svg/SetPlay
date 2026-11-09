@@ -57,7 +57,9 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -97,6 +99,9 @@ import com.example.data.repository.MenaBroadcastChannelInfo
 import com.example.data.repository.MomentumMinutePoint
 import com.example.data.repository.PitchPlayerNode
 import com.example.data.repository.ShotOutcome
+import com.example.data.repository.formatDynamicKickoffTime
+import kotlinx.coroutines.delay
+import kotlin.math.abs
 import com.example.ui.theme.AmberGold
 import com.example.ui.theme.ArenaFloodlightLime
 import com.example.ui.theme.ArenaPitchGreen
@@ -397,6 +402,45 @@ private fun MatchCenterScoreboardHeader(
                 }
 
                 // Center Recessed Digital Scoreboard Well
+                val isSummerTime = remember(dossier.countryZone) {
+                    dossier.countryZone.isSummerTimeActive()
+                }
+                val dynamicKickoffTime = remember(match.kickoffEpochMs, match.kickoffTimeFormatted, dossier.countryZone, isSummerTime) {
+                    if (match.kickoffEpochMs > 0L) {
+                        formatDynamicKickoffTime(match.kickoffEpochMs, dossier.countryZone, isSummerTime)
+                    } else {
+                        match.kickoffTimeFormatted
+                    }
+                }
+                val periodStartEpochMs = remember(match.matchId, match.liveMinuteOrBadge, match.status) {
+                    val seedSec = (abs(match.matchId.hashCode()) % 52)
+                    System.currentTimeMillis() - (seedSec * 1000L)
+                }
+                var liveElapsedSeconds by remember(periodStartEpochMs) {
+                    mutableIntStateOf(((System.currentTimeMillis() - periodStartEpochMs) / 1000L).toInt().coerceAtLeast(0))
+                }
+                if (match.status == MatchStatus.LIVE) {
+                    LaunchedEffect(Unit) {
+                        while (true) {
+                            liveElapsedSeconds = ((System.currentTimeMillis() - periodStartEpochMs) / 1000L).toInt().coerceAtLeast(0)
+                            delay(1000L)
+                        }
+                    }
+                }
+                val liveClockTelemetry = remember(
+                    match.liveMinuteOrBadge,
+                    match.status,
+                    match.halfTimeScore,
+                    dynamicKickoffTime,
+                    liveElapsedSeconds
+                ) {
+                    parseLiveMatchClockTelemetry(
+                        match = match,
+                        utcOffsetBadge = dossier.countryZone.getUtcOffsetBadge(),
+                        elapsedSecondOffset = if (match.status == MatchStatus.LIVE) liveElapsedSeconds else 0,
+                        dynamicKickoffTime = dynamicKickoffTime
+                    )
+                }
                 Surface(
                     color = Color(0xFF051118),
                     shape = RoundedCornerShape(16.dp),
@@ -410,7 +454,7 @@ private fun MatchCenterScoreboardHeader(
                         horizontalAlignment = Alignment.CenterHorizontally,
                         modifier = Modifier.padding(horizontal = 14.dp, vertical = 8.dp)
                     ) {
-                        // Status / Minute Pill
+                        // Status / Minute Pill (1Hz MM:SS Live Clock)
                         Surface(
                             color = when {
                                 isLive -> LiveCrimson.copy(alpha = 0.22f)
@@ -429,10 +473,10 @@ private fun MatchCenterScoreboardHeader(
                         ) {
                             Text(
                                 text = when (match.status) {
-                                    MatchStatus.LIVE -> "LIVE • ${match.liveMinuteOrBadge}"
+                                    MatchStatus.LIVE -> "LIVE • ${liveClockTelemetry.heroReadoutSeconds}"
                                     MatchStatus.HALFTIME -> "HALF TIME"
                                     MatchStatus.FINISHED -> "FULL TIME"
-                                    MatchStatus.UPCOMING -> "${match.kickoffDateFormatted} • ${match.kickoffTimeFormatted}"
+                                    MatchStatus.UPCOMING -> "${match.kickoffDateFormatted} • $dynamicKickoffTime"
                                 },
                                 color = when {
                                     isLive -> LiveCrimson
@@ -453,7 +497,7 @@ private fun MatchCenterScoreboardHeader(
                             text = if (match.homeScore != null && match.awayScore != null) {
                                 "${match.homeScore}  :  ${match.awayScore}"
                             } else {
-                                match.kickoffTimeFormatted
+                                dynamicKickoffTime
                             },
                             color = if (isLive) Color.White else KickoffPeachCream,
                             fontSize = 24.sp,
@@ -787,8 +831,14 @@ private fun MatchSummaryTabContent(
                             )
                         }
                         Spacer(modifier = Modifier.height(6.dp))
+                        val isSummerBriefing = dossier.countryZone.isSummerTimeActive()
+                        val briefingKickoff = if (match.kickoffEpochMs > 0L) {
+                            formatDynamicKickoffTime(match.kickoffEpochMs, dossier.countryZone, isSummerBriefing)
+                        } else {
+                            match.kickoffTimeFormatted
+                        }
                         Text(
-                            text = "Kickoff is scheduled at ${match.kickoffTimeFormatted} (Morocco GMT+1). Probable starting lineups (${dossier.lineups.homeFormation} vs ${dossier.lineups.awayFormation}), H2H history, and MENA broadcast channels are available across the tabs above.",
+                            text = "Kickoff is scheduled at $briefingKickoff (${dossier.countryZone.countryName} ${dossier.countryZone.getUtcOffsetBadge()}). Probable starting lineups (${dossier.lineups.homeFormation} vs ${dossier.lineups.awayFormation}), H2H history, and MENA broadcast channels are available across the tabs above.",
                             color = Champagne,
                             fontSize = 12.sp
                         )
@@ -2482,13 +2532,10 @@ private fun PlayerCircularAvatarMedallion(
                 .data(photoUrl)
                 .size(targetPx, targetPx)
                 .precision(coil.size.Precision.EXACT)
-                .bitmapConfig(android.graphics.Bitmap.Config.RGB_565)
+                .bitmapConfig(android.graphics.Bitmap.Config.ARGB_8888)
                 .memoryCachePolicy(coil.request.CachePolicy.ENABLED)
                 .diskCachePolicy(coil.request.CachePolicy.ENABLED)
-                .addHeader(
-                    "User-Agent",
-                    "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 Chrome/126.0.0.0 Mobile Safari/537.36"
-                )
+                .addHeader("User-Agent", "Mozilla/5.0 (Linux; Android 14)")
                 .addHeader("Referer", "https://www.sofascore.com/")
                 .crossfade(true)
                 .build()
@@ -2497,9 +2544,9 @@ private fun PlayerCircularAvatarMedallion(
         }
     }
 
-    // 365Scores-style studio pearl circle background so transparent player headshots pop with crisp contrast
+    // Dark obsidian-slate medallion backdrop so transparent PNG cutouts & jersey fallbacks never flash as a blank white circle
     Surface(
-        color = Color(0xFFF2F5F8),
+        color = Color(0xFF0A1926),
         shape = CircleShape,
         border = BorderStroke(1.8.dp, ringColor),
         modifier = Modifier.size(sizeDp.dp)
@@ -2515,12 +2562,14 @@ private fun PlayerCircularAvatarMedallion(
                 loading = {
                     TacticalAthletePortraitAvatar(
                         playerName = playerName,
+                        jerseyNumber = jerseyNumber,
                         kitColor = primaryColor
                     )
                 },
                 error = {
                     TacticalAthletePortraitAvatar(
                         playerName = playerName,
+                        jerseyNumber = jerseyNumber,
                         kitColor = primaryColor
                     )
                 }
@@ -2528,6 +2577,7 @@ private fun PlayerCircularAvatarMedallion(
         } else {
             TacticalAthletePortraitAvatar(
                 playerName = playerName,
+                jerseyNumber = jerseyNumber,
                 kitColor = primaryColor
             )
         }
@@ -2535,88 +2585,99 @@ private fun PlayerCircularAvatarMedallion(
 }
 
 /**
- * 365Scores-style illustrated footballer portrait fallback (head, hair, neck, and striped club jersey shoulders
- * over a studio pearl background) so every player on the pitch looks like a real athlete avatar even before
- * or without a remote cutout PNG!
+ * Styled Club Jersey Medallion Fallback:
+ * Renders a tailored football kit silhouette with collar/sleeves and the player's real jersey number
+ * and initials over a dark stadium slate backdrop whenever a remote cutout PNG is unavailable or fails to load.
  */
 @Composable
 private fun TacticalAthletePortraitAvatar(
     playerName: String,
+    jerseyNumber: Int = 0,
     kitColor: Color
 ) {
-    val seed = remember(playerName) { kotlin.math.abs(playerName.hashCode()) }
-    val skinTones = listOf(
-        Color(0xFFE8B89A),
-        Color(0xFFD9A17C),
-        Color(0xFFC6865A),
-        Color(0xFF8D5524),
-        Color(0xFFF1C27D)
-    )
-    val hairTones = listOf(
-        Color(0xFF1C1917),
-        Color(0xFF292524),
-        Color(0xFF451A03),
-        Color(0xFF3F2305)
-    )
-    val skinColor = skinTones[seed % skinTones.size]
-    val hairColor = hairTones[(seed / 3) % hairTones.size]
+    val initials = remember(playerName) {
+        val parts = playerName.replace(Regex("#\\d+"), "").trim().split(Regex("\\s+")).filter { it.isNotBlank() }
+        when {
+            parts.size >= 2 -> "${parts.first().first().uppercaseChar()}${parts.last().first().uppercaseChar()}"
+            parts.size == 1 && parts.first().length >= 2 -> parts.first().take(2).uppercase(Locale.ROOT)
+            parts.size == 1 -> parts.first().uppercase(Locale.ROOT)
+            else -> "XI"
+        }
+    }
 
-    Canvas(
+    Box(
+        contentAlignment = Alignment.Center,
         modifier = Modifier
             .fillMaxSize()
-            .background(Color(0xFFF2F5F8))
+            .background(
+                Brush.radialGradient(
+                    colors = listOf(
+                        Color(0xFF132A3E),
+                        Color(0xFF091520)
+                    )
+                )
+            )
     ) {
-        val w = size.width
-        val h = size.height
+        Canvas(modifier = Modifier.fillMaxSize()) {
+            val w = size.width
+            val h = size.height
 
-        // 1. Club Jersey Shoulders & Torso at bottom of portrait
-        val shoulderTop = h * 0.64f
-        drawOval(
-            color = kitColor,
-            topLeft = Offset(w * 0.12f, shoulderTop),
-            size = Size(w * 0.76f, h * 0.56f)
-        )
-        // Vertical club stripe accent on jersey
-        drawRect(
-            color = Color(0xFF0F172A).copy(alpha = 0.45f),
-            topLeft = Offset(w * 0.34f, shoulderTop + h * 0.04f),
-            size = Size(w * 0.10f, h * 0.36f)
-        )
-        drawRect(
-            color = Color(0xFF0F172A).copy(alpha = 0.45f),
-            topLeft = Offset(w * 0.56f, shoulderTop + h * 0.04f),
-            size = Size(w * 0.10f, h * 0.36f)
-        )
-        // White collar V-neck
-        drawCircle(
-            color = Color.White,
-            radius = w * 0.12f,
-            center = Offset(w * 0.5f, shoulderTop + h * 0.03f)
-        )
+            // Jersey torso + sleeves silhouette
+            val jerseyPath = Path().apply {
+                moveTo(w * 0.28f, h * 0.22f)
+                lineTo(w * 0.10f, h * 0.38f)
+                lineTo(w * 0.20f, h * 0.52f)
+                lineTo(w * 0.27f, h * 0.45f)
+                lineTo(w * 0.27f, h * 0.86f)
+                lineTo(w * 0.73f, h * 0.86f)
+                lineTo(w * 0.73f, h * 0.45f)
+                lineTo(w * 0.80f, h * 0.52f)
+                lineTo(w * 0.90f, h * 0.38f)
+                lineTo(w * 0.72f, h * 0.22f)
+                close()
+            }
+            drawPath(
+                path = jerseyPath,
+                color = kitColor
+            )
+            drawPath(
+                path = jerseyPath,
+                color = Color.White.copy(alpha = 0.38f),
+                style = Stroke(width = w * 0.035f)
+            )
+            // Collar V-neck trim
+            drawCircle(
+                color = Color(0xFF091520),
+                radius = w * 0.10f,
+                center = Offset(w * 0.50f, h * 0.22f)
+            )
+        }
 
-        // 2. Neck
-        drawRect(
-            color = skinColor,
-            topLeft = Offset(w * 0.41f, h * 0.52f),
-            size = Size(w * 0.18f, h * 0.16f)
-        )
-
-        // 3. Head / Face Oval
-        drawOval(
-            color = skinColor,
-            topLeft = Offset(w * 0.31f, h * 0.21f),
-            size = Size(w * 0.38f, h * 0.37f)
-        )
-
-        // 4. Hair Crown
-        drawArc(
-            color = hairColor,
-            startAngle = 180f,
-            sweepAngle = 180f,
-            useCenter = true,
-            topLeft = Offset(w * 0.30f, h * 0.17f),
-            size = Size(w * 0.40f, h * 0.24f)
-        )
+        Column(
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.Center,
+            modifier = Modifier.padding(top = 3.dp)
+        ) {
+            if (jerseyNumber > 0) {
+                Text(
+                    text = jerseyNumber.toString(),
+                    color = Color.White,
+                    fontSize = 10.sp,
+                    lineHeight = 10.sp,
+                    fontWeight = FontWeight.ExtraBold,
+                    style = TabularNumeralTextStyle,
+                    maxLines = 1
+                )
+            }
+            Text(
+                text = initials,
+                color = Color.White.copy(alpha = 0.92f),
+                fontSize = if (jerseyNumber > 0) 6.5.sp else 9.sp,
+                lineHeight = 7.sp,
+                fontWeight = FontWeight.Bold,
+                maxLines = 1
+            )
+        }
     }
 }
 

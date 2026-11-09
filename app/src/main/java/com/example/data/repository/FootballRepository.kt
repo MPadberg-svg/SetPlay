@@ -178,7 +178,8 @@ data class FootballMatch(
     val homeRedCards: Int = 0,
     val awayRedCards: Int = 0,
     val goalScorersSummary: String? = null, // e.g. "Mbappé 18', Bellingham 67'"
-    val referenceMoroccoTime: String = kickoffTimeFormatted // Canonical GMT+1 reference time for instant Country Zone conversion
+    val referenceMoroccoTime: String = kickoffTimeFormatted, // Canonical GMT+1 reference time for instant Country Zone conversion
+    val kickoffEpochMs: Long = FootballRepository.deriveDefaultKickoffEpochMs(dayTab, kickoffTimeFormatted)
 )
 
 data class MenaChannelMatchResult(
@@ -1162,10 +1163,12 @@ class FootballRepository(
             }
         }
 
-        // Step 4: Synchronize elapsed live minute clocks and cross-reference with TheSportsDB `eventstv.php` TV listings
-        val syncedMatches = mergedMap.values.map { match ->
-            synchronizeElapsedMatchClock(match, dayTab)
-        }
+        // Step 4: Drop any non-Tier-1 competition matches, synchronize elapsed live minute clocks, and cross-reference TV listings
+        val syncedMatches = mergedMap.values
+            .filter { it.tournamentId in APPROVED_TIER_1_TOURNAMENT_IDS }
+            .map { match ->
+                synchronizeElapsedMatchClock(match, dayTab)
+            }
         resolveDayMatchesTvChannelsWithMenaPriority(syncedMatches, parallelResults.tvBroadcasts)
     }
 
@@ -1295,7 +1298,8 @@ class FootballRepository(
             fullTimeScore = primaryLive.fullTimeScore ?: badgeAndTvSource.fullTimeScore,
             goalScorersSummary = primaryLive.goalScorersSummary ?: badgeAndTvSource.goalScorersSummary,
             homeRedCards = maxOf(primaryLive.homeRedCards, badgeAndTvSource.homeRedCards),
-            awayRedCards = maxOf(primaryLive.awayRedCards, badgeAndTvSource.awayRedCards)
+            awayRedCards = maxOf(primaryLive.awayRedCards, badgeAndTvSource.awayRedCards),
+            kickoffEpochMs = if (primaryLive.kickoffEpochMs > 0L) primaryLive.kickoffEpochMs else badgeAndTvSource.kickoffEpochMs
         )
     }
 
@@ -1704,14 +1708,28 @@ class FootballRepository(
         } else null
 
         val canonicalRefMoroccoTime = match.referenceMoroccoTime.ifBlank { match.kickoffTimeFormatted }
-        val matchEpochMs = System.currentTimeMillis() + (match.dayTab.dayOffset * 86_400_000L)
-        val localizedKickoffTime = zone.convertMoroccoTimeToZoneTime(
-            moroccoTimeHHmm = canonicalRefMoroccoTime,
-            mode = seasonTimeMode,
-            epochMs = matchEpochMs
-        )
-        val utcOffsetBadge = zone.getUtcOffsetBadge(epochMs = matchEpochMs, mode = seasonTimeMode)
-        val localizedDateFormatted = "${match.dayTab.getDynamicTitle(zone.timeZoneId)} • $utcOffsetBadge"
+        val refEpochFromMorocco = deriveDefaultKickoffEpochMs(match.dayTab, canonicalRefMoroccoTime)
+        val effectiveEpochMs = if (
+            match.kickoffEpochMs > 0L &&
+            formatDynamicKickoffTime(match.kickoffEpochMs, UserZoneRegistry.defaultCountryZone, isSummer = true) == canonicalRefMoroccoTime
+        ) {
+            match.kickoffEpochMs
+        } else {
+            refEpochFromMorocco
+        }
+        val isSummer = zone.isSummerTimeActive(mode = seasonTimeMode, epochMs = effectiveEpochMs)
+        val localizedKickoffTime = if (effectiveEpochMs > 0L) {
+            formatDynamicKickoffTime(effectiveEpochMs, zone, isSummer)
+        } else {
+            zone.convertMoroccoTimeToZoneTime(
+                moroccoTimeHHmm = canonicalRefMoroccoTime,
+                mode = seasonTimeMode,
+                epochMs = System.currentTimeMillis() + (match.dayTab.dayOffset * 86_400_000L)
+            )
+        }
+        val utcOffsetBadge = zone.getUtcOffsetBadge(epochMs = effectiveEpochMs, mode = seasonTimeMode)
+        val zoneTzId = zone.getTimeZoneId(isSummer)
+        val localizedDateFormatted = "${match.dayTab.getDynamicTitle(zoneTzId)} • $utcOffsetBadge"
         val localizedLiveBadge = if (match.status == MatchStatus.UPCOMING) {
             localizedKickoffTime
         } else {
@@ -1723,6 +1741,7 @@ class FootballRepository(
             kickoffDateFormatted = localizedDateFormatted,
             liveMinuteOrBadge = localizedLiveBadge,
             referenceMoroccoTime = canonicalRefMoroccoTime,
+            kickoffEpochMs = effectiveEpochMs,
             beinChannel = primaryChannel,
             beinChannelNumberHint = extractBeinHint(primaryChannel),
             menaProviderName = providerName,
@@ -2444,6 +2463,7 @@ class FootballRepository(
                     if (!response.isSuccessful) return@use
                     val body = response.body?.string() ?: return@use
                     val parsed = parseSportApiAiMatchesJson(body, dayTab)
+                        .filter { it.tournamentId in APPROVED_TIER_1_TOURNAMENT_IDS }
                     if (parsed.isNotEmpty()) {
                         sportApiDayCache[isoDate] = now to parsed
                         return parsed
@@ -2454,7 +2474,7 @@ class FootballRepository(
             }
         }
 
-        return cached?.second ?: emptyList()
+        return cached?.second?.filter { it.tournamentId in APPROVED_TIER_1_TOURNAMENT_IDS } ?: emptyList()
     }
 
     internal fun parseSportApiAiMatchesJson(
@@ -2492,7 +2512,9 @@ class FootballRepository(
                 ?.ifBlank { item.optString("country", "") }
                 ?: ""
 
-            val matchedTournament = matchTournamentCatalog("$countryName $leagueName") ?: continue
+            val matchedTournament = matchTournamentCatalog("$countryName $leagueName")
+                ?.takeIf { it.tournamentId in APPROVED_TIER_1_TOURNAMENT_IDS }
+                ?: continue
 
             val homeObj = item.optJSONObject("home_team")
                 ?: item.optJSONObject("homeTeam")
@@ -2524,6 +2546,7 @@ class FootballRepository(
 
             val startIso = item.optString("start_time", item.optString("date", item.optString("kickoff", "")))
             val kickoffTime = formatIsoToMoroccoTime(startIso)
+            val kickoffEpochMs = parseIsoToEpochMs(startIso, dayTab, kickoffTime)
 
             val (matchStatus, liveBadge) = parseLiveStatusAndMinuteBadge(
                 rawStatus = rawStatusCode,
@@ -2663,7 +2686,8 @@ class FootballRepository(
                     } else null,
                     homeRedCards = homeRedCards,
                     awayRedCards = awayRedCards,
-                    goalScorersSummary = goalScorersList.take(4).joinToString(", ").ifBlank { null }
+                    goalScorersSummary = goalScorersList.take(4).joinToString(", ").ifBlank { null },
+                    kickoffEpochMs = kickoffEpochMs
                 )
             )
         }
@@ -2818,12 +2842,17 @@ class FootballRepository(
             val timestampRaw = ev.optString("strTimestamp", "").trim()
             val dateEventRaw = ev.optString("dateEvent", "").trim()
             val strTimeRaw = ev.optString("strTime", "20:00:00").trim()
-            val timeRaw = when {
-                timestampRaw.isNotBlank() && timestampRaw != "null" -> formatIsoToMoroccoTime(timestampRaw)
+            val rawIsoForEpoch = when {
+                timestampRaw.isNotBlank() && timestampRaw != "null" -> timestampRaw
                 dateEventRaw.isNotBlank() && strTimeRaw.isNotBlank() && strTimeRaw != "null" ->
-                    formatIsoToMoroccoTime("${dateEventRaw}T${strTimeRaw.take(8)}Z")
+                    "${dateEventRaw}T${strTimeRaw.take(8)}Z"
+                else -> ""
+            }
+            val timeRaw = when {
+                rawIsoForEpoch.isNotBlank() -> formatIsoToMoroccoTime(rawIsoForEpoch)
                 else -> strTimeRaw.take(5).ifBlank { "20:00" }
             }
+            val kickoffEpochMs = parseIsoToEpochMs(rawIsoForEpoch, dayTab, timeRaw)
             val venue = ev.optString("strVenue", "").takeIf { it.isNotBlank() && it != "null" } ?: "Main Stadium"
             val city = ev.optString("strCity", matchedTournament.countryOrRegion)
                 .takeIf { it.isNotBlank() && it != "null" } ?: matchedTournament.countryOrRegion
@@ -2916,7 +2945,8 @@ class FootballRepository(
                     sourceTvChannels = eventLevelMenaChannels,
                     stageOrRound = if (roundNum.isNotBlank()) "Matchday $roundNum" else matchedTournament.name,
                     sportsDbEventId = idEvent,
-                    fullTimeScore = if (status == MatchStatus.FINISHED && homeScore != null && awayScore != null) "$homeScore - $awayScore" else null
+                    fullTimeScore = if (status == MatchStatus.FINISHED && homeScore != null && awayScore != null) "$homeScore - $awayScore" else null,
+                    kickoffEpochMs = kickoffEpochMs
                 )
             )
         }
@@ -3175,6 +3205,7 @@ class FootballRepository(
                     val awayLogo = awayTeamObj.optString("logo", "")
 
                     val kickoffTime = formatIsoToMoroccoTime(dateIso)
+                    val kickoffEpochMs = parseIsoToEpochMs(dateIso, dayTab, kickoffTime)
 
                     val (matchStatus, badgeText) = when (stateStr.lowercase(Locale.ROOT)) {
                         "in" -> {
@@ -3326,7 +3357,8 @@ class FootballRepository(
                             fullTimeScore = if (matchStatus == MatchStatus.FINISHED && homeScore != null && awayScore != null) "$homeScore - $awayScore" else null,
                             homeRedCards = homeRedCount,
                             awayRedCards = awayRedCount,
-                            goalScorersSummary = scorerParts.take(4).joinToString(", ").ifBlank { null }
+                            goalScorersSummary = scorerParts.take(4).joinToString(", ").ifBlank { null },
+                            kickoffEpochMs = kickoffEpochMs
                         )
                     )
                 }
@@ -3445,6 +3477,7 @@ class FootballRepository(
 
             val startIso = game.optString("startTime", "")
             val kickoffTime = formatIsoToMoroccoTime(startIso)
+            val kickoffEpochMs = parseIsoToEpochMs(startIso, dayTab, kickoffTime)
 
             val statusText = game.optString("statusText", game.optString("shortStatusText", "")).trim()
             val gameTimeInt = game.optInt("gameTime", -1).takeIf { it > 0 }
@@ -3562,7 +3595,8 @@ class FootballRepository(
                     stageOrRound = game.optString("stageName", matchedTournament.name).ifBlank { matchedTournament.name },
                     fullTimeScore = if (matchStatus == MatchStatus.FINISHED && homeScore != null && awayScore != null) "$homeScore - $awayScore" else null,
                     homeRedCards = homeRedCards,
-                    awayRedCards = awayRedCards
+                    awayRedCards = awayRedCards,
+                    kickoffEpochMs = kickoffEpochMs
                 )
             )
         }
@@ -3677,7 +3711,14 @@ class FootballRepository(
                         "$htHome - $htAway"
                     } else null
 
-                    val kickoffTime = formatIsoToMoroccoTime(fixtureObj.optString("date", ""))
+                    val fixtureDateIso = fixtureObj.optString("date", "")
+                    val kickoffTime = formatIsoToMoroccoTime(fixtureDateIso)
+                    val fixtureTimestampSec = fixtureObj.optLong("timestamp", 0L)
+                    val kickoffEpochMs = if (fixtureTimestampSec > 100_000_000L) {
+                        fixtureTimestampSec * 1000L
+                    } else {
+                        parseIsoToEpochMs(fixtureDateIso, dayTab, kickoffTime)
+                    }
                     val (status, badge) = parseLiveStatusAndMinuteBadge(shortStatus, elapsed, kickoffTime, extraElapsed)
 
                     val homeName = homeObj.optString("name", "")
@@ -3724,7 +3765,8 @@ class FootballRepository(
                             stageOrRound = roundStr,
                             apiFootballFixtureId = fixtureIdStr,
                             halfTimeScore = htScoreStr,
-                            fullTimeScore = if (status == MatchStatus.FINISHED && homeGoalsVal != null && awayGoalsVal != null) "$homeGoalsVal - $awayGoalsVal" else null
+                            fullTimeScore = if (status == MatchStatus.FINISHED && homeGoalsVal != null && awayGoalsVal != null) "$homeGoalsVal - $awayGoalsVal" else null,
+                            kickoffEpochMs = kickoffEpochMs
                         )
                     )
                 }
@@ -3819,6 +3861,7 @@ class FootballRepository(
 
             val utcDate = item.optString("utcDate", "")
             val kickoffTime = formatIsoToMoroccoTime(utcDate)
+            val kickoffEpochMs = parseIsoToEpochMs(utcDate, dayTab, kickoffTime)
             val rawStatus = item.optString("status", "TIMED").uppercase(Locale.ROOT)
             val minuteVal = item.optInt("minute", 0)
             val injuryTimeVal = item.optInt("injuryTime", 0).coerceAtLeast(0)
@@ -3888,7 +3931,8 @@ class FootballRepository(
                     fallbackMenaChannels = smartFallbacks.drop(1),
                     stageOrRound = roundLabel,
                     halfTimeScore = htStr,
-                    fullTimeScore = if (status == MatchStatus.FINISHED && hGoals != null && aGoals != null) "$hGoals - $aGoals" else null
+                    fullTimeScore = if (status == MatchStatus.FINISHED && hGoals != null && aGoals != null) "$hGoals - $aGoals" else null,
+                    kickoffEpochMs = kickoffEpochMs
                 )
             )
         }
@@ -3924,23 +3968,17 @@ class FootballRepository(
         leagueName: String
     ): TournamentCatalogItem? {
         return when (leagueId) {
-            200, 201 -> ALL_TOURNAMENTS.first { it.tournamentId == "botola_pro" }
-            12, 20, 6 -> ALL_TOURNAMENTS.first { it.tournamentId == "caf_cl" }
+            200 -> ALL_TOURNAMENTS.first { it.tournamentId == "botola_pro" }
+            12, 20 -> ALL_TOURNAMENTS.first { it.tournamentId == "caf_cl" }
             2 -> ALL_TOURNAMENTS.first { it.tournamentId == "uefa_cl" }
-            140, 143 -> ALL_TOURNAMENTS.first { it.tournamentId == "laliga" }
-            39, 45, 48 -> ALL_TOURNAMENTS.first { it.tournamentId == "premier_league" }
-            135, 137 -> ALL_TOURNAMENTS.first { it.tournamentId == "serie_a" }
-            61, 66 -> ALL_TOURNAMENTS.first { it.tournamentId == "ligue_1" }
-            78, 81 -> ALL_TOURNAMENTS.first { it.tournamentId == "bundesliga" }
+            140 -> ALL_TOURNAMENTS.first { it.tournamentId == "laliga" }
+            39 -> ALL_TOURNAMENTS.first { it.tournamentId == "premier_league" }
+            135 -> ALL_TOURNAMENTS.first { it.tournamentId == "serie_a" }
+            61 -> ALL_TOURNAMENTS.first { it.tournamentId == "ligue_1" }
+            78 -> ALL_TOURNAMENTS.first { it.tournamentId == "bundesliga" }
             307 -> ALL_TOURNAMENTS.first { it.tournamentId == "saudi_pro" }
-            3, 848 -> ALL_TOURNAMENTS.first { it.tournamentId == "uefa_el" }
-            else -> {
-                if (country.equals("Morocco", ignoreCase = true) && leagueName.contains("Botola", ignoreCase = true)) {
-                    ALL_TOURNAMENTS.first { it.tournamentId == "botola_pro" }
-                } else {
-                    null
-                }
-            }
+            3 -> ALL_TOURNAMENTS.first { it.tournamentId == "uefa_el" }
+            else -> matchTournamentCatalog("$country $leagueName")
         }
     }
 
@@ -4516,6 +4554,37 @@ class FootballRepository(
             .ifBlank { "1" }
     }
 
+    internal fun parseIsoToEpochMs(
+        isoString: String,
+        dayTab: MatchDayTab = MatchDayTab.TODAY,
+        fallbackMoroccoTime: String = "20:00"
+    ): Long {
+        if (isoString.isNotBlank()) {
+            val normalized = normalizeIsoInput(isoString)
+            val patterns = listOf(
+                "yyyy-MM-dd'T'HH:mm:ss'Z'",
+                "yyyy-MM-dd'T'HH:mm'Z'",
+                "yyyy-MM-dd'T'HH:mm:ssZ",
+                "yyyy-MM-dd'T'HH:mmZ",
+                "yyyy-MM-dd'T'HH:mm:ss",
+                "yyyy-MM-dd'T'HH:mm",
+                "yyyy-MM-dd HH:mm:ss",
+                "yyyy-MM-dd HH:mm"
+            )
+            for (pattern in patterns) {
+                try {
+                    val parser = SimpleDateFormat(pattern, Locale.US).apply {
+                        timeZone = TimeZone.getTimeZone("UTC")
+                    }
+                    val parsed: Date = parser.parse(normalized) ?: continue
+                    return parsed.time
+                } catch (_: Exception) {
+                }
+            }
+        }
+        return deriveDefaultKickoffEpochMs(dayTab, fallbackMoroccoTime)
+    }
+
     private fun matchTournamentBySportsDbIdOrName(
         sportsDbLeagueId: String,
         rawLeagueName: String
@@ -4524,35 +4593,14 @@ class FootballRepository(
             val byId = ALL_TOURNAMENTS.firstOrNull { it.sportsDbLeagueId == sportsDbLeagueId }
             if (byId != null) return byId
         }
-        return matchTournamentCatalog(rawLeagueName)
+        return matchTournamentCatalog(rawLeagueName, sportsDbLeagueId = sportsDbLeagueId)
     }
 
-    private fun matchTournamentCatalog(rawLeague: String): TournamentCatalogItem? {
-        val lower = rawLeague.lowercase(Locale.ROOT)
-        return when {
-            lower.contains("botola") || lower.contains("moroccan") || lower.contains("coupe du tr") ->
-                ALL_TOURNAMENTS.first { it.tournamentId == "botola_pro" }
-            lower.contains("caf champions") || lower.contains("caf confederation") ->
-                ALL_TOURNAMENTS.first { it.tournamentId == "caf_cl" }
-            lower.contains("uefa champions") || lower == "champions league" ->
-                ALL_TOURNAMENTS.first { it.tournamentId == "uefa_cl" }
-            lower.contains("la liga") || lower.contains("laliga") || lower.contains("spanish primera") ->
-                ALL_TOURNAMENTS.first { it.tournamentId == "laliga" }
-            lower.contains("english premier league") || lower == "premier league" ->
-                ALL_TOURNAMENTS.first { it.tournamentId == "premier_league" }
-            lower.contains("italian serie a") || lower == "serie a" ->
-                ALL_TOURNAMENTS.first { it.tournamentId == "serie_a" }
-            lower.contains("french ligue 1") || lower == "ligue 1" ->
-                ALL_TOURNAMENTS.first { it.tournamentId == "ligue_1" }
-            lower.contains("german bundesliga") || lower == "bundesliga" ->
-                ALL_TOURNAMENTS.first { it.tournamentId == "bundesliga" }
-            lower.contains("saudi pro") || lower.contains("roshn") ->
-                ALL_TOURNAMENTS.first { it.tournamentId == "saudi_pro" }
-            lower.contains("uefa europa") || lower.contains("europa league") || lower.contains("europa conference") ->
-                ALL_TOURNAMENTS.first { it.tournamentId == "uefa_el" }
-            else -> null
-        }
-    }
+    internal fun matchTournamentCatalog(
+        rawLeague: String,
+        espnSlug: String = "",
+        sportsDbLeagueId: String = ""
+    ): TournamentCatalogItem? = Companion.matchTournamentCatalog(rawLeague, espnSlug, sportsDbLeagueId)
 
     private fun formatIsoToMoroccoDate(isoString: String): String {
         if (isoString.isBlank()) return ""
@@ -4900,6 +4948,341 @@ class FootballRepository(
             "Thmanyah Sports 1",
             "ON Time Sports 1"
         )
+
+        val APPROVED_TIER_1_TOURNAMENT_IDS = setOf(
+            "uefa_cl",
+            "laliga",
+            "premier_league",
+            "ligue_1",
+            "bundesliga",
+            "serie_a",
+            "caf_cl",
+            "botola_pro",
+            "uefa_el",
+            "saudi_pro"
+        )
+
+        fun deriveDefaultKickoffEpochMs(dayTab: MatchDayTab, moroccoTimeHHmm: String): Long {
+            val cleaned = moroccoTimeHHmm.trim()
+            val parts = cleaned.split(":")
+            val hour = parts.getOrNull(0)?.filter { it.isDigit() }?.toIntOrNull() ?: 20
+            val minute = parts.getOrNull(1)?.take(2)?.filter { it.isDigit() }?.toIntOrNull() ?: 0
+            val refTz = TimeZone.getTimeZone("GMT+01:00")
+            val cal = Calendar.getInstance(refTz).apply {
+                add(Calendar.DAY_OF_YEAR, dayTab.dayOffset)
+                set(Calendar.HOUR_OF_DAY, hour.coerceIn(0, 23))
+                set(Calendar.MINUTE, minute.coerceIn(0, 59))
+                set(Calendar.SECOND, 0)
+                set(Calendar.MILLISECOND, 0)
+            }
+            return cal.timeInMillis
+        }
+
+        fun formatDynamicKickoffTime(kickoffEpochMs: Long, zone: UserCountryZone, isSummer: Boolean): String =
+            com.example.data.repository.formatDynamicKickoffTime(kickoffEpochMs, zone, isSummer)
+
+        /**
+         * Strict Tier-1 Tournament Catalog Matcher:
+         * - Eliminates 2nd-division leagues (`Ligue 2`, `LaLiga Hypermotion`, `Segunda`, `Primera Federación`, `Championship`, `League One`, `League Two`, `Serie B`, `2. Bundesliga`)
+         * - Eliminates wrong regional/country leagues (`Côte d'Ivoire`, `Ivory Coast`, `Algeria`, `Congo`, `Andorra`, `Brazil Serie A`, `Scottish Premier`, `Austrian Bundesliga`, etc.)
+         */
+        fun matchTournamentCatalog(
+            rawLeague: String,
+            espnSlug: String = "",
+            sportsDbLeagueId: String = ""
+        ): TournamentCatalogItem? {
+            val slug = espnSlug.trim().lowercase(Locale.ROOT)
+            val sdbId = sportsDbLeagueId.trim()
+            if (slug.isNotEmpty() || sdbId.isNotEmpty()) {
+                val exactByMeta = ALL_TOURNAMENTS.firstOrNull {
+                    (slug.isNotEmpty() && it.espnSlug.equals(slug, ignoreCase = true)) ||
+                        (sdbId.isNotEmpty() && it.sportsDbLeagueId == sdbId)
+                }
+                if (exactByMeta != null) return exactByMeta
+            }
+
+            val lower = rawLeague.trim().lowercase(Locale.ROOT)
+                .replace(Regex("\\s+"), " ")
+            if (lower.isBlank()) return null
+
+            // Reject youth, women, reserve, futsal, friendly, or cup-only lower tiers globally
+            if (lower.contains("women") ||
+                lower.contains("feminine") ||
+                lower.contains("féminine") ||
+                lower.contains("femenina") ||
+                lower.contains("femminile") ||
+                lower.contains("frauen") ||
+                lower.contains("youth") ||
+                lower.contains("u17") ||
+                lower.contains("u19") ||
+                lower.contains("u20") ||
+                lower.contains("u21") ||
+                lower.contains("u23") ||
+                lower.contains("reserve")
+            ) {
+                return null
+            }
+
+            // 1. French Ligue 1 (`espnSlug == "fra.1"`, `sportsDbLeagueId == "4334"`)
+            val isRejectedLigue1 = lower.contains("côte d'ivoire") ||
+                lower.contains("cote d'ivoire") ||
+                lower.contains("cote divoire") ||
+                lower.contains("ivory coast") ||
+                lower.contains("ivoirienne") ||
+                lower.contains("algeria") ||
+                lower.contains("algérie") ||
+                lower.contains("algerie") ||
+                lower.contains("congo") ||
+                lower.contains("ligue 2") ||
+                lower.contains("tunisia") ||
+                lower.contains("tunisie") ||
+                lower.contains("senegal") ||
+                lower.contains("sénégal") ||
+                lower.contains("mali") ||
+                lower.contains("guinea") ||
+                lower.contains("guinée") ||
+                lower.contains("cameroon") ||
+                lower.contains("cameroun") ||
+                lower.contains("burkina") ||
+                lower.contains("niger") ||
+                lower.contains("benin") ||
+                lower.contains("togo") ||
+                lower.contains("gabon") ||
+                lower.contains("mauritania") ||
+                lower.contains("haiti") ||
+                lower.contains("romania") ||
+                lower.contains("indonesia")
+            if (!isRejectedLigue1 && (
+                    slug == "fra.1" ||
+                        sdbId == "4334" ||
+                        lower == "ligue 1" ||
+                        lower.contains("french ligue 1") ||
+                        lower.contains("france ligue 1") ||
+                        lower.contains("ligue 1 mcdonald") ||
+                        lower.contains("ligue 1 uber")
+                )
+            ) {
+                return ALL_TOURNAMENTS.first { it.tournamentId == "ligue_1" }
+            }
+
+            // 2. Spanish LaLiga Primera (`espnSlug == "esp.1"`, `sportsDbLeagueId == "4335"`)
+            val isRejectedLaLiga = lower.contains("hypermotion") ||
+                lower.contains("segunda") ||
+                lower.contains("federacion") ||
+                lower.contains("federación") ||
+                lower.contains("rfef") ||
+                lower.contains("andorra") ||
+                lower.contains("laliga 2") ||
+                lower.contains("la liga 2") ||
+                lower.contains("smartbank") ||
+                lower.contains("adelante") ||
+                lower.contains("tercera") ||
+                lower.contains("costa rica") ||
+                lower.contains("argentina") ||
+                lower.contains("colombia") ||
+                lower.contains("mexico") ||
+                lower.contains("venezuela") ||
+                lower.contains("ecuador") ||
+                lower.contains("chile") ||
+                lower.contains("peru") ||
+                lower.contains("uruguay") ||
+                lower.contains("paraguay") ||
+                lower.contains("bolivia")
+            if (!isRejectedLaLiga && (
+                    slug == "esp.1" ||
+                        sdbId == "4335" ||
+                        lower == "laliga" ||
+                        lower == "la liga" ||
+                        lower.contains("laliga ea sports") ||
+                        lower.contains("la liga ea sports") ||
+                        lower.contains("spanish la liga") ||
+                        lower.contains("spanish laliga") ||
+                        lower.contains("spain la liga") ||
+                        lower.contains("spain laliga") ||
+                        lower.contains("spanish primera") ||
+                        lower.contains("spain primera") ||
+                        lower == "primera division" ||
+                        lower == "primera división"
+                )
+            ) {
+                return ALL_TOURNAMENTS.first { it.tournamentId == "laliga" }
+            }
+
+            // 3. English Premier League (`espnSlug == "eng.1"`, `sportsDbLeagueId == "4328"`)
+            val isRejectedPremierLeague = lower.contains("championship") ||
+                lower.contains("league one") ||
+                lower.contains("league two") ||
+                lower.contains("national league") ||
+                lower.contains("premier league 2") ||
+                lower.contains("pl2") ||
+                lower.contains("scotland") ||
+                lower.contains("scottish") ||
+                lower.contains("egypt") ||
+                lower.contains("russia") ||
+                lower.contains("ukraine") ||
+                lower.contains("israel") ||
+                lower.contains("wales") ||
+                lower.contains("welsh") ||
+                lower.contains("ireland") ||
+                lower.contains("canada") ||
+                lower.contains("canadian") ||
+                lower.contains("south africa") ||
+                lower.contains("ghana") ||
+                lower.contains("nigeria") ||
+                lower.contains("kenya") ||
+                lower.contains("uganda") ||
+                lower.contains("zambia") ||
+                lower.contains("ethiopia") ||
+                lower.contains("tanzania") ||
+                lower.contains("jamaica") ||
+                lower.contains("trinidad") ||
+                lower.contains("singapore") ||
+                lower.contains("hong kong") ||
+                lower.contains("thai") ||
+                lower.contains("malaysia") ||
+                lower.contains("india") ||
+                lower.contains("bangladesh") ||
+                lower.contains("kazakhstan") ||
+                lower.contains("armenia") ||
+                lower.contains("azerbaijan") ||
+                lower.contains("belarus") ||
+                lower.contains("georgia") ||
+                lower.contains("iceland") ||
+                lower.contains("faroe") ||
+                lower.contains("malta") ||
+                lower.contains("bosnia") ||
+                lower.contains("kuwait") ||
+                lower.contains("bahrain") ||
+                lower.contains("jordan") ||
+                lower.contains("lebanon") ||
+                lower.contains("syria") ||
+                lower.contains("iraq") ||
+                lower.contains("oman") ||
+                lower.contains("libya") ||
+                lower.contains("sudan")
+            if (!isRejectedPremierLeague && (
+                    slug == "eng.1" ||
+                        sdbId == "4328" ||
+                        lower == "premier league" ||
+                        lower.contains("english premier league") ||
+                        lower.contains("england premier league")
+                )
+            ) {
+                return ALL_TOURNAMENTS.first { it.tournamentId == "premier_league" }
+            }
+
+            // 4. Italian Serie A (`espnSlug == "ita.1"`, `sportsDbLeagueId == "4332"`)
+            val isRejectedSerieA = lower.contains("serie b") ||
+                lower.contains("serie c") ||
+                lower.contains("serie d") ||
+                lower.contains("brazil") ||
+                lower.contains("brasil") ||
+                lower.contains("brasileiro") ||
+                lower.contains("brasileirao") ||
+                lower.contains("ecuador")
+            if (!isRejectedSerieA && (
+                    slug == "ita.1" ||
+                        sdbId == "4332" ||
+                        lower == "serie a" ||
+                        lower.contains("italian serie a") ||
+                        lower.contains("italy serie a") ||
+                        lower.contains("serie a enilive") ||
+                        lower.contains("serie a tim")
+                )
+            ) {
+                return ALL_TOURNAMENTS.first { it.tournamentId == "serie_a" }
+            }
+
+            // 5. German Bundesliga (`espnSlug == "ger.1"`, `sportsDbLeagueId == "4331"`)
+            val isRejectedBundesliga = lower.contains("2. bundesliga") ||
+                lower.contains("2 bundesliga") ||
+                lower.contains("bundesliga 2") ||
+                lower.contains("3. liga") ||
+                lower.contains("austria") ||
+                lower.contains("austrian") ||
+                lower.contains("oesterreich") ||
+                lower.contains("österreich") ||
+                lower.contains("admiral")
+            if (!isRejectedBundesliga && (
+                    slug == "ger.1" ||
+                        sdbId == "4331" ||
+                        lower == "bundesliga" ||
+                        lower == "1. bundesliga" ||
+                        lower.contains("german bundesliga") ||
+                        lower.contains("germany bundesliga") ||
+                        lower.contains("germany 1. bundesliga")
+                )
+            ) {
+                return ALL_TOURNAMENTS.first { it.tournamentId == "bundesliga" }
+            }
+
+            // 6. Moroccan Botola Pro (`espnSlug == "mar.1"`, `sportsDbLeagueId == "4520"`)
+            val isRejectedBotola = lower.contains("botola 2") ||
+                lower.contains("division 2") ||
+                lower.contains("amateur")
+            if (!isRejectedBotola && (
+                    slug == "mar.1" ||
+                        sdbId == "4520" ||
+                        lower.contains("botola") ||
+                        lower.contains("moroccan") ||
+                        (lower.contains("morocco") && lower.contains("pro"))
+                )
+            ) {
+                return ALL_TOURNAMENTS.first { it.tournamentId == "botola_pro" }
+            }
+
+            // 7. CAF Champions League (`espnSlug == "caf.champions"`, `sportsDbLeagueId == "4486"`)
+            if (slug == "caf.champions" ||
+                sdbId == "4486" ||
+                lower.contains("caf champions") ||
+                lower.contains("caf confederation")
+            ) {
+                return ALL_TOURNAMENTS.first { it.tournamentId == "caf_cl" }
+            }
+
+            // 8. UEFA Champions League (`espnSlug == "uefa.champions"`, `sportsDbLeagueId == "4480"`)
+            val isRejectedUcl = lower.contains("afc") ||
+                lower.contains("concacaf") ||
+                lower.contains("ofc") ||
+                lower.contains("caf")
+            if (!isRejectedUcl && (
+                    slug == "uefa.champions" ||
+                        sdbId == "4480" ||
+                        lower.contains("uefa champions") ||
+                        lower == "champions league" ||
+                        (lower.contains("europe") && lower.contains("champions league"))
+                )
+            ) {
+                return ALL_TOURNAMENTS.first { it.tournamentId == "uefa_cl" }
+            }
+
+            // 9. Roshn Saudi League (`espnSlug == "ksa.1"`, `sportsDbLeagueId == "4668"`)
+            val isRejectedSaudi = lower.contains("division 1") ||
+                lower.contains("first division") ||
+                lower.contains("yelo")
+            if (!isRejectedSaudi && (
+                    slug == "ksa.1" ||
+                        sdbId == "4668" ||
+                        lower.contains("saudi pro") ||
+                        lower.contains("roshn") ||
+                        (lower.contains("saudi") && lower.contains("professional league"))
+                )
+            ) {
+                return ALL_TOURNAMENTS.first { it.tournamentId == "saudi_pro" }
+            }
+
+            // 10. UEFA Europa League (`espnSlug == "uefa.europa"`, `sportsDbLeagueId == "4481"`)
+            if (slug == "uefa.europa" ||
+                sdbId == "4481" ||
+                lower.contains("uefa europa") ||
+                lower == "europa league" ||
+                (lower.contains("europa league") && !lower.contains("conference"))
+            ) {
+                return ALL_TOURNAMENTS.first { it.tournamentId == "uefa_el" }
+            }
+
+            return null
+        }
 
         val ALL_TOURNAMENTS = listOf(
             TournamentCatalogItem(

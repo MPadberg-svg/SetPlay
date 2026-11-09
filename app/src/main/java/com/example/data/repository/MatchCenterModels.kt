@@ -1806,7 +1806,18 @@ class MatchCenterEnricher(
         return FinalizedLineupRatings(updatedHome, updatedAway, homeAvg, awayAvg)
     }
 
-    private fun mapFormationToPitchNodesFromEntries(
+    internal fun parseFormationLines(formation: String): List<Int> {
+        val cleaned = formation.trim().replace(Regex("[^0-9-]"), "")
+        val parsed = cleaned.split("-").mapNotNull { it.trim().toIntOrNull() }.filter { it in 1..6 }
+        val validOutfield = if (parsed.size in 2..5 && parsed.sum() == 10) {
+            parsed
+        } else {
+            listOf(4, 3, 3)
+        }
+        return listOf(1) + validOutfield
+    }
+
+    internal fun mapFormationToPitchNodesFromEntries(
         teamKey: String,
         formation: String,
         entries: List<RawPlayerEntry>,
@@ -1815,15 +1826,48 @@ class MatchCenterEnricher(
         seed: Int,
         isPlayedOrLive: Boolean = true
     ): List<PitchPlayerNode> {
-        // Parse e.g. "4-3-3" -> [1, 4, 3, 3] or "4-2-3-1" -> [1, 4, 2, 3, 1]
-        val lines = listOf(1) + formation.split("-").mapNotNull { it.trim().toIntOrNull() }.ifEmpty { listOf(4, 3, 3) }
-        val positionLabelsByRow = listOf(
-            listOf("GK"),
-            listOf("LB", "LCB", "RCB", "RB", "RWB"),
-            listOf("LCM", "CDM", "RCM", "LM", "RM"),
-            listOf("LW", "CAM", "RW", "LAM", "RAM"),
-            listOf("ST", "CF", "RF")
-        )
+        // Parse e.g. "4-4-2" -> [1, 4, 4, 2], "4-1-4-1" -> [1, 4, 1, 4, 1], "3-4-2-1" -> [1, 3, 4, 2, 1], "4-2-3-1" -> [1, 4, 2, 3, 1]
+        val lines = parseFormationLines(formation)
+        val totalRows = lines.size
+        fun resolvePositionLabelForCoordinate(rowIdx: Int, colIdx: Int, countInLine: Int): String {
+            if (rowIdx == 0) return "GK"
+            if (rowIdx == 1) {
+                return when (countInLine) {
+                    3 -> listOf("LCB", "CB", "RCB").getOrElse(colIdx) { "CB" }
+                    5 -> listOf("LWB", "LCB", "CB", "RCB", "RWB").getOrElse(colIdx) { "CB" }
+                    else -> listOf("LB", "LCB", "RCB", "RB").getOrElse(colIdx) { "DF" }
+                }
+            }
+            if (rowIdx == totalRows - 1) {
+                return when (countInLine) {
+                    1 -> "ST"
+                    2 -> listOf("LST", "RST").getOrElse(colIdx) { "ST" }
+                    3 -> listOf("LW", "ST", "RW").getOrElse(colIdx) { "FW" }
+                    else -> "FW"
+                }
+            }
+            if (totalRows == 5 && rowIdx == 2) {
+                return when (countInLine) {
+                    1 -> "CDM"
+                    2 -> listOf("LDM", "RDM").getOrElse(colIdx) { "CDM" }
+                    4 -> listOf("LM", "LCM", "RCM", "RM").getOrElse(colIdx) { "CM" }
+                    else -> listOf("LCM", "CDM", "RCM").getOrElse(colIdx) { "CM" }
+                }
+            }
+            if (totalRows == 5 && rowIdx == 3) {
+                return when (countInLine) {
+                    2 -> listOf("LAM", "RAM").getOrElse(colIdx) { "CAM" }
+                    3 -> listOf("LW", "CAM", "RW").getOrElse(colIdx) { "CAM" }
+                    4 -> listOf("LM", "LAM", "RAM", "RM").getOrElse(colIdx) { "AM" }
+                    else -> "CAM"
+                }
+            }
+            return when (countInLine) {
+                4 -> listOf("LM", "LCM", "RCM", "RM").getOrElse(colIdx) { "CM" }
+                5 -> listOf("LWB", "LCM", "CDM", "RCM", "RWB").getOrElse(colIdx) { "CM" }
+                else -> listOf("LCM", "CDM", "RCM").getOrElse(colIdx) { "CM" }
+            }
+        }
 
         val hasExplicitEntryGoals = entries.any { it.goals > 0 }
         val nodes = mutableListOf<PitchPlayerNode>()
@@ -1831,8 +1875,7 @@ class MatchCenterEnricher(
 
         lines.forEachIndexed { rowIdx, countInLine ->
             for (colIdx in 0 until countInLine) {
-                val posLabels = positionLabelsByRow.getOrElse(rowIdx) { listOf("FW") }
-                val posCode = posLabels.getOrElse(colIdx) { posLabels.last() }
+                val posCode = resolvePositionLabelForCoordinate(rowIdx, colIdx, countInLine)
                 val entry = entries.getOrElse(playerCursor) {
                     RawPlayerEntry(
                         name = posCode,
@@ -1933,7 +1976,9 @@ class MatchCenterEnricher(
         seed: Int,
         isPlayedOrLive: Boolean
     ): MatchLineupsData? {
-        val lineupsArr = apiFootballFixtureJson?.optJSONArray("lineups") ?: return null
+        val lineupsArr = apiFootballFixtureJson?.optJSONArray("lineups")
+            ?: apiFootballFixtureJson?.optJSONArray("response")
+            ?: return null
         if (lineupsArr.length() < 2) return null
 
         var homeLineupObj = lineupsArr.optJSONObject(0)
@@ -1969,7 +2014,7 @@ class MatchCenterEnricher(
         )
         val telemetryById = mutableMapOf<Int, ApiFootballPlayerTelemetry>()
         val telemetryByName = mutableMapOf<String, ApiFootballPlayerTelemetry>()
-        val playersTeamsArr = apiFootballFixtureJson.optJSONArray("players")
+        val playersTeamsArr = apiFootballFixtureJson?.optJSONArray("players")
         if (playersTeamsArr != null) {
             for (tIdx in 0 until playersTeamsArr.length()) {
                 val teamPlayersArr = playersTeamsArr.optJSONObject(tIdx)?.optJSONArray("players") ?: continue
@@ -2032,16 +2077,17 @@ class MatchCenterEnricher(
         }
 
         fun parseSideEntries(lineupObj: JSONObject?, squadFallback: List<RawPlayerEntry>): Pair<List<RawPlayerEntry>, List<RawPlayerEntry>> {
-            val starters = mutableListOf<RawPlayerEntry>()
+            val startersWithGrid = mutableListOf<Pair<Int, RawPlayerEntry>>()
             val bench = mutableListOf<RawPlayerEntry>()
             val startArr = lineupObj?.optJSONArray("startXI")
             val subArr = lineupObj?.optJSONArray("substitutes")
 
-            fun parsePlayerWrapper(wrapper: JSONObject?, idx: Int, isStarter: Boolean): RawPlayerEntry? {
+            fun parsePlayerWrapper(wrapper: JSONObject?, idx: Int, isStarter: Boolean): Pair<Int, RawPlayerEntry>? {
                 val pObj = wrapper?.optJSONObject("player") ?: return null
                 val pName = pObj.optString("name", "").trim()
                 if (pName.isBlank()) return null
                 val pId = pObj.optInt("id", 0)
+                val sofaId = pObj.optLong("sofascoreId", pObj.optLong("sofascore_id", 0L))
                 val num = pObj.optInt("number", idx + 1)
                 val posRaw = pObj.optString("pos", if (idx == 0 && isStarter) "G" else "M").uppercase(Locale.ROOT)
                 val posCode = when (posRaw) {
@@ -2051,16 +2097,27 @@ class MatchCenterEnricher(
                     "F" -> "FW"
                     else -> posRaw
                 }
+                val gridRaw = pObj.optString("grid", "").trim()
+                val gridSortKey = if (gridRaw.contains(":")) {
+                    val r = gridRaw.substringBefore(":").toIntOrNull() ?: (idx + 1)
+                    val c = gridRaw.substringAfter(":").toIntOrNull() ?: 1
+                    r * 100 + c
+                } else {
+                    (idx + 1) * 100
+                }
                 val tel = (if (pId > 0) telemetryById[pId] else null) ?: telemetryByName[normalizePlayerNameForMatch(pName)]
                 val officialApiSportsPhoto = tel?.photoUrl?.takeIf { it.isNotBlank() }
                     ?: buildApiSportsPlayerPhotoUrl(pId.toLong())
+                val sofascoreCutoutFallback = buildSofascorePlayerPhotoUrl(sofaId)
+                    .ifBlank { resolveSofascoreFallbackPlayerPhoto(pName) }
                 val resolvedPhoto = officialApiSportsPhoto
+                    .ifBlank { sofascoreCutoutFallback }
                     .ifBlank { resolvePlayerPhotoFromSquad(pName, squadFallback) }
                     .ifBlank { resolveCuratedOrCachedPlayerPhoto(pName) }
                 if (resolvedPhoto.isNotBlank()) {
                     cachePlayerPhoto(pName, resolvedPhoto)
                 }
-                return RawPlayerEntry(
+                return gridSortKey to RawPlayerEntry(
                     name = pName,
                     jersey = num,
                     positionAbbr = posCode,
@@ -2086,15 +2143,16 @@ class MatchCenterEnricher(
 
             if (startArr != null) {
                 for (i in 0 until startArr.length()) {
-                    parsePlayerWrapper(startArr.optJSONObject(i), i, isStarter = true)?.let { starters.add(it) }
+                    parsePlayerWrapper(startArr.optJSONObject(i), i, isStarter = true)?.let { startersWithGrid.add(it) }
                 }
             }
             if (subArr != null) {
                 for (i in 0 until subArr.length()) {
-                    parsePlayerWrapper(subArr.optJSONObject(i), i, isStarter = false)?.let { bench.add(it) }
+                    parsePlayerWrapper(subArr.optJSONObject(i), i, isStarter = false)?.let { bench.add(it.second) }
                 }
             }
-            return starters to bench
+            val orderedStarters = startersWithGrid.sortedBy { it.first }.map { it.second }
+            return orderedStarters to bench
         }
 
         val (homeStarters, homeBenchRaw) = parseSideEntries(homeLineupObj, tsdbHomeSquad)

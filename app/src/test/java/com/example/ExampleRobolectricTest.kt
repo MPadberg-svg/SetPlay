@@ -4119,10 +4119,180 @@ class TvSyncDeviceSeparationComposeTest {
         // Unpin match and verify removal
         recreatedVm.togglePinMatch("epl_liv_ars")
         assertFalse(recreatedVm.pinnedMatchIds.value.contains("epl_liv_ars"))
+
+        // 5. Verify Merged Option D adaptive launcher icons and 16:9 TV banner load cleanly
+        val bgDrawable = androidx.core.content.ContextCompat.getDrawable(app, R.drawable.ic_launcher_background)
+        val fgDrawable = androidx.core.content.ContextCompat.getDrawable(app, R.drawable.ic_launcher_foreground)
+        val bannerDrawable = androidx.core.content.ContextCompat.getDrawable(app, R.drawable.tv_banner)
+        assertNotNull("ic_launcher_background must inflate cleanly", bgDrawable)
+        assertNotNull("ic_launcher_foreground must inflate cleanly", fgDrawable)
+        assertNotNull("tv_banner must inflate cleanly", bannerDrawable)
+        assertEquals(108, bgDrawable?.intrinsicWidth)
+        assertEquals(108, bgDrawable?.intrinsicHeight)
+        assertEquals(108, fgDrawable?.intrinsicWidth)
+        assertEquals(108, fgDrawable?.intrinsicHeight)
+        assertEquals(320, bannerDrawable?.intrinsicWidth)
+        assertEquals(180, bannerDrawable?.intrinsicHeight)
+    }
+
+    @Test
+    fun `test KickOff 4 core production fixes - strict Tier-1 filtering, dynamic timezone kickoff, MM_SS live clock, and tactical lineups`() {
+        val footballRepo = com.example.data.repository.FootballRepository
+        val enricher = com.example.data.repository.MatchCenterEnricher(okhttp3.OkHttpClient())
+
+        // 1. Strict Tier-1 Tournament Filtering (reject 2nd division & wrong regional leagues)
+        assertNotNull(footballRepo.matchTournamentCatalog("French Ligue 1", espnSlug = "fra.1", sportsDbLeagueId = "4334"))
+        assertNull(footballRepo.matchTournamentCatalog("Côte d'Ivoire Ligue 1"))
+        assertNull(footballRepo.matchTournamentCatalog("Ivory Coast Ligue 1"))
+        assertNull(footballRepo.matchTournamentCatalog("Algeria Ligue 1"))
+        assertNull(footballRepo.matchTournamentCatalog("Congo Ligue 1"))
+        assertNull(footballRepo.matchTournamentCatalog("French Ligue 2"))
+
+        assertNotNull(footballRepo.matchTournamentCatalog("Spanish LaLiga", espnSlug = "esp.1", sportsDbLeagueId = "4335"))
+        assertNull(footballRepo.matchTournamentCatalog("LaLiga Hypermotion"))
+        assertNull(footballRepo.matchTournamentCatalog("Spanish Segunda División"))
+        assertNull(footballRepo.matchTournamentCatalog("Primera Federación"))
+        assertNull(footballRepo.matchTournamentCatalog("Andorra Primera Divisió"))
+
+        assertNotNull(footballRepo.matchTournamentCatalog("English Premier League", espnSlug = "eng.1", sportsDbLeagueId = "4328"))
+        assertNull(footballRepo.matchTournamentCatalog("English League Championship"))
+        assertNull(footballRepo.matchTournamentCatalog("English League One"))
+        assertNull(footballRepo.matchTournamentCatalog("English League Two"))
+
+        assertNotNull(footballRepo.matchTournamentCatalog("Italian Serie A", espnSlug = "ita.1", sportsDbLeagueId = "4332"))
+        assertNull(footballRepo.matchTournamentCatalog("Italian Serie B"))
+        assertNull(footballRepo.matchTournamentCatalog("Brazilian Serie A"))
+
+        assertNotNull(footballRepo.matchTournamentCatalog("German Bundesliga", espnSlug = "ger.1", sportsDbLeagueId = "4331"))
+        assertNull(footballRepo.matchTournamentCatalog("German 2. Bundesliga"))
+        assertNull(footballRepo.matchTournamentCatalog("Austrian Bundesliga"))
+
+        // 2. Timezone-Accurate Kickoff Times Synchronized with UserCountryZone
+        // 2026-11-08T20:00:00Z (UTC) -> 1794168000000L
+        val utcEpochMs = 1794168000000L
+        val moroccoZone = com.example.data.repository.UserZoneRegistry.getZoneByCode("MA")
+        val saudiZone = com.example.data.repository.UserZoneRegistry.getZoneByCode("SA")
+        val usEastZone = com.example.data.repository.UserZoneRegistry.getZoneByCode("US")
+
+        assertEquals("20:00", com.example.data.repository.formatDynamicKickoffTime(utcEpochMs, moroccoZone, isSummer = false)) // Ramadan GMT+0
+        assertEquals("21:00", com.example.data.repository.formatDynamicKickoffTime(utcEpochMs, moroccoZone, isSummer = true))  // Morocco GMT+1
+        assertEquals("23:00", com.example.data.repository.formatDynamicKickoffTime(utcEpochMs, saudiZone, isSummer = false))   // KSA GMT+3
+        assertEquals("15:00", com.example.data.repository.formatDynamicKickoffTime(utcEpochMs, usEastZone, isSummer = false))  // US EST GMT-5
+
+        // 3. Real-Time MM:SS Live Match Clocks
+        val sampleLiveMatch = com.example.data.repository.FootballMatch(
+            matchId = "ucl_rm_mci",
+            tournamentId = "uefa_cl",
+            tournamentName = "UEFA Champions League",
+            tournamentRegion = "Europe",
+            stageOrRound = "League Phase",
+            homeTeamId = "rm",
+            homeTeamName = "Real Madrid",
+            homeTeamBadge = "",
+            awayTeamId = "mci",
+            awayTeamName = "Manchester City",
+            awayTeamBadge = "",
+            homeScore = 2,
+            awayScore = 1,
+            kickoffTimeFormatted = "21:00",
+            kickoffDateFormatted = "Today",
+            status = com.example.data.repository.MatchStatus.LIVE,
+            liveMinuteOrBadge = "19'",
+            stadiumName = "Santiago Bernabéu",
+            cityName = "Madrid",
+            beinChannel = "beIN Sports 1 HD",
+            beinChannelNumberHint = "1",
+            dayTab = com.example.data.repository.MatchDayTab.TODAY,
+            kickoffEpochMs = utcEpochMs
+        )
+        val clock19 = com.example.ui.home.parseLiveMatchClockTelemetry(sampleLiveMatch, elapsedSecondOffset = 24)
+        assertEquals("19:24", clock19.heroReadoutSeconds)
+
+        val stoppageMatch = sampleLiveMatch.copy(liveMinuteOrBadge = "45+2'")
+        val clockStoppage = com.example.ui.home.parseLiveMatchClockTelemetry(stoppageMatch, elapsedSecondOffset = 15)
+        assertEquals("45:00+02:15", clockStoppage.heroReadoutSeconds)
+
+        val secondHalfMatch = sampleLiveMatch.copy(liveMinuteOrBadge = "78'")
+        val clock78 = com.example.ui.home.parseLiveMatchClockTelemetry(secondHalfMatch, elapsedSecondOffset = 42)
+        assertEquals("78:42", clock78.heroReadoutSeconds)
+
+        // 4. Accurate Lineups & 100% Real Player Cutouts (4-4-2, 4-1-4-1, 3-4-2-1, 4-2-3-1)
+        assertEquals(listOf(1, 4, 4, 2), enricher.parseFormationLines("4-4-2"))
+        assertEquals(listOf(1, 4, 1, 4, 1), enricher.parseFormationLines("4-1-4-1"))
+        assertEquals(listOf(1, 3, 4, 2, 1), enricher.parseFormationLines("3-4-2-1"))
+        assertEquals(listOf(1, 4, 2, 3, 1), enricher.parseFormationLines("4-2-3-1"))
+
+        val apiFootballFixturePayload = org.json.JSONObject(
+            """
+            {
+              "lineups": [
+                {
+                  "team": { "name": "Real Madrid" },
+                  "formation": "4-1-4-1",
+                  "coach": { "name": "Carlo Ancelotti" },
+                  "startXI": [
+                    { "player": { "id": 730, "name": "Thibaut Courtois", "number": 1, "pos": "G", "grid": "1:1" } },
+                    { "player": { "id": 738, "name": "Dani Carvajal", "number": 2, "pos": "D", "grid": "2:1" } },
+                    { "player": { "id": 742, "name": "Antonio Rüdiger", "number": 22, "pos": "D", "grid": "2:2" } },
+                    { "player": { "id": 743, "name": "Éder Militão", "number": 3, "pos": "D", "grid": "2:3" } },
+                    { "player": { "id": 745, "name": "Ferland Mendy", "number": 23, "pos": "D", "grid": "2:4" } },
+                    { "player": { "id": 1271, "name": "Aurélien Tchouaméni", "number": 14, "pos": "M", "grid": "3:1" } },
+                    { "player": { "id": 754, "name": "Federico Valverde", "number": 8, "pos": "M", "grid": "4:1" } },
+                    { "player": { "id": 129718, "name": "Jude Bellingham", "number": 5, "pos": "M", "grid": "4:2" } },
+                    { "player": { "id": 2285, "name": "Eduardo Camavinga", "number": 6, "pos": "M", "grid": "4:3" } },
+                    { "player": { "id": 762, "name": "Vinícius Júnior", "number": 7, "pos": "F", "grid": "4:4" } },
+                    { "player": { "id": 278, "name": "Kylian Mbappé", "number": 9, "pos": "F", "grid": "5:1" } }
+                  ],
+                  "substitutes": [
+                    { "player": { "id": 752, "name": "Luka Modrić", "number": 10, "pos": "M" } }
+                  ]
+                },
+                {
+                  "team": { "name": "Manchester City" },
+                  "formation": "3-4-2-1",
+                  "coach": { "name": "Pep Guardiola" },
+                  "startXI": [
+                    { "player": { "id": 617, "name": "Ederson", "number": 31, "pos": "G", "grid": "1:1" } },
+                    { "player": { "id": 626, "name": "Kyle Walker", "number": 2, "pos": "D", "grid": "2:1" } },
+                    { "player": { "id": 567, "name": "Rúben Dias", "number": 3, "pos": "D", "grid": "2:2" } },
+                    { "player": { "id": 129033, "name": "Joško Gvardiol", "number": 24, "pos": "D", "grid": "2:3" } },
+                    { "player": { "id": 627, "name": "John Stones", "number": 5, "pos": "M", "grid": "3:1" } },
+                    { "player": { "id": 44, "name": "Rodri", "number": 16, "pos": "M", "grid": "3:2" } },
+                    { "player": { "id": 636, "name": "Bernardo Silva", "number": 20, "pos": "M", "grid": "3:3" } },
+                    { "player": { "id": 1422, "name": "Jérémy Doku", "number": 11, "pos": "M", "grid": "3:4" } },
+                    { "player": { "id": 629, "name": "Kevin De Bruyne", "number": 17, "pos": "M", "grid": "4:1" } },
+                    { "player": { "id": 631, "name": "Phil Foden", "number": 47, "pos": "M", "grid": "4:2" } },
+                    { "player": { "id": 1100, "name": "Erling Haaland", "number": 9, "pos": "F", "grid": "5:1" } }
+                  ],
+                  "substitutes": [
+                    { "player": { "id": 633, "name": "İlkay Gündoğan", "number": 19, "pos": "M" } }
+                  ]
+                }
+              ]
+            }
+            """.trimIndent()
+        )
+
+        val dossier = enricher.buildCompleteDossier(
+            match = sampleLiveMatch,
+            raw = com.example.data.repository.MatchCenterEnricher.LiveDossierRawPayload(
+                apiFootballFixtureJson = apiFootballFixturePayload
+            ),
+            countryZone = moroccoZone
+        )
+        assertEquals("4-1-4-1", dossier.lineups.homeFormation)
+        assertEquals("3-4-2-1", dossier.lineups.awayFormation)
+        assertEquals(11, dossier.lineups.homeStartingXI.size)
+        assertEquals(11, dossier.lineups.awayStartingXI.size)
+        // Verify 4-1-4-1 row counts: row 0 = 1 (GK), row 1 = 4 (DF), row 2 = 1 (CDM), row 3 = 4 (MF), row 4 = 1 (ST)
+        assertEquals(1, dossier.lineups.homeStartingXI.count { it.rowIndex == 0 })
+        assertEquals(4, dossier.lineups.homeStartingXI.count { it.rowIndex == 1 })
+        assertEquals(1, dossier.lineups.homeStartingXI.count { it.rowIndex == 2 })
+        assertEquals(4, dossier.lineups.homeStartingXI.count { it.rowIndex == 3 })
+        assertEquals(1, dossier.lineups.homeStartingXI.count { it.rowIndex == 4 })
+        // Verify official API-Football player cutout URLs
+        assertEquals("https://media.api-sports.io/football/players/278.png", dossier.lineups.homeStartingXI[10].photoUrl)
+        assertEquals("https://media.api-sports.io/football/players/752.png", dossier.lineups.homeBench[0].photoUrl)
     }
 }
-
-
-
-
 

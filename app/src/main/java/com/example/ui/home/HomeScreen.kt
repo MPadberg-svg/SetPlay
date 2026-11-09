@@ -143,6 +143,8 @@ import com.example.data.repository.SeasonTimeMode
 import com.example.data.repository.SyncProgress
 import com.example.data.repository.UserCountryZone
 import com.example.data.repository.UserZoneRegistry
+import com.example.data.repository.formatDynamicKickoffTime
+import kotlinx.coroutines.delay
 import com.example.ui.theme.AmberGold
 import com.example.ui.theme.ArenaFloodlightLime
 import com.example.ui.theme.ArenaPitchGreen
@@ -489,6 +491,8 @@ fun HomeScreen(
                         ) { index, match ->
                             FlashscoreMatchCard(
                                 match = match,
+                                selectedCountryZone = selectedCountryZone,
+                                selectedSeasonTimeMode = selectedSeasonTimeMode,
                                 utcOffsetBadge = selectedCountryZone.getUtcOffsetBadge(mode = selectedSeasonTimeMode),
                                 isHomeTeamFavorite = favoriteTeams.any {
                                     it.teamName.equals(match.homeTeamName, ignoreCase = true) ||
@@ -2084,6 +2088,8 @@ private fun PinnedFavoriteTeamsSection(
                     HorizontalDivider(color = ChampagneSubtleBorder, thickness = 0.5.dp)
                     FlashscoreMatchCard(
                         match = match,
+                        selectedCountryZone = selectedCountryZone,
+                        selectedSeasonTimeMode = selectedSeasonTimeMode,
                         utcOffsetBadge = selectedCountryZone.getUtcOffsetBadge(mode = selectedSeasonTimeMode),
                         isHomeTeamFavorite = favoriteTeams.any {
                             it.teamName.equals(match.homeTeamName, ignoreCase = true) ||
@@ -2501,7 +2507,8 @@ internal data class LiveMatchClockTelemetry(
     val bottomBadge: String,       // "HT 0-1", "LIVE MIN", "GMT+1", "FULL TIME"
     val statusExplanation: String, // "2ND HALF • 86' PLAYED", "1ST HALF • 41' PLAYED"
     val remainingLabel: String,    // "4' TO 90'", "4' TO HT", "BREAK"
-    val progressFraction: Float    // 0.06f..1.0f
+    val progressFraction: Float,   // 0.06f..1.0f
+    val heroReadoutSeconds: String = heroReadout // "19:24", "45:00+02:15", "78:42"
 )
 
 internal fun parseLiveMatchProgressFraction(liveBadge: String, status: MatchStatus): Float {
@@ -2529,9 +2536,12 @@ internal fun parseLiveMatchProgressFraction(liveBadge: String, status: MatchStat
 
 internal fun parseLiveMatchClockTelemetry(
     match: FootballMatch,
-    utcOffsetBadge: String = "GMT+1"
+    utcOffsetBadge: String = "GMT+1",
+    elapsedSecondOffset: Int = 0,
+    dynamicKickoffTime: String? = null
 ): LiveMatchClockTelemetry {
     val clean = match.liveMinuteOrBadge.trim()
+    val safeOffsetSec = elapsedSecondOffset.coerceAtLeast(0)
     return when (match.status) {
         MatchStatus.HALFTIME -> {
             val htScore = match.halfTimeScore?.takeIf { it.isNotBlank() }
@@ -2541,7 +2551,8 @@ internal fun parseLiveMatchClockTelemetry(
                 bottomBadge = if (htScore != null) "HT $htScore" else "45' PLAYED",
                 statusExplanation = "HALF-TIME INTERVAL • 45' COMPLETED",
                 remainingLabel = if (htScore != null) "HT: $htScore" else "2ND HALF SOON",
-                progressFraction = 0.50f
+                progressFraction = 0.50f,
+                heroReadoutSeconds = "HT"
             )
         }
         MatchStatus.LIVE -> {
@@ -2553,15 +2564,47 @@ internal fun parseLiveMatchClockTelemetry(
                     bottomBadge = if (htScore != null) "HT $htScore" else "45' PLAYED",
                     statusExplanation = "HALF-TIME INTERVAL • 45' COMPLETED",
                     remainingLabel = if (htScore != null) "HT: $htScore" else "2ND HALF SOON",
-                    progressFraction = 0.50f
+                    progressFraction = 0.50f,
+                    heroReadoutSeconds = "HT"
                 )
             }
+            val explicitStoppageClock = Regex("(\\d{1,3}):(\\d{2})\\+(\\d{1,2}):(\\d{2})").find(clean)
+            val explicitMmSsClock = if (explicitStoppageClock == null) Regex("(\\d{1,3}):(\\d{2})").find(clean) else null
             val apostropheMatch = Regex("(\\d{1,3})(\\+\\d{1,2})?\\s*'").find(clean)
             val withoutHalfPrefix = clean.replace(Regex("\\b[12]H\\b", RegexOption.IGNORE_CASE), "")
             val fallbackMin = Regex("\\d{1,3}").find(withoutHalfPrefix)?.value?.toIntOrNull()
-            val baseMinute = apostropheMatch?.groupValues?.getOrNull(1)?.toIntOrNull() ?: fallbackMin ?: 45
-            val stoppageSuffix = apostropheMatch?.groupValues?.getOrNull(2).orEmpty()
+            val baseMinute = explicitStoppageClock?.groupValues?.getOrNull(1)?.toIntOrNull()
+                ?: explicitMmSsClock?.groupValues?.getOrNull(1)?.toIntOrNull()
+                ?: apostropheMatch?.groupValues?.getOrNull(1)?.toIntOrNull()
+                ?: fallbackMin
+                ?: 45
+            val stoppageSuffix = when {
+                explicitStoppageClock != null -> "+${explicitStoppageClock.groupValues[3].toIntOrNull() ?: 1}"
+                else -> apostropheMatch?.groupValues?.getOrNull(2).orEmpty()
+            }
             val heroMin = "${baseMinute}${stoppageSuffix}'"
+            val heroMmSs = when {
+                explicitStoppageClock != null -> {
+                    val stopMin = explicitStoppageClock.groupValues[3].toIntOrNull() ?: 0
+                    val stopSec = explicitStoppageClock.groupValues[4].toIntOrNull() ?: 0
+                    val totalStopSec = stopMin * 60 + stopSec + safeOffsetSec
+                    String.format(java.util.Locale.US, "%02d:00+%02d:%02d", baseMinute, totalStopSec / 60, totalStopSec % 60)
+                }
+                stoppageSuffix.isNotEmpty() -> {
+                    val stopMin = stoppageSuffix.removePrefix("+").toIntOrNull() ?: 1
+                    val totalStopSec = stopMin * 60 + safeOffsetSec
+                    String.format(java.util.Locale.US, "%02d:00+%02d:%02d", baseMinute, totalStopSec / 60, totalStopSec % 60)
+                }
+                explicitMmSsClock != null -> {
+                    val initSec = explicitMmSsClock.groupValues[2].toIntOrNull() ?: 0
+                    val totalSec = baseMinute * 60 + initSec + safeOffsetSec
+                    String.format(java.util.Locale.US, "%02d:%02d", totalSec / 60, totalSec % 60)
+                }
+                else -> {
+                    val totalSec = baseMinute * 60 + safeOffsetSec
+                    String.format(java.util.Locale.US, "%02d:%02d", totalSec / 60, totalSec % 60)
+                }
+            }
 
             val isSecondHalf = clean.contains("2H", ignoreCase = true) || baseMinute > 45
             val periodLabel = when {
@@ -2594,7 +2637,8 @@ internal fun parseLiveMatchClockTelemetry(
                 bottomBadge = if (htScore != null && isSecondHalf) "HT $htScore" else "LIVE MIN",
                 statusExplanation = explanation,
                 remainingLabel = remaining,
-                progressFraction = parseLiveMatchProgressFraction(clean, match.status)
+                progressFraction = parseLiveMatchProgressFraction(clean, match.status),
+                heroReadoutSeconds = heroMmSs
             )
         }
         MatchStatus.FINISHED -> {
@@ -2605,17 +2649,21 @@ internal fun parseLiveMatchClockTelemetry(
                 bottomBadge = if (htScore != null) "HT $htScore" else "90' FINAL",
                 statusExplanation = "MATCH FINISHED",
                 remainingLabel = "FINAL",
-                progressFraction = 1.0f
+                progressFraction = 1.0f,
+                heroReadoutSeconds = "FT"
             )
         }
         MatchStatus.UPCOMING -> {
+            val resolvedKickoff = dynamicKickoffTime?.takeIf { it.isNotBlank() }
+                ?: clean.ifBlank { match.kickoffTimeFormatted }
             LiveMatchClockTelemetry(
                 periodBadge = "KICKOFF",
-                heroReadout = clean.ifBlank { match.kickoffTimeFormatted },
+                heroReadout = resolvedKickoff,
                 bottomBadge = utcOffsetBadge,
                 statusExplanation = "UPCOMING KICKOFF",
                 remainingLabel = "SCHEDULED",
-                progressFraction = 0f
+                progressFraction = 0f,
+                heroReadoutSeconds = resolvedKickoff
             )
         }
     }
@@ -2898,6 +2946,8 @@ private fun LiveBroadcastEqualizerBars() {
 @Composable
 private fun FlashscoreMatchCard(
     match: FootballMatch,
+    selectedCountryZone: UserCountryZone = UserZoneRegistry.defaultCountryZone,
+    selectedSeasonTimeMode: SeasonTimeMode = SeasonTimeMode.AUTO,
     utcOffsetBadge: String = "GMT+1",
     isHomeTeamFavorite: Boolean,
     isAwayTeamFavorite: Boolean,
@@ -3008,8 +3058,45 @@ private fun FlashscoreMatchCard(
                     )
                     .padding(horizontal = 12.dp, vertical = 9.dp)
             ) {
-                val clockTelemetry = remember(match.liveMinuteOrBadge, match.status, match.halfTimeScore, match.kickoffTimeFormatted, utcOffsetBadge) {
-                    parseLiveMatchClockTelemetry(match, utcOffsetBadge)
+                val isSummerTime = remember(selectedCountryZone, selectedSeasonTimeMode) {
+                    selectedCountryZone.isSummerTimeActive(mode = selectedSeasonTimeMode)
+                }
+                val dynamicKickoffTime = remember(match.kickoffEpochMs, match.kickoffTimeFormatted, selectedCountryZone, isSummerTime) {
+                    if (match.kickoffEpochMs > 0L) {
+                        formatDynamicKickoffTime(match.kickoffEpochMs, selectedCountryZone, isSummerTime)
+                    } else {
+                        match.kickoffTimeFormatted
+                    }
+                }
+                val periodStartEpochMs = remember(match.matchId, match.liveMinuteOrBadge, match.status) {
+                    val seedSec = (abs(match.matchId.hashCode()) % 52)
+                    System.currentTimeMillis() - (seedSec * 1000L)
+                }
+                var liveElapsedSeconds by remember(periodStartEpochMs) {
+                    mutableIntStateOf(((System.currentTimeMillis() - periodStartEpochMs) / 1000L).toInt().coerceAtLeast(0))
+                }
+                if (match.status == MatchStatus.LIVE) {
+                    LaunchedEffect(Unit) {
+                        while (true) {
+                            liveElapsedSeconds = ((System.currentTimeMillis() - periodStartEpochMs) / 1000L).toInt().coerceAtLeast(0)
+                            delay(1000L)
+                        }
+                    }
+                }
+                val clockTelemetry = remember(
+                    match.liveMinuteOrBadge,
+                    match.status,
+                    match.halfTimeScore,
+                    dynamicKickoffTime,
+                    utcOffsetBadge,
+                    liveElapsedSeconds
+                ) {
+                    parseLiveMatchClockTelemetry(
+                        match = match,
+                        utcOffsetBadge = utcOffsetBadge,
+                        elapsedSecondOffset = if (match.status == MatchStatus.LIVE) liveElapsedSeconds else 0,
+                        dynamicKickoffTime = dynamicKickoffTime
+                    )
                 }
 
                 // Match Main Row: 3-Tier Broadcast Digital Clock Pod (Left) + Dual Team Scoreboard Rows (Right)
@@ -3067,11 +3154,16 @@ private fun FlashscoreMatchCard(
                                 )
                             }
 
-                            // Middle Tier: Hero Match Minute ("86'", "41'", "HT") or Kickoff Time ("16:30")
+                            // Middle Tier: Live MM:SS Clock ("19:24", "45:00+02:15", "HT") or Kickoff Time ("16:30")
+                            val displayClockText = if (match.status == MatchStatus.LIVE) {
+                                clockTelemetry.heroReadoutSeconds
+                            } else {
+                                clockTelemetry.heroReadout
+                            }
                             Row(
                                 verticalAlignment = Alignment.CenterVertically,
                                 horizontalArrangement = Arrangement.Center,
-                                modifier = Modifier.padding(vertical = 4.dp, horizontal = 4.dp)
+                                modifier = Modifier.padding(vertical = 4.dp, horizontal = 3.dp)
                             ) {
                                 if (isLive) {
                                     Box(
@@ -3087,14 +3179,18 @@ private fun FlashscoreMatchCard(
                                     Spacer(modifier = Modifier.width(3.dp))
                                 }
                                 Text(
-                                    text = clockTelemetry.heroReadout,
+                                    text = displayClockText,
                                     color = when (match.status) {
                                         MatchStatus.LIVE, MatchStatus.HALFTIME -> Color.White
                                         MatchStatus.FINISHED -> Champagne
                                         MatchStatus.UPCOMING -> Color.White
                                     },
-                                    fontSize = if (isLive) 14.sp else 13.sp,
-                                    lineHeight = 14.5.sp,
+                                    fontSize = when {
+                                        displayClockText.length > 6 -> 9.5.sp
+                                        isLive -> 12.5.sp
+                                        else -> 13.sp
+                                    },
+                                    lineHeight = 14.sp,
                                     fontWeight = FontWeight.ExtraBold,
                                     style = TabularNumeralTextStyle,
                                     textAlign = TextAlign.Center,
