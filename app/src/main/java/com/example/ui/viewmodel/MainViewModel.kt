@@ -766,6 +766,24 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun selectTournamentFilter(filterId: String) {
         _selectedTournamentFilter.value = filterId
+        when (filterId) {
+            "CAT_EUROPEAN" -> {
+                _selectedCompetitionCategory.value = CompetitionCategory.EUROPEAN
+                return
+            }
+            "CAT_AFRICAN_ARAB" -> {
+                _selectedCompetitionCategory.value = CompetitionCategory.AFRICAN_ARAB
+                return
+            }
+            "CAT_INTERNATIONAL" -> {
+                _selectedCompetitionCategory.value = CompetitionCategory.INTERNATIONAL
+                return
+            }
+            "MY_TEAMS" -> {
+                _selectedCompetitionCategory.value = null
+                return
+            }
+        }
         val activePillar = _selectedCompetitionCategory.value
         if (activePillar != null && filterId != "ALL" && filterId != "LIVE" && filterId != "MY_TEAMS") {
             val catalogItem = FootballRepository.ALL_TOURNAMENTS.firstOrNull { it.tournamentId == filterId }
@@ -777,9 +795,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun selectCompetitionCategory(category: CompetitionCategory?) {
         _selectedCompetitionCategory.value = category
-        if (category != null) {
-            val currentFilter = _selectedTournamentFilter.value
-            if (currentFilter != "ALL" && currentFilter != "LIVE" && currentFilter != "MY_TEAMS") {
+        val currentFilter = _selectedTournamentFilter.value
+        if (category == null) {
+            if (currentFilter.startsWith("CAT_") || currentFilter == "MY_TEAMS") {
+                _selectedTournamentFilter.value = "ALL"
+            }
+        } else {
+            if (currentFilter != "ALL" && currentFilter != "LIVE") {
                 val catalogItem = FootballRepository.ALL_TOURNAMENTS.firstOrNull { it.tournamentId == currentFilter }
                 if (catalogItem == null || catalogItem.category != category) {
                     _selectedTournamentFilter.value = "ALL"

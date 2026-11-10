@@ -413,9 +413,13 @@ class InternationalRankingResolver(
                 .trim()
 
             return when {
+                cleaned == "turkiye" || cleaned == "turkey" -> "turkiye"
                 cleaned == "cote d ivoire" || cleaned == "cote divoire" || cleaned == "ivory coast" -> "ivory coast"
                 cleaned == "korea" || cleaned == "south korea" || cleaned == "korea south" || cleaned == "taeguk warriors" -> "south korea"
                 cleaned == "ir iran" || cleaned == "iran" -> "iran"
+                cleaned == "czech" || cleaned == "czechia" -> "czechia"
+                cleaned == "dr congo" || cleaned == "congo dr" || cleaned == "rd congo" || cleaned == "democratic of congo" -> "dr congo"
+                cleaned == "cabo verde" || cleaned == "cape verde" -> "cape verde"
                 cleaned == "holland" || cleaned == "the netherlands" || cleaned == "nederland" || cleaned == "netherlands" -> "netherlands"
                 cleaned == "maroc" || cleaned == "al maghrib" || cleaned == "morocco" -> "morocco"
                 cleaned == "espagne" || cleaned == "espana" || cleaned == "spain" -> "spain"
@@ -432,7 +436,8 @@ class InternationalRankingResolver(
                 cleaned == "tunisie" || cleaned == "tunisia" -> "tunisia"
                 cleaned == "cameroun" || cleaned == "cameroon" -> "cameroon"
                 cleaned == "afrique du sud" || cleaned == "south africa" -> "south africa"
-                cleaned == "arabie saoudite" || cleaned == "saudi arabia" -> "saudi arabia"
+                cleaned == "arabie saoudite" || cleaned == "saudi arabia" || cleaned == "ksa" -> "saudi arabia"
+                cleaned == "uae" || cleaned == "united arab emirates" -> "united arab emirates"
                 else -> cleaned
             }
         }

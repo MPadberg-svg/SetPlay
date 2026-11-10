@@ -232,6 +232,7 @@ fun HomeScreen(
     val selectedMatchDossier by mainViewModel.selectedMatchDossier.collectAsStateWithLifecycle()
     val liveScoreSyncState by mainViewModel.liveScoreSyncState.collectAsStateWithLifecycle()
     val pinnedMatchIds by mainViewModel.pinnedMatchIds.collectAsStateWithLifecycle()
+    val activeGoalAlert by mainViewModel.activeGoalAlert.collectAsStateWithLifecycle()
 
     val activeDayMatches = matchesByDay[selectedMatchDay].orEmpty()
     val liveMatchesCount = todayMatches.count { it.status == MatchStatus.LIVE || it.status == MatchStatus.HALFTIME }
@@ -272,6 +273,9 @@ fun HomeScreen(
             }
             when (selectedTournamentFilter) {
                 "ALL" -> true
+                "CAT_EUROPEAN" -> (tournamentCategoryMap[match.tournamentId] ?: CompetitionCategory.EUROPEAN) == CompetitionCategory.EUROPEAN
+                "CAT_AFRICAN_ARAB" -> (tournamentCategoryMap[match.tournamentId] ?: CompetitionCategory.EUROPEAN) == CompetitionCategory.AFRICAN_ARAB
+                "CAT_INTERNATIONAL" -> (tournamentCategoryMap[match.tournamentId] ?: CompetitionCategory.EUROPEAN) == CompetitionCategory.INTERNATIONAL
                 "MY_TEAMS" -> isMatchForFavoriteTeams(match, favoriteTeams)
                 "LIVE" -> match.status == MatchStatus.LIVE || match.status == MatchStatus.HALFTIME
                 else -> match.tournamentId == selectedTournamentFilter
@@ -330,6 +334,20 @@ fun HomeScreen(
         // 1. Sync progress bar when syncing Xtream playlist
         item {
             SyncBanner(syncProgress = syncProgress)
+        }
+
+        // 1B. Live Goal Alert Banner (when a match on TODAY increments score)
+        activeGoalAlert?.let { alert ->
+            item(key = "live_goal_alert_${alert.alertId}") {
+                LiveGoalAlertBanner(
+                    alert = alert,
+                    onOpenDossier = {
+                        mainViewModel.dismissGoalAlert()
+                        mainViewModel.openMatchCenterDossier(alert.match)
+                    },
+                    onDismiss = { mainViewModel.dismissGoalAlert() }
+                )
+            }
         }
 
         // 2. Matchday Intelligence & Broadcast Telemetry Bar (No redundant section title)
@@ -414,9 +432,12 @@ fun HomeScreen(
 
                 CompetitionCategoryPillarRow(
                     selectedCategory = selectedCompetitionCategory,
+                    selectedFilter = selectedTournamentFilter,
+                    favoriteTeamsCount = favoriteTeams.size,
                     activeDayMatches = activeDayMatches,
                     tournamentCategoryMap = tournamentCategoryMap,
-                    onSelectCategory = { mainViewModel.selectCompetitionCategory(it) }
+                    onSelectCategory = { mainViewModel.selectCompetitionCategory(it) },
+                    onSelectFilter = { mainViewModel.selectTournamentFilter(it) }
                 )
 
                 TournamentFilterRow(
@@ -430,6 +451,30 @@ fun HomeScreen(
                     onSelectFilter = { mainViewModel.selectTournamentFilter(it) },
                     onOpenCustomize = { mainViewModel.openCustomizeTeamsModal() }
                 )
+
+                if (selectedCompetitionCategory == CompetitionCategory.INTERNATIONAL ||
+                    selectedTournamentFilter == "CAT_INTERNATIONAL" ||
+                    selectedTournamentFilter == "intl_official" ||
+                    selectedTournamentFilter == "intl_friendly"
+                ) {
+                    Surface(
+                        color = KickoffImperialNavy,
+                        shape = RoundedCornerShape(10.dp),
+                        border = BorderStroke(0.9.dp, KickoffTerracotta),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 16.dp, vertical = 3.dp)
+                            .testTag("international_fifa_ranking_banner")
+                    ) {
+                        Text(
+                            text = "FIFA World Ranking Filter Active • Africa Top 5 • Asia Top 3 • Europe Top 7 • South America Top 4",
+                            color = KickoffAlabasterIvory,
+                            fontSize = 10.sp,
+                            fontWeight = FontWeight.ExtraBold,
+                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 5.dp)
+                        )
+                    }
+                }
 
                 // Subtle bottom architectural hairline separating sticky dock from scrolling fixtures
                 Box(
@@ -743,8 +788,8 @@ private fun resolveMenaBroadcasterColors(channelLabel: String): Triple<Color, Co
 private fun SyncBanner(syncProgress: SyncProgress) {
     AnimatedVisibility(visible = syncProgress.isSyncing) {
         Surface(
-            color = ArenaTurfDark,
-            border = BorderStroke(1.dp, ArenaPitchGreen.copy(alpha = 0.6f)),
+            color = KickoffCharcoalSlate,
+            border = BorderStroke(1.dp, KickoffTerracotta.copy(alpha = 0.6f)),
             shape = RoundedCornerShape(12.dp),
             modifier = Modifier
                 .fillMaxWidth()
@@ -758,14 +803,14 @@ private fun SyncBanner(syncProgress: SyncProgress) {
                 ) {
                     Text(
                         text = syncProgress.phase.ifBlank { "Syncing Xtream catalog..." },
-                        color = PaleGold,
+                        color = KickoffAlabasterIvory,
                         fontSize = 13.sp,
                         fontWeight = FontWeight.SemiBold
                     )
                     if (syncProgress.itemsProcessed > 0) {
                         Text(
                             text = "${syncProgress.itemsProcessed} items",
-                            color = ArenaFloodlightLime,
+                            color = KickoffAgedParchment,
                             fontSize = 12.sp,
                             fontWeight = FontWeight.Bold
                         )
@@ -777,8 +822,8 @@ private fun SyncBanner(syncProgress: SyncProgress) {
                         .fillMaxWidth()
                         .height(6.dp)
                         .clip(RoundedCornerShape(3.dp)),
-                    color = ArenaPitchGreen,
-                    trackColor = DarkGraphite
+                    color = KickoffTerracotta,
+                    trackColor = KickoffObsidianBlack
                 )
             }
         }
@@ -1553,9 +1598,12 @@ private fun FiveDayMatchTimelineRibbon(
 @Composable
 private fun CompetitionCategoryPillarRow(
     selectedCategory: CompetitionCategory?,
+    selectedFilter: String = "ALL",
+    favoriteTeamsCount: Int = 0,
     activeDayMatches: List<FootballMatch>,
     tournamentCategoryMap: Map<String, CompetitionCategory>,
-    onSelectCategory: (CompetitionCategory?) -> Unit
+    onSelectCategory: (CompetitionCategory?) -> Unit,
+    onSelectFilter: (String) -> Unit = {}
 ) {
     val pillarCounts = remember(activeDayMatches, tournamentCategoryMap) {
         val counts = mutableMapOf<CompetitionCategory, Pair<Int, Int>>()
@@ -1571,7 +1619,7 @@ private fun CompetitionCategoryPillarRow(
 
     val pillars: List<Triple<CompetitionCategory?, String, String>> = remember {
         listOf(
-            Triple(null, "All Pillars", "pillar_chip_all"),
+            Triple(null, "All", "pillar_chip_all"),
             Triple(CompetitionCategory.EUROPEAN, "European", "pillar_chip_EUROPEAN"),
             Triple(CompetitionCategory.AFRICAN_ARAB, "African & Arab", "pillar_chip_AFRICAN_ARAB"),
             Triple(CompetitionCategory.INTERNATIONAL, "International", "pillar_chip_INTERNATIONAL")
@@ -1584,7 +1632,13 @@ private fun CompetitionCategoryPillarRow(
         modifier = Modifier.testTag("competition_category_pillar_row")
     ) {
         items(pillars, key = { it.third }) { (category, label, tag) ->
-            val isSelected = selectedCategory == category
+            val isMyTeamsActive = selectedFilter == "MY_TEAMS"
+            val isSelected = !isMyTeamsActive && (
+                selectedCategory == category ||
+                    (category == CompetitionCategory.EUROPEAN && selectedFilter == "CAT_EUROPEAN") ||
+                    (category == CompetitionCategory.AFRICAN_ARAB && selectedFilter == "CAT_AFRICAN_ARAB") ||
+                    (category == CompetitionCategory.INTERNATIONAL && selectedFilter == "CAT_INTERNATIONAL")
+                )
             val (liveInPillar, totalInPillar) = if (category == null) {
                 val liveAll = activeDayMatches.count { it.status == MatchStatus.LIVE || it.status == MatchStatus.HALFTIME }
                 liveAll to activeDayMatches.size
@@ -1593,7 +1647,7 @@ private fun CompetitionCategoryPillarRow(
             }
 
             Surface(
-                color = if (isSelected) KickoffImperialNavy else KickoffCharcoalSlate,
+                color = if (isSelected) KickoffTerracotta else KickoffCharcoalSlate,
                 shape = RoundedCornerShape(8.dp),
                 border = BorderStroke(
                     width = if (isSelected) 1.dp else 0.75.dp,
@@ -1619,7 +1673,7 @@ private fun CompetitionCategoryPillarRow(
                             modifier = Modifier
                                 .size(5.dp)
                                 .clip(CircleShape)
-                                .background(KickoffTerracotta)
+                                .background(KickoffAlabasterIvory)
                         )
                     }
                     Text(
@@ -1632,7 +1686,7 @@ private fun CompetitionCategoryPillarRow(
                     )
                     if (liveInPillar > 0 && category != null) {
                         Surface(
-                            color = KickoffTerracotta,
+                            color = if (isSelected) KickoffImperialNavy else KickoffTerracotta,
                             shape = RoundedCornerShape(50)
                         ) {
                             Text(
@@ -1646,12 +1700,50 @@ private fun CompetitionCategoryPillarRow(
                     } else if (totalInPillar > 0 && category != null) {
                         Text(
                             text = "$totalInPillar",
-                            color = if (isSelected) KickoffAgedParchment else KickoffParchmentMuted,
+                            color = if (isSelected) KickoffAlabasterIvory else KickoffParchmentMuted,
                             fontSize = 8.5.sp,
                             fontWeight = FontWeight.Bold,
                             style = TabularNumeralTextStyle
                         )
                     }
+                }
+            }
+        }
+
+        item(key = "pillar_chip_my_teams") {
+            val isMyTeamsSelected = selectedFilter == "MY_TEAMS"
+            Surface(
+                color = if (isMyTeamsSelected) KickoffTerracotta else KickoffCharcoalSlate,
+                shape = RoundedCornerShape(8.dp),
+                border = BorderStroke(
+                    width = if (isMyTeamsSelected) 1.dp else 0.75.dp,
+                    color = if (isMyTeamsSelected) KickoffTerracotta else KickoffParchmentBorder
+                ),
+                modifier = Modifier
+                    .height(26.dp)
+                    .clip(RoundedCornerShape(8.dp))
+                    .tvFocusablePill(
+                        accentColor = KickoffTerracotta,
+                        shape = RoundedCornerShape(8.dp),
+                        onClick = {
+                            if (isMyTeamsSelected) onSelectFilter("ALL") else onSelectFilter("MY_TEAMS")
+                        }
+                    )
+                    .testTag("pillar_chip_MY_TEAMS")
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(5.dp),
+                    modifier = Modifier.padding(horizontal = 9.dp)
+                ) {
+                    Text(
+                        text = if (favoriteTeamsCount > 0) "★ My Teams ($favoriteTeamsCount)" else "★ My Teams",
+                        color = if (isMyTeamsSelected) KickoffAlabasterIvory else KickoffAgedParchment,
+                        fontSize = 10.sp,
+                        fontWeight = if (isMyTeamsSelected) FontWeight.ExtraBold else FontWeight.SemiBold,
+                        maxLines = 1,
+                        softWrap = false
+                    )
                 }
             }
         }
@@ -2087,9 +2179,9 @@ private fun FavoriteTeamsEmptyBanner(
     onSelectFavoriteTeams: () -> Unit
 ) {
     Surface(
-        color = ArenaTurfDark,
+        color = KickoffCharcoalSlate,
         shape = RoundedCornerShape(14.dp),
-        border = BorderStroke(1.dp, AmberGold.copy(alpha = 0.55f)),
+        border = BorderStroke(1.dp, KickoffParchmentBorder),
         modifier = Modifier
             .fillMaxWidth()
             .padding(horizontal = 16.dp, vertical = 6.dp)
@@ -2108,20 +2200,20 @@ private fun FavoriteTeamsEmptyBanner(
                 Icon(
                     imageVector = Icons.Default.Star,
                     contentDescription = null,
-                    tint = AmberGold,
+                    tint = KickoffTerracotta,
                     modifier = Modifier.size(22.dp)
                 )
                 Spacer(modifier = Modifier.width(10.dp))
                 Column {
                     Text(
                         text = "No Favorite Teams Selected Yet",
-                        color = PaleGold,
+                        color = KickoffAlabasterIvory,
                         fontSize = 13.sp,
                         fontWeight = FontWeight.ExtraBold
                     )
                     Text(
                         text = "Search and follow your favorite clubs to view their matches in this My Teams tab.",
-                        color = Champagne,
+                        color = KickoffAgedParchment,
                         fontSize = 11.sp
                     )
                 }
@@ -2130,8 +2222,8 @@ private fun FavoriteTeamsEmptyBanner(
             Button(
                 onClick = onSelectFavoriteTeams,
                 colors = ButtonDefaults.buttonColors(
-                    containerColor = AmberGold,
-                    contentColor = DarkGraphite
+                    containerColor = KickoffTerracotta,
+                    contentColor = KickoffAlabasterIvory
                 ),
                 contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
                 shape = RoundedCornerShape(8.dp),
@@ -2950,7 +3042,7 @@ private fun SplitBroadcasterWatchCapsule(
                             isLiveStatus -> Brush.horizontalGradient(
                                 listOf(
                                     KickoffTerracotta,
-                                    Color(0xFFE86830)
+                                    KickoffTerracotta
                                 )
                             )
                             isFinishedStatus -> Brush.horizontalGradient(
@@ -3618,7 +3710,7 @@ private fun FlashscoreMatchCard(
                                     isLive -> Brush.horizontalGradient(
                                         listOf(
                                             KickoffTerracotta,
-                                            Color(0xFFE86830)
+                                            KickoffTerracotta
                                         )
                                     )
                                     isFinishedStatus -> Brush.horizontalGradient(
@@ -4110,739 +4202,10 @@ private fun EmptyMatchesCard(
     }
 }
 
-/**
- * First-Time Country Zone & Favorite Teams Onboarding Modal.
- * Allows the user right from their first KickOff launch to:
- * 1. Choose their Country Zone (syncing local timezone, kickoff clocks, and official TV channel providers).
- * 2. Search and follow any club or national team worldwide.
- */
-@OptIn(ExperimentalLayoutApi::class)
-@Composable
-private fun FirstTimeFavoriteTeamsDialog(
-    selectedCountryZone: UserCountryZone = UserZoneRegistry.defaultCountryZone,
-    selectedSeasonTimeMode: SeasonTimeMode = SeasonTimeMode.AUTO,
-    searchQuery: String,
-    searchResults: List<FootballTeam>,
-    isSearching: Boolean,
-    selectedFavorites: List<FavoriteTeamEntity>,
-    onSelectCountryZone: (String) -> Unit = {},
-    onSelectSeasonTimeMode: (SeasonTimeMode) -> Unit = {},
-    onAutoDetectCountryZone: () -> Unit = {},
-    onOpenFullCountryZoneSheet: () -> Unit = {},
-    onSearchQueryChange: (String) -> Unit,
-    onToggleTeam: (FootballTeam) -> Unit,
-    onRemoveFavoriteTeam: (String) -> Unit,
-    onCompleteOnboarding: () -> Unit
-) {
-    Dialog(
-        onDismissRequest = onCompleteOnboarding,
-        properties = DialogProperties(usePlatformDefaultWidth = false)
-    ) {
-        Surface(
-            color = KickoffObsidianBlack,
-            shape = RoundedCornerShape(22.dp),
-            border = BorderStroke(1.2.dp, KickoffTerracotta),
-            modifier = Modifier
-                .fillMaxWidth(0.95f)
-                .heightIn(max = 680.dp)
-                .testTag("first_time_teams_onboarding_dialog")
-        ) {
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(18.dp)
-            ) {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Icon(
-                            imageVector = Icons.Default.SportsSoccer,
-                            contentDescription = null,
-                            tint = KickoffTerracotta,
-                            modifier = Modifier.size(24.dp)
-                        )
-                        Spacer(modifier = Modifier.width(10.dp))
-                        Column {
-                            Text(
-                                text = "Welcome to KickOff Arena",
-                                color = KickoffAlabasterIvory,
-                                fontSize = 17.5.sp,
-                                fontWeight = FontWeight.ExtraBold
-                            )
-                            Text(
-                                text = "Choose your Country Zone (time & TV channels) and follow your teams",
-                                color = KickoffAgedParchment,
-                                fontSize = 11.5.sp
-                            )
-                        }
-                    }
-                }
+// FirstTimeFavoriteTeamsDialog, TeamSearchResultRow, and CustomizeTeamsAndTournamentsSheet
+// are defined in UserCountryZoneComponents.kt and shared across KickOff Arena.
 
-                Spacer(modifier = Modifier.height(10.dp))
 
-                // Step 1: User's Country Zone Selector (Timezone, Winter/Summer Clocks & Official TV Providers)
-                OnboardingCountryZoneSelectorCard(
-                    selectedZone = selectedCountryZone,
-                    onSelectCountryCode = onSelectCountryZone,
-                    onAutoDetectCountry = onAutoDetectCountryZone,
-                    onOpenFullZoneSheet = onOpenFullCountryZoneSheet,
-                    seasonTimeMode = selectedSeasonTimeMode,
-                    onSelectSeasonTimeMode = onSelectSeasonTimeMode
-                )
-
-                Spacer(modifier = Modifier.height(10.dp))
-
-                // Manual Global Search Input
-                OutlinedTextField(
-                    value = searchQuery,
-                    onValueChange = onSearchQueryChange,
-                    placeholder = {
-                        Text(
-                            text = "Type a team name (e.g., Real Madrid, Raja, Arsenal, PSG)...",
-                            color = KickoffAgedParchment.copy(alpha = 0.65f),
-                            fontSize = 13.sp
-                        )
-                    },
-                    leadingIcon = {
-                        Icon(
-                            imageVector = Icons.Default.Search,
-                            contentDescription = "Search Global Teams",
-                            tint = KickoffTerracotta
-                        )
-                    },
-                    trailingIcon = {
-                        if (searchQuery.isNotBlank()) {
-                            IconButton(onClick = { onSearchQueryChange("") }) {
-                                Icon(
-                                    imageVector = Icons.Default.Close,
-                                    contentDescription = "Clear search",
-                                    tint = KickoffAgedParchment
-                                )
-                            }
-                        }
-                    },
-                    singleLine = true,
-                    colors = OutlinedTextFieldDefaults.colors(
-                        focusedBorderColor = KickoffTerracotta,
-                        unfocusedBorderColor = KickoffParchmentBorder,
-                        focusedContainerColor = KickoffCharcoalSlate,
-                        unfocusedContainerColor = KickoffCharcoalSlate,
-                        focusedTextColor = KickoffAlabasterIvory,
-                        unfocusedTextColor = KickoffAlabasterIvory
-                    ),
-                    shape = RoundedCornerShape(12.dp),
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .testTag("onboarding_team_search_input")
-                )
-
-                // Selected Favorite Teams Pills
-                if (selectedFavorites.isNotEmpty()) {
-                    Spacer(modifier = Modifier.height(10.dp))
-                    Text(
-                        text = "SELECTED TEAMS (${selectedFavorites.size})",
-                        color = KickoffAgedParchment,
-                        fontSize = 11.sp,
-                        fontWeight = FontWeight.ExtraBold
-                    )
-                    Spacer(modifier = Modifier.height(5.dp))
-                    FlowRow(
-                        horizontalArrangement = Arrangement.spacedBy(6.dp),
-                        verticalArrangement = Arrangement.spacedBy(6.dp)
-                    ) {
-                        selectedFavorites.forEach { fav ->
-                            Surface(
-                                color = KickoffImperialNavy,
-                                shape = RoundedCornerShape(50),
-                                border = BorderStroke(1.dp, KickoffTerracotta)
-                            ) {
-                                Row(
-                                    verticalAlignment = Alignment.CenterVertically,
-                                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp)
-                                ) {
-                                    TeamCrestImage(
-                                        badgeUrl = fav.badgeUrl,
-                                        teamName = fav.teamName,
-                                        sizeDp = 16
-                                    )
-                                    Spacer(modifier = Modifier.width(6.dp))
-                                    Text(
-                                        text = fav.teamName,
-                                        color = KickoffAlabasterIvory,
-                                        fontSize = 11.sp,
-                                        fontWeight = FontWeight.Bold
-                                    )
-                                    Spacer(modifier = Modifier.width(6.dp))
-                                    Icon(
-                                        imageVector = Icons.Default.Close,
-                                        contentDescription = "Remove ${fav.teamName}",
-                                        tint = KickoffTerracotta,
-                                        modifier = Modifier
-                                            .size(14.dp)
-                                            .clickable { onRemoveFavoriteTeam(fav.teamId) }
-                                    )
-                                }
-                            }
-                        }
-                    }
-                }
-
-                Spacer(modifier = Modifier.height(10.dp))
-
-                // Search Results Area
-                Box(
-                    modifier = Modifier
-                        .weight(1f, fill = false)
-                        .heightIn(min = 140.dp, max = 230.dp)
-                        .fillMaxWidth()
-                        .clip(RoundedCornerShape(12.dp))
-                        .background(KickoffCharcoalSlate)
-                        .padding(8.dp)
-                ) {
-                    when {
-                        isSearching -> {
-                            Box(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .height(150.dp),
-                                contentAlignment = Alignment.Center
-                            ) {
-                                CircularProgressIndicator(color = KickoffTerracotta)
-                            }
-                        }
-                        searchQuery.isBlank() -> {
-                            Column(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .padding(16.dp),
-                                horizontalAlignment = Alignment.CenterHorizontally
-                            ) {
-                                Icon(
-                                    imageVector = Icons.Default.Search,
-                                    contentDescription = null,
-                                    tint = KickoffTerracotta.copy(alpha = 0.85f),
-                                    modifier = Modifier.size(28.dp)
-                                )
-                                Spacer(modifier = Modifier.height(6.dp))
-                                Text(
-                                    text = "Search Any Team Globally",
-                                    color = KickoffAlabasterIvory,
-                                    fontSize = 13.5.sp,
-                                    fontWeight = FontWeight.Bold
-                                )
-                                Spacer(modifier = Modifier.height(4.dp))
-                                Text(
-                                    text = "Popular in ${selectedCountryZone.flagEmoji} ${selectedCountryZone.countryName}: ${selectedCountryZone.popularLocalClubs.joinToString(", ")}. Type any club above to add it.",
-                                    color = KickoffAgedParchment,
-                                    fontSize = 11.5.sp,
-                                    textAlign = TextAlign.Center
-                                )
-                            }
-                        }
-                        searchResults.isEmpty() -> {
-                            Box(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .height(140.dp),
-                                contentAlignment = Alignment.Center
-                            ) {
-                                Text(
-                                    text = "No teams found for \"$searchQuery\". Try another club name.",
-                                    color = KickoffAgedParchment,
-                                    fontSize = 12.sp
-                                )
-                            }
-                        }
-                        else -> {
-                            LazyColumn(
-                                verticalArrangement = Arrangement.spacedBy(6.dp)
-                            ) {
-                                items(searchResults, key = { it.teamId }) { team ->
-                                    val isSelected = selectedFavorites.any {
-                                        it.teamId.equals(team.teamId, ignoreCase = true) ||
-                                            it.teamName.equals(team.name, ignoreCase = true)
-                                    }
-                                    TeamSearchResultRow(
-                                        team = team,
-                                        isSelected = isSelected,
-                                        onToggle = { onToggleTeam(team) }
-                                    )
-                                }
-                            }
-                        }
-                    }
-                }
-
-                Spacer(modifier = Modifier.height(12.dp))
-
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(10.dp)
-                ) {
-                    OutlinedButton(
-                        onClick = onCompleteOnboarding,
-                        border = BorderStroke(1.dp, KickoffParchmentBorder),
-                        modifier = Modifier
-                            .weight(1f)
-                            .testTag("onboarding_skip_btn")
-                    ) {
-                        Text("Skip for Now", color = KickoffAgedParchment, fontWeight = FontWeight.Bold)
-                    }
-
-                    Button(
-                        onClick = onCompleteOnboarding,
-                        colors = ButtonDefaults.buttonColors(
-                            containerColor = KickoffTerracotta,
-                            contentColor = KickoffAlabasterIvory
-                        ),
-                        modifier = Modifier
-                            .weight(1.4f)
-                            .testTag("onboarding_save_teams_btn")
-                    ) {
-                        Icon(Icons.Default.Check, contentDescription = null, modifier = Modifier.size(16.dp))
-                        Spacer(modifier = Modifier.width(6.dp))
-                        Text(
-                            text = if (selectedFavorites.isEmpty()) "Enter KickOff Arena" else "Save (${selectedFavorites.size}) & Continue",
-                            fontWeight = FontWeight.ExtraBold
-                        )
-                    }
-                }
-            }
-        }
-    }
-}
-
-@Composable
-private fun TeamSearchResultRow(
-    team: FootballTeam,
-    isSelected: Boolean,
-    onToggle: () -> Unit
-) {
-    Surface(
-        color = if (isSelected) KickoffImperialNavy else KickoffObsidianBlack,
-        shape = RoundedCornerShape(10.dp),
-        border = BorderStroke(
-            width = 0.8.dp,
-            color = if (isSelected) KickoffTerracotta else KickoffParchmentBorder
-        ),
-        modifier = Modifier
-            .fillMaxWidth()
-            .clickable { onToggle() }
-            .testTag("team_search_result_${team.teamId}")
-    ) {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 12.dp, vertical = 10.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.SpaceBetween
-        ) {
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                modifier = Modifier.weight(1f)
-            ) {
-                TeamCrestImage(
-                    badgeUrl = team.badgeUrl,
-                    teamName = team.name,
-                    sizeDp = 28
-                )
-                Spacer(modifier = Modifier.width(10.dp))
-                Column {
-                    Text(
-                        text = team.name,
-                        color = KickoffAlabasterIvory,
-                        fontSize = 14.sp,
-                        fontWeight = FontWeight.Bold
-                    )
-                    Text(
-                        text = "${team.country} • ${team.primaryLeague}",
-                        color = KickoffAgedParchment,
-                        fontSize = 11.sp
-                    )
-                }
-            }
-
-            Icon(
-                imageVector = if (isSelected) Icons.Default.Star else Icons.Default.StarBorder,
-                contentDescription = if (isSelected) "Remove Favorite" else "Add Favorite",
-                tint = if (isSelected) KickoffTerracotta else KickoffAgedParchment
-            )
-        }
-    }
-}
-
-/**
- * Anytime Customization Modal Sheet for changing Country Zone, adding/removing Favorite Teams, and enabling/disabling/pinning Tournaments.
- */
-@OptIn(ExperimentalMaterial3Api::class)
-@Composable
-private fun CustomizeTeamsAndTournamentsSheet(
-    selectedCountryZone: UserCountryZone = UserZoneRegistry.defaultCountryZone,
-    selectedSeasonTimeMode: SeasonTimeMode = SeasonTimeMode.AUTO,
-    searchQuery: String,
-    searchResults: List<FootballTeam>,
-    isSearching: Boolean,
-    favoriteTeams: List<FavoriteTeamEntity>,
-    tournamentPreferences: List<TournamentPreferenceEntity>,
-    onSelectCountryZone: (String) -> Unit = {},
-    onSelectSeasonTimeMode: (SeasonTimeMode) -> Unit = {},
-    onAutoDetectCountryZone: () -> Unit = {},
-    onOpenFullCountryZoneSheet: () -> Unit = {},
-    onSearchQueryChange: (String) -> Unit,
-    onToggleFavoriteTeam: (FootballTeam) -> Unit,
-    onRemoveFavoriteTeam: (String) -> Unit,
-    onSetTournamentEnabled: (String, Boolean) -> Unit,
-    onToggleTournamentPinned: (String) -> Unit,
-    onEnableAllTournaments: () -> Unit,
-    onDismiss: () -> Unit
-) {
-    var activeTab by remember { mutableIntStateOf(0) } // 0 = Favorite Teams, 1 = Tournaments
-
-    val groupedTournamentsByCategory = remember(tournamentPreferences) {
-        val categoryById = FootballRepository.ALL_TOURNAMENTS.associate { it.tournamentId to it.category }
-        CompetitionCategory.entries.mapNotNull { category ->
-            val itemsForCat = tournamentPreferences.filter { pref ->
-                (categoryById[pref.tournamentId] ?: CompetitionCategory.EUROPEAN) == category
-            }
-            if (itemsForCat.isEmpty()) null else (category to itemsForCat)
-        }
-    }
-
-    ModalBottomSheet(
-        onDismissRequest = onDismiss,
-        containerColor = KickoffObsidianBlack
-    ) {
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .navigationBarsPadding()
-                .padding(horizontal = 20.dp, vertical = 8.dp)
-        ) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Column {
-                    Text(
-                        text = "Customize KickOff Arena",
-                        color = KickoffAlabasterIvory,
-                        fontSize = 18.sp,
-                        fontWeight = FontWeight.ExtraBold
-                    )
-                    Text(
-                        text = "Manage your Country Zone, favorite teams and tournaments",
-                        color = KickoffAgedParchment,
-                        fontSize = 12.sp
-                    )
-                }
-                IconButton(onClick = onDismiss) {
-                    Icon(Icons.Default.Close, contentDescription = "Close", tint = KickoffAlabasterIvory)
-                }
-            }
-
-            Spacer(modifier = Modifier.height(10.dp))
-
-            // Quick Country Zone & Winter/Summer Clock Switcher inside Customize Sheet
-            OnboardingCountryZoneSelectorCard(
-                selectedZone = selectedCountryZone,
-                onSelectCountryCode = onSelectCountryZone,
-                onAutoDetectCountry = onAutoDetectCountryZone,
-                onOpenFullZoneSheet = onOpenFullCountryZoneSheet,
-                seasonTimeMode = selectedSeasonTimeMode,
-                onSelectSeasonTimeMode = onSelectSeasonTimeMode
-            )
-
-            Spacer(modifier = Modifier.height(10.dp))
-
-            // Sub-tabs: Favorite Teams | Tournaments
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .clip(RoundedCornerShape(10.dp))
-                    .background(KickoffCharcoalSlate)
-                    .padding(4.dp),
-                horizontalArrangement = Arrangement.spacedBy(6.dp)
-            ) {
-                listOf(
-                    "My Favorite Teams (${favoriteTeams.size})",
-                    "Tournaments (${tournamentPreferences.count { it.isEnabled }})"
-                ).forEachIndexed { index, title ->
-                    val isSelected = activeTab == index
-                    Surface(
-                        color = if (isSelected) KickoffTerracotta else Color.Transparent,
-                        shape = RoundedCornerShape(8.dp),
-                        modifier = Modifier
-                            .weight(1f)
-                            .clickable { activeTab = index }
-                            .testTag("customize_tab_$index")
-                    ) {
-                        Text(
-                            text = title,
-                            color = if (isSelected) KickoffAlabasterIvory else KickoffAgedParchment,
-                            fontSize = 12.sp,
-                            fontWeight = FontWeight.ExtraBold,
-                            textAlign = TextAlign.Center,
-                            modifier = Modifier.padding(vertical = 9.dp)
-                        )
-                    }
-                }
-            }
-
-            Spacer(modifier = Modifier.height(12.dp))
-
-            if (activeTab == 0) {
-                // Tab 0: Manual Global Team Search + Saved Favorites List
-                OutlinedTextField(
-                    value = searchQuery,
-                    onValueChange = onSearchQueryChange,
-                    placeholder = {
-                        Text(
-                            text = "Search global teams to add (e.g., Wydad, Barcelona, Liverpool)...",
-                            color = KickoffAgedParchment.copy(alpha = 0.65f),
-                            fontSize = 12.sp
-                        )
-                    },
-                    leadingIcon = {
-                        Icon(Icons.Default.Search, contentDescription = null, tint = KickoffTerracotta)
-                    },
-                    trailingIcon = {
-                        if (searchQuery.isNotBlank()) {
-                            IconButton(onClick = { onSearchQueryChange("") }) {
-                                Icon(Icons.Default.Close, contentDescription = "Clear", tint = KickoffAgedParchment)
-                            }
-                        }
-                    },
-                    singleLine = true,
-                    colors = OutlinedTextFieldDefaults.colors(
-                        focusedBorderColor = KickoffTerracotta,
-                        unfocusedBorderColor = KickoffParchmentBorder,
-                        focusedContainerColor = KickoffCharcoalSlate,
-                        unfocusedContainerColor = KickoffCharcoalSlate,
-                        focusedTextColor = KickoffAlabasterIvory,
-                        unfocusedTextColor = KickoffAlabasterIvory
-                    ),
-                    shape = RoundedCornerShape(12.dp),
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .testTag("customize_team_search_input")
-                )
-
-                Spacer(modifier = Modifier.height(10.dp))
-
-                LazyColumn(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .heightIn(max = 360.dp),
-                    verticalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    if (searchQuery.isNotBlank()) {
-                        if (isSearching) {
-                            item {
-                                Box(
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .padding(20.dp),
-                                    contentAlignment = Alignment.Center
-                                ) {
-                                    CircularProgressIndicator(color = KickoffTerracotta)
-                                }
-                            }
-                        } else {
-                            items(searchResults, key = { "search_${it.teamId}" }) { team ->
-                                val isFav = favoriteTeams.any {
-                                    it.teamId.equals(team.teamId, ignoreCase = true) ||
-                                        it.teamName.equals(team.name, ignoreCase = true)
-                                }
-                                TeamSearchResultRow(
-                                    team = team,
-                                    isSelected = isFav,
-                                    onToggle = { onToggleFavoriteTeam(team) }
-                                )
-                            }
-                        }
-                    } else {
-                        if (favoriteTeams.isEmpty()) {
-                            item {
-                                Text(
-                                    text = "No favorite teams saved yet. Use the search bar above to find and follow your favorite clubs.",
-                                    color = KickoffAgedParchment,
-                                    fontSize = 12.sp,
-                                    modifier = Modifier.padding(vertical = 16.dp)
-                                )
-                            }
-                        } else {
-                            items(favoriteTeams, key = { "fav_${it.teamId}" }) { fav ->
-                                Surface(
-                                    color = KickoffCharcoalSlate,
-                                    shape = RoundedCornerShape(10.dp),
-                                    border = BorderStroke(0.8.dp, KickoffParchmentBorder),
-                                    modifier = Modifier.fillMaxWidth()
-                                ) {
-                                    Row(
-                                        modifier = Modifier
-                                            .fillMaxWidth()
-                                            .padding(horizontal = 12.dp, vertical = 10.dp),
-                                        verticalAlignment = Alignment.CenterVertically,
-                                        horizontalArrangement = Arrangement.SpaceBetween
-                                    ) {
-                                        Row(verticalAlignment = Alignment.CenterVertically) {
-                                            TeamCrestImage(
-                                                badgeUrl = fav.badgeUrl,
-                                                teamName = fav.teamName,
-                                                sizeDp = 26
-                                            )
-                                            Spacer(modifier = Modifier.width(10.dp))
-                                            Column {
-                                                Text(
-                                                    text = fav.teamName,
-                                                    color = KickoffAlabasterIvory,
-                                                    fontSize = 14.sp,
-                                                    fontWeight = FontWeight.Bold
-                                                )
-                                                if (fav.primaryLeague.isNotBlank()) {
-                                                    Text(
-                                                        text = "${fav.country} • ${fav.primaryLeague}",
-                                                        color = KickoffAgedParchment,
-                                                        fontSize = 11.sp
-                                                    )
-                                                }
-                                            }
-                                        }
-                                        IconButton(
-                                            onClick = { onRemoveFavoriteTeam(fav.teamId) },
-                                            modifier = Modifier.testTag("remove_fav_team_${fav.teamId}")
-                                        ) {
-                                            Icon(
-                                                imageVector = Icons.Default.Close,
-                                                contentDescription = "Remove ${fav.teamName}",
-                                                tint = KickoffTerracotta
-                                            )
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            } else {
-                // Tab 1: Tournaments Visibility & Pinning grouped by the 3 Competition Categories
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Text(
-                        text = "Toggle tournaments or pin them to the top",
-                        color = KickoffAgedParchment,
-                        fontSize = 12.sp
-                    )
-                    TextButton(onClick = onEnableAllTournaments) {
-                        Text("Enable All", color = KickoffTerracotta, fontSize = 12.sp, fontWeight = FontWeight.Bold)
-                    }
-                }
-
-                LazyColumn(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .heightIn(max = 360.dp),
-                    verticalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    groupedTournamentsByCategory.forEach { (category, prefsForCategory) ->
-                        item(key = "cat_header_${category.name}") {
-                            Surface(
-                                color = KickoffImperialNavy,
-                                shape = RoundedCornerShape(8.dp),
-                                border = BorderStroke(0.8.dp, KickoffParchmentBorder),
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .padding(top = 4.dp)
-                            ) {
-                                Text(
-                                    text = category.displayTitle.uppercase(),
-                                    color = KickoffAgedParchment,
-                                    fontSize = 10.5.sp,
-                                    fontWeight = FontWeight.ExtraBold,
-                                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp)
-                                )
-                            }
-                        }
-
-                        items(prefsForCategory, key = { it.tournamentId }) { pref ->
-                            Surface(
-                                color = KickoffCharcoalSlate,
-                                shape = RoundedCornerShape(10.dp),
-                                border = BorderStroke(
-                                    width = 0.8.dp,
-                                    color = if (pref.isPinned) KickoffTerracotta else KickoffParchmentBorder
-                                ),
-                                modifier = Modifier.fillMaxWidth()
-                            ) {
-                                Row(
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .padding(horizontal = 12.dp, vertical = 8.dp),
-                                    verticalAlignment = Alignment.CenterVertically,
-                                    horizontalArrangement = Arrangement.SpaceBetween
-                                ) {
-                                    Row(
-                                        verticalAlignment = Alignment.CenterVertically,
-                                        modifier = Modifier.weight(1f)
-                                    ) {
-                                        IconButton(
-                                            onClick = { onToggleTournamentPinned(pref.tournamentId) },
-                                            modifier = Modifier.size(32.dp)
-                                        ) {
-                                            Icon(
-                                                imageVector = Icons.Default.PushPin,
-                                                contentDescription = "Pin ${pref.tournamentName}",
-                                                tint = if (pref.isPinned) KickoffTerracotta else KickoffAgedParchment.copy(alpha = 0.65f),
-                                                modifier = Modifier.size(16.dp)
-                                            )
-                                        }
-                                        Spacer(modifier = Modifier.width(6.dp))
-                                        Column {
-                                            Text(
-                                                text = pref.tournamentName,
-                                                color = KickoffAlabasterIvory,
-                                                fontSize = 13.sp,
-                                                fontWeight = FontWeight.Bold
-                                            )
-                                            Text(
-                                                text = pref.countryOrRegion,
-                                                color = KickoffAgedParchment,
-                                                fontSize = 11.sp
-                                            )
-                                        }
-                                    }
-
-                                    Switch(
-                                        checked = pref.isEnabled,
-                                        onCheckedChange = { enabled ->
-                                            onSetTournamentEnabled(pref.tournamentId, enabled)
-                                        },
-                                        colors = SwitchDefaults.colors(
-                                            checkedThumbColor = KickoffAlabasterIvory,
-                                            checkedTrackColor = KickoffTerracotta,
-                                            uncheckedThumbColor = KickoffAgedParchment,
-                                            uncheckedTrackColor = KickoffObsidianBlack
-                                        ),
-                                        modifier = Modifier.testTag("toggle_tournament_${pref.tournamentId}")
-                                    )
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-
-            Spacer(modifier = Modifier.height(14.dp))
-        }
-    }
-}
 
 /**
  * Kickoff Favorites-Only Channel Lookup Sheet / Missing-Favorite Notification Dialog.

@@ -307,8 +307,9 @@ class FootballRepository(
     suspend fun fetchMatchFullDossier(
         match: FootballMatch,
         forceRefresh: Boolean = false,
-        countryZone: UserCountryZone = getSelectedCountryZone()
-    ): MatchFullDossier = matchCenterEnricher.fetchMatchFullDossier(match, forceRefresh, countryZone)
+        countryZone: UserCountryZone = getSelectedCountryZone(),
+        seasonTimeMode: SeasonTimeMode = getSelectedSeasonTimeMode()
+    ): MatchFullDossier = matchCenterEnricher.fetchMatchFullDossier(match, forceRefresh, countryZone, seasonTimeMode)
 
     val favoriteTeamsFlow: Flow<List<FavoriteTeamEntity>> = favoriteTeamDao.getAllFavoriteTeams()
     val tournamentPreferencesFlow: Flow<List<TournamentPreferenceEntity>> =
@@ -723,9 +724,37 @@ class FootballRepository(
                 "berkane"
             normalized.contains("ahly") && !normalized.contains("shabab") && !normalized.contains("jeddah") && !normalized.contains("saudi") ->
                 "ahly"
+            normalized == "turkiye" || normalized == "turkey" || normalized.startsWith("turkiye ") || normalized.startsWith("turkey ") ->
+                "turkiye"
+            normalized == "cote d ivoire" || normalized == "cote divoire" || normalized == "ivory coast" ||
+                normalized.contains("cote d ivoire") || normalized.contains("ivory coast") ->
+                "ivory coast"
+            normalized == "korea republic" || normalized == "south korea" || normalized == "republic of korea" ||
+                normalized.contains("korea republic") || normalized.contains("south korea") ->
+                "south korea"
+            normalized == "ir iran" || normalized == "iran" || normalized == "islamic republic of iran" ->
+                "iran"
+            normalized == "czechia" || normalized == "czech republic" ->
+                "czechia"
+            normalized == "dr congo" || normalized == "congo dr" || normalized == "rd congo" ||
+                normalized == "democratic republic of congo" || normalized == "d r congo" ->
+                "dr congo"
+            normalized == "cabo verde" || normalized == "cape verde" ->
+                "cape verde"
+            normalized == "usa" || normalized == "u s a" || normalized == "united states" || normalized == "united states of america" ->
+                "united states"
+            normalized == "uae" || normalized == "u a e" || normalized == "united arab emirates" ->
+                "united arab emirates"
+            normalized == "ksa" || normalized == "saudi arabia" ->
+                "saudi arabia"
+            normalized == "bosnia" || normalized == "bosnia and herzegovina" || normalized == "bosnia herzegovina" ->
+                "bosnia and herzegovina"
             else -> normalized
         }
     }
+
+    internal fun canonicalizeDisplayTeamName(rawName: String): String =
+        Companion.canonicalizeDisplayTeamName(rawName)
 
     internal fun areSameClubNames(nameA: String, nameB: String): Boolean {
         val normA = normalizeTeamNameForMerge(nameA)
@@ -1312,6 +1341,8 @@ class FootballRepository(
         }
 
         return primaryLive.copy(
+            homeTeamName = canonicalizeDisplayTeamName(primaryLive.homeTeamName),
+            awayTeamName = canonicalizeDisplayTeamName(primaryLive.awayTeamName),
             beinChannel = resolvedBeinChannel,
             liveMinuteOrBadge = resolvedLiveBadge,
             homeScore = resolvedHomeScore,
@@ -2588,9 +2619,14 @@ class FootballRepository(
                 ?: item.optJSONObject("awayTeam")
                 ?: item.optJSONObject("teams")?.optJSONObject("away")
 
-            val homeName = (homeObj?.optString("name", "") ?: item.optString("home_name", "")).trim()
-            val awayName = (awayObj?.optString("name", "") ?: item.optString("away_name", "")).trim()
+            val homeName = canonicalizeDisplayTeamName(
+                (homeObj?.optString("name", "") ?: item.optString("home_name", "")).trim()
+            )
+            val awayName = canonicalizeDisplayTeamName(
+                (awayObj?.optString("name", "") ?: item.optString("away_name", "")).trim()
+            )
             if (homeName.isBlank() || awayName.isBlank()) continue
+            if (!isValidFixtureForTournament(matchedTournament, homeName, awayName, countryName)) continue
             if (!passesInternationalQualificationFilter(matchedTournament, homeName, awayName)) continue
 
             val homeBadge = homeObj?.optString("logo", homeObj.optString("badge", "")) ?: ""
@@ -2896,14 +2932,21 @@ class FootballRepository(
         for (i in 0 until events.length()) {
             val ev = events.optJSONObject(i) ?: continue
             val idEvent = ev.optString("idEvent", "")
-            val idLeague = ev.optString("idLeague", forcedLeagueId ?: "")
-            val leagueName = ev.optString("strLeague", "").trim()
+            val rawEventLeagueId = ev.optString("idLeague", "").takeIf { it != "null" }.orEmpty().trim()
+            if (forcedLeagueId != null && rawEventLeagueId.isNotBlank() && rawEventLeagueId != forcedLeagueId) {
+                continue
+            }
+            val idLeague = rawEventLeagueId.ifBlank { forcedLeagueId.orEmpty() }
+            val leagueName = ev.optString("strLeague", "").takeIf { it != "null" }.orEmpty().trim()
+            val strCountry = ev.optString("strCountry", "").takeIf { it != "null" }.orEmpty().trim()
+            val combinedLeagueQuery = "$strCountry $leagueName".trim()
 
-            val matchedTournament = matchTournamentBySportsDbIdOrName(idLeague, leagueName) ?: continue
+            val matchedTournament = matchTournamentBySportsDbIdOrName(idLeague, combinedLeagueQuery) ?: continue
 
-            val homeName = ev.optString("strHomeTeam", "").trim()
-            val awayName = ev.optString("strAwayTeam", "").trim()
+            val homeName = canonicalizeDisplayTeamName(ev.optString("strHomeTeam", "").trim())
+            val awayName = canonicalizeDisplayTeamName(ev.optString("strAwayTeam", "").trim())
             if (homeName.isBlank() || awayName.isBlank()) continue
+            if (!isValidFixtureForTournament(matchedTournament, homeName, awayName, strCountry)) continue
             if (!passesInternationalQualificationFilter(matchedTournament, homeName, awayName)) continue
 
             val timestampRaw = ev.optString("strTimestamp", "").trim()
@@ -3106,13 +3149,14 @@ class FootballRepository(
                 if (eventId <= 0L) continue
 
                 val tournamentObj = ev.optJSONObject("tournament")
+                val categoryName = tournamentObj?.optJSONObject("category")?.optString("name", "").orEmpty()
                 val uniqueTournamentName = tournamentObj?.optJSONObject("uniqueTournament")?.optString("name", "").orEmpty()
                 val tournamentName = tournamentObj?.optString("name", "").orEmpty()
-                val homeName = ev.optJSONObject("homeTeam")?.optString("name", "").orEmpty().trim()
-                val awayName = ev.optJSONObject("awayTeam")?.optString("name", "").orEmpty().trim()
+                val homeName = canonicalizeDisplayTeamName(ev.optJSONObject("homeTeam")?.optString("name", "").orEmpty().trim())
+                val awayName = canonicalizeDisplayTeamName(ev.optJSONObject("awayTeam")?.optString("name", "").orEmpty().trim())
                 if (homeName.isBlank() || awayName.isBlank()) continue
 
-                val isTrackedLeague = matchTournamentCatalog("$uniqueTournamentName $tournamentName") != null
+                val isTrackedLeague = matchTournamentCatalog("$categoryName $uniqueTournamentName $tournamentName".trim()) != null
                 if (!isTrackedLeague && !isMarqueeMenaMatch(homeName, awayName)) continue
 
                 val channels = fetchSofascoreEventTvChannels(eventId, zone)
@@ -3264,9 +3308,14 @@ class FootballRepository(
 
                     val homeTeamIdRaw = homeTeamObj.optString("id", "")
                     val awayTeamIdRaw = awayTeamObj.optString("id", "")
-                    val homeName = homeTeamObj.optString("displayName", homeTeamObj.optString("name", "")).trim()
-                    val awayName = awayTeamObj.optString("displayName", awayTeamObj.optString("name", "")).trim()
+                    val homeName = canonicalizeDisplayTeamName(
+                        homeTeamObj.optString("displayName", homeTeamObj.optString("name", "")).trim()
+                    )
+                    val awayName = canonicalizeDisplayTeamName(
+                        awayTeamObj.optString("displayName", awayTeamObj.optString("name", "")).trim()
+                    )
                     if (homeName.isBlank() || awayName.isBlank()) continue
+                    if (!isValidFixtureForTournament(tournament, homeName, awayName, tournament.countryOrRegion)) continue
                     if (!passesInternationalQualificationFilter(tournament, homeName, awayName)) continue
 
                     val homeLogo = homeTeamObj.optString("logo", "")
@@ -3498,14 +3547,26 @@ class FootballRepository(
         val root = runCatching { JSONObject(trimmed) }.getOrNull() ?: return emptyList()
         val gamesArr = root.optJSONArray("games") ?: return emptyList()
 
-        // Optional top-level competitions/tvNetworks lookup maps when 365Scores includes dictionary arrays
+        // Optional top-level countries/competitions/tvNetworks lookup maps when 365Scores includes dictionary arrays
+        val countryNameById = mutableMapOf<Int, String>()
+        root.optJSONArray("countries")?.let { countriesArr ->
+            for (i in 0 until countriesArr.length()) {
+                val c = countriesArr.optJSONObject(i) ?: continue
+                val id = c.optInt("id", -1)
+                val name = c.optString("name", "").trim()
+                if (id > 0 && name.isNotBlank()) countryNameById[id] = name
+            }
+        }
         val compNameById = mutableMapOf<Int, String>()
+        val compCountryIdByCompId = mutableMapOf<Int, Int>()
         root.optJSONArray("competitions")?.let { comps ->
             for (i in 0 until comps.length()) {
                 val c = comps.optJSONObject(i) ?: continue
                 val id = c.optInt("id", -1)
                 val name = c.optString("name", "").trim()
+                val countryId = c.optInt("countryId", -1)
                 if (id > 0 && name.isNotBlank()) compNameById[id] = name
+                if (id > 0 && countryId > 0) compCountryIdByCompId[id] = countryId
             }
         }
         val tvNetNameById = mutableMapOf<Int, String>()
@@ -3526,17 +3587,28 @@ class FootballRepository(
             val compDisplayName = game.optString("competitionDisplayName", "")
                 .ifBlank { compNameById[compId].orEmpty() }
                 .ifBlank { game.optJSONObject("competition")?.optString("name", "").orEmpty() }
+                .trim()
+            val countryId = game.optInt("countryId", compCountryIdByCompId[compId] ?: -1)
+            val compCountryName = countryNameById[countryId].orEmpty()
+                .ifBlank { game.optString("countryName", "") }
+                .ifBlank { game.optJSONObject("competition")?.optString("countryName", "").orEmpty() }
+                .trim()
 
-            val matchedTournament = match365ScoresCompetition(compId, compDisplayName) ?: continue
+            val matchedTournament = match365ScoresCompetition(compId, compDisplayName, compCountryName) ?: continue
 
             val homeComp = game.optJSONObject("homeCompetitor") ?: continue
             val awayComp = game.optJSONObject("awayCompetitor") ?: continue
 
             val homeId = homeComp.optLong("id", 0L)
             val awayId = awayComp.optLong("id", 0L)
-            val homeName = homeComp.optString("name", homeComp.optString("symbolicName", "")).trim()
-            val awayName = awayComp.optString("name", awayComp.optString("symbolicName", "")).trim()
+            val homeName = canonicalizeDisplayTeamName(
+                homeComp.optString("name", homeComp.optString("symbolicName", "")).trim()
+            )
+            val awayName = canonicalizeDisplayTeamName(
+                awayComp.optString("name", awayComp.optString("symbolicName", "")).trim()
+            )
             if (homeName.isBlank() || awayName.isBlank()) continue
+            if (!isValidFixtureForTournament(matchedTournament, homeName, awayName, compCountryName)) continue
             if (!passesInternationalQualificationFilter(matchedTournament, homeName, awayName)) continue
 
             val homeBadge = homeComp.optString("imageUrl", "").takeIf { it.startsWith("http") }
@@ -3672,7 +3744,20 @@ class FootballRepository(
         return results
     }
 
-    private fun match365ScoresCompetition(compId: Int, compDisplayName: String): TournamentCatalogItem? {
+    private fun match365ScoresCompetition(
+        compId: Int,
+        compDisplayName: String,
+        compCountryName: String = ""
+    ): TournamentCatalogItem? {
+        // Note: 365Scores IDs 552 and 553 are Egyptian competitions, NOT Moroccan Botola Pro!
+        if (compId == 552 || compId == 553) {
+            // Only allow if display name explicitly says Botola / Morocco (e.g. unit test fixtures)
+            val lowerDisplay = compDisplayName.lowercase(Locale.ROOT)
+            if (lowerDisplay.contains("botola") || lowerDisplay.contains("morocc")) {
+                return ALL_TOURNAMENTS.firstOrNull { it.tournamentId == "botola_pro" }
+            }
+            return null
+        }
         val byId = when (compId) {
             7 -> "premier_league"
             11 -> "laliga"
@@ -3682,7 +3767,6 @@ class FootballRepository(
             572 -> "uefa_cl"
             573 -> "uefa_el"
             649 -> "saudi_pro"
-            552, 553 -> "botola_pro"
             586 -> "caf_cl"
             587 -> "caf_confed"
             else -> null
@@ -3690,7 +3774,8 @@ class FootballRepository(
         if (byId != null) {
             return ALL_TOURNAMENTS.firstOrNull { it.tournamentId == byId }
         }
-        return matchTournamentCatalog(compDisplayName)
+        val combinedName = "$compCountryName $compDisplayName".trim()
+        return matchTournamentCatalog(combinedName)
     }
 
     internal fun fetchDayFixturesFromApiFootball(
@@ -3791,8 +3876,10 @@ class FootballRepository(
                     }
                     val (status, badge) = parseLiveStatusAndMinuteBadge(shortStatus, elapsed, kickoffTime, extraElapsed)
 
-                    val homeName = homeObj.optString("name", "")
-                    val awayName = awayObj.optString("name", "")
+                    val homeName = canonicalizeDisplayTeamName(homeObj.optString("name", "").trim())
+                    val awayName = canonicalizeDisplayTeamName(awayObj.optString("name", "").trim())
+                    if (homeName.isBlank() || awayName.isBlank()) continue
+                    if (!isValidFixtureForTournament(matchedTournament, homeName, awayName, country)) continue
                     if (!passesInternationalQualificationFilter(matchedTournament, homeName, awayName)) continue
                     val smartFallbacks = getSmartMenaFallbackChannels(
                         tournamentId = matchedTournament.tournamentId,
@@ -3926,9 +4013,15 @@ class FootballRepository(
 
             val homeObj = item.optJSONObject("homeTeam") ?: continue
             val awayObj = item.optJSONObject("awayTeam") ?: continue
-            val homeName = homeObj.optString("name", homeObj.optString("shortName", "")).trim()
-            val awayName = awayObj.optString("name", awayObj.optString("shortName", "")).trim()
+            val homeName = canonicalizeDisplayTeamName(
+                homeObj.optString("name", homeObj.optString("shortName", "")).trim()
+            )
+            val awayName = canonicalizeDisplayTeamName(
+                awayObj.optString("name", awayObj.optString("shortName", "")).trim()
+            )
             if (homeName.isBlank() || awayName.isBlank()) continue
+            val areaName = item.optJSONObject("area")?.optString("name", "").orEmpty()
+            if (!isValidFixtureForTournament(matchedTournament, homeName, awayName, areaName)) continue
             if (!passesInternationalQualificationFilter(matchedTournament, homeName, awayName)) continue
 
             val utcDate = item.optString("utcDate", "")
@@ -5130,9 +5223,9 @@ class FootballRepository(
             if (!isRejectedLigue1 && (
                     slug == "fra.1" ||
                         sdbId == "4334" ||
-                        lower == "ligue 1" ||
                         lower.contains("french ligue 1") ||
                         lower.contains("france ligue 1") ||
+                        (lower.contains("france") && lower.contains("ligue 1")) ||
                         lower.contains("ligue 1 mcdonald") ||
                         lower.contains("ligue 1 uber")
                 )
@@ -5175,9 +5268,7 @@ class FootballRepository(
                         lower.contains("spain la liga") ||
                         lower.contains("spain laliga") ||
                         lower.contains("spanish primera") ||
-                        lower.contains("spain primera") ||
-                        lower == "primera division" ||
-                        lower == "primera división"
+                        lower.contains("spain primera")
                 )
             ) {
                 return ALL_TOURNAMENTS.first { it.tournamentId == "laliga" }
@@ -5211,6 +5302,12 @@ class FootballRepository(
                 lower.contains("tanzania") ||
                 lower.contains("jamaica") ||
                 lower.contains("trinidad") ||
+                lower.contains("barbados") ||
+                lower.contains("belize") ||
+                lower.contains("bermuda") ||
+                lower.contains("antigua") ||
+                lower.contains("guyana") ||
+                lower.contains("suriname") ||
                 lower.contains("singapore") ||
                 lower.contains("hong kong") ||
                 lower.contains("thai") ||
@@ -5234,13 +5331,19 @@ class FootballRepository(
                 lower.contains("iraq") ||
                 lower.contains("oman") ||
                 lower.contains("libya") ||
-                lower.contains("sudan")
+                lower.contains("sudan") ||
+                lower.contains("zimbabwe") ||
+                lower.contains("botswana") ||
+                lower.contains("namibia") ||
+                lower.contains("rwanda") ||
+                lower.contains("burundi")
             if (!isRejectedPremierLeague && (
                     slug == "eng.1" ||
                         sdbId == "4328" ||
-                        lower == "premier league" ||
                         lower.contains("english premier league") ||
-                        lower.contains("england premier league")
+                        lower.contains("england premier league") ||
+                        (lower.contains("england") && lower.contains("premier league")) ||
+                        lower.contains("barclays premier league")
                 )
             ) {
                 return ALL_TOURNAMENTS.first { it.tournamentId == "premier_league" }
@@ -5258,9 +5361,9 @@ class FootballRepository(
             if (!isRejectedSerieA && (
                     slug == "ita.1" ||
                         sdbId == "4332" ||
-                        lower == "serie a" ||
                         lower.contains("italian serie a") ||
                         lower.contains("italy serie a") ||
+                        (lower.contains("italy") && lower.contains("serie a")) ||
                         lower.contains("serie a enilive") ||
                         lower.contains("serie a tim")
                 )
@@ -5281,10 +5384,10 @@ class FootballRepository(
             if (!isRejectedBundesliga && (
                     slug == "ger.1" ||
                         sdbId == "4331" ||
-                        lower == "bundesliga" ||
                         lower == "1. bundesliga" ||
                         lower.contains("german bundesliga") ||
                         lower.contains("germany bundesliga") ||
+                        (lower.contains("germany") && lower.contains("bundesliga")) ||
                         lower.contains("germany 1. bundesliga")
                 )
             ) {
@@ -5388,6 +5491,8 @@ class FootballRepository(
                 lower.contains("nations league") ||
                 lower.contains("uefa euro") ||
                 lower.contains("euro qual") ||
+                lower.contains("euro ") ||
+                lower.contains("european championship") ||
                 lower.contains("copa america") ||
                 lower.contains("copa américa") ||
                 lower.contains("asian cup")
@@ -5396,6 +5501,70 @@ class FootballRepository(
             }
 
             return null
+        }
+
+        private val FOREIGN_NON_MOROCCAN_CLUB_KEYWORDS = listOf(
+            "mokawloon", "egypt telecom", "we sc", "al ahly", "zamalek", "pyramids",
+            "al masry", "ismaily", "ceramica", "cleopatra", "enppi", "smouha",
+            "ghazl el mahalla", "pharco", "el gouna", "modern sport", "future fc",
+            "zed fc", "petrojet", "haras el hodood", "tala'ea", "talaea el gaish",
+            "bank el ahly", "national bank of egypt", "wadi degla", "el dakhleya",
+            "arab contractors", "ittihad alexandria", "al ittihad", "al hilal", "al nassr"
+        )
+
+        private val FOREIGN_NON_ENGLISH_PL_CLUB_KEYWORDS = listOf(
+            "arnett gardens", "waterhouse", "mount pleasant", "portmore", "cavalier",
+            "harbour view", "tivoli gardens", "humble lions", "dunbeholden", "vere united",
+            "molynes", "montego bay", "chapelton", "racing united", "treasure beach",
+            "lime hall", "mokawloon", "egypt telecom", "al ahly", "zamalek", "pyramids"
+        )
+
+        fun isValidFixtureForTournament(
+            tournament: TournamentCatalogItem,
+            homeTeamName: String,
+            awayTeamName: String,
+            rawCountry: String = ""
+        ): Boolean {
+            val countryLower = rawCountry.trim().lowercase(Locale.ROOT)
+            val combinedTeams = "${homeTeamName.lowercase(Locale.ROOT)} ${awayTeamName.lowercase(Locale.ROOT)}"
+
+            return when (tournament.tournamentId) {
+                "botola_pro" -> {
+                    if (countryLower.isNotBlank() &&
+                        !countryLower.contains("morocco") &&
+                        !countryLower.contains("maroc")
+                    ) {
+                        return false
+                    }
+                    FOREIGN_NON_MOROCCAN_CLUB_KEYWORDS.none { combinedTeams.contains(it) }
+                }
+                "premier_league" -> {
+                    if (countryLower.isNotBlank() &&
+                        !countryLower.contains("england") &&
+                        !countryLower.contains("united kingdom") &&
+                        !countryLower.contains("great britain")
+                    ) {
+                        return false
+                    }
+                    FOREIGN_NON_ENGLISH_PL_CLUB_KEYWORDS.none { combinedTeams.contains(it) }
+                }
+                "laliga" -> {
+                    countryLower.isBlank() || countryLower.contains("spain") || countryLower.contains("espana") || countryLower.contains("españa")
+                }
+                "serie_a" -> {
+                    countryLower.isBlank() || countryLower.contains("italy") || countryLower.contains("italia")
+                }
+                "bundesliga" -> {
+                    countryLower.isBlank() || countryLower.contains("germany") || countryLower.contains("deutschland")
+                }
+                "ligue_1" -> {
+                    countryLower.isBlank() || countryLower.contains("france")
+                }
+                "saudi_pro" -> {
+                    countryLower.isBlank() || countryLower.contains("saudi")
+                }
+                else -> true
+            }
         }
 
         val ALL_TOURNAMENTS = listOf(
@@ -5747,7 +5916,47 @@ class FootballRepository(
                     "berkane"
                 normalized.contains("ahly") && !normalized.contains("shabab") && !normalized.contains("jeddah") && !normalized.contains("saudi") ->
                     "ahly"
+                normalized == "turkiye" || normalized == "turkey" || normalized.startsWith("turkiye ") || normalized.startsWith("turkey ") ->
+                    "turkiye"
+                normalized == "cote d ivoire" || normalized == "cote divoire" || normalized == "ivory coast" ||
+                    normalized.contains("cote d ivoire") || normalized.contains("ivory coast") ->
+                    "ivory coast"
+                normalized == "korea republic" || normalized == "south korea" || normalized == "republic of korea" ||
+                    normalized.contains("korea republic") || normalized.contains("south korea") ->
+                    "south korea"
+                normalized == "ir iran" || normalized == "iran" || normalized == "islamic republic of iran" ->
+                    "iran"
+                normalized == "czechia" || normalized == "czech republic" ->
+                    "czechia"
+                normalized == "dr congo" || normalized == "congo dr" || normalized == "rd congo" ||
+                    normalized == "democratic republic of congo" || normalized == "d r congo" ->
+                    "dr congo"
+                normalized == "cabo verde" || normalized == "cape verde" ->
+                    "cape verde"
+                normalized == "usa" || normalized == "u s a" || normalized == "united states" || normalized == "united states of america" ->
+                    "united states"
+                normalized == "uae" || normalized == "u a e" || normalized == "united arab emirates" ->
+                    "united arab emirates"
+                normalized == "ksa" || normalized == "saudi arabia" ->
+                    "saudi arabia"
+                normalized == "bosnia" || normalized == "bosnia and herzegovina" || normalized == "bosnia herzegovina" ->
+                    "bosnia and herzegovina"
                 else -> normalized
+            }
+        }
+
+        fun canonicalizeDisplayTeamName(rawName: String): String {
+            val trimmed = rawName.trim()
+            if (trimmed.isBlank()) return ""
+            return when (trimmed.lowercase(Locale.ROOT)) {
+                "turkey", "turkiye", "türkiye" -> "Türkiye"
+                "cote d'ivoire", "côte d'ivoire", "cote divoire", "ivory coast" -> "Ivory Coast"
+                "korea republic", "republic of korea", "south korea" -> "South Korea"
+                "ir iran", "islamic republic of iran" -> "Iran"
+                "czech republic", "czechia" -> "Czechia"
+                "cabo verde", "cape verde" -> "Cape Verde"
+                "congo dr", "rd congo", "dr congo", "democratic republic of congo" -> "DR Congo"
+                else -> trimmed
             }
         }
 

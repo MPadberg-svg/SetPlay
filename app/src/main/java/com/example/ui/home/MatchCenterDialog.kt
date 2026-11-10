@@ -103,38 +103,21 @@ import com.example.data.repository.ShotOutcome
 import com.example.data.repository.formatDynamicKickoffTime
 import kotlinx.coroutines.delay
 import kotlin.math.abs
-import com.example.ui.theme.AmberGold
-import com.example.ui.theme.ArenaFloodlightLime
-import com.example.ui.theme.ArenaPitchGreen
-import com.example.ui.theme.ArenaTrophyGold
-import com.example.ui.theme.ArenaTurfDark
-import com.example.ui.theme.ArenaTurfElevated
-import com.example.ui.theme.Champagne
-import com.example.ui.theme.ChampagneMuted
-import com.example.ui.theme.ChampagneSubtleBorder
-import com.example.ui.theme.DarkGraphite
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.tween
 import com.example.ui.theme.KickoffAgedParchment
 import com.example.ui.theme.KickoffAlabasterIvory
-import com.example.ui.theme.KickoffCeruleanBlue
 import com.example.ui.theme.KickoffCharcoalElevated
 import com.example.ui.theme.KickoffCharcoalSlate
-import com.example.ui.theme.KickoffCoralRed
 import com.example.ui.theme.KickoffImperialNavy
 import com.example.ui.theme.KickoffNavyElevated
 import com.example.ui.theme.KickoffObsidianBlack
-import com.example.ui.theme.KickoffOceanBase
-import com.example.ui.theme.KickoffOceanElevated
-import com.example.ui.theme.KickoffOceanSurface
 import com.example.ui.theme.KickoffParchmentBorder
-import com.example.ui.theme.KickoffParchmentMuted
-import com.example.ui.theme.KickoffPeachCream
 import com.example.ui.theme.KickoffTerracotta
 import com.example.ui.theme.KickoffTerracottaGlow
-import com.example.ui.theme.KickoffTropicalTeal
-import com.example.ui.theme.LiveCrimson
-import com.example.ui.theme.MetalCharcoal
-import com.example.ui.theme.MetalCharcoalElevated
-import com.example.ui.theme.PaleGold
 import com.example.ui.theme.TabularNumeralTextStyle
 import com.example.ui.theme.tvFocusableControl
 import com.example.ui.theme.tvFocusablePill
@@ -401,24 +384,35 @@ private fun MatchCenterScoreboardHeader(
                             RedCardIndicatorBadge(count = match.homeRedCards)
                         }
                     }
-                    Text(
-                        text = dossier.lineups.homeFormation,
-                        color = KickoffAgedParchment,
-                        fontSize = 10.sp,
-                        fontWeight = FontWeight.Bold
-                    )
+                    if (match.status != MatchStatus.UPCOMING || dossier.lineups.isConfirmed) {
+                        Text(
+                            text = dossier.lineups.homeFormation,
+                            color = KickoffAgedParchment,
+                            fontSize = 10.sp,
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
                 }
 
                 // Center Recessed Digital Scoreboard Well
-                val isSummerTime = remember(dossier.countryZone) {
-                    dossier.countryZone.isSummerTimeActive()
+                val effectiveRefEpochMs = remember(match.kickoffEpochMs) {
+                    match.kickoffEpochMs.takeIf { it > 0L } ?: System.currentTimeMillis()
                 }
-                val dynamicKickoffTime = remember(match.kickoffEpochMs, match.kickoffTimeFormatted, dossier.countryZone, isSummerTime) {
-                    if (match.kickoffEpochMs > 0L) {
-                        formatDynamicKickoffTime(match.kickoffEpochMs, dossier.countryZone, isSummerTime)
-                    } else {
-                        match.kickoffTimeFormatted
-                    }
+                val isSummerTime = remember(dossier.countryZone, dossier.seasonTimeMode, effectiveRefEpochMs) {
+                    dossier.countryZone.isSummerTimeActive(dossier.seasonTimeMode, effectiveRefEpochMs)
+                }
+                val dynamicKickoffTime = remember(
+                    match.kickoffTimeFormatted,
+                    match.kickoffEpochMs,
+                    dossier.countryZone,
+                    isSummerTime
+                ) {
+                    match.kickoffTimeFormatted.takeIf { it.isNotBlank() }
+                        ?: if (match.kickoffEpochMs > 0L) {
+                            formatDynamicKickoffTime(match.kickoffEpochMs, dossier.countryZone, isSummerTime)
+                        } else {
+                            "20:00"
+                        }
                 }
                 val matchClockAnchor = remember(match.matchId, match.liveMinuteOrBadge, match.status) {
                     MatchClockEngine.registerOrUpdateAnchor(match)
@@ -443,11 +437,12 @@ private fun MatchCenterScoreboardHeader(
                     match.status,
                     match.halfTimeScore,
                     dynamicKickoffTime,
-                    liveElapsedSeconds
+                    liveElapsedSeconds,
+                    dossier.seasonTimeMode
                 ) {
                     parseLiveMatchClockTelemetry(
                         match = match,
-                        utcOffsetBadge = dossier.countryZone.getUtcOffsetBadge(),
+                        utcOffsetBadge = dossier.countryZone.getUtcOffsetBadge(effectiveRefEpochMs, dossier.seasonTimeMode),
                         elapsedSecondOffset = if (match.status == MatchStatus.LIVE) liveElapsedSeconds else 0,
                         dynamicKickoffTime = dynamicKickoffTime
                     )
@@ -479,11 +474,21 @@ private fun MatchCenterScoreboardHeader(
                                 modifier = Modifier.padding(horizontal = 9.dp, vertical = 2.5.dp)
                             ) {
                                 if (isLive) {
+                                    val pulseTransition = rememberInfiniteTransition(label = "live_scoreboard_dot")
+                                    val dotAlpha by pulseTransition.animateFloat(
+                                        initialValue = 0.35f,
+                                        targetValue = 1.0f,
+                                        animationSpec = infiniteRepeatable(
+                                            animation = tween(durationMillis = 750),
+                                            repeatMode = RepeatMode.Reverse
+                                        ),
+                                        label = "live_scoreboard_dot_alpha"
+                                    )
                                     Box(
                                         modifier = Modifier
                                             .size(6.dp)
                                             .clip(CircleShape)
-                                            .background(KickoffAlabasterIvory)
+                                            .background(KickoffAlabasterIvory.copy(alpha = dotAlpha))
                                     )
                                     Spacer(modifier = Modifier.width(5.dp))
                                 }
@@ -518,26 +523,28 @@ private fun MatchCenterScoreboardHeader(
                             letterSpacing = 0.8.sp
                         )
 
-                        // HT / FT Score Breakdown Pill
-                        Spacer(modifier = Modifier.height(4.dp))
-                        val breakdownText = buildString {
-                            append("(${dossier.halfTimeScoreLabel})")
-                            dossier.fullTimeScoreLabel?.let { ft ->
-                                append(" • $ft")
+                        // HT / FT Score Breakdown Pill (only when match is live/halftime/finished and HT score is real)
+                        if (match.status != MatchStatus.UPCOMING && dossier.halfTimeScoreLabel != "HT - : -") {
+                            Spacer(modifier = Modifier.height(4.dp))
+                            val breakdownText = buildString {
+                                append("(${dossier.halfTimeScoreLabel})")
+                                dossier.fullTimeScoreLabel?.let { ft ->
+                                    append(" • $ft")
+                                }
                             }
-                        }
-                        Surface(
-                            color = KickoffCharcoalSlate,
-                            shape = RoundedCornerShape(50),
-                            border = BorderStroke(0.6.dp, KickoffParchmentBorder)
-                        ) {
-                            Text(
-                                text = breakdownText,
-                                color = KickoffAgedParchment,
-                                fontSize = 9.5.sp,
-                                fontWeight = FontWeight.Bold,
-                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp)
-                            )
+                            Surface(
+                                color = KickoffCharcoalSlate,
+                                shape = RoundedCornerShape(50),
+                                border = BorderStroke(0.6.dp, KickoffParchmentBorder)
+                            ) {
+                                Text(
+                                    text = breakdownText,
+                                    color = KickoffAgedParchment,
+                                    fontSize = 9.5.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp)
+                                )
+                            }
                         }
                     }
                 }
@@ -580,12 +587,14 @@ private fun MatchCenterScoreboardHeader(
                             RedCardIndicatorBadge(count = match.awayRedCards)
                         }
                     }
-                    Text(
-                        text = dossier.lineups.awayFormation,
-                        color = KickoffAgedParchment,
-                        fontSize = 10.sp,
-                        fontWeight = FontWeight.Bold
-                    )
+                    if (match.status != MatchStatus.UPCOMING || dossier.lineups.isConfirmed) {
+                        Text(
+                            text = dossier.lineups.awayFormation,
+                            color = KickoffAgedParchment,
+                            fontSize = 10.sp,
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
                 }
             }
 
@@ -644,8 +653,31 @@ private fun MatchCenterScoreboardHeader(
                                     )
                                 }
                             }
+                            val cleanMetadataSubtitle = buildList {
+                                val hasRealStadium = match.stadiumName.isNotBlank() &&
+                                    !match.stadiumName.equals("Main Stadium", ignoreCase = true)
+                                val hasRealCity = match.cityName.isNotBlank() &&
+                                    !match.cityName.equals("International", ignoreCase = true)
+                                if (hasRealStadium) {
+                                    add(if (hasRealCity) "${match.stadiumName}, ${match.cityName}" else match.stadiumName)
+                                } else if (hasRealCity) {
+                                    add(match.cityName)
+                                }
+                                if (dossier.refereeName.isNotBlank() &&
+                                    !dossier.refereeName.startsWith("TBA", ignoreCase = true)
+                                ) {
+                                    add(dossier.refereeName)
+                                }
+                                if (dossier.attendanceLabel.isNotBlank() &&
+                                    !dossier.attendanceLabel.startsWith("TBA", ignoreCase = true)
+                                ) {
+                                    add(dossier.attendanceLabel)
+                                }
+                            }.joinToString(" • ").ifBlank {
+                                "${match.tournamentName} • Official Broadcast Feed"
+                            }
                             Text(
-                                text = "${match.stadiumName}, ${match.cityName} • ${dossier.refereeName} • ${dossier.attendanceLabel}",
+                                text = cleanMetadataSubtitle,
                                 color = KickoffAgedParchment,
                                 fontSize = 9.5.sp,
                                 maxLines = 1,
@@ -822,14 +854,21 @@ private fun MatchSummaryTabContent(
                             )
                         }
                         Spacer(modifier = Modifier.height(6.dp))
-                        val isSummerBriefing = dossier.countryZone.isSummerTimeActive()
+                        val refEpochMs = match.kickoffEpochMs.takeIf { it > 0L } ?: System.currentTimeMillis()
+                        val isSummerBriefing = dossier.countryZone.isSummerTimeActive(dossier.seasonTimeMode, refEpochMs)
                         val briefingKickoff = if (match.kickoffEpochMs > 0L) {
                             formatDynamicKickoffTime(match.kickoffEpochMs, dossier.countryZone, isSummerBriefing)
                         } else {
                             match.kickoffTimeFormatted
                         }
+                        val offsetBadge = dossier.countryZone.getUtcOffsetBadge(refEpochMs, dossier.seasonTimeMode)
+                        val lineupNote = if (dossier.lineups.isConfirmed) {
+                            "Official starting lineups (${dossier.lineups.homeFormation} vs ${dossier.lineups.awayFormation})"
+                        } else {
+                            "Official starting XI (published 60 minutes prior to kickoff)"
+                        }
                         Text(
-                            text = "Kickoff is scheduled at $briefingKickoff (${dossier.countryZone.countryName} ${dossier.countryZone.getUtcOffsetBadge()}). Official starting lineups (${dossier.lineups.homeFormation} vs ${dossier.lineups.awayFormation}), H2H history, and MENA broadcast channels are available across the tabs above.",
+                            text = "Kickoff is scheduled at $briefingKickoff (${dossier.countryZone.countryName} $offsetBadge). $lineupNote, H2H history, and regional broadcast channels are available across the tabs above.",
                             color = KickoffAgedParchment,
                             fontSize = 12.sp
                         )
@@ -932,12 +971,31 @@ private fun MatchSummaryTabContent(
                         fontSize = 11.sp,
                         fontWeight = FontWeight.ExtraBold
                     )
-                    MatchInfoKeyValueRow("Stadium / Venue", "${match.stadiumName}, ${match.cityName}")
-                    MatchInfoKeyValueRow("Referee", dossier.refereeName)
-                    MatchInfoKeyValueRow("Attendance", dossier.attendanceLabel)
-                    MatchInfoKeyValueRow("Pitch & Weather", dossier.pitchConditionLabel)
+                    val hasRealStadium = match.stadiumName.isNotBlank() &&
+                        !match.stadiumName.equals("Main Stadium", ignoreCase = true)
+                    val hasRealCity = match.cityName.isNotBlank() &&
+                        !match.cityName.equals("International", ignoreCase = true)
+                    if (hasRealStadium) {
+                        MatchInfoKeyValueRow(
+                            "Stadium / Venue",
+                            if (hasRealCity) "${match.stadiumName}, ${match.cityName}" else match.stadiumName
+                        )
+                    }
+                    if (dossier.refereeName.isNotBlank() &&
+                        !dossier.refereeName.startsWith("TBA", ignoreCase = true)
+                    ) {
+                        MatchInfoKeyValueRow("Referee", dossier.refereeName)
+                    }
+                    if (dossier.attendanceLabel.isNotBlank() &&
+                        !dossier.attendanceLabel.startsWith("TBA", ignoreCase = true)
+                    ) {
+                        MatchInfoKeyValueRow("Attendance", dossier.attendanceLabel)
+                    }
+                    MatchInfoKeyValueRow("Competition", "${match.tournamentName} (${match.stageOrRound})")
+                    val refEpochMs = match.kickoffEpochMs.takeIf { it > 0L } ?: System.currentTimeMillis()
+                    val offsetBadge = dossier.countryZone.getUtcOffsetBadge(refEpochMs, dossier.seasonTimeMode)
                     MatchInfoKeyValueRow(
-                        "Kickoff (${dossier.countryZone.countryName} • ${dossier.countryZone.getUtcOffsetBadge()})",
+                        "Kickoff (${dossier.countryZone.countryName} • $offsetBadge)",
                         "${match.kickoffTimeFormatted} (${match.kickoffDateFormatted})"
                     )
                 }
@@ -1466,7 +1524,9 @@ private fun MatchLineups2DPitchTabContent(
                             listOf(KickoffImperialNavy, KickoffTerracotta)
                         )
                     ),
-                    modifier = Modifier.fillMaxWidth()
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .testTag("pre_match_lineups_empty_card")
                 ) {
                     Column(
                         modifier = Modifier
@@ -1498,74 +1558,89 @@ private fun MatchLineups2DPitchTabContent(
                     }
                 }
             }
-        }
 
-        // 2. 365Scores-Style 3D Perspective Stadium Pitch with Circular Player Portraits & Formation Pill
-        item {
-            TacticalPitch2DView(
-                match = match,
-                lineups = lineups,
-                filterMode = pitchFilterMode,
-                showPassingNetwork = showPassingNetwork,
-                isPlayedOrLive = isPlayedOrLive,
-                selectedPlayer = inspectedPlayer,
-                onSelectPlayer = { inspectedPlayer = it }
-            )
-        }
-
-        // 3. Official 1-Hour Pre-Match Lineup Release Notice Banner (Directly below pitch like 365Scores)
-        item {
-            OfficialLineupTimingBanner(
-                lineups = lineups,
-                isPlayedOrLive = isPlayedOrLive
-            )
-        }
-
-        // 4. Tapped Player Tactical Dossier Spotlight Card (with Player Headshot & Role Metrics)
-        inspectedPlayer?.let { player ->
             item {
-                val isHomePlayer = lineups.homeStartingXI.any { it.playerId == player.playerId } ||
-                    lineups.homeBench.any { it.playerId == player.playerId }
-                PlayerTacticalSpotlightCard(
-                    player = player,
-                    teamName = if (isHomePlayer) match.homeTeamName else match.awayTeamName,
-                    teamBadge = if (isHomePlayer) match.homeTeamBadge else match.awayTeamBadge,
-                    isHomeTeam = isHomePlayer,
+                OfficialLineupTimingBanner(
+                    lineups = lineups,
                     isPlayedOrLive = isPlayedOrLive
                 )
             }
-        }
 
-        // 5. Helpful Tactical Recommendations & Team DNA Card (Requirement 5)
-        item {
-            TeamTacticalRecommendationsCard(
-                match = match,
-                lineups = lineups,
-                filterMode = pitchFilterMode,
-                isPlayedOrLive = isPlayedOrLive,
-                onSelectPlayer = { inspectedPlayer = it }
-            )
-        }
+            item {
+                SeparatedManagerCard(
+                    match = match,
+                    lineups = lineups,
+                    filterMode = pitchFilterMode
+                )
+            }
+        } else {
+            // 2. 365Scores-Style 3D Perspective Stadium Pitch with Circular Player Portraits & Formation Pill
+            item {
+                TacticalPitch2DView(
+                    match = match,
+                    lineups = lineups,
+                    filterMode = pitchFilterMode,
+                    showPassingNetwork = showPassingNetwork,
+                    isPlayedOrLive = isPlayedOrLive,
+                    selectedPlayer = inspectedPlayer,
+                    onSelectPlayer = { inspectedPlayer = it }
+                )
+            }
 
-        // 6. Separated Manager / Head Coach Card for Selected Team (or Both if 22 View)
-        item {
-            SeparatedManagerCard(
-                match = match,
-                lineups = lineups,
-                filterMode = pitchFilterMode
-            )
-        }
+            // 3. Official 1-Hour Pre-Match Lineup Release Notice Banner (Directly below pitch like 365Scores)
+            item {
+                OfficialLineupTimingBanner(
+                    lineups = lineups,
+                    isPlayedOrLive = isPlayedOrLive
+                )
+            }
 
-        // 7. Separated Substitutes Bench with Circular Player Avatars
-        item {
-            SeparatedSubstitutesBenchCard(
-                match = match,
-                lineups = lineups,
-                filterMode = pitchFilterMode,
-                isPlayedOrLive = isPlayedOrLive,
-                inspectedPlayer = inspectedPlayer,
-                onSelectPlayer = { inspectedPlayer = it }
-            )
+            // 4. Tapped Player Tactical Dossier Spotlight Card (with Player Headshot & Role Metrics)
+            inspectedPlayer?.let { player ->
+                item {
+                    val isHomePlayer = lineups.homeStartingXI.any { it.playerId == player.playerId } ||
+                        lineups.homeBench.any { it.playerId == player.playerId }
+                    PlayerTacticalSpotlightCard(
+                        player = player,
+                        teamName = if (isHomePlayer) match.homeTeamName else match.awayTeamName,
+                        teamBadge = if (isHomePlayer) match.homeTeamBadge else match.awayTeamBadge,
+                        isHomeTeam = isHomePlayer,
+                        isPlayedOrLive = isPlayedOrLive
+                    )
+                }
+            }
+
+            // 5. Helpful Tactical Recommendations & Team DNA Card (Requirement 5)
+            item {
+                TeamTacticalRecommendationsCard(
+                    match = match,
+                    lineups = lineups,
+                    filterMode = pitchFilterMode,
+                    isPlayedOrLive = isPlayedOrLive,
+                    onSelectPlayer = { inspectedPlayer = it }
+                )
+            }
+
+            // 6. Separated Manager / Head Coach Card for Selected Team (or Both if 22 View)
+            item {
+                SeparatedManagerCard(
+                    match = match,
+                    lineups = lineups,
+                    filterMode = pitchFilterMode
+                )
+            }
+
+            // 7. Separated Substitutes Bench with Circular Player Avatars
+            item {
+                SeparatedSubstitutesBenchCard(
+                    match = match,
+                    lineups = lineups,
+                    filterMode = pitchFilterMode,
+                    isPlayedOrLive = isPlayedOrLive,
+                    inspectedPlayer = inspectedPlayer,
+                    onSelectPlayer = { inspectedPlayer = it }
+                )
+            }
         }
 
         // 8. Separated Missing / Injured / Suspended Players
@@ -3720,7 +3795,7 @@ internal fun MatchBuzzInsightsCard(
             verticalArrangement = Arrangement.spacedBy(6.dp)
         ) {
             Text(
-                text = "🔥 365SCORES MATCH BUZZ & H2H INSIGHTS",
+                text = "SETPLAY MATCH INTELLIGENCE & H2H INSIGHTS",
                 color = KickoffTerracotta,
                 fontSize = 11.sp,
                 fontWeight = FontWeight.ExtraBold
@@ -4190,8 +4265,9 @@ private fun MatchMenaTvGuideTabContent(
                             shape = RoundedCornerShape(50),
                             border = BorderStroke(0.7.dp, KickoffParchmentBorder)
                         ) {
+                            val refEpochMs = dossier.match.kickoffEpochMs.takeIf { it > 0L } ?: System.currentTimeMillis()
                             Text(
-                                text = dossier.countryZone.getUtcOffsetBadge(),
+                                text = dossier.countryZone.getUtcOffsetBadge(refEpochMs, dossier.seasonTimeMode),
                                 color = KickoffAgedParchment,
                                 fontSize = 9.sp,
                                 fontWeight = FontWeight.ExtraBold,

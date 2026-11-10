@@ -192,6 +192,7 @@ data class MatchFullDossier(
     val standingsTable: List<LeagueStandingRow>,
     val menaBroadcastGuide: List<MenaBroadcastChannelInfo>,
     val countryZone: UserCountryZone = UserZoneRegistry.getZoneByCode(UserZoneRegistry.DEFAULT_COUNTRY_CODE),
+    val seasonTimeMode: SeasonTimeMode = SeasonTimeMode.AUTO,
     val momentumPoints: List<MomentumMinutePoint> = emptyList(),
     val shotMap: List<MatchShotPoint> = emptyList(),
     val matchBuzzInsights: List<String> = emptyList()
@@ -229,7 +230,8 @@ class MatchCenterEnricher(
     suspend fun fetchMatchFullDossier(
         match: FootballMatch,
         forceRefresh: Boolean = false,
-        countryZone: UserCountryZone = UserZoneRegistry.getZoneByCode(UserZoneRegistry.DEFAULT_COUNTRY_CODE)
+        countryZone: UserCountryZone = UserZoneRegistry.getZoneByCode(UserZoneRegistry.DEFAULT_COUNTRY_CODE),
+        seasonTimeMode: SeasonTimeMode = SeasonTimeMode.AUTO
     ): MatchFullDossier = withContext(Dispatchers.IO) {
         val nowMs = System.currentTimeMillis()
         val cacheKey = "${match.matchId}_${countryZone.countryCode}"
@@ -239,7 +241,7 @@ class MatchCenterEnricher(
             if ((nowMs - cachedEntry.timestampMs) < DOSSIER_CACHE_TTL_MS &&
                 cachedEntry.matchScoreSignature == currentSignature
             ) {
-                return@withContext cachedEntry.dossier
+                return@withContext cachedEntry.dossier.copy(seasonTimeMode = seasonTimeMode)
             } else {
                 // Score or status changed (e.g. live goal scored) or TTL expired -> invalidate
                 dossierCache.remove(cacheKey)
@@ -331,7 +333,7 @@ class MatchCenterEnricher(
             )
         }
 
-        val built = buildCompleteDossier(match, livePayload, countryZone)
+        val built = buildCompleteDossier(match, livePayload, countryZone, seasonTimeMode)
         val enrichedLineups = enrichLineupPlayerPhotosRemotely(
             lineups = built.lineups,
             tsdbHomeSquad = livePayload.tsdbHomeSquad,
@@ -846,7 +848,8 @@ class MatchCenterEnricher(
     internal fun buildCompleteDossier(
         match: FootballMatch,
         raw: LiveDossierRawPayload? = null,
-        countryZone: UserCountryZone = UserZoneRegistry.getZoneByCode(UserZoneRegistry.DEFAULT_COUNTRY_CODE)
+        countryZone: UserCountryZone = UserZoneRegistry.getZoneByCode(UserZoneRegistry.DEFAULT_COUNTRY_CODE),
+        seasonTimeMode: SeasonTimeMode = SeasonTimeMode.AUTO
     ): MatchFullDossier {
         val seed = abs((match.homeTeamName + match.awayTeamName + match.tournamentId).hashCode())
         val isPlayedOrLive = match.status == MatchStatus.LIVE ||
@@ -984,6 +987,7 @@ class MatchCenterEnricher(
             standingsTable = standings,
             menaBroadcastGuide = menaGuide,
             countryZone = countryZone,
+            seasonTimeMode = seasonTimeMode,
             momentumPoints = momentumPoints,
             shotMap = shotMap,
             matchBuzzInsights = matchBuzzInsights

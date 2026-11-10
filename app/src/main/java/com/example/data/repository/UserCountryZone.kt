@@ -340,7 +340,13 @@ data class UserCountryZone(
 }
 
 fun formatDynamicKickoffTime(kickoffEpochMs: Long, zone: UserCountryZone, isSummer: Boolean): String {
-    val tz = TimeZone.getTimeZone(zone.getTimeZoneId(isSummer))
+    val mode = if (isSummer) SeasonTimeMode.SUMMER else SeasonTimeMode.WINTER
+    val offsetMins = zone.getEffectiveOffsetMinutes(mode, kickoffEpochMs)
+    val sign = if (offsetMins >= 0) "+" else "-"
+    val absMins = kotlin.math.abs(offsetMins)
+    val hours = absMins / 60
+    val mins = absMins % 60
+    val tz = TimeZone.getTimeZone(String.format(Locale.US, "GMT%s%02d:%02d", sign, hours, mins))
     return SimpleDateFormat("HH:mm", Locale.US).apply { timeZone = tz }.format(Date(kickoffEpochMs))
 }
 

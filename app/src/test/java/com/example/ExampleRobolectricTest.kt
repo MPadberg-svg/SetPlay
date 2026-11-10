@@ -4728,6 +4728,11 @@ class TvSyncDeviceSeparationComposeTest {
         assertEquals(Color(0xFFF3EEE3), KickoffAlabasterIvory)
         assertEquals(Color(0xFFD8CBB3), KickoffAgedParchment)
         assertEquals(Color(0xFF1E1E1C), KickoffCharcoalSlate)
+        assertEquals(Color(0x33D9541E), KickoffTerracottaGlow)
+        assertEquals(Color(0xFF162654), KickoffNavyElevated)
+        assertEquals(Color(0x2ED8CBB3), KickoffParchmentBorder)
+        assertEquals(Color(0xB3D8CBB3), KickoffParchmentMuted)
+        assertEquals(Color(0xFF272724), KickoffCharcoalElevated)
     }
 }
 
