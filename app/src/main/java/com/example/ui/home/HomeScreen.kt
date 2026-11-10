@@ -134,10 +134,14 @@ import com.example.data.model.FavoriteTeamEntity
 import com.example.data.model.PlaylistEntity
 import com.example.data.model.StreamEntity
 import com.example.data.model.TournamentPreferenceEntity
+import com.example.data.repository.CompetitionCategory
 import com.example.data.repository.FootballMatch
+import com.example.data.repository.FootballRepository
 import com.example.data.repository.FootballTeam
 import com.example.data.repository.LiveScoreSyncState
+import com.example.data.repository.MatchClockEngine
 import com.example.data.repository.MatchDayTab
+import com.example.data.repository.MatchPeriodPhase
 import com.example.data.repository.MatchStatus
 import com.example.data.repository.SeasonTimeMode
 import com.example.data.repository.SyncProgress
@@ -156,12 +160,23 @@ import com.example.ui.theme.Champagne
 import com.example.ui.theme.ChampagneMuted
 import com.example.ui.theme.ChampagneSubtleBorder
 import com.example.ui.theme.DarkGraphite
+import com.example.ui.theme.KickoffAgedParchment
+import com.example.ui.theme.KickoffAlabasterIvory
 import com.example.ui.theme.KickoffCeruleanBlue
+import com.example.ui.theme.KickoffCharcoalElevated
+import com.example.ui.theme.KickoffCharcoalSlate
 import com.example.ui.theme.KickoffCoralRed
+import com.example.ui.theme.KickoffImperialNavy
+import com.example.ui.theme.KickoffNavyElevated
+import com.example.ui.theme.KickoffObsidianBlack
 import com.example.ui.theme.KickoffOceanBase
 import com.example.ui.theme.KickoffOceanElevated
 import com.example.ui.theme.KickoffOceanSurface
+import com.example.ui.theme.KickoffParchmentBorder
+import com.example.ui.theme.KickoffParchmentMuted
 import com.example.ui.theme.KickoffPeachCream
+import com.example.ui.theme.KickoffTerracotta
+import com.example.ui.theme.KickoffTerracottaGlow
 import com.example.ui.theme.KickoffTropicalTeal
 import com.example.ui.theme.LiveCrimson
 import com.example.ui.theme.LiveRed
@@ -204,6 +219,7 @@ fun HomeScreen(
     val showCustomizeModal by mainViewModel.showCustomizeTeamsModal.collectAsStateWithLifecycle()
     val selectedMatchDay by mainViewModel.selectedMatchDay.collectAsStateWithLifecycle()
     val selectedTournamentFilter by mainViewModel.selectedTournamentFilter.collectAsStateWithLifecycle()
+    val selectedCompetitionCategory by mainViewModel.selectedCompetitionCategory.collectAsStateWithLifecycle()
     val collapsedTournamentIds by mainViewModel.collapsedTournamentIds.collectAsStateWithLifecycle()
     val matchesByDay by mainViewModel.matchesByDay.collectAsStateWithLifecycle()
     val todayMatches by mainViewModel.todayMatches.collectAsStateWithLifecycle()
@@ -230,11 +246,15 @@ fun HomeScreen(
     val enabledTournamentMap = remember(tournamentPreferences) {
         tournamentPreferences.associateBy { it.tournamentId }
     }
+    val tournamentCategoryMap = remember {
+        FootballRepository.ALL_TOURNAMENTS.associate { it.tournamentId to it.category }
+    }
 
-    // Filter matches according to enabled tournaments & active filter chip
+    // Filter matches according to enabled tournaments, active 3-pillar category & active filter chip
     val visibleMatches = remember(
         activeDayMatches,
         enabledTournamentMap,
+        selectedCompetitionCategory,
         selectedTournamentFilter,
         favoriteTeams
     ) {
@@ -243,6 +263,12 @@ fun HomeScreen(
             val isTournamentEnabled = pref?.isEnabled ?: true
             if (!isTournamentEnabled && selectedTournamentFilter == "ALL") {
                 return@filter false
+            }
+            if (selectedCompetitionCategory != null) {
+                val matchCat = tournamentCategoryMap[match.tournamentId] ?: CompetitionCategory.EUROPEAN
+                if (matchCat != selectedCompetitionCategory) {
+                    return@filter false
+                }
             }
             when (selectedTournamentFilter) {
                 "ALL" -> true
@@ -292,9 +318,9 @@ fun HomeScreen(
             .background(
                 Brush.verticalGradient(
                     listOf(
-                        KickoffOceanBase,
-                        KickoffOceanSurface.copy(alpha = 0.85f),
-                        KickoffOceanBase
+                        KickoffObsidianBlack,
+                        KickoffImperialNavy.copy(alpha = 0.28f),
+                        KickoffObsidianBlack
                     )
                 )
             )
@@ -363,7 +389,7 @@ fun HomeScreen(
             }
         }
 
-        // 3 & 4. Sticky Frosted Matchday Scrubber + Tournament Filter Dock on Scroll
+        // 3 & 4. Sticky Architectural Matchday Scrubber + 3-Pillar Competition Bar + Tournament Filter Dock
         stickyHeader(key = "sticky_matchday_and_tournament_bar") {
             Column(
                 modifier = Modifier
@@ -371,9 +397,9 @@ fun HomeScreen(
                     .background(
                         Brush.verticalGradient(
                             listOf(
-                                KickoffOceanBase.copy(alpha = 0.98f),
-                                KickoffOceanBase.copy(alpha = 0.95f),
-                                KickoffOceanSurface.copy(alpha = 0.92f)
+                                KickoffObsidianBlack.copy(alpha = 0.98f),
+                                KickoffObsidianBlack.copy(alpha = 0.96f),
+                                KickoffCharcoalSlate.copy(alpha = 0.94f)
                             )
                         )
                     )
@@ -386,8 +412,17 @@ fun HomeScreen(
                     onSelectDay = { mainViewModel.selectMatchDay(it) }
                 )
 
+                CompetitionCategoryPillarRow(
+                    selectedCategory = selectedCompetitionCategory,
+                    activeDayMatches = activeDayMatches,
+                    tournamentCategoryMap = tournamentCategoryMap,
+                    onSelectCategory = { mainViewModel.selectCompetitionCategory(it) }
+                )
+
                 TournamentFilterRow(
                     selectedFilter = selectedTournamentFilter,
+                    selectedCategory = selectedCompetitionCategory,
+                    tournamentCategoryMap = tournamentCategoryMap,
                     favoriteTeamsCount = favoriteTeams.size,
                     liveCount = activeDayMatches.count { it.status == MatchStatus.LIVE || it.status == MatchStatus.HALFTIME },
                     activeDayMatches = activeDayMatches,
@@ -396,7 +431,7 @@ fun HomeScreen(
                     onOpenCustomize = { mainViewModel.openCustomizeTeamsModal() }
                 )
 
-                // Subtle bottom specular gradient hairline separating sticky dock from scrolling fixtures
+                // Subtle bottom architectural hairline separating sticky dock from scrolling fixtures
                 Box(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -405,9 +440,9 @@ fun HomeScreen(
                             Brush.horizontalGradient(
                                 listOf(
                                     Color.Transparent,
-                                    KickoffTropicalTeal.copy(alpha = 0.40f),
-                                    KickoffPeachCream.copy(alpha = 0.25f),
-                                    KickoffCoralRed.copy(alpha = 0.35f),
+                                    KickoffImperialNavy.copy(alpha = 0.75f),
+                                    KickoffAgedParchment.copy(alpha = 0.32f),
+                                    KickoffTerracotta.copy(alpha = 0.48f),
                                     Color.Transparent
                                 )
                             )
@@ -451,6 +486,7 @@ fun HomeScreen(
                     EmptyMatchesCard(
                         selectedFilter = selectedTournamentFilter,
                         onResetFilter = {
+                            mainViewModel.selectCompetitionCategory(null)
                             mainViewModel.selectTournamentFilter("ALL")
                             mainViewModel.enableAllTournaments()
                         },
@@ -764,15 +800,18 @@ private fun SyncBanner(syncProgress: SyncProgress) {
  */
 internal val CANONICAL_TOURNAMENT_ORDER = listOf(
     "uefa_cl",
-    "laliga",
-    "premier_league",
-    "ligue_1",
-    "bundesliga",
-    "serie_a",
-    "caf_cl",
-    "botola_pro",
     "uefa_el",
-    "saudi_pro"
+    "premier_league",
+    "laliga",
+    "serie_a",
+    "bundesliga",
+    "ligue_1",
+    "caf_cl",
+    "caf_confed",
+    "botola_pro",
+    "saudi_pro",
+    "intl_official",
+    "intl_friendly"
 )
 
 internal fun getTournamentCanonicalPriority(tournamentId: String, fallbackSortOrder: Int = 99): Int {
@@ -898,19 +937,19 @@ private fun KickOffArenaHeaderCard(
     }
 
     Surface(
-        color = KickoffOceanSurface.copy(alpha = 0.90f),
+        color = KickoffCharcoalSlate.copy(alpha = 0.94f),
         shape = RoundedCornerShape(12.dp),
         border = BorderStroke(
             width = 0.85.dp,
             brush = Brush.horizontalGradient(
                 listOf(
                     if (liveMatchesCount > 0 && selectedMatchDay == MatchDayTab.TODAY) {
-                        LiveCrimson.copy(alpha = 0.48f)
+                        KickoffTerracotta.copy(alpha = 0.65f)
                     } else {
-                        KickoffTropicalTeal.copy(alpha = 0.42f)
+                        KickoffAgedParchment.copy(alpha = 0.35f)
                     },
-                    Color.White.copy(alpha = 0.12f),
-                    KickoffTropicalTeal.copy(alpha = 0.32f)
+                    KickoffParchmentBorder,
+                    KickoffImperialNavy.copy(alpha = 0.70f)
                 )
             )
         ),
@@ -927,8 +966,8 @@ private fun KickOffArenaHeaderCard(
                 .background(
                     Brush.horizontalGradient(
                         colors = listOf(
-                            KickoffOceanSurface,
-                            KickoffOceanElevated.copy(alpha = 0.94f)
+                            KickoffCharcoalSlate,
+                            KickoffImperialNavy.copy(alpha = 0.88f)
                         )
                     )
                 )
@@ -950,11 +989,11 @@ private fun KickOffArenaHeaderCard(
 
                 if (liveMatchesCount > 0 && selectedMatchDay == MatchDayTab.TODAY) {
                     Surface(
-                        color = if (isLiveFilterActive) LiveCrimson else LiveCrimson.copy(alpha = 0.18f),
+                        color = if (isLiveFilterActive) KickoffTerracotta else KickoffTerracottaGlow,
                         shape = RoundedCornerShape(8.dp),
                         border = BorderStroke(
                             0.8.dp,
-                            if (isLiveFilterActive) Color.White.copy(alpha = 0.85f) else LiveCrimson.copy(alpha = 0.65f)
+                            if (isLiveFilterActive) KickoffAlabasterIvory.copy(alpha = 0.85f) else KickoffTerracotta.copy(alpha = 0.75f)
                         ),
                         modifier = Modifier
                             .height(26.dp)
@@ -969,12 +1008,12 @@ private fun KickOffArenaHeaderCard(
                                 modifier = Modifier
                                     .size(5.dp)
                                     .clip(CircleShape)
-                                    .background(if (isLiveFilterActive) Color.White else LiveCrimson)
+                                    .background(if (isLiveFilterActive) KickoffAlabasterIvory else KickoffTerracotta)
                             )
                             Spacer(modifier = Modifier.width(4.dp))
                             Text(
                                 text = if (isLiveFilterActive) "$liveMatchesCount LIVE ✕" else "$liveMatchesCount LIVE",
-                                color = Color.White,
+                                color = KickoffAlabasterIvory,
                                 fontSize = 9.sp,
                                 fontWeight = FontWeight.ExtraBold,
                                 style = TabularNumeralTextStyle,
@@ -985,9 +1024,9 @@ private fun KickOffArenaHeaderCard(
                     }
                 } else {
                     Surface(
-                        color = Color.White.copy(alpha = 0.05f),
+                        color = KickoffObsidianBlack.copy(alpha = 0.65f),
                         shape = RoundedCornerShape(8.dp),
-                        border = BorderStroke(0.7.dp, Color.White.copy(alpha = 0.10f)),
+                        border = BorderStroke(0.7.dp, KickoffParchmentBorder),
                         modifier = Modifier.height(26.dp)
                     ) {
                         Row(
@@ -996,7 +1035,7 @@ private fun KickOffArenaHeaderCard(
                         ) {
                             Text(
                                 text = compactSlateLabel,
-                                color = Champagne,
+                                color = KickoffAgedParchment,
                                 fontSize = 9.sp,
                                 fontWeight = FontWeight.Bold,
                                 style = TabularNumeralTextStyle,
@@ -1017,9 +1056,9 @@ private fun KickOffArenaHeaderCard(
             ) {
                 if (selectedMatchDay != MatchDayTab.TODAY) {
                     Surface(
-                        color = AmberGold.copy(alpha = 0.16f),
+                        color = KickoffTerracottaGlow,
                         shape = RoundedCornerShape(8.dp),
-                        border = BorderStroke(0.75.dp, AmberGold.copy(alpha = 0.60f)),
+                        border = BorderStroke(0.75.dp, KickoffTerracotta.copy(alpha = 0.75f)),
                         modifier = Modifier
                             .height(26.dp)
                             .clip(RoundedCornerShape(8.dp))
@@ -1031,7 +1070,7 @@ private fun KickOffArenaHeaderCard(
                         ) {
                             Text(
                                 text = "↩ Today",
-                                color = AmberGold,
+                                color = KickoffAlabasterIvory,
                                 fontSize = 9.sp,
                                 fontWeight = FontWeight.ExtraBold,
                                 maxLines = 1,
@@ -1042,9 +1081,9 @@ private fun KickOffArenaHeaderCard(
                 }
 
                 Surface(
-                    color = KickoffTropicalTeal.copy(alpha = 0.14f),
+                    color = KickoffImperialNavy.copy(alpha = 0.85f),
                     shape = RoundedCornerShape(8.dp),
-                    border = BorderStroke(0.8.dp, KickoffTropicalTeal.copy(alpha = 0.45f)),
+                    border = BorderStroke(0.8.dp, KickoffAgedParchment.copy(alpha = 0.42f)),
                     modifier = Modifier
                         .height(26.dp)
                         .clip(RoundedCornerShape(8.dp))
@@ -1061,7 +1100,7 @@ private fun KickOffArenaHeaderCard(
                         Icon(
                             imageVector = Icons.Default.Tune,
                             contentDescription = "Customize Teams and Leagues",
-                            tint = KickoffTropicalTeal,
+                            tint = KickoffAgedParchment,
                             modifier = Modifier.size(12.dp)
                         )
                         Spacer(modifier = Modifier.width(4.dp))
@@ -1071,7 +1110,7 @@ private fun KickOffArenaHeaderCard(
                             } else {
                                 "Teams"
                             },
-                            color = Color.White,
+                            color = KickoffAlabasterIvory,
                             fontSize = 9.5.sp,
                             fontWeight = FontWeight.SemiBold,
                             maxLines = 1,
@@ -1085,14 +1124,14 @@ private fun KickOffArenaHeaderCard(
                     modifier = Modifier
                         .size(26.dp)
                         .clip(CircleShape)
-                        .background(Color.White.copy(alpha = 0.07f))
-                        .border(0.7.dp, Color.White.copy(alpha = 0.12f), CircleShape)
+                        .background(KickoffObsidianBlack.copy(alpha = 0.75f))
+                        .border(0.7.dp, KickoffParchmentBorder, CircleShape)
                         .clickable(onClick = onRefreshMatches)
                         .testTag("refresh_matches_btn")
                 ) {
                     if (isLoadingMatches || liveScoreSyncState.isSyncingDelta) {
                         CircularProgressIndicator(
-                            color = KickoffTropicalTeal,
+                            color = KickoffTerracotta,
                             strokeWidth = 1.6.dp,
                             modifier = Modifier.size(13.dp)
                         )
@@ -1100,7 +1139,7 @@ private fun KickOffArenaHeaderCard(
                         Icon(
                             imageVector = Icons.Default.Refresh,
                             contentDescription = "Refresh Matches",
-                            tint = Champagne,
+                            tint = KickoffAgedParchment,
                             modifier = Modifier.size(14.dp)
                         )
                     }
@@ -1111,15 +1150,10 @@ private fun KickOffArenaHeaderCard(
 }
 
 /**
- * Liquid-Stretch Segmented Calendar Strip (`FiveDayMatchTimelineRibbon`):
- * - Clean, minimalist, and completely distinct from the bottom navigation bar.
- * - Features a sleek frosted-glass stadium track where unselected days sit cleanly without inner box clutter,
- *   while a single **Elastic Liquid-Stretch Capsule** (`min(fastSlot, slowSlot)` to `max(fastSlot, slowSlot)`)
- *   glides and stretches organically from day to day on tap or swipe.
- * - Clear 3-tier typographic hierarchy in each equal-width (`weight(1f)`) column:
- *   1. Tracked Day Code (`YEST`, `TODAY`, `TOM`, `FRI`, `SAT`)
- *   2. Crisp Hero Date (`04 Nov`)
- *   3. Minimalist Match Count Pill (`10 Games` when active, `9` / `20` / `8` / `22` when inactive).
+ * Architectural 5-Day Segmented Calendar Strip (`FiveDayMatchTimelineRibbon`) in the Official 6-Color Palette:
+ * - Obsidian Black (`#111111`) recessed track with Aged Parchment (`#D8CBB3`) border.
+ * - Elastic Liquid-Stretch Capsule in Imperial Navy (`#0F1B3D`) with Burnt Terracotta (`#D9541E`) crown and rim.
+ * - Alabaster Ivory (`#F3EEE3`) hero date numerals and Aged Parchment (`#D8CBB3`) secondary labels.
  */
 @Composable
 private fun FiveDayMatchTimelineRibbon(
@@ -1133,7 +1167,6 @@ private fun FiveDayMatchTimelineRibbon(
     val slotCount = allTabs.size
     val selectedIndex = selectedDay.ordinal
 
-    // Coupled fast + trailing springs create a true elastic liquid-stretch capsule during day transitions
     val fastSlot by animateFloatAsState(
         targetValue = selectedIndex.toFloat(),
         animationSpec = spring(
@@ -1154,9 +1187,9 @@ private fun FiveDayMatchTimelineRibbon(
     val isTodaySelectedWithLive = selectedDay == MatchDayTab.TODAY && liveCountToday > 0
     val activeAccent by animateColorAsState(
         targetValue = when {
-            isTodaySelectedWithLive -> LiveCrimson
-            selectedDay == MatchDayTab.YESTERDAY -> AmberGold
-            else -> KickoffTropicalTeal
+            isTodaySelectedWithLive -> KickoffTerracotta
+            selectedDay == MatchDayTab.YESTERDAY -> KickoffAgedParchment
+            else -> KickoffTerracotta
         },
         animationSpec = tween(durationMillis = 260),
         label = "liquid_pill_accent"
@@ -1186,15 +1219,15 @@ private fun FiveDayMatchTimelineRibbon(
     var stripWidthPx by remember { mutableStateOf(0f) }
 
     Surface(
-        color = Color(0xFF06151F).copy(alpha = 0.94f),
+        color = KickoffObsidianBlack.copy(alpha = 0.96f),
         shape = RoundedCornerShape(18.dp),
         border = BorderStroke(
             width = 0.9.dp,
             brush = Brush.horizontalGradient(
                 listOf(
-                    KickoffTropicalTeal.copy(alpha = 0.30f),
-                    Color.White.copy(alpha = 0.12f),
-                    KickoffTropicalTeal.copy(alpha = 0.30f)
+                    KickoffImperialNavy.copy(alpha = 0.85f),
+                    KickoffParchmentBorder,
+                    KickoffTerracotta.copy(alpha = 0.38f)
                 )
             )
         ),
@@ -1214,7 +1247,6 @@ private fun FiveDayMatchTimelineRibbon(
                     val usableWidth = (size.width - insetPx * 2f).coerceAtLeast(1f)
                     val slotWidth = usableWidth / slotCount.toFloat()
 
-                    // Elastic Liquid-Stretch Capsule bounds: leading edge moves with fastSlot, trailing edge with slowSlot
                     val leftSlot = minOf(fastSlot, slowSlot).coerceIn(0f, (slotCount - 1).toFloat())
                     val rightSlot = maxOf(fastSlot, slowSlot).coerceIn(0f, (slotCount - 1).toFloat())
 
@@ -1234,13 +1266,13 @@ private fun FiveDayMatchTimelineRibbon(
                             dividerX > pillRight -> dividerX - pillRight
                             else -> 0f
                         }
-                        val dividerAlpha = (distToPill / (slotWidth * 0.5f)).coerceIn(0f, 1f) * 0.08f
+                        val dividerAlpha = (distToPill / (slotWidth * 0.5f)).coerceIn(0f, 1f) * 0.12f
                         if (dividerAlpha > 0.005f) {
                             drawLine(
                                 brush = Brush.verticalGradient(
                                     listOf(
                                         Color.Transparent,
-                                        Color.White.copy(alpha = dividerAlpha),
+                                        KickoffAgedParchment.copy(alpha = dividerAlpha),
                                         Color.Transparent
                                     )
                                 ),
@@ -1255,8 +1287,8 @@ private fun FiveDayMatchTimelineRibbon(
                     drawCircle(
                         brush = Brush.radialGradient(
                             colors = listOf(
-                                activeAccent.copy(alpha = 0.26f * glowPulse),
-                                KickoffCeruleanBlue.copy(alpha = 0.10f * glowPulse),
+                                activeAccent.copy(alpha = 0.24f * glowPulse),
+                                KickoffImperialNavy.copy(alpha = 0.35f * glowPulse),
                                 Color.Transparent
                             ),
                             center = Offset(pillCenterX, size.height * 0.5f),
@@ -1266,13 +1298,13 @@ private fun FiveDayMatchTimelineRibbon(
                         center = Offset(pillCenterX, size.height * 0.5f)
                     )
 
-                    // 3. Elastic Sliding Glass Capsule Fill
+                    // 3. Elastic Sliding Imperial Navy Capsule Fill
                     drawRoundRect(
                         brush = Brush.verticalGradient(
                             colors = listOf(
-                                activeAccent.copy(alpha = 0.28f),
-                                Color(0xFF0B2838).copy(alpha = 0.95f),
-                                Color(0xFF071B26).copy(alpha = 0.98f)
+                                KickoffNavyElevated,
+                                KickoffImperialNavy,
+                                KickoffCharcoalSlate
                             ),
                             startY = pillTop,
                             endY = pillTop + pillHeight
@@ -1286,9 +1318,9 @@ private fun FiveDayMatchTimelineRibbon(
                     drawRoundRect(
                         brush = Brush.verticalGradient(
                             colors = listOf(
-                                KickoffPeachCream.copy(alpha = 0.85f),
-                                activeAccent.copy(alpha = 0.75f),
-                                activeAccent.copy(alpha = 0.30f)
+                                KickoffAgedParchment.copy(alpha = 0.85f),
+                                activeAccent.copy(alpha = 0.80f),
+                                KickoffImperialNavy.copy(alpha = 0.55f)
                             ),
                             startY = pillTop,
                             endY = pillTop + pillHeight
@@ -1306,9 +1338,9 @@ private fun FiveDayMatchTimelineRibbon(
                         brush = Brush.horizontalGradient(
                             colors = listOf(
                                 Color.Transparent,
-                                KickoffPeachCream,
+                                KickoffAlabasterIvory,
                                 activeAccent,
-                                KickoffPeachCream,
+                                KickoffAlabasterIvory,
                                 Color.Transparent
                             ),
                             startX = pillCenterX - crownWidth * 0.7f,
@@ -1375,10 +1407,10 @@ private fun FiveDayMatchTimelineRibbon(
 
                     val dayLabelColor by animateColorAsState(
                         targetValue = when {
-                            isSelected -> KickoffPeachCream
-                            hasTodayLive -> LiveCrimson
-                            isTodayTab -> KickoffTropicalTeal
-                            else -> ChampagneMuted
+                            isSelected -> KickoffAlabasterIvory
+                            hasTodayLive -> KickoffTerracotta
+                            isTodayTab -> KickoffAgedParchment
+                            else -> KickoffParchmentMuted
                         },
                         animationSpec = tween(durationMillis = 200),
                         label = "calendar_day_label_${tab.name}"
@@ -1416,7 +1448,7 @@ private fun FiveDayMatchTimelineRibbon(
                                             scaleY = liveDotScale
                                         }
                                         .clip(CircleShape)
-                                        .background(LiveCrimson)
+                                        .background(KickoffTerracotta)
                                 )
                                 Spacer(modifier = Modifier.width(3.dp))
                             }
@@ -1439,7 +1471,7 @@ private fun FiveDayMatchTimelineRibbon(
                         ) {
                             Text(
                                 text = dayNumeral,
-                                color = if (isSelected) Color.White else Color.White.copy(alpha = 0.85f),
+                                color = if (isSelected) KickoffAlabasterIvory else KickoffAlabasterIvory.copy(alpha = 0.82f),
                                 fontSize = if (isSelected) 14.5.sp else 13.sp,
                                 lineHeight = 15.sp,
                                 fontWeight = FontWeight.ExtraBold,
@@ -1450,9 +1482,9 @@ private fun FiveDayMatchTimelineRibbon(
                             Text(
                                 text = monthTitleCase,
                                 color = if (isSelected) {
-                                    Color.White.copy(alpha = 0.88f)
+                                    KickoffAgedParchment
                                 } else {
-                                    ChampagneMuted.copy(alpha = 0.78f)
+                                    KickoffParchmentMuted.copy(alpha = 0.78f)
                                 },
                                 fontSize = if (isSelected) 9.5.sp else 8.5.sp,
                                 lineHeight = 10.sp,
@@ -1466,15 +1498,15 @@ private fun FiveDayMatchTimelineRibbon(
                         // Tier 3: Match Count Badge ("10 Games" when selected, compact pill when unselected)
                         Surface(
                             color = when {
-                                isSelected && hasTodayLive -> LiveCrimson
-                                isSelected && tab == MatchDayTab.YESTERDAY -> AmberGold
-                                isSelected -> KickoffTropicalTeal
-                                hasTodayLive -> LiveCrimson.copy(alpha = 0.22f)
-                                else -> Color.White.copy(alpha = 0.07f)
+                                isSelected && hasTodayLive -> KickoffTerracotta
+                                isSelected && tab == MatchDayTab.YESTERDAY -> KickoffAgedParchment
+                                isSelected -> KickoffTerracotta
+                                hasTodayLive -> KickoffTerracottaGlow
+                                else -> KickoffCharcoalElevated
                             },
                             shape = RoundedCornerShape(50),
                             border = if (!isSelected && hasTodayLive) {
-                                BorderStroke(0.6.dp, LiveCrimson.copy(alpha = 0.65f))
+                                BorderStroke(0.6.dp, KickoffTerracotta.copy(alpha = 0.75f))
                             } else {
                                 null
                             }
@@ -1487,10 +1519,10 @@ private fun FiveDayMatchTimelineRibbon(
                                     else -> "$count"
                                 },
                                 color = when {
-                                    isSelected && hasTodayLive -> Color.White
-                                    isSelected -> DarkGraphite
-                                    hasTodayLive -> Color.White
-                                    else -> Champagne.copy(alpha = 0.85f)
+                                    isSelected && tab == MatchDayTab.YESTERDAY -> KickoffObsidianBlack
+                                    isSelected -> KickoffAlabasterIvory
+                                    hasTodayLive -> KickoffAlabasterIvory
+                                    else -> KickoffAgedParchment.copy(alpha = 0.88f)
                                 },
                                 fontSize = if (isSelected) 8.sp else 7.5.sp,
                                 lineHeight = 8.5.sp,
@@ -1511,6 +1543,122 @@ private fun FiveDayMatchTimelineRibbon(
 }
 
 /**
+ * 3-Pillar Competition Category Selector Bar (`CompetitionCategoryPillarRow`):
+ * - Lets users filter the Kickoff Hub across the 3 core competition pillars:
+ *   1. All Pillars (`null`)
+ *   2. European Competitions (`CompetitionCategory.EUROPEAN`)
+ *   3. African & Arab Competitions (`CompetitionCategory.AFRICAN_ARAB` — incl. CAF Champions League, CAF Confederation Cup, Botola Pro, Roshn Saudi League)
+ *   4. International (`CompetitionCategory.INTERNATIONAL` — Dynamic FIFA Top-Ranked National Teams)
+ */
+@Composable
+private fun CompetitionCategoryPillarRow(
+    selectedCategory: CompetitionCategory?,
+    activeDayMatches: List<FootballMatch>,
+    tournamentCategoryMap: Map<String, CompetitionCategory>,
+    onSelectCategory: (CompetitionCategory?) -> Unit
+) {
+    val pillarCounts = remember(activeDayMatches, tournamentCategoryMap) {
+        val counts = mutableMapOf<CompetitionCategory, Pair<Int, Int>>()
+        for (cat in CompetitionCategory.entries) {
+            val matchesForCat = activeDayMatches.filter {
+                (tournamentCategoryMap[it.tournamentId] ?: CompetitionCategory.EUROPEAN) == cat
+            }
+            val live = matchesForCat.count { it.status == MatchStatus.LIVE || it.status == MatchStatus.HALFTIME }
+            counts[cat] = live to matchesForCat.size
+        }
+        counts
+    }
+
+    val pillars: List<Triple<CompetitionCategory?, String, String>> = remember {
+        listOf(
+            Triple(null, "All Pillars", "pillar_chip_all"),
+            Triple(CompetitionCategory.EUROPEAN, "European", "pillar_chip_EUROPEAN"),
+            Triple(CompetitionCategory.AFRICAN_ARAB, "African & Arab", "pillar_chip_AFRICAN_ARAB"),
+            Triple(CompetitionCategory.INTERNATIONAL, "International", "pillar_chip_INTERNATIONAL")
+        )
+    }
+
+    LazyRow(
+        contentPadding = PaddingValues(horizontal = 16.dp, vertical = 2.dp),
+        horizontalArrangement = Arrangement.spacedBy(6.dp),
+        modifier = Modifier.testTag("competition_category_pillar_row")
+    ) {
+        items(pillars, key = { it.third }) { (category, label, tag) ->
+            val isSelected = selectedCategory == category
+            val (liveInPillar, totalInPillar) = if (category == null) {
+                val liveAll = activeDayMatches.count { it.status == MatchStatus.LIVE || it.status == MatchStatus.HALFTIME }
+                liveAll to activeDayMatches.size
+            } else {
+                pillarCounts[category] ?: (0 to 0)
+            }
+
+            Surface(
+                color = if (isSelected) KickoffImperialNavy else KickoffCharcoalSlate,
+                shape = RoundedCornerShape(8.dp),
+                border = BorderStroke(
+                    width = if (isSelected) 1.dp else 0.75.dp,
+                    color = if (isSelected) KickoffTerracotta else KickoffParchmentBorder
+                ),
+                modifier = Modifier
+                    .height(26.dp)
+                    .clip(RoundedCornerShape(8.dp))
+                    .tvFocusablePill(
+                        accentColor = KickoffTerracotta,
+                        shape = RoundedCornerShape(8.dp),
+                        onClick = { onSelectCategory(category) }
+                    )
+                    .testTag(tag)
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(5.dp),
+                    modifier = Modifier.padding(horizontal = 9.dp)
+                ) {
+                    if (isSelected) {
+                        Box(
+                            modifier = Modifier
+                                .size(5.dp)
+                                .clip(CircleShape)
+                                .background(KickoffTerracotta)
+                        )
+                    }
+                    Text(
+                        text = label,
+                        color = if (isSelected) KickoffAlabasterIvory else KickoffAgedParchment,
+                        fontSize = 10.sp,
+                        fontWeight = if (isSelected) FontWeight.ExtraBold else FontWeight.SemiBold,
+                        maxLines = 1,
+                        softWrap = false
+                    )
+                    if (liveInPillar > 0 && category != null) {
+                        Surface(
+                            color = KickoffTerracotta,
+                            shape = RoundedCornerShape(50)
+                        ) {
+                            Text(
+                                text = "$liveInPillar LIVE",
+                                color = KickoffAlabasterIvory,
+                                fontSize = 7.5.sp,
+                                fontWeight = FontWeight.ExtraBold,
+                                modifier = Modifier.padding(horizontal = 4.5.dp, vertical = 0.5.dp)
+                            )
+                        }
+                    } else if (totalInPillar > 0 && category != null) {
+                        Text(
+                            text = "$totalInPillar",
+                            color = if (isSelected) KickoffAgedParchment else KickoffParchmentMuted,
+                            fontSize = 8.5.sp,
+                            fontWeight = FontWeight.Bold,
+                            style = TabularNumeralTextStyle
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+/**
  * Horizontal Tournament Filter Strip with Real Tournament Crest Medallions:
  * - Replaces plain colored dots with official high-res league/tournament crests inside a glowing circular medallion.
  * - Shows a compact live match badge or fixture count pill per tournament.
@@ -1518,6 +1666,8 @@ private fun FiveDayMatchTimelineRibbon(
 @Composable
 private fun TournamentFilterRow(
     selectedFilter: String,
+    selectedCategory: CompetitionCategory? = null,
+    tournamentCategoryMap: Map<String, CompetitionCategory> = emptyMap(),
     favoriteTeamsCount: Int,
     liveCount: Int,
     activeDayMatches: List<FootballMatch> = emptyList(),
@@ -1525,9 +1675,17 @@ private fun TournamentFilterRow(
     onSelectFilter: (String) -> Unit,
     onOpenCustomize: () -> Unit
 ) {
-    val enabledTournaments = remember(tournamentPreferences) {
+    val enabledTournaments = remember(tournamentPreferences, selectedCategory, tournamentCategoryMap) {
         tournamentPreferences
-            .filter { it.isEnabled }
+            .filter { pref ->
+                if (!pref.isEnabled) return@filter false
+                if (selectedCategory != null) {
+                    val cat = tournamentCategoryMap[pref.tournamentId] ?: CompetitionCategory.EUROPEAN
+                    cat == selectedCategory
+                } else {
+                    true
+                }
+            }
             .sortedWith(
                 compareBy<TournamentPreferenceEntity> {
                     getTournamentCanonicalPriority(it.tournamentId, it.sortOrder)
@@ -1566,26 +1724,26 @@ private fun TournamentFilterRow(
                             .size(22.dp)
                             .clip(CircleShape)
                             .background(
-                                if (isAllSelected) DarkGraphite.copy(alpha = 0.18f)
-                                else KickoffTropicalTeal.copy(alpha = 0.16f)
+                                if (isAllSelected) KickoffObsidianBlack.copy(alpha = 0.28f)
+                                else KickoffImperialNavy.copy(alpha = 0.75f)
                             )
                             .border(
                                 0.8.dp,
-                                if (isAllSelected) DarkGraphite.copy(alpha = 0.35f)
-                                else KickoffTropicalTeal.copy(alpha = 0.55f),
+                                if (isAllSelected) KickoffAlabasterIvory.copy(alpha = 0.65f)
+                                else KickoffAgedParchment.copy(alpha = 0.45f),
                                 CircleShape
                             )
                     ) {
                         Icon(
                             imageVector = Icons.Default.EmojiEvents,
                             contentDescription = null,
-                            tint = if (isAllSelected) DarkGraphite else KickoffTropicalTeal,
+                            tint = if (isAllSelected) KickoffAlabasterIvory else KickoffAgedParchment,
                             modifier = Modifier.size(13.dp)
                         )
                     }
                     Text(
                         text = "All Tournaments",
-                        color = if (isAllSelected) DarkGraphite else Color.White,
+                        color = if (isAllSelected) KickoffAlabasterIvory else KickoffAgedParchment,
                         fontSize = 11.5.sp,
                         fontWeight = if (isAllSelected) FontWeight.ExtraBold else FontWeight.SemiBold,
                         maxLines = 1,
@@ -1593,7 +1751,7 @@ private fun TournamentFilterRow(
                     )
                     if (liveCount > 0) {
                         Surface(
-                            color = LiveCrimson,
+                            color = if (isAllSelected) KickoffObsidianBlack else KickoffTerracotta,
                             shape = RoundedCornerShape(50)
                         ) {
                             Row(
@@ -1604,12 +1762,12 @@ private fun TournamentFilterRow(
                                     modifier = Modifier
                                         .size(4.5.dp)
                                         .clip(CircleShape)
-                                        .background(Color.White)
+                                        .background(KickoffAlabasterIvory)
                                 )
                                 Spacer(modifier = Modifier.width(3.dp))
                                 Text(
                                     text = "$liveCount LIVE",
-                                    color = Color.White,
+                                    color = KickoffAlabasterIvory,
                                     fontSize = 8.5.sp,
                                     fontWeight = FontWeight.ExtraBold,
                                     maxLines = 1,
@@ -1628,6 +1786,9 @@ private fun TournamentFilterRow(
                 "laliga" -> "La Liga"
                 "ligue_1" -> "Ligue 1"
                 "botola_pro" -> "Botola Pro"
+                "caf_confed" -> "CAF Confed Cup"
+                "intl_official" -> "Intl Official"
+                "intl_friendly" -> "Intl Friendlies"
                 else -> tournament.tournamentName
             }
             val leagueAccentColor = remember(tournament.tournamentId) {
@@ -1654,7 +1815,7 @@ private fun TournamentFilterRow(
                     )
                     Text(
                         text = chipLabel,
-                        color = if (isSelected) DarkGraphite else Champagne,
+                        color = if (isSelected) KickoffAlabasterIvory else KickoffAgedParchment,
                         fontSize = 11.5.sp,
                         fontWeight = if (isSelected) FontWeight.ExtraBold else FontWeight.SemiBold,
                         maxLines = 1,
@@ -1662,7 +1823,7 @@ private fun TournamentFilterRow(
                     )
                     if (liveInLeague > 0) {
                         Surface(
-                            color = LiveCrimson,
+                            color = if (isSelected) KickoffObsidianBlack else KickoffTerracotta,
                             shape = RoundedCornerShape(50)
                         ) {
                             Row(
@@ -1673,12 +1834,12 @@ private fun TournamentFilterRow(
                                     modifier = Modifier
                                         .size(4.dp)
                                         .clip(CircleShape)
-                                        .background(Color.White)
+                                        .background(KickoffAlabasterIvory)
                                 )
                                 Spacer(modifier = Modifier.width(3.dp))
                                 Text(
                                     text = "$liveInLeague",
-                                    color = Color.White,
+                                    color = KickoffAlabasterIvory,
                                     fontSize = 8.5.sp,
                                     fontWeight = FontWeight.ExtraBold
                                 )
@@ -1686,12 +1847,12 @@ private fun TournamentFilterRow(
                         }
                     } else if (totalInLeague > 0) {
                         Surface(
-                            color = if (isSelected) DarkGraphite.copy(alpha = 0.18f) else Color.White.copy(alpha = 0.08f),
+                            color = if (isSelected) KickoffObsidianBlack.copy(alpha = 0.35f) else KickoffObsidianBlack.copy(alpha = 0.65f),
                             shape = RoundedCornerShape(50)
                         ) {
                             Text(
                                 text = "$totalInLeague",
-                                color = if (isSelected) DarkGraphite else ChampagneMuted,
+                                color = if (isSelected) KickoffAlabasterIvory else KickoffParchmentMuted,
                                 fontSize = 8.5.sp,
                                 fontWeight = FontWeight.ExtraBold,
                                 modifier = Modifier.padding(horizontal = 5.5.dp, vertical = 1.dp)
@@ -1716,12 +1877,12 @@ private fun TournamentFilterRow(
                     Icon(
                         imageVector = Icons.Default.Tune,
                         contentDescription = null,
-                        tint = AmberGold,
+                        tint = KickoffTerracotta,
                         modifier = Modifier.size(13.dp)
                     )
                     Text(
                         text = "Modify Leagues",
-                        color = PaleGold,
+                        color = KickoffAlabasterIvory,
                         fontSize = 11.5.sp,
                         fontWeight = FontWeight.SemiBold,
                         maxLines = 1,
@@ -1742,9 +1903,12 @@ internal fun resolveTournamentLogoUrl(tournamentId: String): String {
         "bundesliga" -> "https://media.api-sports.io/football/leagues/78.png"
         "serie_a" -> "https://media.api-sports.io/football/leagues/135.png"
         "caf_cl" -> "https://media.api-sports.io/football/leagues/12.png"
+        "caf_confed" -> "https://media.api-sports.io/football/leagues/20.png"
         "botola_pro" -> "https://media.api-sports.io/football/leagues/200.png"
         "uefa_el" -> "https://media.api-sports.io/football/leagues/3.png"
         "saudi_pro" -> "https://media.api-sports.io/football/leagues/307.png"
+        "intl_official" -> "https://media.api-sports.io/football/leagues/1.png"
+        "intl_friendly" -> "https://media.api-sports.io/football/leagues/10.png"
         else -> ""
     }
 }
@@ -1758,15 +1922,18 @@ internal fun resolveTournamentShortMonogram(tournamentId: String, tournamentName
         "bundesliga" -> "BUN"
         "serie_a" -> "SA"
         "caf_cl" -> "CAF"
+        "caf_confed" -> "CC"
         "botola_pro" -> "BOT"
         "uefa_el" -> "UEL"
         "saudi_pro" -> "SPL"
+        "intl_official" -> "INT"
+        "intl_friendly" -> "FRD"
         else -> tournamentName.split(" ").filter { it.isNotBlank() }.take(2).joinToString("") { it.take(1).uppercase() }.ifBlank { "cup" }
     }
 }
 
 /**
- * Circular Crest Medallion rendering the real tournament logo over a crisp illuminated porcelain/glass disc
+ * Circular Crest Medallion rendering the real tournament logo over a crisp illuminated Alabaster Ivory disc
  * so dark and multi-color official league emblems remain razor-sharp on both dark and highlighted chips.
  */
 @Composable
@@ -1774,7 +1941,7 @@ internal fun TournamentLogoMedallion(
     tournamentId: String,
     tournamentName: String,
     isSelected: Boolean = false,
-    accentColor: Color = KickoffTropicalTeal,
+    accentColor: Color = KickoffTerracotta,
     sizeDp: Int = 22
 ) {
     val logoUrl = remember(tournamentId) { resolveTournamentLogoUrl(tournamentId) }
@@ -1802,20 +1969,20 @@ internal fun TournamentLogoMedallion(
             .background(
                 Brush.radialGradient(
                     colors = listOf(
-                        Color.White.copy(alpha = 0.94f),
-                        Color(0xFFE6F0F5).copy(alpha = 0.88f)
+                        KickoffAlabasterIvory,
+                        KickoffAgedParchment.copy(alpha = 0.90f)
                     )
                 )
             )
             .border(
                 width = if (isSelected) 1.2.dp else 0.9.dp,
-                color = if (isSelected) DarkGraphite.copy(alpha = 0.55f) else accentColor.copy(alpha = 0.75f),
+                color = if (isSelected) KickoffObsidianBlack.copy(alpha = 0.55f) else accentColor.copy(alpha = 0.75f),
                 shape = CircleShape
             )
     ) {
         Text(
             text = monogram,
-            color = DarkGraphite.copy(alpha = 0.75f),
+            color = KickoffObsidianBlack.copy(alpha = 0.82f),
             fontSize = (sizeDp * 0.32f).sp,
             fontWeight = FontWeight.ExtraBold,
             maxLines = 1
@@ -1835,15 +2002,12 @@ internal fun TournamentLogoMedallion(
 
 private fun resolveTournamentAccentDotColor(tournamentId: String): Color {
     return when (tournamentId) {
-        "uefa_cl" -> KickoffTropicalTeal
-        "laliga" -> KickoffCoralRed
-        "premier_league" -> Color(0xFFA78BFA)
-        "ligue_1" -> KickoffPeachCream
-        "bundesliga" -> Color(0xFFF87171)
-        "serie_a" -> Color(0xFF38BDF8)
-        "caf_cl" -> AmberGold
-        "botola_pro" -> Color(0xFF34D399)
-        else -> KickoffTropicalTeal
+        "uefa_cl", "uefa_el" -> KickoffAlabasterIvory
+        "laliga", "bundesliga", "caf_cl", "caf_confed" -> KickoffTerracotta
+        "premier_league", "serie_a", "ligue_1" -> KickoffAgedParchment
+        "botola_pro", "saudi_pro" -> KickoffTerracotta
+        "intl_official", "intl_friendly" -> KickoffAgedParchment
+        else -> KickoffTerracotta
     }
 }
 
@@ -1852,7 +2016,7 @@ private fun LuxuryLeagueCapsule(
     selected: Boolean,
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
-    accentColor: Color = KickoffTropicalTeal,
+    accentColor: Color = KickoffTerracotta,
     isActionCapsule: Boolean = false,
     content: @Composable () -> Unit
 ) {
@@ -1871,9 +2035,9 @@ private fun LuxuryLeagueCapsule(
         color = Color.Transparent,
         shape = RoundedCornerShape(50),
         border = when {
-            selected -> BorderStroke(1.2.dp, KickoffPeachCream.copy(alpha = 0.80f))
-            isActionCapsule -> BorderStroke(0.9.dp, AmberGold.copy(alpha = 0.40f))
-            else -> BorderStroke(0.8.dp, accentColor.copy(alpha = 0.28f))
+            selected -> BorderStroke(1.2.dp, KickoffAgedParchment.copy(alpha = 0.90f))
+            isActionCapsule -> BorderStroke(0.9.dp, KickoffTerracotta.copy(alpha = 0.55f))
+            else -> BorderStroke(0.8.dp, KickoffParchmentBorder)
         },
         modifier = modifier
             .graphicsLayer {
@@ -1885,21 +2049,20 @@ private fun LuxuryLeagueCapsule(
                 brush = when {
                     selected -> Brush.horizontalGradient(
                         listOf(
-                            Color(0xFF46DFB1),
-                            KickoffTropicalTeal,
-                            KickoffCeruleanBlue
+                            KickoffTerracotta,
+                            KickoffImperialNavy
                         )
                     )
                     isActionCapsule -> Brush.horizontalGradient(
                         listOf(
-                            AmberGold.copy(alpha = 0.16f),
-                            KickoffOceanElevated.copy(alpha = 0.85f)
+                            KickoffImperialNavy,
+                            KickoffCharcoalSlate
                         )
                     )
                     else -> Brush.horizontalGradient(
                         listOf(
-                            KickoffOceanElevated.copy(alpha = 0.80f),
-                            KickoffOceanSurface.copy(alpha = 0.92f)
+                            KickoffCharcoalElevated,
+                            KickoffCharcoalSlate
                         )
                     )
                 }
@@ -2119,9 +2282,9 @@ private fun PinnedMatchesStickyRail(
     onUnpinMatch: (String) -> Unit
 ) {
     Surface(
-        color = Color(0xFF071722),
+        color = KickoffObsidianBlack,
         shape = RoundedCornerShape(14.dp),
-        border = BorderStroke(1.dp, AmberGold.copy(alpha = 0.60f)),
+        border = BorderStroke(1.dp, KickoffAgedParchment.copy(alpha = 0.55f)),
         modifier = Modifier
             .fillMaxWidth()
             .padding(horizontal = 16.dp, vertical = 4.dp)
@@ -2139,20 +2302,20 @@ private fun PinnedMatchesStickyRail(
                     Icon(
                         imageVector = Icons.Default.PushPin,
                         contentDescription = null,
-                        tint = AmberGold,
+                        tint = KickoffTerracotta,
                         modifier = Modifier.size(14.dp)
                     )
                     Spacer(modifier = Modifier.width(6.dp))
                     Text(
                         text = "📌 PINNED MATCHES • MY GAMES (${pinnedMatches.size})",
-                        color = PaleGold,
+                        color = KickoffAlabasterIvory,
                         fontSize = 10.5.sp,
                         fontWeight = FontWeight.ExtraBold
                     )
                 }
                 Text(
                     text = "LIVE GOAL ALERTS ACTIVE",
-                    color = KickoffTropicalTeal,
+                    color = KickoffTerracotta,
                     fontSize = 8.5.sp,
                     fontWeight = FontWeight.ExtraBold
                 )
@@ -2172,11 +2335,11 @@ private fun PinnedMatchesStickyRail(
                         "vs"
                     }
                     Surface(
-                        color = KickoffOceanElevated,
+                        color = if (isLive) KickoffImperialNavy else KickoffCharcoalSlate,
                         shape = RoundedCornerShape(12.dp),
                         border = BorderStroke(
                             width = 0.9.dp,
-                            color = if (isLive) LiveCrimson.copy(alpha = 0.75f) else KickoffTropicalTeal.copy(alpha = 0.45f)
+                            color = if (isLive) KickoffTerracotta.copy(alpha = 0.80f) else KickoffParchmentBorder
                         ),
                         modifier = Modifier.width(226.dp)
                     ) {
@@ -2187,12 +2350,12 @@ private fun PinnedMatchesStickyRail(
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
                                 Surface(
-                                    color = if (isLive) LiveCrimson.copy(alpha = 0.24f) else DarkGraphite,
+                                    color = if (isLive) KickoffTerracotta else KickoffObsidianBlack,
                                     shape = RoundedCornerShape(4.dp)
                                 ) {
                                     Text(
                                         text = if (isLive) "● ${match.liveMinuteOrBadge}" else match.liveMinuteOrBadge.ifBlank { match.kickoffTimeFormatted },
-                                        color = if (isLive) KickoffPeachCream else Champagne,
+                                        color = if (isLive) KickoffAlabasterIvory else KickoffAgedParchment,
                                         fontSize = 8.5.sp,
                                         fontWeight = FontWeight.ExtraBold,
                                         modifier = Modifier.padding(horizontal = 5.dp, vertical = 1.5.dp)
@@ -2205,7 +2368,7 @@ private fun PinnedMatchesStickyRail(
                                     Icon(
                                         imageVector = Icons.Default.Close,
                                         contentDescription = "Unpin Match",
-                                        tint = ChampagneMuted,
+                                        tint = KickoffParchmentMuted,
                                         modifier = Modifier.size(12.dp)
                                     )
                                 }
@@ -2215,7 +2378,7 @@ private fun PinnedMatchesStickyRail(
 
                             Text(
                                 text = "${match.homeTeamName}  $scoreText  ${match.awayTeamName}",
-                                color = Color.White,
+                                color = KickoffAlabasterIvory,
                                 fontSize = 11.5.sp,
                                 fontWeight = FontWeight.ExtraBold,
                                 maxLines = 1,
@@ -2229,9 +2392,9 @@ private fun PinnedMatchesStickyRail(
                                 horizontalArrangement = Arrangement.spacedBy(6.dp)
                             ) {
                                 Surface(
-                                    color = KickoffTropicalTeal.copy(alpha = 0.20f),
+                                    color = KickoffTerracotta,
                                     shape = RoundedCornerShape(6.dp),
-                                    border = BorderStroke(0.6.dp, KickoffTropicalTeal),
+                                    border = BorderStroke(0.6.dp, KickoffAlabasterIvory.copy(alpha = 0.45f)),
                                     modifier = Modifier
                                         .weight(1f)
                                         .clip(RoundedCornerShape(6.dp))
@@ -2239,7 +2402,7 @@ private fun PinnedMatchesStickyRail(
                                 ) {
                                     Text(
                                         text = "▶ Watch",
-                                        color = KickoffPeachCream,
+                                        color = KickoffAlabasterIvory,
                                         fontSize = 9.5.sp,
                                         fontWeight = FontWeight.ExtraBold,
                                         textAlign = TextAlign.Center,
@@ -2247,9 +2410,9 @@ private fun PinnedMatchesStickyRail(
                                     )
                                 }
                                 Surface(
-                                    color = AmberGold.copy(alpha = 0.16f),
+                                    color = KickoffImperialNavy,
                                     shape = RoundedCornerShape(6.dp),
-                                    border = BorderStroke(0.6.dp, AmberGold),
+                                    border = BorderStroke(0.6.dp, KickoffAgedParchment),
                                     modifier = Modifier
                                         .weight(1f)
                                         .clip(RoundedCornerShape(6.dp))
@@ -2257,7 +2420,7 @@ private fun PinnedMatchesStickyRail(
                                 ) {
                                     Text(
                                         text = "📊 Dossier",
-                                        color = AmberGold,
+                                        color = KickoffAgedParchment,
                                         fontSize = 9.5.sp,
                                         fontWeight = FontWeight.ExtraBold,
                                         textAlign = TextAlign.Center,
@@ -2310,9 +2473,9 @@ private fun FlashscoreTournamentHeader(
             width = 1.dp,
             brush = Brush.horizontalGradient(
                 listOf(
-                    if (liveCount > 0) LiveCrimson.copy(alpha = 0.45f) else leagueAccentColor.copy(alpha = 0.38f),
-                    Color.White.copy(alpha = 0.10f),
-                    Color.White.copy(alpha = 0.08f)
+                    if (liveCount > 0) KickoffTerracotta.copy(alpha = 0.72f) else KickoffAgedParchment.copy(alpha = 0.45f),
+                    KickoffParchmentBorder,
+                    KickoffParchmentBorder
                 )
             )
         ),
@@ -2330,14 +2493,14 @@ private fun FlashscoreTournamentHeader(
             .background(
                 Brush.horizontalGradient(
                     listOf(
-                        (if (liveCount > 0) LiveCrimson else leagueAccentColor).copy(alpha = 0.15f),
-                        KickoffOceanElevated,
-                        KickoffOceanSurface.copy(alpha = 0.96f)
+                        KickoffImperialNavy,
+                        KickoffNavyElevated,
+                        KickoffCharcoalSlate
                     )
                 )
             )
             .tvFocusableControl(
-                accentColor = leagueAccentColor,
+                accentColor = KickoffTerracotta,
                 shape = RoundedCornerShape(
                     topStart = 14.dp,
                     topEnd = 14.dp,
@@ -2368,8 +2531,8 @@ private fun FlashscoreTournamentHeader(
                         .background(
                             Brush.verticalGradient(
                                 listOf(
-                                    KickoffPeachCream,
-                                    if (liveCount > 0) LiveCrimson else leagueAccentColor
+                                    KickoffTerracotta,
+                                    if (liveCount > 0) KickoffAlabasterIvory else KickoffAgedParchment
                                 )
                             )
                         )
@@ -2390,7 +2553,7 @@ private fun FlashscoreTournamentHeader(
                     ) {
                         Text(
                             text = regionName.uppercase(),
-                            color = ChampagneMuted,
+                            color = KickoffAgedParchment,
                             fontSize = 8.5.sp,
                             fontWeight = FontWeight.ExtraBold,
                             letterSpacing = 0.8.sp,
@@ -2399,13 +2562,13 @@ private fun FlashscoreTournamentHeader(
                         )
                         if (menaProviderName.isNotBlank()) {
                             Surface(
-                                color = leagueAccentColor.copy(alpha = 0.14f),
+                                color = KickoffObsidianBlack.copy(alpha = 0.65f),
                                 shape = RoundedCornerShape(4.dp),
-                                border = BorderStroke(0.5.dp, leagueAccentColor.copy(alpha = 0.40f))
+                                border = BorderStroke(0.5.dp, KickoffAgedParchment.copy(alpha = 0.50f))
                             ) {
                                 Text(
                                     text = menaProviderName.uppercase(),
-                                    color = KickoffPeachCream,
+                                    color = KickoffAlabasterIvory,
                                     fontSize = 7.5.sp,
                                     fontWeight = FontWeight.ExtraBold,
                                     letterSpacing = 0.3.sp,
@@ -2419,7 +2582,7 @@ private fun FlashscoreTournamentHeader(
                     Spacer(modifier = Modifier.height(1.dp))
                     Text(
                         text = tournamentName,
-                        color = Color.White,
+                        color = KickoffAlabasterIvory,
                         fontSize = 13.5.sp,
                         fontWeight = FontWeight.ExtraBold,
                         maxLines = 1,
@@ -2432,9 +2595,9 @@ private fun FlashscoreTournamentHeader(
             Row(verticalAlignment = Alignment.CenterVertically) {
                 if (liveCount > 0) {
                     Surface(
-                        color = LiveCrimson.copy(alpha = 0.22f),
+                        color = KickoffTerracotta,
                         shape = RoundedCornerShape(50),
-                        border = BorderStroke(0.7.dp, LiveCrimson.copy(alpha = 0.75f))
+                        border = BorderStroke(0.7.dp, KickoffAlabasterIvory.copy(alpha = 0.75f))
                     ) {
                         Row(
                             verticalAlignment = Alignment.CenterVertically,
@@ -2444,12 +2607,12 @@ private fun FlashscoreTournamentHeader(
                                 modifier = Modifier
                                     .size(4.5.dp)
                                     .clip(CircleShape)
-                                    .background(LiveCrimson)
+                                    .background(KickoffAlabasterIvory)
                             )
                             Spacer(modifier = Modifier.width(3.5.dp))
                             Text(
                                 text = "$liveCount LIVE",
-                                color = Color.White,
+                                color = KickoffAlabasterIvory,
                                 fontSize = 8.5.sp,
                                 fontWeight = FontWeight.ExtraBold
                             )
@@ -2467,19 +2630,19 @@ private fun FlashscoreTournamentHeader(
                     Icon(
                         imageVector = Icons.Default.PushPin,
                         contentDescription = "Pin Tournament",
-                        tint = if (isPinned) AmberGold else ChampagneMuted.copy(alpha = 0.65f),
+                        tint = if (isPinned) KickoffTerracotta else KickoffParchmentMuted,
                         modifier = Modifier.size(13.5.dp)
                     )
                 }
 
                 Surface(
-                    color = Color(0xFF06131B),
+                    color = KickoffObsidianBlack,
                     shape = RoundedCornerShape(50),
-                    border = BorderStroke(0.8.dp, leagueAccentColor.copy(alpha = 0.48f))
+                    border = BorderStroke(0.8.dp, KickoffAgedParchment.copy(alpha = 0.55f))
                 ) {
                     Text(
                         text = "$matchCount",
-                        color = KickoffPeachCream,
+                        color = KickoffAlabasterIvory,
                         fontSize = 10.5.sp,
                         fontWeight = FontWeight.ExtraBold,
                         modifier = Modifier.padding(horizontal = 8.dp, vertical = 1.5.dp)
@@ -2491,7 +2654,7 @@ private fun FlashscoreTournamentHeader(
                 Icon(
                     imageVector = Icons.Default.ExpandMore,
                     contentDescription = if (isCollapsed) "Expand" else "Collapse",
-                    tint = Champagne,
+                    tint = KickoffAgedParchment,
                     modifier = Modifier
                         .size(18.dp)
                         .graphicsLayer { rotationZ = chevronRotation }
@@ -2568,65 +2731,42 @@ internal fun parseLiveMatchClockTelemetry(
                     heroReadoutSeconds = "HT"
                 )
             }
-            val explicitStoppageClock = Regex("(\\d{1,3}):(\\d{2})\\+(\\d{1,2}):(\\d{2})").find(clean)
-            val explicitMmSsClock = if (explicitStoppageClock == null) Regex("(\\d{1,3}):(\\d{2})").find(clean) else null
-            val apostropheMatch = Regex("(\\d{1,3})(\\+\\d{1,2})?\\s*'").find(clean)
-            val withoutHalfPrefix = clean.replace(Regex("\\b[12]H\\b", RegexOption.IGNORE_CASE), "")
-            val fallbackMin = Regex("\\d{1,3}").find(withoutHalfPrefix)?.value?.toIntOrNull()
-            val baseMinute = explicitStoppageClock?.groupValues?.getOrNull(1)?.toIntOrNull()
-                ?: explicitMmSsClock?.groupValues?.getOrNull(1)?.toIntOrNull()
-                ?: apostropheMatch?.groupValues?.getOrNull(1)?.toIntOrNull()
-                ?: fallbackMin
-                ?: 45
-            val stoppageSuffix = when {
-                explicitStoppageClock != null -> "+${explicitStoppageClock.groupValues[3].toIntOrNull() ?: 1}"
-                else -> apostropheMatch?.groupValues?.getOrNull(2).orEmpty()
-            }
-            val heroMin = "${baseMinute}${stoppageSuffix}'"
-            val heroMmSs = when {
-                explicitStoppageClock != null -> {
-                    val stopMin = explicitStoppageClock.groupValues[3].toIntOrNull() ?: 0
-                    val stopSec = explicitStoppageClock.groupValues[4].toIntOrNull() ?: 0
-                    val totalStopSec = stopMin * 60 + stopSec + safeOffsetSec
-                    String.format(java.util.Locale.US, "%02d:00+%02d:%02d", baseMinute, totalStopSec / 60, totalStopSec % 60)
-                }
-                stoppageSuffix.isNotEmpty() -> {
-                    val stopMin = stoppageSuffix.removePrefix("+").toIntOrNull() ?: 1
-                    val totalStopSec = stopMin * 60 + safeOffsetSec
-                    String.format(java.util.Locale.US, "%02d:00+%02d:%02d", baseMinute, totalStopSec / 60, totalStopSec % 60)
-                }
-                explicitMmSsClock != null -> {
-                    val initSec = explicitMmSsClock.groupValues[2].toIntOrNull() ?: 0
-                    val totalSec = baseMinute * 60 + initSec + safeOffsetSec
-                    String.format(java.util.Locale.US, "%02d:%02d", totalSec / 60, totalSec % 60)
-                }
-                else -> {
-                    val totalSec = baseMinute * 60 + safeOffsetSec
-                    String.format(java.util.Locale.US, "%02d:%02d", totalSec / 60, totalSec % 60)
-                }
-            }
+            val syntheticSyncEpochMs = 1_000_000_000L
+            val anchor = MatchClockEngine.deriveAnchorFromMatch(
+                match = match,
+                nowEpochMs = syntheticSyncEpochMs,
+                deterministicSubMinuteSeed = false
+            )
+            val snapshot = MatchClockEngine.evaluateClockAt(
+                anchor = anchor,
+                nowEpochMs = syntheticSyncEpochMs + safeOffsetSec * 1_000L
+            )
+            val isStoppagePhase = snapshot.phase == MatchPeriodPhase.FIRST_HALF_STOPPAGE ||
+                snapshot.phase == MatchPeriodPhase.SECOND_HALF_STOPPAGE
+            val isSecondHalf = snapshot.phase == MatchPeriodPhase.SECOND_HALF ||
+                snapshot.phase == MatchPeriodPhase.SECOND_HALF_STOPPAGE ||
+                snapshot.phase == MatchPeriodPhase.EXTRA_TIME ||
+                clean.contains("2H", ignoreCase = true) ||
+                snapshot.baseMinute > 45
 
-            val isSecondHalf = clean.contains("2H", ignoreCase = true) || baseMinute > 45
-            val periodLabel = when {
-                baseMinute > 90 -> "EXTRA TIME"
-                stoppageSuffix.isNotEmpty() -> "STOPPAGE"
-                isSecondHalf -> "2ND HALF"
-                else -> "1ST HALF"
-            }
+            val heroMin = snapshot.formattedMinuteBadge
+            val heroMmSs = snapshot.formattedSecondsClock
+            val periodLabel = snapshot.periodHeaderBadge
+
             val explanation = when {
-                stoppageSuffix.isNotEmpty() && isSecondHalf -> "2ND HALF • $heroMin ADDED TIME"
-                stoppageSuffix.isNotEmpty() -> "1ST HALF • $heroMin ADDED TIME"
-                isSecondHalf -> "2ND HALF • ${baseMinute}' PLAYED"
-                else -> "1ST HALF • ${baseMinute}' PLAYED"
+                isStoppagePhase && isSecondHalf -> "2ND HALF • $heroMin ADDED TIME"
+                isStoppagePhase -> "1ST HALF • $heroMin ADDED TIME"
+                isSecondHalf -> "2ND HALF • ${snapshot.baseMinute}' PLAYED"
+                else -> "1ST HALF • ${snapshot.baseMinute}' PLAYED"
             }
             val remaining = when {
-                stoppageSuffix.isNotEmpty() -> "STOPPAGE TIME"
+                isStoppagePhase -> "STOPPAGE TIME"
                 isSecondHalf -> {
-                    val left = (90 - baseMinute).coerceAtLeast(1)
+                    val left = (90 - snapshot.baseMinute).coerceAtLeast(1)
                     "${left}' TO 90'"
                 }
                 else -> {
-                    val left = (45 - baseMinute).coerceAtLeast(1)
+                    val left = (45 - snapshot.baseMinute).coerceAtLeast(1)
                     "${left}' TO HT"
                 }
             }
@@ -2637,7 +2777,7 @@ internal fun parseLiveMatchClockTelemetry(
                 bottomBadge = if (htScore != null && isSecondHalf) "HT $htScore" else "LIVE MIN",
                 statusExplanation = explanation,
                 remainingLabel = remaining,
-                progressFraction = parseLiveMatchProgressFraction(clean, match.status),
+                progressFraction = snapshot.progressFraction,
                 heroReadoutSeconds = heroMmSs
             )
         }
@@ -2711,20 +2851,20 @@ private fun SplitBroadcasterWatchCapsule(
     }
 
     Surface(
-        color = badgeBg.copy(alpha = if (isFinishedStatus) 0.72f else 0.92f),
+        color = KickoffObsidianBlack.copy(alpha = if (isFinishedStatus) 0.78f else 0.94f),
         shape = RoundedCornerShape(50),
         border = BorderStroke(
             width = 1.dp,
             brush = Brush.horizontalGradient(
                 if (isFinishedStatus) {
                     listOf(
-                        badgeAccent.copy(alpha = 0.45f),
-                        Champagne.copy(alpha = 0.35f)
+                        KickoffAgedParchment.copy(alpha = 0.40f),
+                        KickoffParchmentBorder
                     )
                 } else {
                     listOf(
-                        badgeAccent.copy(alpha = 0.75f),
-                        KickoffTropicalTeal.copy(alpha = 0.85f)
+                        badgeAccent.copy(alpha = 0.70f),
+                        KickoffTerracotta.copy(alpha = 0.85f)
                     )
                 }
             )
@@ -2756,13 +2896,13 @@ private fun SplitBroadcasterWatchCapsule(
                 Icon(
                     imageVector = Icons.Default.LiveTv,
                     contentDescription = null,
-                    tint = badgeText,
+                    tint = KickoffAlabasterIvory,
                     modifier = Modifier.size(11.5.dp)
                 )
                 Spacer(modifier = Modifier.width(4.5.dp))
                 Text(
                     text = com.example.util.StreamMetadataParser.compactBroadcastChannelLabel(broadcasterName),
-                    color = badgeText,
+                    color = KickoffAlabasterIvory,
                     fontSize = 9.5.sp,
                     fontWeight = FontWeight.Bold,
                     maxLines = 1,
@@ -2772,16 +2912,16 @@ private fun SplitBroadcasterWatchCapsule(
                 if (!isBeinSourceChannel) {
                     Spacer(modifier = Modifier.width(4.dp))
                     Surface(
-                        color = Color.Black.copy(alpha = 0.35f),
+                        color = KickoffCharcoalSlate,
                         shape = RoundedCornerShape(4.dp),
                         border = BorderStroke(
                             0.6.dp,
-                            if (isUltraHdChannel) AmberGold.copy(alpha = 0.7f) else badgeText.copy(alpha = 0.35f)
+                            if (isUltraHdChannel) KickoffTerracotta else KickoffAgedParchment.copy(alpha = 0.45f)
                         )
                     ) {
                         Text(
                             text = if (isUltraHdChannel) "4K" else "HD",
-                            color = if (isUltraHdChannel) AmberGold else badgeText,
+                            color = if (isUltraHdChannel) KickoffTerracotta else KickoffAgedParchment,
                             fontSize = 7.5.sp,
                             fontWeight = FontWeight.ExtraBold,
                             modifier = Modifier.padding(horizontal = 3.5.dp, vertical = 0.5.dp)
@@ -2797,9 +2937,9 @@ private fun SplitBroadcasterWatchCapsule(
                 border = BorderStroke(
                     0.8.dp,
                     when {
-                        isLiveStatus -> KickoffPeachCream.copy(alpha = 0.9f)
-                        isFinishedStatus -> Champagne.copy(alpha = 0.35f)
-                        else -> KickoffTropicalTeal.copy(alpha = 0.75f)
+                        isLiveStatus -> KickoffAlabasterIvory.copy(alpha = 0.85f)
+                        isFinishedStatus -> KickoffAgedParchment.copy(alpha = 0.40f)
+                        else -> KickoffAgedParchment.copy(alpha = 0.65f)
                     }
                 ),
                 modifier = Modifier
@@ -2809,22 +2949,20 @@ private fun SplitBroadcasterWatchCapsule(
                         brush = when {
                             isLiveStatus -> Brush.horizontalGradient(
                                 listOf(
-                                    Color(0xFF80EE98),
-                                    Color(0xFF09D1C7),
-                                    KickoffTropicalTeal
+                                    KickoffTerracotta,
+                                    Color(0xFFE86830)
                                 )
                             )
                             isFinishedStatus -> Brush.horizontalGradient(
                                 listOf(
-                                    Color(0xFF0B1C28),
-                                    Color(0xFF132C3D)
+                                    KickoffCharcoalSlate,
+                                    KickoffCharcoalElevated
                                 )
                             )
                             else -> Brush.horizontalGradient(
                                 listOf(
-                                    KickoffOceanElevated,
-                                    KickoffCeruleanBlue,
-                                    KickoffTropicalTeal.copy(alpha = 0.88f)
+                                    KickoffImperialNavy,
+                                    KickoffNavyElevated
                                 )
                             )
                         }
@@ -2847,7 +2985,7 @@ private fun SplitBroadcasterWatchCapsule(
                         modifier = Modifier
                             .size(18.dp)
                             .clip(CircleShape)
-                            .background(DarkGraphite)
+                            .background(KickoffObsidianBlack)
                     ) {
                         Icon(
                             imageVector = if (isFinishedStatus) Icons.Default.Info else Icons.Default.PlayArrow,
@@ -2857,9 +2995,9 @@ private fun SplitBroadcasterWatchCapsule(
                                 else -> "Pre-Match Channel Test"
                             },
                             tint = when {
-                                isLiveStatus -> Color(0xFF80EE98)
-                                isFinishedStatus -> AmberGold
-                                else -> KickoffPeachCream
+                                isLiveStatus -> KickoffTerracotta
+                                isFinishedStatus -> KickoffAgedParchment
+                                else -> KickoffAlabasterIvory
                             },
                             modifier = Modifier.size(12.dp)
                         )
@@ -2876,9 +3014,9 @@ private fun SplitBroadcasterWatchCapsule(
                             else -> "PRE-MATCH"
                         },
                         color = when {
-                            isLiveStatus -> DarkGraphite
-                            isFinishedStatus -> Champagne
-                            else -> Color.White
+                            isLiveStatus -> KickoffAlabasterIvory
+                            isFinishedStatus -> KickoffAgedParchment
+                            else -> KickoffAlabasterIvory
                         },
                         fontSize = 9.5.sp,
                         fontWeight = FontWeight.ExtraBold,
@@ -2937,7 +3075,7 @@ private fun LiveBroadcastEqualizerBars() {
                     .width(2.dp)
                     .height((10f * fraction).dp)
                     .clip(RoundedCornerShape(50))
-                    .background(LiveCrimson)
+                    .background(KickoffAlabasterIvory)
             )
         }
     }
@@ -2970,15 +3108,15 @@ private fun FlashscoreMatchCard(
     val hasDecisiveWinner = homeIsWinner || awayIsWinner
 
     val leftSpineColor = when {
-        isLive -> LiveCrimson
-        hasFavTeam -> AmberGold
-        else -> KickoffTropicalTeal.copy(alpha = 0.55f)
+        isLive -> KickoffTerracotta
+        hasFavTeam -> KickoffAgedParchment
+        else -> KickoffImperialNavy
     }
 
     val livePulseTransition = rememberInfiniteTransition(label = "matchCardLivePulse_${match.matchId}")
     val livePulseAlpha by livePulseTransition.animateFloat(
-        initialValue = if (isLive) 0.45f else 0.28f,
-        targetValue = if (isLive) 0.95f else 0.28f,
+        initialValue = if (isLive) 0.50f else 0.30f,
+        targetValue = if (isLive) 0.96f else 0.30f,
         animationSpec = infiniteRepeatable(
             animation = tween(durationMillis = 800, easing = LinearEasing),
             repeatMode = RepeatMode.Reverse
@@ -3002,14 +3140,14 @@ private fun FlashscoreMatchCard(
     }
 
     Surface(
-        color = if (isInsidePinnedSection) Color.Transparent else KickoffOceanSurface,
+        color = if (isInsidePinnedSection) Color.Transparent else KickoffCharcoalSlate,
         shape = cardShape,
         border = if (isInsidePinnedSection) {
             null
         } else {
             BorderStroke(
                 width = 0.9.dp,
-                color = if (isLive) LiveCrimson.copy(alpha = 0.32f) else Color.White.copy(alpha = 0.07f)
+                color = if (isLive) KickoffTerracotta.copy(alpha = 0.45f) else KickoffParchmentBorder
             )
         },
         modifier = Modifier
@@ -3017,7 +3155,7 @@ private fun FlashscoreMatchCard(
             .padding(horizontal = if (isInsidePinnedSection) 0.dp else 16.dp)
             .clip(cardShape)
             .luxuryFocusableCard(
-                accentColor = if (isLive) LiveCrimson else KickoffTropicalTeal,
+                accentColor = if (isLive) KickoffTerracotta else KickoffAgedParchment,
                 shape = cardShape,
                 onClick = { onOpenDossier() }
             )
@@ -3045,8 +3183,8 @@ private fun FlashscoreMatchCard(
                         if (isLive) {
                             Brush.horizontalGradient(
                                 listOf(
-                                    LiveCrimson.copy(alpha = 0.10f),
-                                    KickoffOceanSurface.copy(alpha = 0.40f),
+                                    KickoffTerracottaGlow,
+                                    KickoffImperialNavy.copy(alpha = 0.35f),
                                     Color.Transparent
                                 )
                             )
@@ -3068,17 +3206,20 @@ private fun FlashscoreMatchCard(
                         match.kickoffTimeFormatted
                     }
                 }
-                val periodStartEpochMs = remember(match.matchId, match.liveMinuteOrBadge, match.status) {
-                    val seedSec = (abs(match.matchId.hashCode()) % 52)
-                    System.currentTimeMillis() - (seedSec * 1000L)
+                val matchClockAnchor = remember(match.matchId, match.liveMinuteOrBadge, match.status) {
+                    MatchClockEngine.registerOrUpdateAnchor(match)
                 }
-                var liveElapsedSeconds by remember(periodStartEpochMs) {
-                    mutableIntStateOf(((System.currentTimeMillis() - periodStartEpochMs) / 1000L).toInt().coerceAtLeast(0))
+                val anchorSyncOriginMs = remember(matchClockAnchor.verifiedAtEpochMs, match.matchId) {
+                    val seedSec = (abs(match.matchId.hashCode()) % 52)
+                    matchClockAnchor.verifiedAtEpochMs - (seedSec * 1000L)
+                }
+                var liveElapsedSeconds by remember(anchorSyncOriginMs) {
+                    mutableIntStateOf(((System.currentTimeMillis() - anchorSyncOriginMs) / 1000L).toInt().coerceAtLeast(0))
                 }
                 if (match.status == MatchStatus.LIVE) {
-                    LaunchedEffect(Unit) {
+                    LaunchedEffect(anchorSyncOriginMs) {
                         while (true) {
-                            liveElapsedSeconds = ((System.currentTimeMillis() - periodStartEpochMs) / 1000L).toInt().coerceAtLeast(0)
+                            liveElapsedSeconds = ((System.currentTimeMillis() - anchorSyncOriginMs) / 1000L).toInt().coerceAtLeast(0)
                             delay(1000L)
                         }
                     }
@@ -3106,14 +3247,14 @@ private fun FlashscoreMatchCard(
                 ) {
                     // 1. Left Column (72dp wide): Two-Tone Sculpted Broadcast Time & Status Pod
                     Surface(
-                        color = if (isLive) Color(0xFF1A0810) else Color(0xFF051118),
+                        color = KickoffObsidianBlack,
                         shape = RoundedCornerShape(12.dp),
                         border = BorderStroke(
                             width = if (isLive) 1.1.dp else 0.85.dp,
                             color = when {
-                                isLive -> LiveCrimson.copy(alpha = livePulseAlpha)
-                                isFinished -> Color.White.copy(alpha = 0.12f)
-                                else -> KickoffTropicalTeal.copy(alpha = 0.34f)
+                                isLive -> KickoffTerracotta.copy(alpha = livePulseAlpha)
+                                isFinished -> KickoffParchmentBorder
+                                else -> KickoffImperialNavy.copy(alpha = 0.85f)
                             }
                         ),
                         modifier = Modifier
@@ -3131,9 +3272,9 @@ private fun FlashscoreMatchCard(
                                     .fillMaxWidth()
                                     .background(
                                         when {
-                                            isLive -> LiveCrimson.copy(alpha = 0.32f)
-                                            isFinished -> Color.White.copy(alpha = 0.08f)
-                                            else -> KickoffTropicalTeal.copy(alpha = 0.18f)
+                                            isLive -> KickoffTerracotta
+                                            isFinished -> KickoffCharcoalElevated
+                                            else -> KickoffImperialNavy
                                         }
                                     )
                                     .padding(vertical = 2.5.dp, horizontal = 3.dp)
@@ -3141,9 +3282,9 @@ private fun FlashscoreMatchCard(
                                 Text(
                                     text = clockTelemetry.periodBadge,
                                     color = when {
-                                        isLive -> KickoffPeachCream
-                                        isFinished -> ChampagneMuted
-                                        else -> KickoffTropicalTeal
+                                        isLive -> KickoffAlabasterIvory
+                                        isFinished -> KickoffAgedParchment
+                                        else -> KickoffAlabasterIvory
                                     },
                                     fontSize = 7.5.sp,
                                     lineHeight = 8.sp,
@@ -3174,16 +3315,16 @@ private fun FlashscoreMatchCard(
                                                 scaleY = liveDotScale
                                             }
                                             .clip(CircleShape)
-                                            .background(LiveCrimson)
+                                            .background(KickoffTerracotta)
                                     )
                                     Spacer(modifier = Modifier.width(3.dp))
                                 }
                                 Text(
                                     text = displayClockText,
                                     color = when (match.status) {
-                                        MatchStatus.LIVE, MatchStatus.HALFTIME -> Color.White
-                                        MatchStatus.FINISHED -> Champagne
-                                        MatchStatus.UPCOMING -> Color.White
+                                        MatchStatus.LIVE, MatchStatus.HALFTIME -> KickoffAlabasterIvory
+                                        MatchStatus.FINISHED -> KickoffAgedParchment
+                                        MatchStatus.UPCOMING -> KickoffAlabasterIvory
                                     },
                                     fontSize = when {
                                         displayClockText.length > 6 -> 9.5.sp
@@ -3204,15 +3345,15 @@ private fun FlashscoreMatchCard(
                                 contentAlignment = Alignment.Center,
                                 modifier = Modifier
                                     .fillMaxWidth()
-                                    .background(Color.White.copy(alpha = 0.03f))
+                                    .background(KickoffCharcoalSlate.copy(alpha = 0.65f))
                                     .padding(vertical = 2.dp, horizontal = 3.dp)
                             ) {
                                 Text(
                                     text = clockTelemetry.bottomBadge,
                                     color = when {
-                                        match.halfTimeScore != null && (isLive || isFinished) -> AmberGold
-                                        isLive -> LiveCrimson.copy(alpha = 0.95f)
-                                        else -> KickoffPeachCream.copy(alpha = 0.85f)
+                                        match.halfTimeScore != null && (isLive || isFinished) -> KickoffAgedParchment
+                                        isLive -> KickoffTerracotta
+                                        else -> KickoffAgedParchment
                                     },
                                     fontSize = 7.5.sp,
                                     lineHeight = 8.sp,
@@ -3271,9 +3412,9 @@ private fun FlashscoreMatchCard(
                             .orEmpty()
                     }
                     Surface(
-                        color = Color(0xFF071620).copy(alpha = 0.90f),
+                        color = KickoffObsidianBlack,
                         shape = RoundedCornerShape(8.dp),
-                        border = BorderStroke(0.6.dp, LiveCrimson.copy(alpha = 0.30f)),
+                        border = BorderStroke(0.6.dp, KickoffTerracotta.copy(alpha = 0.45f)),
                         modifier = Modifier.fillMaxWidth()
                     ) {
                         Row(
@@ -3285,7 +3426,7 @@ private fun FlashscoreMatchCard(
                         ) {
                             Text(
                                 text = "0'",
-                                color = ChampagneMuted,
+                                color = KickoffParchmentMuted,
                                 fontSize = 7.5.sp,
                                 fontWeight = FontWeight.Bold
                             )
@@ -3294,7 +3435,7 @@ private fun FlashscoreMatchCard(
                                     .weight(1f)
                                     .height(4.dp)
                                     .clip(RoundedCornerShape(50))
-                                    .background(Color.White.copy(alpha = 0.10f))
+                                    .background(KickoffCharcoalElevated)
                             ) {
                                 // Illuminated elapsed match progress fill
                                 Box(
@@ -3304,7 +3445,7 @@ private fun FlashscoreMatchCard(
                                         .clip(RoundedCornerShape(50))
                                         .background(
                                             Brush.horizontalGradient(
-                                                listOf(KickoffTropicalTeal, KickoffPeachCream, LiveCrimson)
+                                                listOf(KickoffImperialNavy, KickoffAgedParchment, KickoffTerracotta)
                                             )
                                         )
                                 )
@@ -3314,18 +3455,18 @@ private fun FlashscoreMatchCard(
                                         .align(Alignment.Center)
                                         .width(1.5.dp)
                                         .height(4.dp)
-                                        .background(Color.White.copy(alpha = 0.55f))
+                                        .background(KickoffAlabasterIvory.copy(alpha = 0.70f))
                                 )
                             }
                             Text(
                                 text = "HT",
-                                color = if (clockTelemetry.progressFraction >= 0.5f) AmberGold else ChampagneMuted,
+                                color = if (clockTelemetry.progressFraction >= 0.5f) KickoffAgedParchment else KickoffParchmentMuted,
                                 fontSize = 7.5.sp,
                                 fontWeight = FontWeight.ExtraBold
                             )
                             Text(
                                 text = "90'",
-                                color = ChampagneMuted,
+                                color = KickoffParchmentMuted,
                                 fontSize = 7.5.sp,
                                 fontWeight = FontWeight.Bold
                             )
@@ -3333,7 +3474,7 @@ private fun FlashscoreMatchCard(
                             if (latestGoalScorer.isNotBlank()) {
                                 Text(
                                     text = "• ⚽ $latestGoalScorer",
-                                    color = KickoffPeachCream,
+                                    color = KickoffAlabasterIvory,
                                     fontSize = 8.sp,
                                     fontWeight = FontWeight.Bold,
                                     maxLines = 1,
@@ -3342,7 +3483,7 @@ private fun FlashscoreMatchCard(
                             } else {
                                 Text(
                                     text = "• ${clockTelemetry.remainingLabel}",
-                                    color = KickoffTropicalTeal,
+                                    color = KickoffTerracotta,
                                     fontSize = 8.sp,
                                     fontWeight = FontWeight.ExtraBold,
                                     maxLines = 1,
@@ -3353,7 +3494,7 @@ private fun FlashscoreMatchCard(
                     }
                 } else {
                     HorizontalDivider(
-                        color = Color.White.copy(alpha = 0.06f),
+                        color = KickoffParchmentBorder,
                         thickness = 0.8.dp
                     )
                 }
@@ -3373,18 +3514,18 @@ private fun FlashscoreMatchCard(
                 ) {
                     // Left: Broadcaster Badge (📺 beIN Sports 1 HD) — never collides with stadium name
                     Surface(
-                        color = badgeBg.copy(alpha = if (isFinishedStatus) 0.72f else 0.90f),
+                        color = KickoffObsidianBlack,
                         shape = RoundedCornerShape(50),
                         border = BorderStroke(
                             0.8.dp,
-                            badgeAccent.copy(alpha = if (isFinishedStatus) 0.45f else 0.75f)
+                            if (isFinishedStatus) KickoffParchmentBorder else badgeAccent.copy(alpha = 0.75f)
                         ),
                         modifier = Modifier
                             .weight(1f, fill = false)
                             .height(28.dp)
                             .clip(RoundedCornerShape(50))
                             .tvFocusablePill(
-                                accentColor = KickoffTropicalTeal,
+                                accentColor = KickoffTerracotta,
                                 shape = RoundedCornerShape(50),
                                 onClick = { onWatchBeinClicked(match.beinChannel) }
                             )
@@ -3397,13 +3538,13 @@ private fun FlashscoreMatchCard(
                             Icon(
                                 imageVector = Icons.Default.LiveTv,
                                 contentDescription = "Broadcaster",
-                                tint = badgeText,
+                                tint = KickoffAgedParchment,
                                 modifier = Modifier.size(12.5.dp)
                             )
                             Spacer(modifier = Modifier.width(5.5.dp))
                             Text(
                                 text = com.example.util.StreamMetadataParser.compactBroadcastChannelLabel(match.beinChannel),
-                                color = badgeText,
+                                color = KickoffAlabasterIvory,
                                 fontSize = 10.5.sp,
                                 fontWeight = FontWeight.Bold,
                                 maxLines = 1,
@@ -3411,16 +3552,16 @@ private fun FlashscoreMatchCard(
                             )
                             Spacer(modifier = Modifier.width(5.dp))
                             Surface(
-                                color = Color.Black.copy(alpha = 0.35f),
+                                color = KickoffCharcoalSlate,
                                 shape = RoundedCornerShape(4.dp),
                                 border = BorderStroke(
                                     0.6.dp,
-                                    if (isUltraHdChannel) AmberGold.copy(alpha = 0.7f) else badgeText.copy(alpha = 0.35f)
+                                    if (isUltraHdChannel) KickoffTerracotta else KickoffAgedParchment.copy(alpha = 0.45f)
                                 )
                             ) {
                                 Text(
                                     text = if (isUltraHdChannel) "4K" else "HD",
-                                    color = if (isUltraHdChannel) AmberGold else badgeText,
+                                    color = if (isUltraHdChannel) KickoffTerracotta else KickoffAgedParchment,
                                     fontSize = 7.5.sp,
                                     fontWeight = FontWeight.ExtraBold,
                                     modifier = Modifier.padding(horizontal = 4.dp, vertical = 0.5.dp)
@@ -3433,11 +3574,11 @@ private fun FlashscoreMatchCard(
 
                     // Pin Match ("My Games") Toggle Button
                     Surface(
-                        color = if (isMatchPinned) AmberGold.copy(alpha = 0.22f) else Color.White.copy(alpha = 0.06f),
+                        color = if (isMatchPinned) KickoffTerracottaGlow else KickoffObsidianBlack,
                         shape = CircleShape,
                         border = BorderStroke(
                             0.75.dp,
-                            if (isMatchPinned) AmberGold else Color.White.copy(alpha = 0.16f)
+                            if (isMatchPinned) KickoffTerracotta else KickoffParchmentBorder
                         ),
                         modifier = Modifier
                             .size(28.dp)
@@ -3449,7 +3590,7 @@ private fun FlashscoreMatchCard(
                             Icon(
                                 imageVector = Icons.Default.PushPin,
                                 contentDescription = if (isMatchPinned) "Unpin Match" else "Pin Match to My Games",
-                                tint = if (isMatchPinned) AmberGold else ChampagneMuted,
+                                tint = if (isMatchPinned) KickoffTerracotta else KickoffParchmentMuted,
                                 modifier = Modifier.size(13.dp)
                             )
                         }
@@ -3464,9 +3605,9 @@ private fun FlashscoreMatchCard(
                         border = BorderStroke(
                             0.85.dp,
                             when {
-                                isLive -> KickoffPeachCream.copy(alpha = 0.90f)
-                                isFinishedStatus -> Champagne.copy(alpha = 0.35f)
-                                else -> KickoffTropicalTeal.copy(alpha = 0.78f)
+                                isLive -> KickoffAlabasterIvory.copy(alpha = 0.85f)
+                                isFinishedStatus -> KickoffAgedParchment.copy(alpha = 0.40f)
+                                else -> KickoffAgedParchment.copy(alpha = 0.65f)
                             }
                         ),
                         modifier = Modifier
@@ -3476,28 +3617,26 @@ private fun FlashscoreMatchCard(
                                 brush = when {
                                     isLive -> Brush.horizontalGradient(
                                         listOf(
-                                            Color(0xFF80EE98),
-                                            Color(0xFF09D1C7),
-                                            KickoffTropicalTeal
+                                            KickoffTerracotta,
+                                            Color(0xFFE86830)
                                         )
                                     )
                                     isFinishedStatus -> Brush.horizontalGradient(
                                         listOf(
-                                            Color(0xFF0B1C28),
-                                            Color(0xFF132C3D)
+                                            KickoffCharcoalElevated,
+                                            KickoffObsidianBlack
                                         )
                                     )
                                     else -> Brush.horizontalGradient(
                                         listOf(
-                                            KickoffOceanElevated,
-                                            KickoffCeruleanBlue,
-                                            KickoffTropicalTeal.copy(alpha = 0.88f)
+                                            KickoffImperialNavy,
+                                            KickoffNavyElevated
                                         )
                                     )
                                 }
                             )
                             .tvFocusablePill(
-                                accentColor = AmberGold,
+                                accentColor = KickoffTerracotta,
                                 shape = RoundedCornerShape(50),
                                 onClick = {
                                     if (isFinishedStatus) {
@@ -3519,7 +3658,7 @@ private fun FlashscoreMatchCard(
                                 modifier = Modifier
                                     .size(18.dp)
                                     .clip(CircleShape)
-                                    .background(DarkGraphite)
+                                    .background(KickoffObsidianBlack)
                             ) {
                                 Icon(
                                     imageVector = if (isFinishedStatus) Icons.Default.Info else Icons.Default.PlayArrow,
@@ -3529,9 +3668,9 @@ private fun FlashscoreMatchCard(
                                         else -> "Pre-Match"
                                     },
                                     tint = when {
-                                        isLive -> Color(0xFF80EE98)
-                                        isFinishedStatus -> AmberGold
-                                        else -> KickoffPeachCream
+                                        isLive -> KickoffTerracotta
+                                        isFinishedStatus -> KickoffAgedParchment
+                                        else -> KickoffAlabasterIvory
                                     },
                                     modifier = Modifier.size(12.dp)
                                 )
@@ -3548,9 +3687,9 @@ private fun FlashscoreMatchCard(
                                     else -> "PRE-MATCH"
                                 },
                                 color = when {
-                                    isLive -> DarkGraphite
-                                    isFinishedStatus -> Champagne
-                                    else -> Color.White
+                                    isLive -> KickoffAlabasterIvory
+                                    isFinishedStatus -> KickoffAgedParchment
+                                    else -> KickoffAlabasterIvory
                                 },
                                 fontSize = 9.5.sp,
                                 fontWeight = FontWeight.ExtraBold,
@@ -3602,7 +3741,7 @@ private fun FlashscoreTeamRow(
             Spacer(modifier = Modifier.width(9.dp))
             Text(
                 text = teamName,
-                color = (if (isFavorite) AmberGold else Color.White).copy(alpha = nameAlpha),
+                color = (if (isFavorite) KickoffAgedParchment else KickoffAlabasterIvory).copy(alpha = nameAlpha),
                 fontSize = 13.5.sp,
                 fontWeight = nameWeight,
                 maxLines = 1,
@@ -3616,7 +3755,7 @@ private fun FlashscoreTeamRow(
             Icon(
                 imageVector = if (isFavorite) Icons.Default.Star else Icons.Default.StarBorder,
                 contentDescription = if (isFavorite) "Favorite Team" else "Add to Favorites",
-                tint = if (isFavorite) AmberGold else ChampagneMuted.copy(alpha = 0.32f),
+                tint = if (isFavorite) KickoffTerracotta else KickoffParchmentMuted.copy(alpha = 0.45f),
                 modifier = Modifier
                     .size(14.dp)
                     .clickable { onToggleFavorite() }
@@ -3626,24 +3765,24 @@ private fun FlashscoreTeamRow(
         // Right Column: Recessed Scoreboard Well when match is Live or Finished
         if ((isLive || isFinished) && score != null) {
             val scoreColor = when {
-                isLive -> Color.White
-                isWinner -> KickoffPeachCream
-                isLoser -> ChampagneMuted
-                else -> Color.White
+                isLive -> KickoffAlabasterIvory
+                isWinner -> KickoffAlabasterIvory
+                isLoser -> KickoffParchmentMuted
+                else -> KickoffAgedParchment
             }
             Surface(
                 color = when {
-                    isLive -> LiveCrimson.copy(alpha = 0.24f)
-                    isWinner -> KickoffTropicalTeal.copy(alpha = 0.16f)
-                    else -> Color(0xFF06131B)
+                    isLive -> KickoffTerracottaGlow
+                    isWinner -> KickoffImperialNavy
+                    else -> KickoffObsidianBlack
                 },
                 shape = RoundedCornerShape(7.dp),
                 border = BorderStroke(
                     0.7.dp,
                     when {
-                        isLive -> LiveCrimson.copy(alpha = 0.70f)
-                        isWinner -> KickoffTropicalTeal.copy(alpha = 0.45f)
-                        else -> Color.White.copy(alpha = 0.09f)
+                        isLive -> KickoffTerracotta
+                        isWinner -> KickoffAgedParchment.copy(alpha = 0.65f)
+                        else -> KickoffParchmentBorder
                     }
                 ),
                 modifier = Modifier.padding(start = 8.dp)
@@ -3678,8 +3817,8 @@ fun TeamCrestImage(
             .ifBlank { "FC" }
     }
 
-    // High-contrast Frosted Pearl-Porcelain Medallion Core so dark/red crests (e.g., Liverpool, Olympiacos)
-    // pop with razor-sharp broadcast contrast against dark ocean cards
+    // High-contrast Warm Alabaster Ivory Medallion Core so dark/red crests
+    // pop with razor-sharp broadcast contrast against Warm Charcoal Slate cards
     Box(
         contentAlignment = Alignment.Center,
         modifier = Modifier
@@ -3688,20 +3827,20 @@ fun TeamCrestImage(
             .background(
                 Brush.radialGradient(
                     colors = listOf(
-                        Color(0xFFF5F9FC).copy(alpha = 0.96f),
-                        Color(0xFFDCE8F0).copy(alpha = 0.90f)
+                        KickoffAlabasterIvory,
+                        KickoffAgedParchment.copy(alpha = 0.92f)
                     )
                 )
             )
             .border(
                 width = 0.85.dp,
-                color = KickoffTropicalTeal.copy(alpha = 0.42f),
+                color = KickoffAgedParchment.copy(alpha = 0.70f),
                 shape = CircleShape
             )
     ) {
         Text(
             text = initials,
-            color = DarkGraphite.copy(alpha = 0.78f),
+            color = KickoffObsidianBlack.copy(alpha = 0.85f),
             fontSize = (sizeDp * 0.36f).sp,
             fontWeight = FontWeight.ExtraBold
         )
@@ -4000,9 +4139,9 @@ private fun FirstTimeFavoriteTeamsDialog(
         properties = DialogProperties(usePlatformDefaultWidth = false)
     ) {
         Surface(
-            color = MetalCharcoal,
+            color = KickoffObsidianBlack,
             shape = RoundedCornerShape(22.dp),
-            border = BorderStroke(1.2.dp, ArenaPitchGreen),
+            border = BorderStroke(1.2.dp, KickoffTerracotta),
             modifier = Modifier
                 .fillMaxWidth(0.95f)
                 .heightIn(max = 680.dp)
@@ -4022,20 +4161,20 @@ private fun FirstTimeFavoriteTeamsDialog(
                         Icon(
                             imageVector = Icons.Default.SportsSoccer,
                             contentDescription = null,
-                            tint = ArenaFloodlightLime,
+                            tint = KickoffTerracotta,
                             modifier = Modifier.size(24.dp)
                         )
                         Spacer(modifier = Modifier.width(10.dp))
                         Column {
                             Text(
                                 text = "Welcome to KickOff Arena",
-                                color = PaleGold,
+                                color = KickoffAlabasterIvory,
                                 fontSize = 17.5.sp,
                                 fontWeight = FontWeight.ExtraBold
                             )
                             Text(
                                 text = "Choose your Country Zone (time & TV channels) and follow your teams",
-                                color = Champagne,
+                                color = KickoffAgedParchment,
                                 fontSize = 11.5.sp
                             )
                         }
@@ -4063,7 +4202,7 @@ private fun FirstTimeFavoriteTeamsDialog(
                     placeholder = {
                         Text(
                             text = "Type a team name (e.g., Real Madrid, Raja, Arsenal, PSG)...",
-                            color = Champagne.copy(alpha = 0.6f),
+                            color = KickoffAgedParchment.copy(alpha = 0.65f),
                             fontSize = 13.sp
                         )
                     },
@@ -4071,7 +4210,7 @@ private fun FirstTimeFavoriteTeamsDialog(
                         Icon(
                             imageVector = Icons.Default.Search,
                             contentDescription = "Search Global Teams",
-                            tint = ArenaFloodlightLime
+                            tint = KickoffTerracotta
                         )
                     },
                     trailingIcon = {
@@ -4080,19 +4219,19 @@ private fun FirstTimeFavoriteTeamsDialog(
                                 Icon(
                                     imageVector = Icons.Default.Close,
                                     contentDescription = "Clear search",
-                                    tint = Champagne
+                                    tint = KickoffAgedParchment
                                 )
                             }
                         }
                     },
                     singleLine = true,
                     colors = OutlinedTextFieldDefaults.colors(
-                        focusedBorderColor = ArenaPitchGreen,
-                        unfocusedBorderColor = ChampagneSubtleBorder,
-                        focusedContainerColor = DarkGraphite,
-                        unfocusedContainerColor = DarkGraphite,
-                        focusedTextColor = PaleGold,
-                        unfocusedTextColor = PaleGold
+                        focusedBorderColor = KickoffTerracotta,
+                        unfocusedBorderColor = KickoffParchmentBorder,
+                        focusedContainerColor = KickoffCharcoalSlate,
+                        unfocusedContainerColor = KickoffCharcoalSlate,
+                        focusedTextColor = KickoffAlabasterIvory,
+                        unfocusedTextColor = KickoffAlabasterIvory
                     ),
                     shape = RoundedCornerShape(12.dp),
                     modifier = Modifier
@@ -4105,7 +4244,7 @@ private fun FirstTimeFavoriteTeamsDialog(
                     Spacer(modifier = Modifier.height(10.dp))
                     Text(
                         text = "SELECTED TEAMS (${selectedFavorites.size})",
-                        color = ArenaFloodlightLime,
+                        color = KickoffAgedParchment,
                         fontSize = 11.sp,
                         fontWeight = FontWeight.ExtraBold
                     )
@@ -4116,9 +4255,9 @@ private fun FirstTimeFavoriteTeamsDialog(
                     ) {
                         selectedFavorites.forEach { fav ->
                             Surface(
-                                color = ArenaPitchGreen.copy(alpha = 0.2f),
+                                color = KickoffImperialNavy,
                                 shape = RoundedCornerShape(50),
-                                border = BorderStroke(1.dp, ArenaPitchGreen)
+                                border = BorderStroke(1.dp, KickoffTerracotta)
                             ) {
                                 Row(
                                     verticalAlignment = Alignment.CenterVertically,
@@ -4132,7 +4271,7 @@ private fun FirstTimeFavoriteTeamsDialog(
                                     Spacer(modifier = Modifier.width(6.dp))
                                     Text(
                                         text = fav.teamName,
-                                        color = PaleGold,
+                                        color = KickoffAlabasterIvory,
                                         fontSize = 11.sp,
                                         fontWeight = FontWeight.Bold
                                     )
@@ -4140,7 +4279,7 @@ private fun FirstTimeFavoriteTeamsDialog(
                                     Icon(
                                         imageVector = Icons.Default.Close,
                                         contentDescription = "Remove ${fav.teamName}",
-                                        tint = ArenaFloodlightLime,
+                                        tint = KickoffTerracotta,
                                         modifier = Modifier
                                             .size(14.dp)
                                             .clickable { onRemoveFavoriteTeam(fav.teamId) }
@@ -4160,7 +4299,7 @@ private fun FirstTimeFavoriteTeamsDialog(
                         .heightIn(min = 140.dp, max = 230.dp)
                         .fillMaxWidth()
                         .clip(RoundedCornerShape(12.dp))
-                        .background(DarkGraphite)
+                        .background(KickoffCharcoalSlate)
                         .padding(8.dp)
                 ) {
                     when {
@@ -4171,7 +4310,7 @@ private fun FirstTimeFavoriteTeamsDialog(
                                     .height(150.dp),
                                 contentAlignment = Alignment.Center
                             ) {
-                                CircularProgressIndicator(color = ArenaPitchGreen)
+                                CircularProgressIndicator(color = KickoffTerracotta)
                             }
                         }
                         searchQuery.isBlank() -> {
@@ -4184,20 +4323,20 @@ private fun FirstTimeFavoriteTeamsDialog(
                                 Icon(
                                     imageVector = Icons.Default.Search,
                                     contentDescription = null,
-                                    tint = ArenaFloodlightLime.copy(alpha = 0.7f),
+                                    tint = KickoffTerracotta.copy(alpha = 0.85f),
                                     modifier = Modifier.size(28.dp)
                                 )
                                 Spacer(modifier = Modifier.height(6.dp))
                                 Text(
                                     text = "Search Any Team Globally",
-                                    color = PaleGold,
+                                    color = KickoffAlabasterIvory,
                                     fontSize = 13.5.sp,
                                     fontWeight = FontWeight.Bold
                                 )
                                 Spacer(modifier = Modifier.height(4.dp))
                                 Text(
                                     text = "Popular in ${selectedCountryZone.flagEmoji} ${selectedCountryZone.countryName}: ${selectedCountryZone.popularLocalClubs.joinToString(", ")}. Type any club above to add it.",
-                                    color = Champagne,
+                                    color = KickoffAgedParchment,
                                     fontSize = 11.5.sp,
                                     textAlign = TextAlign.Center
                                 )
@@ -4212,7 +4351,7 @@ private fun FirstTimeFavoriteTeamsDialog(
                             ) {
                                 Text(
                                     text = "No teams found for \"$searchQuery\". Try another club name.",
-                                    color = Champagne,
+                                    color = KickoffAgedParchment,
                                     fontSize = 12.sp
                                 )
                             }
@@ -4245,19 +4384,19 @@ private fun FirstTimeFavoriteTeamsDialog(
                 ) {
                     OutlinedButton(
                         onClick = onCompleteOnboarding,
-                        border = BorderStroke(1.dp, ChampagneSubtleBorder),
+                        border = BorderStroke(1.dp, KickoffParchmentBorder),
                         modifier = Modifier
                             .weight(1f)
                             .testTag("onboarding_skip_btn")
                     ) {
-                        Text("Skip for Now", color = Champagne, fontWeight = FontWeight.Bold)
+                        Text("Skip for Now", color = KickoffAgedParchment, fontWeight = FontWeight.Bold)
                     }
 
                     Button(
                         onClick = onCompleteOnboarding,
                         colors = ButtonDefaults.buttonColors(
-                            containerColor = ArenaPitchGreen,
-                            contentColor = DarkGraphite
+                            containerColor = KickoffTerracotta,
+                            contentColor = KickoffAlabasterIvory
                         ),
                         modifier = Modifier
                             .weight(1.4f)
@@ -4283,11 +4422,11 @@ private fun TeamSearchResultRow(
     onToggle: () -> Unit
 ) {
     Surface(
-        color = if (isSelected) ArenaPitchGreen.copy(alpha = 0.16f) else MetalCharcoal,
+        color = if (isSelected) KickoffImperialNavy else KickoffObsidianBlack,
         shape = RoundedCornerShape(10.dp),
         border = BorderStroke(
             width = 0.8.dp,
-            color = if (isSelected) ArenaPitchGreen else ChampagneSubtleBorder
+            color = if (isSelected) KickoffTerracotta else KickoffParchmentBorder
         ),
         modifier = Modifier
             .fillMaxWidth()
@@ -4314,13 +4453,13 @@ private fun TeamSearchResultRow(
                 Column {
                     Text(
                         text = team.name,
-                        color = PaleGold,
+                        color = KickoffAlabasterIvory,
                         fontSize = 14.sp,
                         fontWeight = FontWeight.Bold
                     )
                     Text(
                         text = "${team.country} • ${team.primaryLeague}",
-                        color = Champagne,
+                        color = KickoffAgedParchment,
                         fontSize = 11.sp
                     )
                 }
@@ -4329,7 +4468,7 @@ private fun TeamSearchResultRow(
             Icon(
                 imageVector = if (isSelected) Icons.Default.Star else Icons.Default.StarBorder,
                 contentDescription = if (isSelected) "Remove Favorite" else "Add Favorite",
-                tint = if (isSelected) AmberGold else Champagne
+                tint = if (isSelected) KickoffTerracotta else KickoffAgedParchment
             )
         }
     }
@@ -4362,9 +4501,19 @@ private fun CustomizeTeamsAndTournamentsSheet(
 ) {
     var activeTab by remember { mutableIntStateOf(0) } // 0 = Favorite Teams, 1 = Tournaments
 
+    val groupedTournamentsByCategory = remember(tournamentPreferences) {
+        val categoryById = FootballRepository.ALL_TOURNAMENTS.associate { it.tournamentId to it.category }
+        CompetitionCategory.entries.mapNotNull { category ->
+            val itemsForCat = tournamentPreferences.filter { pref ->
+                (categoryById[pref.tournamentId] ?: CompetitionCategory.EUROPEAN) == category
+            }
+            if (itemsForCat.isEmpty()) null else (category to itemsForCat)
+        }
+    }
+
     ModalBottomSheet(
         onDismissRequest = onDismiss,
-        containerColor = MetalCharcoal
+        containerColor = KickoffObsidianBlack
     ) {
         Column(
             modifier = Modifier
@@ -4380,18 +4529,18 @@ private fun CustomizeTeamsAndTournamentsSheet(
                 Column {
                     Text(
                         text = "Customize KickOff Arena",
-                        color = PaleGold,
+                        color = KickoffAlabasterIvory,
                         fontSize = 18.sp,
                         fontWeight = FontWeight.ExtraBold
                     )
                     Text(
                         text = "Manage your Country Zone, favorite teams and tournaments",
-                        color = Champagne,
+                        color = KickoffAgedParchment,
                         fontSize = 12.sp
                     )
                 }
                 IconButton(onClick = onDismiss) {
-                    Icon(Icons.Default.Close, contentDescription = "Close", tint = PaleGold)
+                    Icon(Icons.Default.Close, contentDescription = "Close", tint = KickoffAlabasterIvory)
                 }
             }
 
@@ -4414,7 +4563,7 @@ private fun CustomizeTeamsAndTournamentsSheet(
                 modifier = Modifier
                     .fillMaxWidth()
                     .clip(RoundedCornerShape(10.dp))
-                    .background(DarkGraphite)
+                    .background(KickoffCharcoalSlate)
                     .padding(4.dp),
                 horizontalArrangement = Arrangement.spacedBy(6.dp)
             ) {
@@ -4424,7 +4573,7 @@ private fun CustomizeTeamsAndTournamentsSheet(
                 ).forEachIndexed { index, title ->
                     val isSelected = activeTab == index
                     Surface(
-                        color = if (isSelected) ArenaPitchGreen else Color.Transparent,
+                        color = if (isSelected) KickoffTerracotta else Color.Transparent,
                         shape = RoundedCornerShape(8.dp),
                         modifier = Modifier
                             .weight(1f)
@@ -4433,7 +4582,7 @@ private fun CustomizeTeamsAndTournamentsSheet(
                     ) {
                         Text(
                             text = title,
-                            color = if (isSelected) DarkGraphite else PaleGold,
+                            color = if (isSelected) KickoffAlabasterIvory else KickoffAgedParchment,
                             fontSize = 12.sp,
                             fontWeight = FontWeight.ExtraBold,
                             textAlign = TextAlign.Center,
@@ -4453,28 +4602,28 @@ private fun CustomizeTeamsAndTournamentsSheet(
                     placeholder = {
                         Text(
                             text = "Search global teams to add (e.g., Wydad, Barcelona, Liverpool)...",
-                            color = Champagne.copy(alpha = 0.6f),
+                            color = KickoffAgedParchment.copy(alpha = 0.65f),
                             fontSize = 12.sp
                         )
                     },
                     leadingIcon = {
-                        Icon(Icons.Default.Search, contentDescription = null, tint = ArenaFloodlightLime)
+                        Icon(Icons.Default.Search, contentDescription = null, tint = KickoffTerracotta)
                     },
                     trailingIcon = {
                         if (searchQuery.isNotBlank()) {
                             IconButton(onClick = { onSearchQueryChange("") }) {
-                                Icon(Icons.Default.Close, contentDescription = "Clear", tint = Champagne)
+                                Icon(Icons.Default.Close, contentDescription = "Clear", tint = KickoffAgedParchment)
                             }
                         }
                     },
                     singleLine = true,
                     colors = OutlinedTextFieldDefaults.colors(
-                        focusedBorderColor = ArenaPitchGreen,
-                        unfocusedBorderColor = ChampagneSubtleBorder,
-                        focusedContainerColor = DarkGraphite,
-                        unfocusedContainerColor = DarkGraphite,
-                        focusedTextColor = PaleGold,
-                        unfocusedTextColor = PaleGold
+                        focusedBorderColor = KickoffTerracotta,
+                        unfocusedBorderColor = KickoffParchmentBorder,
+                        focusedContainerColor = KickoffCharcoalSlate,
+                        unfocusedContainerColor = KickoffCharcoalSlate,
+                        focusedTextColor = KickoffAlabasterIvory,
+                        unfocusedTextColor = KickoffAlabasterIvory
                     ),
                     shape = RoundedCornerShape(12.dp),
                     modifier = Modifier
@@ -4499,7 +4648,7 @@ private fun CustomizeTeamsAndTournamentsSheet(
                                         .padding(20.dp),
                                     contentAlignment = Alignment.Center
                                 ) {
-                                    CircularProgressIndicator(color = ArenaPitchGreen)
+                                    CircularProgressIndicator(color = KickoffTerracotta)
                                 }
                             }
                         } else {
@@ -4520,7 +4669,7 @@ private fun CustomizeTeamsAndTournamentsSheet(
                             item {
                                 Text(
                                     text = "No favorite teams saved yet. Use the search bar above to find and follow your favorite clubs.",
-                                    color = Champagne,
+                                    color = KickoffAgedParchment,
                                     fontSize = 12.sp,
                                     modifier = Modifier.padding(vertical = 16.dp)
                                 )
@@ -4528,9 +4677,9 @@ private fun CustomizeTeamsAndTournamentsSheet(
                         } else {
                             items(favoriteTeams, key = { "fav_${it.teamId}" }) { fav ->
                                 Surface(
-                                    color = DarkGraphite,
+                                    color = KickoffCharcoalSlate,
                                     shape = RoundedCornerShape(10.dp),
-                                    border = BorderStroke(0.8.dp, ArenaPitchGreen.copy(alpha = 0.45f)),
+                                    border = BorderStroke(0.8.dp, KickoffParchmentBorder),
                                     modifier = Modifier.fillMaxWidth()
                                 ) {
                                     Row(
@@ -4550,14 +4699,14 @@ private fun CustomizeTeamsAndTournamentsSheet(
                                             Column {
                                                 Text(
                                                     text = fav.teamName,
-                                                    color = PaleGold,
+                                                    color = KickoffAlabasterIvory,
                                                     fontSize = 14.sp,
                                                     fontWeight = FontWeight.Bold
                                                 )
                                                 if (fav.primaryLeague.isNotBlank()) {
                                                     Text(
                                                         text = "${fav.country} • ${fav.primaryLeague}",
-                                                        color = Champagne,
+                                                        color = KickoffAgedParchment,
                                                         fontSize = 11.sp
                                                     )
                                                 }
@@ -4570,7 +4719,7 @@ private fun CustomizeTeamsAndTournamentsSheet(
                                             Icon(
                                                 imageVector = Icons.Default.Close,
                                                 contentDescription = "Remove ${fav.teamName}",
-                                                tint = LiveRed
+                                                tint = KickoffTerracotta
                                             )
                                         }
                                     }
@@ -4580,7 +4729,7 @@ private fun CustomizeTeamsAndTournamentsSheet(
                     }
                 }
             } else {
-                // Tab 1: Tournaments Visibility & Pinning
+                // Tab 1: Tournaments Visibility & Pinning grouped by the 3 Competition Categories
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.SpaceBetween,
@@ -4588,11 +4737,11 @@ private fun CustomizeTeamsAndTournamentsSheet(
                 ) {
                     Text(
                         text = "Toggle tournaments or pin them to the top",
-                        color = Champagne,
+                        color = KickoffAgedParchment,
                         fontSize = 12.sp
                     )
                     TextButton(onClick = onEnableAllTournaments) {
-                        Text("Enable All", color = ArenaFloodlightLime, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                        Text("Enable All", color = KickoffTerracotta, fontSize = 12.sp, fontWeight = FontWeight.Bold)
                     }
                 }
 
@@ -4602,67 +4751,88 @@ private fun CustomizeTeamsAndTournamentsSheet(
                         .heightIn(max = 360.dp),
                     verticalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
-                    items(tournamentPreferences, key = { it.tournamentId }) { pref ->
-                        Surface(
-                            color = DarkGraphite,
-                            shape = RoundedCornerShape(10.dp),
-                            border = BorderStroke(
-                                width = 0.8.dp,
-                                color = if (pref.isPinned) ArenaPitchGreen else ChampagneSubtleBorder
-                            ),
-                            modifier = Modifier.fillMaxWidth()
-                        ) {
-                            Row(
+                    groupedTournamentsByCategory.forEach { (category, prefsForCategory) ->
+                        item(key = "cat_header_${category.name}") {
+                            Surface(
+                                color = KickoffImperialNavy,
+                                shape = RoundedCornerShape(8.dp),
+                                border = BorderStroke(0.8.dp, KickoffParchmentBorder),
                                 modifier = Modifier
                                     .fillMaxWidth()
-                                    .padding(horizontal = 12.dp, vertical = 8.dp),
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.SpaceBetween
+                                    .padding(top = 4.dp)
+                            ) {
+                                Text(
+                                    text = category.displayTitle.uppercase(),
+                                    color = KickoffAgedParchment,
+                                    fontSize = 10.5.sp,
+                                    fontWeight = FontWeight.ExtraBold,
+                                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp)
+                                )
+                            }
+                        }
+
+                        items(prefsForCategory, key = { it.tournamentId }) { pref ->
+                            Surface(
+                                color = KickoffCharcoalSlate,
+                                shape = RoundedCornerShape(10.dp),
+                                border = BorderStroke(
+                                    width = 0.8.dp,
+                                    color = if (pref.isPinned) KickoffTerracotta else KickoffParchmentBorder
+                                ),
+                                modifier = Modifier.fillMaxWidth()
                             ) {
                                 Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(horizontal = 12.dp, vertical = 8.dp),
                                     verticalAlignment = Alignment.CenterVertically,
-                                    modifier = Modifier.weight(1f)
+                                    horizontalArrangement = Arrangement.SpaceBetween
                                 ) {
-                                    IconButton(
-                                        onClick = { onToggleTournamentPinned(pref.tournamentId) },
-                                        modifier = Modifier.size(32.dp)
+                                    Row(
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        modifier = Modifier.weight(1f)
                                     ) {
-                                        Icon(
-                                            imageVector = Icons.Default.PushPin,
-                                            contentDescription = "Pin ${pref.tournamentName}",
-                                            tint = if (pref.isPinned) ArenaTrophyGold else ChampagneMuted,
-                                            modifier = Modifier.size(16.dp)
-                                        )
+                                        IconButton(
+                                            onClick = { onToggleTournamentPinned(pref.tournamentId) },
+                                            modifier = Modifier.size(32.dp)
+                                        ) {
+                                            Icon(
+                                                imageVector = Icons.Default.PushPin,
+                                                contentDescription = "Pin ${pref.tournamentName}",
+                                                tint = if (pref.isPinned) KickoffTerracotta else KickoffAgedParchment.copy(alpha = 0.65f),
+                                                modifier = Modifier.size(16.dp)
+                                            )
+                                        }
+                                        Spacer(modifier = Modifier.width(6.dp))
+                                        Column {
+                                            Text(
+                                                text = pref.tournamentName,
+                                                color = KickoffAlabasterIvory,
+                                                fontSize = 13.sp,
+                                                fontWeight = FontWeight.Bold
+                                            )
+                                            Text(
+                                                text = pref.countryOrRegion,
+                                                color = KickoffAgedParchment,
+                                                fontSize = 11.sp
+                                            )
+                                        }
                                     }
-                                    Spacer(modifier = Modifier.width(6.dp))
-                                    Column {
-                                        Text(
-                                            text = pref.tournamentName,
-                                            color = PaleGold,
-                                            fontSize = 13.sp,
-                                            fontWeight = FontWeight.Bold
-                                        )
-                                        Text(
-                                            text = pref.countryOrRegion,
-                                            color = Champagne,
-                                            fontSize = 11.sp
-                                        )
-                                    }
-                                }
 
-                                Switch(
-                                    checked = pref.isEnabled,
-                                    onCheckedChange = { enabled ->
-                                        onSetTournamentEnabled(pref.tournamentId, enabled)
-                                    },
-                                    colors = SwitchDefaults.colors(
-                                        checkedThumbColor = DarkGraphite,
-                                        checkedTrackColor = ArenaPitchGreen,
-                                        uncheckedThumbColor = Champagne,
-                                        uncheckedTrackColor = MetalCharcoal
-                                    ),
-                                    modifier = Modifier.testTag("toggle_tournament_${pref.tournamentId}")
-                                )
+                                    Switch(
+                                        checked = pref.isEnabled,
+                                        onCheckedChange = { enabled ->
+                                            onSetTournamentEnabled(pref.tournamentId, enabled)
+                                        },
+                                        colors = SwitchDefaults.colors(
+                                            checkedThumbColor = KickoffAlabasterIvory,
+                                            checkedTrackColor = KickoffTerracotta,
+                                            uncheckedThumbColor = KickoffAgedParchment,
+                                            uncheckedTrackColor = KickoffObsidianBlack
+                                        ),
+                                        modifier = Modifier.testTag("toggle_tournament_${pref.tournamentId}")
+                                    )
+                                }
                             }
                         }
                     }
@@ -4699,7 +4869,7 @@ private fun BeinChannelMatcherBottomSheet(
 
     ModalBottomSheet(
         onDismissRequest = onDismiss,
-        containerColor = MetalCharcoal
+        containerColor = KickoffObsidianBlack
     ) {
         Column(
             modifier = Modifier
@@ -4735,7 +4905,7 @@ private fun BeinChannelMatcherBottomSheet(
                     Column {
                         Text(
                             text = "${state.match.homeTeamName} vs ${state.match.awayTeamName}",
-                            color = PaleGold,
+                            color = KickoffAlabasterIvory,
                             fontSize = 15.sp,
                             fontWeight = FontWeight.ExtraBold,
                             maxLines = 1,
@@ -4743,14 +4913,14 @@ private fun BeinChannelMatcherBottomSheet(
                         )
                         Text(
                             text = "${state.resolvedProviderName} • ${state.match.tournamentName}",
-                            color = ArenaFloodlightLime,
+                            color = KickoffAgedParchment,
                             fontSize = 11.sp,
                             fontWeight = FontWeight.SemiBold
                         )
                     }
                 }
                 IconButton(onClick = onDismiss) {
-                    Icon(Icons.Default.Close, contentDescription = "Close", tint = PaleGold)
+                    Icon(Icons.Default.Close, contentDescription = "Close", tint = KickoffAlabasterIvory)
                 }
             }
 
@@ -4759,7 +4929,7 @@ private fun BeinChannelMatcherBottomSheet(
                 Spacer(modifier = Modifier.height(10.dp))
                 Text(
                     text = "MATCH TV CHANNELS (★ = SAVED IN YOUR FAVORITES)",
-                    color = ChampagneMuted,
+                    color = KickoffAgedParchment,
                     fontSize = 10.sp,
                     fontWeight = FontWeight.ExtraBold
                 )
@@ -4778,7 +4948,7 @@ private fun BeinChannelMatcherBottomSheet(
                                     Icon(
                                         imageVector = Icons.Default.Star,
                                         contentDescription = "In Favorites",
-                                        tint = if (isSelected) DarkGraphite else AmberGold,
+                                        tint = if (isSelected) KickoffAlabasterIvory else KickoffTerracotta,
                                         modifier = Modifier.size(13.dp)
                                     )
                                 }
@@ -4793,15 +4963,15 @@ private fun BeinChannelMatcherBottomSheet(
                             border = FilterChipDefaults.filterChipBorder(
                                 enabled = true,
                                 selected = isSelected,
-                                borderColor = if (isSavedInFavs) AmberGold else ChampagneSubtleBorder,
-                                selectedBorderColor = ArenaPitchGreen,
+                                borderColor = if (isSavedInFavs) KickoffTerracotta else KickoffParchmentBorder,
+                                selectedBorderColor = KickoffTerracotta,
                                 borderWidth = if (isSavedInFavs) 1.1.dp else 0.8.dp
                             ),
                             colors = FilterChipDefaults.filterChipColors(
-                                selectedContainerColor = ArenaPitchGreen,
-                                selectedLabelColor = DarkGraphite,
-                                containerColor = if (isSavedInFavs) AmberGold.copy(alpha = 0.12f) else DarkGraphite,
-                                labelColor = if (isSavedInFavs) AmberGold else PaleGold
+                                selectedContainerColor = KickoffTerracotta,
+                                selectedLabelColor = KickoffAlabasterIvory,
+                                containerColor = if (isSavedInFavs) KickoffImperialNavy else KickoffCharcoalSlate,
+                                labelColor = if (isSavedInFavs) KickoffAlabasterIvory else KickoffAgedParchment
                             )
                         )
                     }
@@ -4818,16 +4988,16 @@ private fun BeinChannelMatcherBottomSheet(
                             .height(120.dp),
                         contentAlignment = Alignment.Center
                     ) {
-                        CircularProgressIndicator(color = ArenaPitchGreen)
+                        CircularProgressIndicator(color = KickoffTerracotta)
                     }
                 }
 
                 state.requiresAddToFavoritesPrompt -> {
                     // Case B — No Match Found in Favorites (Tier 1), with Smart Tier 2 Playlist Catalog Candidates
                     Surface(
-                        color = ArenaTurfDark,
+                        color = KickoffCharcoalSlate,
                         shape = RoundedCornerShape(14.dp),
-                        border = BorderStroke(1.2.dp, AmberGold),
+                        border = BorderStroke(1.2.dp, KickoffTerracotta),
                         modifier = Modifier
                             .fillMaxWidth()
                             .testTag("add_channel_to_favorites_prompt_card")
@@ -4841,13 +5011,13 @@ private fun BeinChannelMatcherBottomSheet(
                             Icon(
                                 imageVector = Icons.Default.StarBorder,
                                 contentDescription = null,
-                                tint = AmberGold,
+                                tint = KickoffTerracotta,
                                 modifier = Modifier.size(24.dp)
                             )
                             Spacer(modifier = Modifier.height(6.dp))
                             Text(
                                 text = state.missingFavoriteNotificationMessage,
-                                color = PaleGold,
+                                color = KickoffAlabasterIvory,
                                 fontSize = 13.sp,
                                 fontWeight = FontWeight.ExtraBold,
                                 textAlign = TextAlign.Center
@@ -4859,17 +5029,17 @@ private fun BeinChannelMatcherBottomSheet(
                                 Spacer(modifier = Modifier.height(8.dp))
                                 OutlinedButton(
                                     onClick = { onSelectMenaChannelOption(firstAvailableFavChannel) },
-                                    border = BorderStroke(1.dp, ArenaPitchGreen),
+                                    border = BorderStroke(1.dp, KickoffTerracotta),
                                     colors = ButtonDefaults.outlinedButtonColors(
-                                        containerColor = ArenaPitchGreen.copy(alpha = 0.14f),
-                                        contentColor = ArenaFloodlightLime
+                                        containerColor = KickoffImperialNavy,
+                                        contentColor = KickoffAlabasterIvory
                                     ),
                                     modifier = Modifier.fillMaxWidth()
                                 ) {
                                     Icon(
                                         imageVector = Icons.Default.Star,
                                         contentDescription = null,
-                                        tint = AmberGold,
+                                        tint = KickoffTerracotta,
                                         modifier = Modifier.size(15.dp)
                                     )
                                     Spacer(modifier = Modifier.width(6.dp))
@@ -4889,8 +5059,8 @@ private fun BeinChannelMatcherBottomSheet(
                                     Button(
                                         onClick = onConnectPlaylist,
                                         colors = ButtonDefaults.buttonColors(
-                                            containerColor = ArenaPitchGreen,
-                                            contentColor = DarkGraphite
+                                            containerColor = KickoffTerracotta,
+                                            contentColor = KickoffAlabasterIvory
                                         ),
                                         modifier = Modifier
                                             .weight(1f)
@@ -4901,17 +5071,17 @@ private fun BeinChannelMatcherBottomSheet(
                                 } else {
                                     OutlinedButton(
                                         onClick = onOpenFavoritesScreen,
-                                        border = BorderStroke(1.dp, AmberGold),
+                                        border = BorderStroke(1.dp, KickoffParchmentBorder),
                                         modifier = Modifier.weight(1f)
                                     ) {
-                                        Text("Open Favorites", color = PaleGold, fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                                        Text("Open Favorites", color = KickoffAlabasterIvory, fontWeight = FontWeight.Bold, fontSize = 12.sp)
                                     }
                                 }
                                 Button(
                                     onClick = onDismiss,
                                     colors = ButtonDefaults.buttonColors(
-                                        containerColor = AmberGold,
-                                        contentColor = DarkGraphite
+                                        containerColor = KickoffTerracotta,
+                                        contentColor = KickoffAlabasterIvory
                                     ),
                                     modifier = Modifier
                                         .weight(1f)
@@ -4928,7 +5098,7 @@ private fun BeinChannelMatcherBottomSheet(
                         Spacer(modifier = Modifier.height(12.dp))
                         Text(
                             text = "FOUND IN YOUR PLAYLIST CATALOG (${state.livePlaylistCandidates.size}) — 1-TAP WATCH & PIN",
-                            color = ArenaFloodlightLime,
+                            color = KickoffAgedParchment,
                             fontSize = 10.5.sp,
                             fontWeight = FontWeight.ExtraBold
                         )
@@ -4960,9 +5130,9 @@ private fun BeinChannelMatcherBottomSheet(
                                     }
                                 }
                                 Surface(
-                                    color = ArenaTurfElevated,
+                                    color = KickoffCharcoalSlate,
                                     shape = RoundedCornerShape(12.dp),
-                                    border = BorderStroke(1.dp, KickoffTropicalTeal.copy(alpha = 0.7f)),
+                                    border = BorderStroke(1.dp, KickoffParchmentBorder),
                                     modifier = Modifier
                                         .fillMaxWidth()
                                         .clickable { onWatchAndPinCatalogStream(stream) }
@@ -4997,7 +5167,7 @@ private fun BeinChannelMatcherBottomSheet(
                                                 Row(verticalAlignment = Alignment.CenterVertically) {
                                                     Text(
                                                         text = stream.name,
-                                                        color = PaleGold,
+                                                        color = KickoffAlabasterIvory,
                                                         fontSize = 12.5.sp,
                                                         fontWeight = FontWeight.Bold,
                                                         maxLines = 1,
@@ -5006,13 +5176,13 @@ private fun BeinChannelMatcherBottomSheet(
                                                     )
                                                     Spacer(modifier = Modifier.width(6.dp))
                                                     Surface(
-                                                        color = KickoffTropicalTeal.copy(alpha = 0.20f),
+                                                        color = KickoffImperialNavy,
                                                         shape = RoundedCornerShape(4.dp),
-                                                        border = BorderStroke(0.6.dp, KickoffTropicalTeal)
+                                                        border = BorderStroke(0.6.dp, KickoffTerracotta)
                                                     ) {
                                                         Text(
                                                             text = qualityBadge,
-                                                            color = KickoffPeachCream,
+                                                            color = KickoffAlabasterIvory,
                                                             fontSize = 8.5.sp,
                                                             fontWeight = FontWeight.ExtraBold,
                                                             modifier = Modifier.padding(horizontal = 5.dp, vertical = 1.dp)
@@ -5025,13 +5195,13 @@ private fun BeinChannelMatcherBottomSheet(
                                                     horizontalArrangement = Arrangement.spacedBy(6.dp)
                                                 ) {
                                                     Surface(
-                                                        color = ArenaPitchGreen.copy(alpha = 0.16f),
+                                                        color = KickoffObsidianBlack,
                                                         shape = RoundedCornerShape(4.dp),
-                                                        border = BorderStroke(0.5.dp, ArenaPitchGreen.copy(alpha = 0.65f))
+                                                        border = BorderStroke(0.5.dp, KickoffParchmentBorder)
                                                     ) {
                                                         Text(
                                                             text = pingLabel,
-                                                            color = ArenaFloodlightLime,
+                                                            color = KickoffAgedParchment,
                                                             fontSize = 9.sp,
                                                             fontWeight = FontWeight.Bold,
                                                             modifier = Modifier.padding(horizontal = 5.dp, vertical = 1.dp)
@@ -5039,7 +5209,7 @@ private fun BeinChannelMatcherBottomSheet(
                                                     }
                                                     Text(
                                                         text = "Auto-saves to Favorites",
-                                                        color = Champagne,
+                                                        color = KickoffAgedParchment,
                                                         fontSize = 9.5.sp,
                                                         maxLines = 1,
                                                         overflow = TextOverflow.Ellipsis
@@ -5051,7 +5221,7 @@ private fun BeinChannelMatcherBottomSheet(
                                         Spacer(modifier = Modifier.width(8.dp))
 
                                         Surface(
-                                            color = ArenaPitchGreen,
+                                            color = KickoffTerracotta,
                                             shape = RoundedCornerShape(8.dp),
                                             modifier = Modifier
                                                 .clickable { onWatchAndPinCatalogStream(stream) }
@@ -5063,7 +5233,7 @@ private fun BeinChannelMatcherBottomSheet(
                                             ) {
                                                 Text(
                                                     text = "▶ Watch & Pin to Favorites",
-                                                    color = DarkGraphite,
+                                                    color = KickoffAlabasterIvory,
                                                     fontSize = 10.sp,
                                                     fontWeight = FontWeight.ExtraBold
                                                 )
@@ -5079,9 +5249,9 @@ private fun BeinChannelMatcherBottomSheet(
                 else -> {
                     // Case A (Multiple versions of the matched channel in Favorites, e.g., FHD and HD)
                     Surface(
-                        color = ArenaTurfElevated,
+                        color = KickoffImperialNavy,
                         shape = RoundedCornerShape(10.dp),
-                        border = BorderStroke(1.dp, ArenaPitchGreen),
+                        border = BorderStroke(1.dp, KickoffTerracotta),
                         modifier = Modifier.fillMaxWidth()
                     ) {
                         Row(
@@ -5095,13 +5265,13 @@ private fun BeinChannelMatcherBottomSheet(
                                 Icon(
                                     imageVector = Icons.Default.Verified,
                                     contentDescription = null,
-                                    tint = ArenaFloodlightLime,
+                                    tint = KickoffTerracotta,
                                     modifier = Modifier.size(16.dp)
                                 )
                                 Spacer(modifier = Modifier.width(6.dp))
                                 Text(
                                     text = "Matched in Your Favorites (${state.favoriteMatchedStreams.size})",
-                                    color = PaleGold,
+                                    color = KickoffAlabasterIvory,
                                     fontSize = 12.sp,
                                     fontWeight = FontWeight.ExtraBold
                                 )
@@ -5109,8 +5279,8 @@ private fun BeinChannelMatcherBottomSheet(
                             Button(
                                 onClick = { onPlayMatchedFavoriteStream(state.favoriteMatchedStreams.first()) },
                                 colors = ButtonDefaults.buttonColors(
-                                    containerColor = ArenaPitchGreen,
-                                    contentColor = DarkGraphite
+                                    containerColor = KickoffTerracotta,
+                                    contentColor = KickoffAlabasterIvory
                                 ),
                                 contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp)
                             ) {
@@ -5137,9 +5307,9 @@ private fun BeinChannelMatcherBottomSheet(
                                 else -> "FAV"
                             }
                             Surface(
-                                color = ArenaTurfDark,
+                                color = KickoffCharcoalSlate,
                                 shape = RoundedCornerShape(12.dp),
-                                border = BorderStroke(1.2.dp, AmberGold),
+                                border = BorderStroke(1.2.dp, KickoffTerracotta),
                                 modifier = Modifier
                                     .fillMaxWidth()
                                     .clickable { onPlayMatchedFavoriteStream(stream) }
@@ -5174,7 +5344,7 @@ private fun BeinChannelMatcherBottomSheet(
                                             Row(verticalAlignment = Alignment.CenterVertically) {
                                                 Text(
                                                     text = stream.name,
-                                                    color = PaleGold,
+                                                    color = KickoffAlabasterIvory,
                                                     fontSize = 13.sp,
                                                     fontWeight = FontWeight.Bold,
                                                     maxLines = 1,
@@ -5183,13 +5353,13 @@ private fun BeinChannelMatcherBottomSheet(
                                                 )
                                                 Spacer(modifier = Modifier.width(6.dp))
                                                 Surface(
-                                                    color = ArenaPitchGreen.copy(alpha = 0.22f),
+                                                    color = KickoffImperialNavy,
                                                     shape = RoundedCornerShape(4.dp),
-                                                    border = BorderStroke(0.6.dp, ArenaPitchGreen)
+                                                    border = BorderStroke(0.6.dp, KickoffTerracotta)
                                                 ) {
                                                     Text(
                                                         text = qualityBadge,
-                                                        color = ArenaFloodlightLime,
+                                                        color = KickoffAlabasterIvory,
                                                         fontSize = 9.sp,
                                                         fontWeight = FontWeight.ExtraBold,
                                                         modifier = Modifier.padding(horizontal = 5.dp, vertical = 1.dp)
@@ -5198,7 +5368,7 @@ private fun BeinChannelMatcherBottomSheet(
                                             }
                                             Text(
                                                 text = "★ Saved in Favorites • Tap to Watch Immediately",
-                                                color = AmberGold,
+                                                color = KickoffAgedParchment,
                                                 fontSize = 10.sp
                                             )
                                         }
@@ -5207,7 +5377,7 @@ private fun BeinChannelMatcherBottomSheet(
                                     Spacer(modifier = Modifier.width(8.dp))
 
                                     Surface(
-                                        color = ArenaPitchGreen,
+                                        color = KickoffTerracotta,
                                         shape = RoundedCornerShape(8.dp),
                                         modifier = Modifier.clickable { onPlayMatchedFavoriteStream(stream) }
                                     ) {
@@ -5218,13 +5388,13 @@ private fun BeinChannelMatcherBottomSheet(
                                             Icon(
                                                 imageVector = Icons.Default.PlayArrow,
                                                 contentDescription = "Watch ${stream.name}",
-                                                tint = DarkGraphite,
+                                                tint = KickoffAlabasterIvory,
                                                 modifier = Modifier.size(14.dp)
                                             )
                                             Spacer(modifier = Modifier.width(3.dp))
                                             Text(
                                                 text = "Watch",
-                                                color = DarkGraphite,
+                                                color = KickoffAlabasterIvory,
                                                 fontSize = 11.sp,
                                                 fontWeight = FontWeight.ExtraBold
                                             )

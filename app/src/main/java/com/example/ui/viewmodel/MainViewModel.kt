@@ -8,6 +8,7 @@ import com.example.data.model.FavoriteTeamEntity
 import com.example.data.model.PlaylistEntity
 import com.example.data.model.StreamEntity
 import com.example.data.model.TournamentPreferenceEntity
+import com.example.data.repository.CompetitionCategory
 import com.example.data.repository.FootballMatch
 import com.example.data.repository.FootballRepository
 import com.example.data.repository.FootballTeam
@@ -220,6 +221,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val _selectedTournamentFilter = MutableStateFlow("ALL")
     val selectedTournamentFilter: StateFlow<String> = _selectedTournamentFilter.asStateFlow()
 
+    private val _selectedCompetitionCategory = MutableStateFlow<CompetitionCategory?>(null)
+    val selectedCompetitionCategory: StateFlow<CompetitionCategory?> = _selectedCompetitionCategory.asStateFlow()
+
     private val _collapsedTournamentIds = MutableStateFlow<Set<String>>(emptySet())
     val collapsedTournamentIds: StateFlow<Set<String>> = _collapsedTournamentIds.asStateFlow()
 
@@ -316,6 +320,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
         viewModelScope.launch {
             runCatching { repository.purgeAllAdultContent() }
+            runCatching { footballRepository.internationalRankingResolver.syncInternationalRankingsIfNeeded() }
             footballRepository.ensureDefaultTournamentsInitialized()
             refreshFootballSchedules()
             startConditionalLivePolling()
@@ -761,6 +766,26 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun selectTournamentFilter(filterId: String) {
         _selectedTournamentFilter.value = filterId
+        val activePillar = _selectedCompetitionCategory.value
+        if (activePillar != null && filterId != "ALL" && filterId != "LIVE" && filterId != "MY_TEAMS") {
+            val catalogItem = FootballRepository.ALL_TOURNAMENTS.firstOrNull { it.tournamentId == filterId }
+            if (catalogItem != null && catalogItem.category != activePillar) {
+                _selectedCompetitionCategory.value = null
+            }
+        }
+    }
+
+    fun selectCompetitionCategory(category: CompetitionCategory?) {
+        _selectedCompetitionCategory.value = category
+        if (category != null) {
+            val currentFilter = _selectedTournamentFilter.value
+            if (currentFilter != "ALL" && currentFilter != "LIVE" && currentFilter != "MY_TEAMS") {
+                val catalogItem = FootballRepository.ALL_TOURNAMENTS.firstOrNull { it.tournamentId == currentFilter }
+                if (catalogItem == null || catalogItem.category != category) {
+                    _selectedTournamentFilter.value = "ALL"
+                }
+            }
+        }
     }
 
     fun toggleTournamentCollapsed(tournamentId: String) {

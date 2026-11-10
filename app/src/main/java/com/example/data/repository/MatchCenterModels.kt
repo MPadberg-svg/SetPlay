@@ -919,7 +919,12 @@ class MatchCenterEnricher(
             isPlayedOrLive = isPlayedOrLive
         )
         val (homeForm, awayForm, h2hList) = buildH2HAndForm(match, raw?.espnSummaryJson, seed)
-        val standings = buildLeagueStandings(match, raw?.espnSummaryJson, raw?.tsdbTableJson, seed)
+        val baseStandings = buildLeagueStandings(match, raw?.espnSummaryJson, raw?.tsdbTableJson, seed)
+        val standings = if (match.status == MatchStatus.LIVE || match.status == MatchStatus.HALFTIME) {
+            computeLiveInPlayStandings(baseStandings, match)
+        } else {
+            baseStandings
+        }
         val menaGuide = buildMenaBroadcastGuide(match, seed, countryZone, raw?.sofascoreTvChannels.orEmpty())
         val momentumPoints = buildMomentumPointsForMatch(
             match = match,
@@ -1630,25 +1635,33 @@ class MatchCenterEnricher(
             }
         }
 
-        val rawHomeStarting = mapFormationToPitchNodesFromEntries(
-            teamKey = "home_${match.matchId}",
-            formation = homeProfile.formation,
-            entries = homeEntries,
-            teamSquad = tsdbHomeSquad,
-            goalsScored = homeGoals,
-            seed = seed,
-            isPlayedOrLive = isPlayedOrLive
-        )
+        val rawHomeStarting = if (homeEntries.isEmpty()) {
+            emptyList()
+        } else {
+            mapFormationToPitchNodesFromEntries(
+                teamKey = "home_${match.matchId}",
+                formation = homeProfile.formation,
+                entries = homeEntries,
+                teamSquad = tsdbHomeSquad,
+                goalsScored = homeGoals,
+                seed = seed,
+                isPlayedOrLive = isPlayedOrLive
+            )
+        }
 
-        val rawAwayStarting = mapFormationToPitchNodesFromEntries(
-            teamKey = "away_${match.matchId}",
-            formation = awayProfile.formation,
-            entries = awayEntries,
-            teamSquad = tsdbAwaySquad,
-            goalsScored = awayGoals,
-            seed = seed + 31,
-            isPlayedOrLive = isPlayedOrLive
-        )
+        val rawAwayStarting = if (awayEntries.isEmpty()) {
+            emptyList()
+        } else {
+            mapFormationToPitchNodesFromEntries(
+                teamKey = "away_${match.matchId}",
+                formation = awayProfile.formation,
+                entries = awayEntries,
+                teamSquad = tsdbAwaySquad,
+                goalsScored = awayGoals,
+                seed = seed + 31,
+                isPlayedOrLive = isPlayedOrLive
+            )
+        }
 
         val (homeStarting, awayStarting, homeAvg, awayAvg) = finalizeMvpAndTeamRatings(
             rawHomeStarting,
@@ -3998,35 +4011,13 @@ class MatchCenterEnricher(
                 ),
                 missingPlayerName = "Reece James"
             )
-            else -> {
-                val formation = if (isHome) "4-3-3" else "4-2-3-1"
-                val rosterPoolA = listOf(
-                    "Lucas Chevalier" to 1,
-                    "Nuno Tavares" to 3, "Bafodé Diakité" to 4, "Alexsandro Ribeiro" to 5, "Tiago Santos" to 2,
-                    "Benjamin André" to 21, "Angel Gomes" to 8, "Ayyoub Bouaddi" to 10,
-                    "Edon Zhegrova" to 23, "Jonathan David" to 9, "Osame Sahraoui" to 11
-                )
-                val rosterPoolB = listOf(
-                    "Diogo Costa" to 99,
-                    "Francisco Moura" to 74, "Nehuén Pérez" to 24, "Tiago Djaló" to 3, "Martim Fernandes" to 52,
-                    "Alan Varela" to 22, "Nico González" to 16,
-                    "Galeno" to 13, "Fábio Vieira" to 10, "Pepê" to 11,
-                    "Samu Omorodion" to 9
-                )
-                ClubSquadTemplate(
-                    formation = formation,
-                    coachName = if (isHome) "Marco Rose" else "Bruno Genesio",
-                    startingXI = if (isHome) rosterPoolA else rosterPoolB,
-                    bench = listOf(
-                        Triple("Rémy Cabella", 14, "CAM"),
-                        Triple("Hákon Haraldsson", 17, "LW"),
-                        Triple("Thomas Meunier", 12, "RB"),
-                        Triple("Aïssa Mandi", 15, "CB"),
-                        Triple("Vito Mannone", 16, "GK")
-                    ),
-                    missingPlayerName = "Nabil Bentaleb"
-                )
-            }
+            else -> ClubSquadTemplate(
+                formation = if (isHome) "4-3-3" else "4-2-3-1",
+                coachName = "Head Coach",
+                startingXI = emptyList(),
+                bench = emptyList(),
+                missingPlayerName = ""
+            )
         }
     }
 

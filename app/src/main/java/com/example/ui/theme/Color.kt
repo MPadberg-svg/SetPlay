@@ -22,15 +22,31 @@ val CatchupGreen = Color(0xFF2EBD85)
 // 5-Section Bespoke Brand Kit Palettes (From User's 5 Section Color Sheets)
 // =========================================================================
 
-// 1. KICKOFF ARENA PALETTE (Kickoff-colors.jpg: #0081A7, #00AFB9, #FED9B7, #F07167)
-val KickoffCeruleanBlue = Color(0xFF0081A7)  // #0081A7 — Primary Cerulean Ocean Blue
-val KickoffTropicalTeal = Color(0xFF00AFB9)  // #00AFB9 — Vibrant Tropical Teal-Cyan
-val KickoffPeachCream = Color(0xFFFED9B7)    // #FED9B7 — Warm Peach-Champagne highlight & badge text
-val KickoffCoralRed = Color(0xFFF07167)      // #F07167 — Vibrant Coral-Red live & action accent
-// Dark ocean-stadium companion surfaces that preserve SetPlay's dark luxury DNA
-val KickoffOceanBase = Color(0xFF071A24)
-val KickoffOceanSurface = Color(0xFF0D2633)
-val KickoffOceanElevated = Color(0xFF133447)
+// 1. KICKOFF ARENA PALETTE (Legacy tokens preserved for backward compatibility + Official 6-Color Architectural Palette)
+val KickoffCeruleanBlue = Color(0xFF0081A7)  // #0081A7 — Legacy Primary Cerulean Ocean Blue
+val KickoffTropicalTeal = Color(0xFF00AFB9)  // #00AFB9 — Legacy Vibrant Tropical Teal-Cyan
+val KickoffPeachCream = Color(0xFFFED9B7)    // #FED9B7 — Legacy Warm Peach-Champagne highlight & badge text
+val KickoffCoralRed = Color(0xFFF07167)      // #F07167 — Legacy Vibrant Coral-Red live & action accent
+
+// Official Kickoff 6-Color Architectural Palette
+val KickoffTerracotta = Color(0xFFD9541E)       // #D9541E — Burnt Terracotta / Signal Orange (Live badges, primary CTAs, active pillar, focus rings)
+val KickoffImperialNavy = Color(0xFF0F1B3D)     // #0F1B3D — Deep Royal Imperial Navy (Hero match cards, active day capsule, competition group headers, 2D pitch)
+val KickoffObsidianBlack = Color(0xFF111111)    // #111111 — Obsidian Carbon Black (Primary screen canvas, modal backdrop, recessed scorebox wells)
+val KickoffAlabasterIvory = Color(0xFFF3EEE3)   // #F3EEE3 — Warm Alabaster Ivory (Primary high-contrast typography, team names, live tabular scores)
+val KickoffAgedParchment = Color(0xFFD8CBB3)    // #D8CBB3 — Aged Parchment / Warm Sand (Secondary metadata, TV channel pills, kickoff times, subtle borders)
+val KickoffCharcoalSlate = Color(0xFF1E1E1C)    // #1E1E1C — Warm Charcoal Slate (Match row cards, elevated containers, filter pills, bottom sheets)
+
+// Controlled Shade & Alpha Derivations
+val KickoffNavyElevated = Color(0xFF162654)     // Elevated Imperial Navy for hero gradients & pitch stripes
+val KickoffCharcoalElevated = Color(0xFF272724) // Elevated Charcoal for inner pills & unselected controls
+val KickoffTerracottaGlow = Color(0x33D9541E)   // 20% #D9541E for live match card border aura
+val KickoffParchmentBorder = Color(0x2ED8CBB3)  // 18% #D8CBB3 for crisp 0.8dp architectural borders
+val KickoffParchmentMuted = Color(0xB3D8CBB3)   // 70% #D8CBB3 for secondary captions
+
+// Dark ocean-stadium companion surfaces mapped to Official 6-Color Architectural Palette
+val KickoffOceanBase = KickoffObsidianBlack
+val KickoffOceanSurface = KickoffCharcoalSlate
+val KickoffOceanElevated = KickoffImperialNavy
 
 // 2. LIVE TV PALETTE (TV-colors.jpg: #1F313B, #383852, #784259, #B94E56, #BE4039, #683536)
 val TvMidnightSlate = Color(0xFF1F313B)      // #1F313B — Deep Midnight Slate-Navy background base
@@ -82,12 +98,12 @@ val SeriesJadeAccent = Color(0xFF2EC4B6)
 val SeriesDeepVault = SeriesForestSurface
 val SeriesVaultGold = SeriesIceAqua
 
-// KickOff Arena tokens mapped to the new KickOff Cerulean/Teal/Peach/Coral palette
-val ArenaPitchGreen = KickoffTropicalTeal
-val ArenaTurfDark = KickoffOceanSurface
-val ArenaTurfElevated = KickoffOceanElevated
-val ArenaFloodlightLime = KickoffPeachCream
-val ArenaTrophyGold = KickoffCoralRed
+// KickOff Arena tokens mapped to the Official 6-Color Architectural Palette
+val ArenaPitchGreen = KickoffTerracotta
+val ArenaTurfDark = KickoffCharcoalSlate
+val ArenaTurfElevated = KickoffImperialNavy
+val ArenaFloodlightLime = KickoffAlabasterIvory
+val ArenaTrophyGold = KickoffAgedParchment
 
 // MENA Sports Broadcaster Accents
 val MenaBeinPurple = Color(0xFF5C2D91)

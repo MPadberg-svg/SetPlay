@@ -132,6 +132,16 @@ data class FootballTeam(
     val primaryLeague: String
 )
 
+enum class CompetitionCategory(
+    val id: String,
+    val displayTitle: String,
+    val shortTitle: String
+) {
+    EUROPEAN("EUROPEAN", "European Competitions", "European"),
+    AFRICAN_ARAB("AFRICAN_ARAB", "African & Arab Competitions", "African & Arab"),
+    INTERNATIONAL("INTERNATIONAL", "International Fixtures", "International")
+}
+
 data class TournamentCatalogItem(
     val tournamentId: String,
     val name: String,
@@ -141,7 +151,8 @@ data class TournamentCatalogItem(
     val primaryMenaProvider: String,
     val defaultBeinPool: List<String>,
     val fallbackMenaPool: List<String>,
-    val defaultSortOrder: Int
+    val defaultSortOrder: Int,
+    val category: CompetitionCategory = CompetitionCategory.EUROPEAN
 )
 
 data class FootballMatch(
@@ -271,6 +282,28 @@ class FootballRepository(
         canAcquireSportsDbPermit = ::canAcquireSportsDbPermit
     )
 
+    // 6. Dynamic FIFA World Ranking & Confederation Top-N Qualification Engine
+    val internationalRankingResolver = InternationalRankingResolver(
+        context = context,
+        httpClient = httpClient
+    )
+
+    internal fun passesInternationalQualificationFilter(
+        tournament: TournamentCatalogItem,
+        homeTeamName: String,
+        awayTeamName: String,
+        homeCountryCode: String = "",
+        awayCountryCode: String = ""
+    ): Boolean {
+        if (tournament.category != CompetitionCategory.INTERNATIONAL) return true
+        return internationalRankingResolver.isQualifiedInternationalFixture(
+            homeTeamName = homeTeamName,
+            awayTeamName = awayTeamName,
+            homeCountryCode = homeCountryCode,
+            awayCountryCode = awayCountryCode
+        )
+    }
+
     suspend fun fetchMatchFullDossier(
         match: FootballMatch,
         forceRefresh: Boolean = false,
@@ -387,15 +420,24 @@ class FootballRepository(
             tournamentPreferenceDao.upsertPreferences(defaults)
         } else {
             val catalogMap = ALL_TOURNAMENTS.associateBy { it.tournamentId }
-            val synced = existing.map { pref ->
-                val catalogItem = catalogMap[pref.tournamentId]
-                if (catalogItem != null && pref.sortOrder != catalogItem.defaultSortOrder) {
-                    pref.copy(
+            val existingById = existing.associateBy { it.tournamentId }
+            val synced = ALL_TOURNAMENTS.map { catalogItem ->
+                val prev = existingById[catalogItem.tournamentId]
+                if (prev != null) {
+                    prev.copy(
                         tournamentName = catalogItem.name,
+                        countryOrRegion = catalogItem.countryOrRegion,
                         sortOrder = catalogItem.defaultSortOrder
                     )
                 } else {
-                    pref
+                    TournamentPreferenceEntity(
+                        tournamentId = catalogItem.tournamentId,
+                        tournamentName = catalogItem.name,
+                        countryOrRegion = catalogItem.countryOrRegion,
+                        isEnabled = true,
+                        isPinned = catalogItem.defaultSortOrder <= 3,
+                        sortOrder = catalogItem.defaultSortOrder
+                    )
                 }
             }
             tournamentPreferenceDao.upsertPreferences(synced)
@@ -1191,22 +1233,10 @@ class FootballRepository(
         existing: FootballMatch,
         candidate: FootballMatch
     ): Boolean {
-        if (existing.status == MatchStatus.UPCOMING && candidate.status != MatchStatus.UPCOMING) return true
-        if (candidate.status == MatchStatus.UPCOMING && existing.status != MatchStatus.UPCOMING) return false
-        if (candidate.status == MatchStatus.FINISHED && existing.status != MatchStatus.FINISHED) return true
-        if (existing.status == MatchStatus.FINISHED && candidate.status != MatchStatus.FINISHED) return false
-
-        val existingHasExplicitMinute = existing.liveMinuteOrBadge.contains("'") && existing.liveMinuteOrBadge.any { it.isDigit() }
-        val candidateHasExplicitMinute = candidate.liveMinuteOrBadge.contains("'") && candidate.liveMinuteOrBadge.any { it.isDigit() }
-        if (candidateHasExplicitMinute && !existingHasExplicitMinute) return true
-        if (existingHasExplicitMinute && !candidateHasExplicitMinute) return false
-
-        val existingTotalGoals = (existing.homeScore ?: 0) + (existing.awayScore ?: 0)
-        val candidateTotalGoals = (candidate.homeScore ?: 0) + (candidate.awayScore ?: 0)
-        if (candidateTotalGoals > existingTotalGoals) return true
-
-        if (existing.matchId.startsWith("tsdb_") && candidate.espnEventId.isNotBlank()) return true
-        return false
+        return MatchClockEngine.shouldPreferCandidateByAuthority(
+            existing = existing,
+            candidate = candidate
+        )
     }
 
     internal fun mergeDayFixtures(
@@ -2005,6 +2035,7 @@ class FootballRepository(
 
             // 4. CAF Champions League & Confederation Cup (beIN Sports 6 HD / 5 HD + terrestrial host broadcasters)
             tournamentId == "caf_cl" ||
+                tournamentId == "caf_confed" ||
                 lowerName.contains("caf champions") ||
                 lowerName.contains("confederation cup") ||
                 lowerName.contains("caf ") -> {
@@ -2320,24 +2351,43 @@ class FootballRepository(
     )
 
     /**
-     * Ensures that if a match on `TODAY` is marked `LIVE` by an upstream feed without an explicit minute integer
-     * (e.g. raw badge `"LIVE"`, `"1H"`, or `"2H"`), its elapsed minute clock (`1H • 34'`, `HT`, `2H • 71'`)
-     * is calculated accurately from its Morocco `GMT+1` kickoff time so the live minute counter ticks smoothly.
+     * Synchronizes the match's epoch-anchored local clock in [MatchClockEngine] and ensures that if a match
+     * on `TODAY` is marked `LIVE` by an upstream feed without an explicit minute integer (e.g. raw badge `"LIVE"`,
+     * `"1H"`, or `"2H"`), its elapsed minute clock is anchored within the verified period while respecting
+     * strict horizon guards (never fabricating `"HT"` or `"FT"` transitions locally without provider confirmation).
      */
     internal fun synchronizeElapsedMatchClock(
         match: FootballMatch,
         dayTab: MatchDayTab
     ): FootballMatch {
-        if (dayTab != MatchDayTab.TODAY || match.status != MatchStatus.LIVE) {
+        if (dayTab != MatchDayTab.TODAY) {
+            return match
+        }
+        if (match.status == MatchStatus.HALFTIME || match.status == MatchStatus.FINISHED) {
+            MatchClockEngine.registerOrUpdateAnchor(match)
+            return match
+        }
+        if (match.status != MatchStatus.LIVE) {
             return match
         }
         val badge = match.liveMinuteOrBadge.trim()
-        // If the API already supplied an explicit minute (e.g., "1H • 38'", "67'", "90+3'"), keep it
+        // If the API already supplied an explicit minute (e.g., "1H • 38'", "67'", "90+3'"), register anchor & keep it
         if (badge.contains("'") && badge.any { it.isDigit() }) {
+            MatchClockEngine.registerOrUpdateAnchor(match)
             return match
         }
-        val parts = match.kickoffTimeFormatted.trim().split(":")
-        if (parts.size < 2) return match
+        if (badge.equals("HT", ignoreCase = true)) {
+            val htMatch = match.copy(status = MatchStatus.HALFTIME, liveMinuteOrBadge = "HT")
+            MatchClockEngine.registerOrUpdateAnchor(htMatch)
+            return htMatch
+        }
+
+        val refTime = match.referenceMoroccoTime.ifBlank { match.kickoffTimeFormatted }.trim()
+        val parts = refTime.split(":")
+        if (parts.size < 2) {
+            MatchClockEngine.registerOrUpdateAnchor(match)
+            return match
+        }
         val koHour = parts[0].filter { it.isDigit() }.toIntOrNull() ?: return match
         val koMin = parts[1].take(2).filter { it.isDigit() }.toIntOrNull() ?: return match
 
@@ -2346,26 +2396,41 @@ class FootballRepository(
         val koTotalMin = koHour * 60 + koMin
         val elapsedSinceKo = nowTotalMin - koTotalMin
 
-        if (elapsedSinceKo < 0 || elapsedSinceKo > 140) return match
+        if (elapsedSinceKo < 0 || elapsedSinceKo > 140) {
+            MatchClockEngine.registerOrUpdateAnchor(match)
+            return match
+        }
 
-        val computedBadge = when {
-            elapsedSinceKo <= 45 -> "1H • ${elapsedSinceKo.coerceAtLeast(1)}'"
-            elapsedSinceKo in 46..48 -> "1H • 45+${elapsedSinceKo - 45}'"
-            elapsedSinceKo in 49..62 -> "HT"
-            elapsedSinceKo in 63..108 -> {
-                val secondHalfMinute = (45 + (elapsedSinceKo - 62)).coerceIn(46, 90)
-                "2H • ${secondHalfMinute}'"
+        val isExplicitSecondHalf = badge.contains("2H", ignoreCase = true)
+        val computedBadge = if (isExplicitSecondHalf) {
+            // Provider verified 2nd Half: never fabricate FT locally; transition to 90+X' stoppage past 90'
+            val estSecondHalfMin = if (elapsedSinceKo >= 60) {
+                45 + (elapsedSinceKo - 60)
+            } else {
+                (45 + elapsedSinceKo.coerceAtLeast(1)).coerceAtMost(90)
             }
-            else -> {
-                val added = (elapsedSinceKo - 108).coerceIn(1, 9)
+            if (estSecondHalfMin <= 90) {
+                "2H • ${estSecondHalfMin.coerceIn(46, 90)}'"
+            } else {
+                val added = (estSecondHalfMin - 90).coerceIn(1, 12)
                 "2H • 90+${added}'"
             }
+        } else {
+            // Provider verified 1st Half or generic LIVE: never fabricate HT locally; hold in 45+X' stoppage past 45'
+            if (elapsedSinceKo <= 45) {
+                "1H • ${elapsedSinceKo.coerceAtLeast(1)}'"
+            } else {
+                val added = (elapsedSinceKo - 45).coerceIn(1, 12)
+                "1H • 45+${added}'"
+            }
         }
-        val computedStatus = if (computedBadge == "HT") MatchStatus.HALFTIME else MatchStatus.LIVE
-        return match.copy(
-            status = computedStatus,
+
+        val updatedMatch = match.copy(
+            status = MatchStatus.LIVE,
             liveMinuteOrBadge = computedBadge
         )
+        MatchClockEngine.registerOrUpdateAnchor(updatedMatch)
+        return updatedMatch
     }
 
     /**
@@ -2526,6 +2591,7 @@ class FootballRepository(
             val homeName = (homeObj?.optString("name", "") ?: item.optString("home_name", "")).trim()
             val awayName = (awayObj?.optString("name", "") ?: item.optString("away_name", "")).trim()
             if (homeName.isBlank() || awayName.isBlank()) continue
+            if (!passesInternationalQualificationFilter(matchedTournament, homeName, awayName)) continue
 
             val homeBadge = homeObj?.optString("logo", homeObj.optString("badge", "")) ?: ""
             val awayBadge = awayObj?.optString("logo", awayObj.optString("badge", "")) ?: ""
@@ -2838,6 +2904,7 @@ class FootballRepository(
             val homeName = ev.optString("strHomeTeam", "").trim()
             val awayName = ev.optString("strAwayTeam", "").trim()
             if (homeName.isBlank() || awayName.isBlank()) continue
+            if (!passesInternationalQualificationFilter(matchedTournament, homeName, awayName)) continue
 
             val timestampRaw = ev.optString("strTimestamp", "").trim()
             val dateEventRaw = ev.optString("dateEvent", "").trim()
@@ -3200,6 +3267,7 @@ class FootballRepository(
                     val homeName = homeTeamObj.optString("displayName", homeTeamObj.optString("name", "")).trim()
                     val awayName = awayTeamObj.optString("displayName", awayTeamObj.optString("name", "")).trim()
                     if (homeName.isBlank() || awayName.isBlank()) continue
+                    if (!passesInternationalQualificationFilter(tournament, homeName, awayName)) continue
 
                     val homeLogo = homeTeamObj.optString("logo", "")
                     val awayLogo = awayTeamObj.optString("logo", "")
@@ -3469,6 +3537,7 @@ class FootballRepository(
             val homeName = homeComp.optString("name", homeComp.optString("symbolicName", "")).trim()
             val awayName = awayComp.optString("name", awayComp.optString("symbolicName", "")).trim()
             if (homeName.isBlank() || awayName.isBlank()) continue
+            if (!passesInternationalQualificationFilter(matchedTournament, homeName, awayName)) continue
 
             val homeBadge = homeComp.optString("imageUrl", "").takeIf { it.startsWith("http") }
                 ?: if (homeId > 0L) "https://imagecache.365scores.com/image/upload/f_png,w_80,h_80,c_limit,q_auto:eco/v1/Competitors/$homeId" else ""
@@ -3614,7 +3683,8 @@ class FootballRepository(
             573 -> "uefa_el"
             649 -> "saudi_pro"
             552, 553 -> "botola_pro"
-            586, 587 -> "caf_cl"
+            586 -> "caf_cl"
+            587 -> "caf_confed"
             else -> null
         }
         if (byId != null) {
@@ -3723,6 +3793,7 @@ class FootballRepository(
 
                     val homeName = homeObj.optString("name", "")
                     val awayName = awayObj.optString("name", "")
+                    if (!passesInternationalQualificationFilter(matchedTournament, homeName, awayName)) continue
                     val smartFallbacks = getSmartMenaFallbackChannels(
                         tournamentId = matchedTournament.tournamentId,
                         tournamentName = matchedTournament.name,
@@ -3858,6 +3929,7 @@ class FootballRepository(
             val homeName = homeObj.optString("name", homeObj.optString("shortName", "")).trim()
             val awayName = awayObj.optString("name", awayObj.optString("shortName", "")).trim()
             if (homeName.isBlank() || awayName.isBlank()) continue
+            if (!passesInternationalQualificationFilter(matchedTournament, homeName, awayName)) continue
 
             val utcDate = item.optString("utcDate", "")
             val kickoffTime = formatIsoToMoroccoTime(utcDate)
@@ -3947,37 +4019,37 @@ class FootballRepository(
             "SA" -> ALL_TOURNAMENTS.first { it.tournamentId == "serie_a" }
             "BL1" -> ALL_TOURNAMENTS.first { it.tournamentId == "bundesliga" }
             "FL1" -> ALL_TOURNAMENTS.first { it.tournamentId == "ligue_1" }
-            else -> {
-                val lower = name.lowercase(Locale.ROOT)
-                when {
-                    lower.contains("champions league") && !lower.contains("caf") -> ALL_TOURNAMENTS.first { it.tournamentId == "uefa_cl" }
-                    lower.contains("premier league") -> ALL_TOURNAMENTS.first { it.tournamentId == "premier_league" }
-                    lower.contains("primera division") || lower.contains("laliga") -> ALL_TOURNAMENTS.first { it.tournamentId == "laliga" }
-                    lower.contains("serie a") -> ALL_TOURNAMENTS.first { it.tournamentId == "serie_a" }
-                    lower.contains("bundesliga") -> ALL_TOURNAMENTS.first { it.tournamentId == "bundesliga" }
-                    lower.contains("ligue 1") -> ALL_TOURNAMENTS.first { it.tournamentId == "ligue_1" }
-                    else -> null
-                }
-            }
+            "WC", "EC", "CLI" -> ALL_TOURNAMENTS.first { it.tournamentId == "intl_official" }
+            else -> matchTournamentCatalog(name)
         }
     }
 
-    private fun matchApiFootballLeague(
+    internal fun matchApiFootballLeague(
         leagueId: Int,
         country: String,
         leagueName: String
     ): TournamentCatalogItem? {
+        // Strictly reject European domestic cup IDs and 2nd divisions
+        if (leagueId in setOf(40, 41, 42, 45, 48, 62, 66, 79, 81, 136, 137, 141, 143, 848)) {
+            return null
+        }
         return when (leagueId) {
-            200 -> ALL_TOURNAMENTS.first { it.tournamentId == "botola_pro" }
-            12, 20 -> ALL_TOURNAMENTS.first { it.tournamentId == "caf_cl" }
+            // A. European First Divisions & Elite UEFA Only
             2 -> ALL_TOURNAMENTS.first { it.tournamentId == "uefa_cl" }
-            140 -> ALL_TOURNAMENTS.first { it.tournamentId == "laliga" }
-            39 -> ALL_TOURNAMENTS.first { it.tournamentId == "premier_league" }
-            135 -> ALL_TOURNAMENTS.first { it.tournamentId == "serie_a" }
-            61 -> ALL_TOURNAMENTS.first { it.tournamentId == "ligue_1" }
-            78 -> ALL_TOURNAMENTS.first { it.tournamentId == "bundesliga" }
-            307 -> ALL_TOURNAMENTS.first { it.tournamentId == "saudi_pro" }
             3 -> ALL_TOURNAMENTS.first { it.tournamentId == "uefa_el" }
+            39 -> ALL_TOURNAMENTS.first { it.tournamentId == "premier_league" }
+            140 -> ALL_TOURNAMENTS.first { it.tournamentId == "laliga" }
+            135 -> ALL_TOURNAMENTS.first { it.tournamentId == "serie_a" }
+            78 -> ALL_TOURNAMENTS.first { it.tournamentId == "bundesliga" }
+            61 -> ALL_TOURNAMENTS.first { it.tournamentId == "ligue_1" }
+            // B. African & Arab Competitions
+            12 -> ALL_TOURNAMENTS.first { it.tournamentId == "caf_cl" }
+            20 -> ALL_TOURNAMENTS.first { it.tournamentId == "caf_confed" }
+            200 -> ALL_TOURNAMENTS.first { it.tournamentId == "botola_pro" }
+            307 -> ALL_TOURNAMENTS.first { it.tournamentId == "saudi_pro" }
+            // C. International Official & Friendly Fixtures
+            1, 4, 5, 6, 7, 9, 15, 29, 30, 31, 32, 34, 36 -> ALL_TOURNAMENTS.first { it.tournamentId == "intl_official" }
+            10 -> ALL_TOURNAMENTS.first { it.tournamentId == "intl_friendly" }
             else -> matchTournamentCatalog("$country $leagueName")
         }
     }
@@ -4951,15 +5023,18 @@ class FootballRepository(
 
         val APPROVED_TIER_1_TOURNAMENT_IDS = setOf(
             "uefa_cl",
-            "laliga",
-            "premier_league",
-            "ligue_1",
-            "bundesliga",
-            "serie_a",
-            "caf_cl",
-            "botola_pro",
             "uefa_el",
-            "saudi_pro"
+            "premier_league",
+            "laliga",
+            "serie_a",
+            "bundesliga",
+            "ligue_1",
+            "caf_cl",
+            "caf_confed",
+            "botola_pro",
+            "saudi_pro",
+            "intl_official",
+            "intl_friendly"
         )
 
         fun deriveDefaultKickoffEpochMs(dayTab: MatchDayTab, moroccoTimeHHmm: String): Long {
@@ -5231,11 +5306,20 @@ class FootballRepository(
                 return ALL_TOURNAMENTS.first { it.tournamentId == "botola_pro" }
             }
 
-            // 7. CAF Champions League (`espnSlug == "caf.champions"`, `sportsDbLeagueId == "4486"`)
+            // 7a. CAF Confederation Cup (`espnSlug == "caf.confed"`, `sportsDbLeagueId == "4487"`)
+            if (slug == "caf.confed" ||
+                sdbId == "4487" ||
+                lower.contains("caf confederation") ||
+                lower.contains("confederation cup") ||
+                lower.contains("confederations cup")
+            ) {
+                return ALL_TOURNAMENTS.first { it.tournamentId == "caf_confed" }
+            }
+
+            // 7b. CAF Champions League (`espnSlug == "caf.champions"`, `sportsDbLeagueId == "4486"`)
             if (slug == "caf.champions" ||
                 sdbId == "4486" ||
-                lower.contains("caf champions") ||
-                lower.contains("caf confederation")
+                lower.contains("caf champions")
             ) {
                 return ALL_TOURNAMENTS.first { it.tournamentId == "caf_cl" }
             }
@@ -5281,10 +5365,41 @@ class FootballRepository(
                 return ALL_TOURNAMENTS.first { it.tournamentId == "uefa_el" }
             }
 
+            // 11. International Friendlies (`espnSlug == "fifa.friendly"`, `sportsDbLeagueId == "4569"`)
+            if (!lower.contains("club") && (
+                    slug == "fifa.friendly" ||
+                        sdbId == "4569" ||
+                        lower.contains("international friendl") ||
+                        lower == "friendlies" ||
+                        lower == "friendly" ||
+                        (lower.contains("world") && lower.contains("friendl"))
+                )
+            ) {
+                return ALL_TOURNAMENTS.first { it.tournamentId == "intl_friendly" }
+            }
+
+            // 12. International Official Fixtures (World Cup, Qualifiers, AFCON, Euro, Nations League, Copa America, Asian Cup)
+            if (slug.startsWith("fifa.") ||
+                sdbId == "4429" ||
+                lower.contains("world cup") ||
+                lower.contains("wc qual") ||
+                lower.contains("africa cup of nations") ||
+                lower.contains("afcon") ||
+                lower.contains("nations league") ||
+                lower.contains("uefa euro") ||
+                lower.contains("euro qual") ||
+                lower.contains("copa america") ||
+                lower.contains("copa américa") ||
+                lower.contains("asian cup")
+            ) {
+                return ALL_TOURNAMENTS.first { it.tournamentId == "intl_official" }
+            }
+
             return null
         }
 
         val ALL_TOURNAMENTS = listOf(
+            // A. European Competitions (First Divisions & Elite UEFA Only)
             TournamentCatalogItem(
                 tournamentId = "uefa_cl",
                 name = "UEFA Champions League",
@@ -5294,84 +5409,8 @@ class FootballRepository(
                 primaryMenaProvider = "beIN Sports MENA",
                 defaultBeinPool = listOf("beIN Sports 1 HD", "beIN Sports 2 HD", "beIN Sports 3 HD", "beIN Sports 4 HD", "beIN Sports 5 HD", "beIN Sports 6 HD", "beIN Sports 1 4K"),
                 fallbackMenaPool = listOf("beIN Sports 2 HD", "beIN Sports 3 HD", "beIN Sports 1 English", "beIN Sports 1 4K"),
-                defaultSortOrder = 1
-            ),
-            TournamentCatalogItem(
-                tournamentId = "laliga",
-                name = "LaLiga EA Sports",
-                countryOrRegion = "Spain",
-                espnSlug = "esp.1",
-                sportsDbLeagueId = "4335",
-                primaryMenaProvider = "beIN Sports MENA",
-                defaultBeinPool = listOf("beIN Sports 3 HD", "beIN Sports 1 HD", "beIN Sports 2 HD", "beIN Sports 4 HD", "beIN Sports 1 4K"),
-                fallbackMenaPool = listOf("beIN Sports 3 HD", "beIN Sports 1 HD", "beIN Sports 1 4K"),
-                defaultSortOrder = 2
-            ),
-            TournamentCatalogItem(
-                tournamentId = "premier_league",
-                name = "Premier League",
-                countryOrRegion = "England",
-                espnSlug = "eng.1",
-                sportsDbLeagueId = "4328",
-                primaryMenaProvider = "beIN Sports MENA",
-                defaultBeinPool = listOf("beIN Sports 1 HD", "beIN Sports 2 HD", "beIN Sports 3 HD", "beIN Sports 4 HD", "beIN Sports 1 English", "beIN Sports 1 4K"),
-                fallbackMenaPool = listOf("beIN Sports 1 HD", "beIN Sports 2 HD", "beIN Sports 1 English"),
-                defaultSortOrder = 3
-            ),
-            TournamentCatalogItem(
-                tournamentId = "ligue_1",
-                name = "Ligue 1 McDonald's",
-                countryOrRegion = "France",
-                espnSlug = "fra.1",
-                sportsDbLeagueId = "4334",
-                primaryMenaProvider = "beIN Sports MENA",
-                defaultBeinPool = listOf("beIN Sports 4 HD", "beIN Sports 2 HD", "beIN Sports 1 French", "beIN Sports 5 HD", "beIN Sports Max 4"),
-                fallbackMenaPool = listOf("beIN Sports 4 HD", "beIN Sports 1 French", "beIN Sports Max 4"),
-                defaultSortOrder = 4
-            ),
-            TournamentCatalogItem(
-                tournamentId = "bundesliga",
-                name = "Bundesliga",
-                countryOrRegion = "Germany",
-                espnSlug = "ger.1",
-                sportsDbLeagueId = "4331",
-                primaryMenaProvider = "beIN Sports MENA",
-                defaultBeinPool = listOf("beIN Sports 5 HD", "beIN Sports 6 HD", "beIN Sports 4 HD", "beIN Sports Xtra 1", "beIN Sports Max 5"),
-                fallbackMenaPool = listOf("beIN Sports 5 HD", "beIN Sports 6 HD", "beIN Sports Xtra 1"),
-                defaultSortOrder = 5
-            ),
-            TournamentCatalogItem(
-                tournamentId = "serie_a",
-                name = "Serie A",
-                countryOrRegion = "Italy",
-                espnSlug = "ita.1",
-                sportsDbLeagueId = "4332",
-                primaryMenaProvider = "AD Sports / STARZPLAY",
-                defaultBeinPool = listOf("AD Sports Premium 1", "AD Sports Premium 2", "STARZPLAY"),
-                fallbackMenaPool = listOf("AD Sports Premium 2", "STARZPLAY"),
-                defaultSortOrder = 6
-            ),
-            TournamentCatalogItem(
-                tournamentId = "caf_cl",
-                name = "CAF Champions League",
-                countryOrRegion = "Africa",
-                espnSlug = "caf.champions",
-                sportsDbLeagueId = "4486",
-                primaryMenaProvider = "beIN Sports MENA",
-                defaultBeinPool = listOf("beIN Sports 6 HD", "beIN Sports 5 HD", "Arryadia TNT", "ON Time Sports 1"),
-                fallbackMenaPool = listOf("Arryadia TNT", "ON Time Sports 1", "beIN Sports 5 HD"),
-                defaultSortOrder = 7
-            ),
-            TournamentCatalogItem(
-                tournamentId = "botola_pro",
-                name = "Botola Pro Inwi",
-                countryOrRegion = "Morocco",
-                espnSlug = "mar.1",
-                sportsDbLeagueId = "4520",
-                primaryMenaProvider = "Arryadia / SNRT",
-                defaultBeinPool = listOf("Arryadia HD", "Arryadia TNT", "Al Aoula HD", "Tamazight HD"),
-                fallbackMenaPool = listOf("Arryadia TNT", "Al Aoula HD", "Tamazight HD", "SNRT Live"),
-                defaultSortOrder = 8
+                defaultSortOrder = 1,
+                category = CompetitionCategory.EUROPEAN
             ),
             TournamentCatalogItem(
                 tournamentId = "uefa_el",
@@ -5382,7 +5421,105 @@ class FootballRepository(
                 primaryMenaProvider = "beIN Sports MENA",
                 defaultBeinPool = listOf("beIN Sports 1 HD", "beIN Sports 2 HD", "beIN Sports 3 HD", "beIN Sports 4 HD", "beIN Sports 5 HD", "beIN Sports 6 HD"),
                 fallbackMenaPool = listOf("beIN Sports 2 HD", "beIN Sports 3 HD", "beIN Sports Xtra 1"),
-                defaultSortOrder = 9
+                defaultSortOrder = 2,
+                category = CompetitionCategory.EUROPEAN
+            ),
+            TournamentCatalogItem(
+                tournamentId = "premier_league",
+                name = "Premier League",
+                countryOrRegion = "England",
+                espnSlug = "eng.1",
+                sportsDbLeagueId = "4328",
+                primaryMenaProvider = "beIN Sports MENA",
+                defaultBeinPool = listOf("beIN Sports 1 HD", "beIN Sports 2 HD", "beIN Sports 3 HD", "beIN Sports 4 HD", "beIN Sports 1 English", "beIN Sports 1 4K"),
+                fallbackMenaPool = listOf("beIN Sports 1 HD", "beIN Sports 2 HD", "beIN Sports 1 English"),
+                defaultSortOrder = 3,
+                category = CompetitionCategory.EUROPEAN
+            ),
+            TournamentCatalogItem(
+                tournamentId = "laliga",
+                name = "LaLiga EA Sports",
+                countryOrRegion = "Spain",
+                espnSlug = "esp.1",
+                sportsDbLeagueId = "4335",
+                primaryMenaProvider = "beIN Sports MENA",
+                defaultBeinPool = listOf("beIN Sports 3 HD", "beIN Sports 1 HD", "beIN Sports 2 HD", "beIN Sports 4 HD", "beIN Sports 1 4K"),
+                fallbackMenaPool = listOf("beIN Sports 3 HD", "beIN Sports 1 HD", "beIN Sports 1 4K"),
+                defaultSortOrder = 4,
+                category = CompetitionCategory.EUROPEAN
+            ),
+            TournamentCatalogItem(
+                tournamentId = "serie_a",
+                name = "Serie A",
+                countryOrRegion = "Italy",
+                espnSlug = "ita.1",
+                sportsDbLeagueId = "4332",
+                primaryMenaProvider = "AD Sports / STARZPLAY",
+                defaultBeinPool = listOf("AD Sports Premium 1", "AD Sports Premium 2", "STARZPLAY"),
+                fallbackMenaPool = listOf("AD Sports Premium 2", "STARZPLAY"),
+                defaultSortOrder = 5,
+                category = CompetitionCategory.EUROPEAN
+            ),
+            TournamentCatalogItem(
+                tournamentId = "bundesliga",
+                name = "Bundesliga",
+                countryOrRegion = "Germany",
+                espnSlug = "ger.1",
+                sportsDbLeagueId = "4331",
+                primaryMenaProvider = "beIN Sports MENA",
+                defaultBeinPool = listOf("beIN Sports 5 HD", "beIN Sports 6 HD", "beIN Sports 4 HD", "beIN Sports Xtra 1", "beIN Sports Max 5"),
+                fallbackMenaPool = listOf("beIN Sports 5 HD", "beIN Sports 6 HD", "beIN Sports Xtra 1"),
+                defaultSortOrder = 6,
+                category = CompetitionCategory.EUROPEAN
+            ),
+            TournamentCatalogItem(
+                tournamentId = "ligue_1",
+                name = "Ligue 1 McDonald's",
+                countryOrRegion = "France",
+                espnSlug = "fra.1",
+                sportsDbLeagueId = "4334",
+                primaryMenaProvider = "beIN Sports MENA",
+                defaultBeinPool = listOf("beIN Sports 4 HD", "beIN Sports 2 HD", "beIN Sports 1 French", "beIN Sports 5 HD", "beIN Sports Max 4"),
+                fallbackMenaPool = listOf("beIN Sports 4 HD", "beIN Sports 1 French", "beIN Sports Max 4"),
+                defaultSortOrder = 7,
+                category = CompetitionCategory.EUROPEAN
+            ),
+            // B. African & Arab Competitions
+            TournamentCatalogItem(
+                tournamentId = "caf_cl",
+                name = "CAF Champions League",
+                countryOrRegion = "Africa",
+                espnSlug = "caf.champions",
+                sportsDbLeagueId = "4486",
+                primaryMenaProvider = "beIN Sports MENA",
+                defaultBeinPool = listOf("beIN Sports 6 HD", "beIN Sports 5 HD", "Arryadia TNT", "ON Time Sports 1"),
+                fallbackMenaPool = listOf("Arryadia TNT", "ON Time Sports 1", "beIN Sports 5 HD"),
+                defaultSortOrder = 8,
+                category = CompetitionCategory.AFRICAN_ARAB
+            ),
+            TournamentCatalogItem(
+                tournamentId = "caf_confed",
+                name = "CAF Confederation Cup",
+                countryOrRegion = "Africa",
+                espnSlug = "caf.confed",
+                sportsDbLeagueId = "4487",
+                primaryMenaProvider = "beIN Sports MENA",
+                defaultBeinPool = listOf("beIN Sports 6 HD", "beIN Sports 5 HD", "Arryadia TNT", "ON Time Sports 1"),
+                fallbackMenaPool = listOf("Arryadia TNT", "ON Time Sports 1", "beIN Sports 5 HD"),
+                defaultSortOrder = 9,
+                category = CompetitionCategory.AFRICAN_ARAB
+            ),
+            TournamentCatalogItem(
+                tournamentId = "botola_pro",
+                name = "Botola Pro Inwi",
+                countryOrRegion = "Morocco",
+                espnSlug = "mar.1",
+                sportsDbLeagueId = "4520",
+                primaryMenaProvider = "Arryadia / SNRT",
+                defaultBeinPool = listOf("Arryadia HD", "Arryadia TNT", "Al Aoula HD", "Tamazight HD"),
+                fallbackMenaPool = listOf("Arryadia TNT", "Al Aoula HD", "Tamazight HD", "SNRT Live"),
+                defaultSortOrder = 10,
+                category = CompetitionCategory.AFRICAN_ARAB
             ),
             TournamentCatalogItem(
                 tournamentId = "saudi_pro",
@@ -5393,7 +5530,33 @@ class FootballRepository(
                 primaryMenaProvider = "SSC Sports",
                 defaultBeinPool = listOf("SSC 1 HD", "SSC Extra 1", "SSC Extra 2", "Thmanyah Sports 1"),
                 fallbackMenaPool = listOf("SSC Extra 1", "SSC Extra 2", "Thmanyah Sports 1"),
-                defaultSortOrder = 10
+                defaultSortOrder = 11,
+                category = CompetitionCategory.AFRICAN_ARAB
+            ),
+            // C. International Fixtures (Filtered by Dynamic FIFA World Ranking Top-N per Confederation)
+            TournamentCatalogItem(
+                tournamentId = "intl_official",
+                name = "International Official Fixtures",
+                countryOrRegion = "International",
+                espnSlug = "fifa.worldq.caf",
+                sportsDbLeagueId = "4429",
+                primaryMenaProvider = "beIN Sports MENA",
+                defaultBeinPool = listOf("beIN Sports 1 HD", "beIN Sports 2 HD", "Arryadia TNT", "SSC 1 HD"),
+                fallbackMenaPool = listOf("beIN Sports 1 HD", "beIN Sports 2 HD", "Arryadia TNT"),
+                defaultSortOrder = 12,
+                category = CompetitionCategory.INTERNATIONAL
+            ),
+            TournamentCatalogItem(
+                tournamentId = "intl_friendly",
+                name = "International Friendlies",
+                countryOrRegion = "International",
+                espnSlug = "fifa.friendly",
+                sportsDbLeagueId = "4569",
+                primaryMenaProvider = "beIN Sports MENA",
+                defaultBeinPool = listOf("beIN Sports 1 HD", "beIN Sports 2 HD", "Arryadia TNT"),
+                fallbackMenaPool = listOf("beIN Sports 1 HD", "beIN Sports 2 HD", "Arryadia TNT"),
+                defaultSortOrder = 13,
+                category = CompetitionCategory.INTERNATIONAL
             )
         )
 

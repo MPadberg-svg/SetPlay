@@ -26,9 +26,20 @@ import com.example.ui.theme.FavoritesEvergreenSurface
 import com.example.ui.theme.FavoritesObsidianBase
 import com.example.ui.theme.FavoritesPaleMint
 import com.example.ui.theme.FavoritesSagePrimary
+import com.example.ui.theme.KickoffAgedParchment
+import com.example.ui.theme.KickoffAlabasterIvory
 import com.example.ui.theme.KickoffCeruleanBlue
+import com.example.ui.theme.KickoffCharcoalElevated
+import com.example.ui.theme.KickoffCharcoalSlate
 import com.example.ui.theme.KickoffCoralRed
+import com.example.ui.theme.KickoffImperialNavy
+import com.example.ui.theme.KickoffNavyElevated
+import com.example.ui.theme.KickoffObsidianBlack
+import com.example.ui.theme.KickoffParchmentBorder
+import com.example.ui.theme.KickoffParchmentMuted
 import com.example.ui.theme.KickoffPeachCream
+import com.example.ui.theme.KickoffTerracotta
+import com.example.ui.theme.KickoffTerracottaGlow
 import com.example.ui.theme.KickoffTropicalTeal
 import com.example.ui.theme.LiveCrimson
 import com.example.ui.theme.MetalCharcoal
@@ -111,11 +122,22 @@ class ExampleRobolectricTest {
         assertEquals(Color(0xFF1B998B), SeriesEmerald)
         assertEquals(Color(0xFF2EC4B6), SeriesJadeAccent)
 
-        // 1. KickOff Section Palette (#0081A7, #00AFB9, #FED9B7, #F07167)
+        // 1. KickOff Section Palette (Legacy & Official 6-Color Architectural Palette)
         assertEquals(Color(0xFF0081A7), KickoffCeruleanBlue)
         assertEquals(Color(0xFF00AFB9), KickoffTropicalTeal)
         assertEquals(Color(0xFFFED9B7), KickoffPeachCream)
         assertEquals(Color(0xFFF07167), KickoffCoralRed)
+        assertEquals(Color(0xFFD9541E), KickoffTerracotta)
+        assertEquals(Color(0xFF0F1B3D), KickoffImperialNavy)
+        assertEquals(Color(0xFF111111), KickoffObsidianBlack)
+        assertEquals(Color(0xFFF3EEE3), KickoffAlabasterIvory)
+        assertEquals(Color(0xFFD8CBB3), KickoffAgedParchment)
+        assertEquals(Color(0xFF1E1E1C), KickoffCharcoalSlate)
+        assertEquals(Color(0xFF162654), KickoffNavyElevated)
+        assertEquals(Color(0xFF272724), KickoffCharcoalElevated)
+        assertEquals(Color(0x33D9541E), KickoffTerracottaGlow)
+        assertEquals(Color(0x2ED8CBB3), KickoffParchmentBorder)
+        assertEquals(Color(0xB3D8CBB3), KickoffParchmentMuted)
 
         // 2. Live TV Section Palette (#1F313B, #383852, #784259, #B94E56, #BE4039, #683536)
         assertEquals(Color(0xFF1F313B), TvMidnightSlate)
@@ -697,20 +719,22 @@ class ExampleRobolectricTest {
         assertTrue(upcomingLineups.homeStartingXI.none { it.hasYellowCard || it.hasRedCard || it.subbedOffMinute != null })
         assertTrue(upcomingLineups.awayStartingXI.none { it.hasYellowCard || it.hasRedCard || it.subbedOffMinute != null })
 
-        // 7. Verify Canonical Tournament Order:
-        // UEFA CL, La Liga, Premier League, Ligue 1, Bundesliga, Serie A, CAF CL, Botola Pro, then others
+        // 7. Verify Canonical 3-Pillar Tournament Catalog (European, African/Arab incl. CAF Confederation Cup, International):
         assertEquals(
             listOf(
                 "uefa_cl",
-                "laliga",
-                "premier_league",
-                "ligue_1",
-                "bundesliga",
-                "serie_a",
-                "caf_cl",
-                "botola_pro",
                 "uefa_el",
-                "saudi_pro"
+                "premier_league",
+                "laliga",
+                "serie_a",
+                "bundesliga",
+                "ligue_1",
+                "caf_cl",
+                "caf_confed",
+                "botola_pro",
+                "saudi_pro",
+                "intl_official",
+                "intl_friendly"
             ),
             com.example.data.repository.FootballRepository.ALL_TOURNAMENTS.map { it.tournamentId }
         )
@@ -4294,5 +4318,418 @@ class TvSyncDeviceSeparationComposeTest {
         assertEquals("https://media.api-sports.io/football/players/278.png", dossier.lineups.homeStartingXI[10].photoUrl)
         assertEquals("https://media.api-sports.io/football/players/752.png", dossier.lineups.homeBench[0].photoUrl)
     }
+
+    @Test
+    fun `test MatchClockEngine epoch-anchored clock, stoppage horizon verification guard, and provider authority hierarchy`() {
+        com.example.data.repository.MatchClockEngine.clearRegistryForTests()
+        val syncEpochMs = 1_730_000_000_000L
+
+        val baseMatch = com.example.data.repository.FootballMatch(
+            matchId = "sportapi_ars_liv",
+            tournamentId = "premier_league",
+            tournamentName = "Premier League",
+            tournamentRegion = "England",
+            stageOrRound = "Round 11",
+            homeTeamId = "ars",
+            homeTeamName = "Arsenal",
+            homeTeamBadge = "",
+            awayTeamId = "liv",
+            awayTeamName = "Liverpool",
+            awayTeamBadge = "",
+            homeScore = 1,
+            awayScore = 1,
+            kickoffTimeFormatted = "17:30",
+            kickoffDateFormatted = "Today",
+            status = com.example.data.repository.MatchStatus.LIVE,
+            liveMinuteOrBadge = "1H • 44'",
+            stadiumName = "Emirates Stadium",
+            cityName = "London",
+            beinChannel = "beIN Sports 1 HD",
+            beinChannelNumberHint = "1",
+            dayTab = com.example.data.repository.MatchDayTab.TODAY,
+            kickoffEpochMs = syncEpochMs - 44 * 60_000L
+        )
+
+        // 1. 1st Half Horizon Guard: crossing 45:00 transitions to FIRST_HALF_STOPPAGE (45:00+MM:SS), NEVER fabricating "HT"
+        val anchor1H = com.example.data.repository.MatchClockEngine.deriveAnchorFromMatch(
+            match = baseMatch,
+            nowEpochMs = syncEpochMs,
+            deterministicSubMinuteSeed = false
+        )
+        assertEquals(com.example.data.repository.MatchPeriodPhase.FIRST_HALF, anchor1H.phase)
+
+        val snapAt44m30s = com.example.data.repository.MatchClockEngine.evaluateClockAt(anchor1H, syncEpochMs + 30_000L)
+        assertEquals(com.example.data.repository.MatchPeriodPhase.FIRST_HALF, snapAt44m30s.phase)
+        assertEquals("44:30", snapAt44m30s.formattedSecondsClock)
+        assertFalse(snapAt44m30s.isAwaitingProviderPhaseConfirmation)
+
+        // Advance 2 minutes 15 seconds (past 45:00 into 46:15 elapsed) without provider HT confirmation
+        val snapPast45 = com.example.data.repository.MatchClockEngine.evaluateClockAt(anchor1H, syncEpochMs + 135_000L)
+        assertEquals(com.example.data.repository.MatchPeriodPhase.FIRST_HALF_STOPPAGE, snapPast45.phase)
+        assertEquals("45:00+01:15", snapPast45.formattedSecondsClock)
+        assertEquals("45+1'", snapPast45.formattedMinuteBadge)
+        assertEquals("STOPPAGE", snapPast45.periodHeaderBadge)
+        assertTrue(snapPast45.isAwaitingProviderPhaseConfirmation)
+
+        // 2. Halftime Hold Guard: holds strictly at "HT" even after 20 minutes until upstream confirms 2H kickoff
+        val htMatch = baseMatch.copy(status = com.example.data.repository.MatchStatus.HALFTIME, liveMinuteOrBadge = "HT")
+        val anchorHt = com.example.data.repository.MatchClockEngine.registerOrUpdateAnchor(htMatch, syncEpochMs + 300_000L)
+        val snapHtAfter20Min = com.example.data.repository.MatchClockEngine.evaluateClockAt(anchorHt, syncEpochMs + 1_500_000L)
+        assertEquals(com.example.data.repository.MatchPeriodPhase.HALFTIME_BREAK, snapHtAfter20Min.phase)
+        assertEquals("HT", snapHtAfter20Min.formattedSecondsClock)
+        assertTrue(snapHtAfter20Min.isAwaitingProviderPhaseConfirmation)
+
+        // 3. 2nd Half Horizon Guard: crossing 90:00 transitions to SECOND_HALF_STOPPAGE (90:00+MM:SS), NEVER fabricating "FT"
+        val match2H89 = baseMatch.copy(status = com.example.data.repository.MatchStatus.LIVE, liveMinuteOrBadge = "2H • 89'")
+        val anchor2H = com.example.data.repository.MatchClockEngine.deriveAnchorFromMatch(
+            match = match2H89,
+            nowEpochMs = syncEpochMs,
+            deterministicSubMinuteSeed = false
+        )
+        val snapPast90 = com.example.data.repository.MatchClockEngine.evaluateClockAt(anchor2H, syncEpochMs + 190_000L)
+        assertEquals(com.example.data.repository.MatchPeriodPhase.SECOND_HALF_STOPPAGE, snapPast90.phase)
+        assertEquals("90:00+02:10", snapPast90.formattedSecondsClock)
+        assertEquals("90+2'", snapPast90.formattedMinuteBadge)
+        assertTrue(snapPast90.isAwaitingProviderPhaseConfirmation)
+
+        // 4. Provider Authority Hierarchy: API-Football & 365Scores outrank TheSportsDB and prevent phase regression
+        val tsdbCandidate = baseMatch.copy(matchId = "tsdb_100", status = com.example.data.repository.MatchStatus.LIVE, liveMinuteOrBadge = "1H • 42'")
+        val apiFootballCandidate = baseMatch.copy(
+            matchId = "apif_999",
+            apiFootballFixtureId = "999",
+            status = com.example.data.repository.MatchStatus.LIVE,
+            liveMinuteOrBadge = "2H • 51'"
+        )
+        assertTrue(
+            com.example.data.repository.MatchClockEngine.shouldPreferCandidateByAuthority(
+                existing = tsdbCandidate,
+                candidate = apiFootballCandidate
+            )
+        )
+        assertFalse(
+            com.example.data.repository.MatchClockEngine.shouldPreferCandidateByAuthority(
+                existing = apiFootballCandidate,
+                candidate = tsdbCandidate
+            )
+        )
+    }
+
+    @Test
+    fun `test KickOff Phase 2 - InternationalRankingResolver, CAF Confederation Cup, 3-Pillar Competitions, and Empty Unannounced Lineups`() {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val db = Room.inMemoryDatabaseBuilder(context, StreamVaultDatabase::class.java)
+            .allowMainThreadQueries()
+            .build()
+        try {
+            val footballRepo = com.example.data.repository.FootballRepository(
+                context = context,
+                favoriteTeamDao = db.favoriteTeamDao(),
+                tournamentPreferenceDao = db.tournamentPreferenceDao(),
+                streamDao = db.streamDao()
+            )
+            val resolver = footballRepo.internationalRankingResolver
+
+            // 1. Verify Dynamic Confederation Quotas: Top 5 CAF, Top 3 AFC, Top 7 UEFA, Top 4 CONMEBOL (19 total)
+            val qualifiedByConfed = resolver.getQualifiedTeamsByConfederation()
+            assertEquals(5, qualifiedByConfed[com.example.data.repository.FootballConfederation.CAF]?.size)
+            assertEquals(3, qualifiedByConfed[com.example.data.repository.FootballConfederation.AFC]?.size)
+            assertEquals(7, qualifiedByConfed[com.example.data.repository.FootballConfederation.UEFA]?.size)
+            assertEquals(4, qualifiedByConfed[com.example.data.repository.FootballConfederation.CONMEBOL]?.size)
+            assertEquals(19, resolver.getQualifiedNationalTeams().size)
+
+            // Verify Top-5 CAF teams qualify while 7th-ranked CAF team alone vs non-qualified opponent is filtered out
+            assertTrue(resolver.isQualifiedInternationalFixture("Morocco", "Brazil"))
+            assertTrue(resolver.isQualifiedInternationalFixture("Japan", "San Marino"))
+            assertFalse(resolver.isQualifiedInternationalFixture("Cameroon", "Tunisia"))
+
+            // 2. Verify dynamic ranking table update automatically shifts qualified teams without code changes
+            val updatedRankingJson = """
+                [
+                  {"fifaCode": "CMR", "iso2": "CM", "confederation": "CAF", "globalRank": 11, "points": 1715.0, "countryName": "Cameroon"},
+                  {"fifaCode": "MAR", "iso2": "MA", "confederation": "CAF", "globalRank": 12, "points": 1710.0, "countryName": "Morocco"},
+                  {"fifaCode": "SEN", "iso2": "SN", "confederation": "CAF", "globalRank": 17, "points": 1640.0, "countryName": "Senegal"},
+                  {"fifaCode": "EGY", "iso2": "EG", "confederation": "CAF", "globalRank": 30, "points": 1525.0, "countryName": "Egypt"},
+                  {"fifaCode": "NGA", "iso2": "NG", "confederation": "CAF", "globalRank": 36, "points": 1505.0, "countryName": "Nigeria"},
+                  {"fifaCode": "ALG", "iso2": "DZ", "confederation": "CAF", "globalRank": 40, "points": 1495.0, "countryName": "Algeria"},
+                  {"fifaCode": "JPN", "iso2": "JP", "confederation": "AFC", "globalRank": 15, "points": 1655.0, "countryName": "Japan"},
+                  {"fifaCode": "IRN", "iso2": "IR", "confederation": "AFC", "globalRank": 19, "points": 1625.0, "countryName": "Iran"},
+                  {"fifaCode": "KOR", "iso2": "KR", "confederation": "AFC", "globalRank": 22, "points": 1590.0, "countryName": "South Korea"},
+                  {"fifaCode": "ESP", "iso2": "ES", "confederation": "UEFA", "globalRank": 2, "points": 1855.0, "countryName": "Spain"},
+                  {"fifaCode": "FRA", "iso2": "FR", "confederation": "UEFA", "globalRank": 3, "points": 1850.0, "countryName": "France"},
+                  {"fifaCode": "ENG", "iso2": "GB-ENG", "confederation": "UEFA", "globalRank": 4, "points": 1815.0, "countryName": "England"},
+                  {"fifaCode": "POR", "iso2": "PT", "confederation": "UEFA", "globalRank": 6, "points": 1775.0, "countryName": "Portugal"},
+                  {"fifaCode": "NED", "iso2": "NL", "confederation": "UEFA", "globalRank": 7, "points": 1765.0, "countryName": "Netherlands"},
+                  {"fifaCode": "BEL", "iso2": "BE", "confederation": "UEFA", "globalRank": 8, "points": 1750.0, "countryName": "Belgium"},
+                  {"fifaCode": "ITA", "iso2": "IT", "confederation": "UEFA", "globalRank": 9, "points": 1740.0, "countryName": "Italy"},
+                  {"fifaCode": "ARG", "iso2": "AR", "confederation": "CONMEBOL", "globalRank": 1, "points": 1885.0, "countryName": "Argentina"},
+                  {"fifaCode": "BRA", "iso2": "BR", "confederation": "CONMEBOL", "globalRank": 5, "points": 1785.0, "countryName": "Brazil"},
+                  {"fifaCode": "COL", "iso2": "CO", "confederation": "CONMEBOL", "globalRank": 10, "points": 1730.0, "countryName": "Colombia"},
+                  {"fifaCode": "URU", "iso2": "UY", "confederation": "CONMEBOL", "globalRank": 14, "points": 1665.0, "countryName": "Uruguay"}
+                ]
+            """.trimIndent()
+            assertTrue(resolver.updateRankingsFromJson(updatedRankingJson).isNotEmpty())
+            assertTrue(resolver.isQualifiedInternationalFixture("Cameroon", "Tunisia"))
+
+            // 3. Verify CAF Confederation Cup & International Fixtures matching (separate from CAF CL)
+            val cafConfedById = footballRepo.matchApiFootballLeague(20, "CAF Confederation Cup", "Africa")
+            assertNotNull(cafConfedById)
+            assertEquals("caf_confed", cafConfedById?.tournamentId)
+
+            val cafConfedByName = footballRepo.matchTournamentCatalog("TotalEnergies CAF Confederation Cup", "Africa")
+            assertNotNull(cafConfedByName)
+            assertEquals("caf_confed", cafConfedByName?.tournamentId)
+
+            val intlOfficial = footballRepo.matchTournamentCatalog("FIFA World Cup Qualifiers - Africa", "World")
+            assertNotNull(intlOfficial)
+            assertEquals("intl_official", intlOfficial?.tournamentId)
+
+            val intlFriendly = footballRepo.matchTournamentCatalog("International Friendlies", "World")
+            assertNotNull(intlFriendly)
+            assertEquals("intl_friendly", intlFriendly?.tournamentId)
+
+            // 4. Verify Unrecognized Club with unannounced lineups returns empty startingXI & bench (never Lille/Porto roster)
+            val enricher = com.example.data.repository.MatchCenterEnricher(okhttp3.OkHttpClient())
+            val unknownMatch = com.example.data.repository.FootballMatch(
+                matchId = "caf_confed_test",
+                tournamentId = "caf_confed",
+                tournamentName = "CAF Confederation Cup",
+                tournamentRegion = "Africa",
+                dayTab = com.example.data.repository.MatchDayTab.TODAY,
+                kickoffTimeFormatted = "20:00",
+                kickoffDateFormatted = "Today",
+                status = com.example.data.repository.MatchStatus.UPCOMING,
+                liveMinuteOrBadge = "20:00",
+                homeTeamId = "usma",
+                homeTeamName = "USM Alger",
+                homeTeamBadge = "",
+                homeScore = null,
+                awayTeamId = "asec",
+                awayTeamName = "ASEC Mimosas",
+                awayTeamBadge = "",
+                awayScore = null,
+                stadiumName = "Stade du 5 Juillet",
+                cityName = "Algiers",
+                beinChannel = "beIN Sports 6 HD",
+                beinChannelNumberHint = "6"
+            )
+            val unknownDossier = enricher.buildCompleteDossier(unknownMatch, raw = null)
+            assertTrue(unknownDossier.lineups.homeStartingXI.isEmpty())
+            assertTrue(unknownDossier.lineups.awayStartingXI.isEmpty())
+            assertTrue(unknownDossier.lineups.homeBench.isEmpty())
+            assertTrue(unknownDossier.lineups.awayBench.isEmpty())
+        } finally {
+            db.close()
+        }
+    }
+
+    @Test
+    fun testKickoffV2ArchitectureAnchoredClockProviderAuthorityDynamicRankingsAndPalette() {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+
+        // 1. Anchored Real-Time Match Clock (MatchClockEngine)
+        com.example.data.repository.MatchClockEngine.clearRegistryForTests()
+        val t0 = 1_000_000L
+        val anchor1H = com.example.data.repository.MatchClockEngine.recordVerifiedObservation(
+            matchId = "clock_1h_test",
+            liveMinuteOrBadge = "1H • 15'",
+            status = com.example.data.repository.MatchStatus.LIVE,
+            observedAtEpochMs = t0
+        )
+        assertEquals(
+            "1H • 22'",
+            com.example.data.repository.MatchClockEngine.computeLocalBadgeFromAnchor(
+                anchor = anchor1H,
+                nowEpochMs = t0 + 7 * 60_000L
+            )
+        )
+
+        val anchor2HStoppage = com.example.data.repository.MatchClockEngine.recordVerifiedObservation(
+            matchId = "clock_2h_stoppage_test",
+            liveMinuteOrBadge = "2H • 90'",
+            status = com.example.data.repository.MatchStatus.LIVE,
+            observedAtEpochMs = t0,
+            officialAddedMinutes = 7
+        )
+        assertEquals(
+            "2H • 90+7'",
+            com.example.data.repository.MatchClockEngine.computeLocalBadgeFromAnchor(
+                anchor = anchor2HStoppage,
+                nowEpochMs = t0 + 7 * 60_000L
+            )
+        )
+
+        // Verification Horizon checks: true at 1H • 43', false at 1H • 25', true at 2H • 88', true at HT elapsed 14 min
+        val anchorAt43 = com.example.data.repository.MatchClockEngine.recordVerifiedObservation(
+            matchId = "horizon_43",
+            liveMinuteOrBadge = "1H • 43'",
+            status = com.example.data.repository.MatchStatus.LIVE,
+            observedAtEpochMs = t0
+        )
+        assertTrue(com.example.data.repository.MatchClockEngine.isMatchInVerificationHorizon(anchorAt43, t0))
+
+        val anchorAt25 = com.example.data.repository.MatchClockEngine.recordVerifiedObservation(
+            matchId = "horizon_25",
+            liveMinuteOrBadge = "1H • 25'",
+            status = com.example.data.repository.MatchStatus.LIVE,
+            observedAtEpochMs = t0
+        )
+        assertFalse(com.example.data.repository.MatchClockEngine.isMatchInVerificationHorizon(anchorAt25, t0))
+
+        val anchorAt88 = com.example.data.repository.MatchClockEngine.recordVerifiedObservation(
+            matchId = "horizon_88",
+            liveMinuteOrBadge = "2H • 88'",
+            status = com.example.data.repository.MatchStatus.LIVE,
+            observedAtEpochMs = t0
+        )
+        assertTrue(com.example.data.repository.MatchClockEngine.isMatchInVerificationHorizon(anchorAt88, t0))
+
+        val anchorHt = com.example.data.repository.MatchClockEngine.recordVerifiedObservation(
+            matchId = "horizon_ht",
+            liveMinuteOrBadge = "HT",
+            status = com.example.data.repository.MatchStatus.HALFTIME,
+            observedAtEpochMs = t0
+        )
+        assertFalse(com.example.data.repository.MatchClockEngine.isMatchInVerificationHorizon(anchorHt, t0 + 5 * 60_000L))
+        assertTrue(com.example.data.repository.MatchClockEngine.isMatchInVerificationHorizon(anchorHt, t0 + 14 * 60_000L))
+
+        // 2. Provider Authority & VAR Disallowed-Goal Rollback (ProviderAuthorityEngine)
+        val baseFixture = com.example.data.repository.FootballMatch(
+            matchId = "var_rollback_fixture",
+            tournamentId = "uefa_cl",
+            tournamentName = "UEFA Champions League",
+            tournamentRegion = "Europe",
+            dayTab = com.example.data.repository.MatchDayTab.TODAY,
+            kickoffTimeFormatted = "20:00",
+            kickoffDateFormatted = "Today",
+            status = com.example.data.repository.MatchStatus.LIVE,
+            liveMinuteOrBadge = "2H • 64'",
+            homeTeamId = "rm",
+            homeTeamName = "Real Madrid",
+            homeTeamBadge = "",
+            homeScore = 1,
+            awayTeamId = "bay",
+            awayTeamName = "Bayern Munich",
+            awayTeamBadge = "",
+            awayScore = 0,
+            stadiumName = "Santiago Bernabéu",
+            cityName = "Madrid",
+            beinChannel = "beIN Sports 1 HD",
+            beinChannelNumberHint = "1"
+        )
+
+        val tsdbObservation = com.example.data.repository.ProviderMatchObservation(
+            provider = com.example.data.repository.MatchDataProvider.THESPORTSDB_V1,
+            match = baseFixture.copy(
+                homeScore = 2,
+                awayScore = 0,
+                homeTeamBadge = "https://r2.thesportsdb.com/images/media/team/badge/rm/tiny",
+                awayTeamBadge = "https://r2.thesportsdb.com/images/media/team/badge/bay/tiny"
+            ),
+            observedAtEpochMs = t0
+        )
+        val apiFootballObservation = com.example.data.repository.ProviderMatchObservation(
+            provider = com.example.data.repository.MatchDataProvider.API_FOOTBALL_V3,
+            match = baseFixture.copy(
+                homeScore = 1,
+                awayScore = 0,
+                liveMinuteOrBadge = "2H • 65'",
+                apiFootballFixtureId = "998877"
+            ),
+            observedAtEpochMs = t0 + 15_000L
+        )
+        val espnObservation = com.example.data.repository.ProviderMatchObservation(
+            provider = com.example.data.repository.MatchDataProvider.ESPN_SCOREBOARD,
+            match = baseFixture.copy(
+                homeScore = 1,
+                awayScore = 0,
+                liveMinuteOrBadge = "2H • 65'",
+                espnEventId = "776655"
+            ),
+            observedAtEpochMs = t0 + 12_000L
+        )
+
+        val resolvedFixture = com.example.data.repository.ProviderAuthorityEngine.resolveMultiProviderFixture(
+            observations = listOf(tsdbObservation, apiFootballObservation, espnObservation),
+            nowEpochMs = t0 + 15_000L
+        )
+        assertEquals(1, resolvedFixture.homeScore)
+        assertEquals(0, resolvedFixture.awayScore)
+        assertTrue(resolvedFixture.homeTeamBadge.endsWith("/tiny"))
+        assertTrue(resolvedFixture.awayTeamBadge.endsWith("/tiny"))
+
+        // 3. Restructured Competitions (CompetitionCategory & caf_confed)
+        val allTournaments = com.example.data.repository.FootballRepository.ALL_TOURNAMENTS
+        val europeanIds = allTournaments
+            .filter { it.category == com.example.data.repository.CompetitionCategory.EUROPEAN }
+            .map { it.tournamentId }
+        val africanArabIds = allTournaments
+            .filter { it.category == com.example.data.repository.CompetitionCategory.AFRICAN_ARAB }
+            .map { it.tournamentId }
+        val internationalIds = allTournaments
+            .filter { it.category == com.example.data.repository.CompetitionCategory.INTERNATIONAL }
+            .map { it.tournamentId }
+
+        assertEquals(
+            listOf("uefa_cl", "uefa_el", "premier_league", "laliga", "serie_a", "bundesliga", "ligue_1"),
+            europeanIds
+        )
+        assertEquals(
+            listOf("caf_cl", "caf_confed", "botola_pro", "saudi_pro"),
+            africanArabIds
+        )
+        assertEquals(
+            listOf("intl_official", "intl_friendly"),
+            internationalIds
+        )
+
+        // 4. Dynamic International Ranking Filter (InternationalRankingResolver)
+        val rankingResolver = com.example.data.repository.InternationalRankingResolver(context)
+        val qualifiedMap = rankingResolver.getQualifiedTeamsByConfederation()
+        assertEquals(5, qualifiedMap[com.example.data.repository.FootballConfederation.CAF]?.size)
+        assertEquals(3, qualifiedMap[com.example.data.repository.FootballConfederation.AFC]?.size)
+        assertEquals(7, qualifiedMap[com.example.data.repository.FootballConfederation.UEFA]?.size)
+        assertEquals(4, qualifiedMap[com.example.data.repository.FootballConfederation.CONMEBOL]?.size)
+        assertEquals(19, rankingResolver.getQualifiedNationalTeams().size)
+
+        assertTrue(rankingResolver.isQualifiedInternationalFixture("Morocco", "Tanzania"))
+        assertFalse(rankingResolver.isQualifiedInternationalFixture("Tanzania", "Zambia"))
+
+        val simulatedRankingUpdateJson = """
+            [
+              {"fifaCode": "MLI", "iso2": "ML", "confederation": "CAF", "globalRank": 10, "points": 1735.0, "countryName": "Mali"},
+              {"fifaCode": "MAR", "iso2": "MA", "confederation": "CAF", "globalRank": 12, "points": 1710.0, "countryName": "Morocco"},
+              {"fifaCode": "SEN", "iso2": "SN", "confederation": "CAF", "globalRank": 17, "points": 1640.0, "countryName": "Senegal"},
+              {"fifaCode": "EGY", "iso2": "EG", "confederation": "CAF", "globalRank": 30, "points": 1525.0, "countryName": "Egypt"},
+              {"fifaCode": "NGA", "iso2": "NG", "confederation": "CAF", "globalRank": 36, "points": 1505.0, "countryName": "Nigeria"},
+              {"fifaCode": "ALG", "iso2": "DZ", "confederation": "CAF", "globalRank": 40, "points": 1495.0, "countryName": "Algeria"},
+              {"fifaCode": "JPN", "iso2": "JP", "confederation": "AFC", "globalRank": 15, "points": 1655.0, "countryName": "Japan"},
+              {"fifaCode": "IRN", "iso2": "IR", "confederation": "AFC", "globalRank": 19, "points": 1625.0, "countryName": "Iran"},
+              {"fifaCode": "KOR", "iso2": "KR", "confederation": "AFC", "globalRank": 22, "points": 1590.0, "countryName": "South Korea"},
+              {"fifaCode": "ESP", "iso2": "ES", "confederation": "UEFA", "globalRank": 2, "points": 1855.0, "countryName": "Spain"},
+              {"fifaCode": "FRA", "iso2": "FR", "confederation": "UEFA", "globalRank": 3, "points": 1850.0, "countryName": "France"},
+              {"fifaCode": "ENG", "iso2": "GB-ENG", "confederation": "UEFA", "globalRank": 4, "points": 1815.0, "countryName": "England"},
+              {"fifaCode": "POR", "iso2": "PT", "confederation": "UEFA", "globalRank": 6, "points": 1775.0, "countryName": "Portugal"},
+              {"fifaCode": "NED", "iso2": "NL", "confederation": "UEFA", "globalRank": 7, "points": 1765.0, "countryName": "Netherlands"},
+              {"fifaCode": "BEL", "iso2": "BE", "confederation": "UEFA", "globalRank": 8, "points": 1750.0, "countryName": "Belgium"},
+              {"fifaCode": "ITA", "iso2": "IT", "confederation": "UEFA", "globalRank": 9, "points": 1740.0, "countryName": "Italy"},
+              {"fifaCode": "ARG", "iso2": "AR", "confederation": "CONMEBOL", "globalRank": 1, "points": 1885.0, "countryName": "Argentina"},
+              {"fifaCode": "BRA", "iso2": "BR", "confederation": "CONMEBOL", "globalRank": 5, "points": 1785.0, "countryName": "Brazil"},
+              {"fifaCode": "COL", "iso2": "CO", "confederation": "CONMEBOL", "globalRank": 11, "points": 1720.0, "countryName": "Colombia"},
+              {"fifaCode": "URU", "iso2": "UY", "confederation": "CONMEBOL", "globalRank": 14, "points": 1665.0, "countryName": "Uruguay"}
+            ]
+        """.trimIndent()
+        assertTrue(rankingResolver.updateRankingsFromJson(simulatedRankingUpdateJson).isNotEmpty())
+        assertTrue(rankingResolver.isQualifiedInternationalFixture("Mali", "Tanzania"))
+
+        // 5. Official 6-Color Palette Verification (Color.kt)
+        assertEquals(Color(0xFFD9541E), KickoffTerracotta)
+        assertEquals(Color(0xFF0F1B3D), KickoffImperialNavy)
+        assertEquals(Color(0xFF111111), KickoffObsidianBlack)
+        assertEquals(Color(0xFFF3EEE3), KickoffAlabasterIvory)
+        assertEquals(Color(0xFFD8CBB3), KickoffAgedParchment)
+        assertEquals(Color(0xFF1E1E1C), KickoffCharcoalSlate)
+    }
 }
+
+
 

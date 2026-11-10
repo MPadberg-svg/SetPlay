@@ -68,15 +68,15 @@ import com.example.data.repository.BroadcastMacroRegion
 import com.example.data.repository.SeasonTimeMode
 import com.example.data.repository.UserCountryZone
 import com.example.data.repository.UserZoneRegistry
-import com.example.ui.theme.AmberGold
-import com.example.ui.theme.Champagne
-import com.example.ui.theme.ChampagneMuted
-import com.example.ui.theme.DarkGraphite
-import com.example.ui.theme.KickoffOceanBase
-import com.example.ui.theme.KickoffOceanElevated
-import com.example.ui.theme.KickoffOceanSurface
-import com.example.ui.theme.KickoffPeachCream
-import com.example.ui.theme.KickoffTropicalTeal
+import com.example.ui.theme.KickoffAgedParchment
+import com.example.ui.theme.KickoffAlabasterIvory
+import com.example.ui.theme.KickoffCharcoalElevated
+import com.example.ui.theme.KickoffCharcoalSlate
+import com.example.ui.theme.KickoffImperialNavy
+import com.example.ui.theme.KickoffObsidianBlack
+import com.example.ui.theme.KickoffParchmentBorder
+import com.example.ui.theme.KickoffTerracotta
+import com.example.ui.theme.KickoffTerracottaGlow
 
 /**
  * Interactive Country Zone Capsule Button displayed in the KickOff Arena Header Bar.
@@ -115,16 +115,11 @@ fun UserCountryZoneCapsuleButton(
     }
 
     Surface(
-        color = Color(0xFF071D2A),
+        color = KickoffCharcoalSlate,
         shape = RoundedCornerShape(10.dp),
         border = BorderStroke(
             width = 0.9.dp,
-            brush = Brush.horizontalGradient(
-                listOf(
-                    AmberGold.copy(alpha = 0.70f),
-                    KickoffTropicalTeal.copy(alpha = 0.65f)
-                )
-            )
+            color = KickoffParchmentBorder
         ),
         modifier = modifier
             .graphicsLayer {
@@ -153,7 +148,7 @@ fun UserCountryZoneCapsuleButton(
             )
             Text(
                 text = selectedZone.shortIso3,
-                color = KickoffPeachCream,
+                color = KickoffAlabasterIvory,
                 fontSize = 10.sp,
                 fontWeight = FontWeight.ExtraBold,
                 letterSpacing = 0.3.sp,
@@ -164,11 +159,11 @@ fun UserCountryZoneCapsuleButton(
                 modifier = Modifier
                     .size(3.dp)
                     .clip(CircleShape)
-                    .background(KickoffTropicalTeal)
+                    .background(KickoffTerracotta)
             )
             Text(
                 text = "$seasonEmoji$utcBadge",
-                color = AmberGold,
+                color = KickoffAgedParchment,
                 fontSize = 9.5.sp,
                 fontWeight = FontWeight.ExtraBold,
                 maxLines = 1,
@@ -177,7 +172,7 @@ fun UserCountryZoneCapsuleButton(
             Icon(
                 imageVector = Icons.Default.KeyboardArrowDown,
                 contentDescription = "Change Country Zone",
-                tint = Champagne,
+                tint = KickoffAgedParchment,
                 modifier = Modifier.size(13.dp)
             )
         }
@@ -204,16 +199,11 @@ fun OnboardingCountryZoneSelectorCard(
     }
 
     Surface(
-        color = Color(0xFF071B26),
+        color = KickoffCharcoalSlate,
         shape = RoundedCornerShape(14.dp),
         border = BorderStroke(
             width = 1.dp,
-            brush = Brush.horizontalGradient(
-                listOf(
-                    KickoffTropicalTeal.copy(alpha = 0.65f),
-                    AmberGold.copy(alpha = 0.55f)
-                )
-            )
+            color = KickoffParchmentBorder
         ),
         modifier = Modifier
             .fillMaxWidth()
@@ -235,13 +225,13 @@ fun OnboardingCountryZoneSelectorCard(
                     Icon(
                         imageVector = Icons.Default.Public,
                         contentDescription = null,
-                        tint = KickoffTropicalTeal,
+                        tint = KickoffTerracotta,
                         modifier = Modifier.size(15.dp)
                     )
                     Spacer(modifier = Modifier.width(6.dp))
                     Text(
                         text = "USER'S ZONE • COUNTRY, TIME & TV",
-                        color = KickoffPeachCream,
+                        color = KickoffAlabasterIvory,
                         fontSize = 10.5.sp,
                         fontWeight = FontWeight.ExtraBold,
                         letterSpacing = 0.3.sp
@@ -250,9 +240,9 @@ fun OnboardingCountryZoneSelectorCard(
 
                 Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                     Surface(
-                        color = KickoffTropicalTeal.copy(alpha = 0.16f),
+                        color = KickoffImperialNavy,
                         shape = RoundedCornerShape(50),
-                        border = BorderStroke(0.7.dp, KickoffTropicalTeal.copy(alpha = 0.6f)),
+                        border = BorderStroke(0.7.dp, KickoffParchmentBorder),
                         modifier = Modifier
                             .clip(RoundedCornerShape(50))
                             .clickable { onAutoDetectCountry() }
@@ -265,13 +255,13 @@ fun OnboardingCountryZoneSelectorCard(
                             Icon(
                                 imageVector = Icons.Default.LocationOn,
                                 contentDescription = null,
-                                tint = KickoffTropicalTeal,
+                                tint = KickoffTerracotta,
                                 modifier = Modifier.size(11.dp)
                             )
                             Spacer(modifier = Modifier.width(3.dp))
                             Text(
                                 text = "Auto-Detect",
-                                color = KickoffTropicalTeal,
+                                color = KickoffAlabasterIvory,
                                 fontSize = 9.sp,
                                 fontWeight = FontWeight.ExtraBold
                             )
@@ -279,9 +269,9 @@ fun OnboardingCountryZoneSelectorCard(
                     }
 
                     Surface(
-                        color = AmberGold.copy(alpha = 0.16f),
+                        color = KickoffTerracottaGlow,
                         shape = RoundedCornerShape(50),
-                        border = BorderStroke(0.7.dp, AmberGold.copy(alpha = 0.6f)),
+                        border = BorderStroke(0.7.dp, KickoffTerracotta),
                         modifier = Modifier
                             .clip(RoundedCornerShape(50))
                             .clickable { onOpenFullZoneSheet() }
@@ -289,7 +279,7 @@ fun OnboardingCountryZoneSelectorCard(
                     ) {
                         Text(
                             text = "All Zones (${allZones.size})",
-                            color = AmberGold,
+                            color = KickoffAlabasterIvory,
                             fontSize = 9.sp,
                             fontWeight = FontWeight.ExtraBold,
                             modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
@@ -300,9 +290,9 @@ fun OnboardingCountryZoneSelectorCard(
 
             // Active Country Summary Pill (Flag + Name + Timezone + Primary TV Broadcaster)
             Surface(
-                color = Color(0xFF041017),
+                color = KickoffObsidianBlack,
                 shape = RoundedCornerShape(10.dp),
-                border = BorderStroke(0.8.dp, Color.White.copy(alpha = 0.10f)),
+                border = BorderStroke(0.8.dp, KickoffParchmentBorder),
                 modifier = Modifier.fillMaxWidth()
             ) {
                 Row(
@@ -325,19 +315,19 @@ fun OnboardingCountryZoneSelectorCard(
                             Row(verticalAlignment = Alignment.CenterVertically) {
                                 Text(
                                     text = selectedZone.countryName,
-                                    color = Color.White,
+                                    color = KickoffAlabasterIvory,
                                     fontSize = 12.5.sp,
                                     fontWeight = FontWeight.ExtraBold
                                 )
                                 Spacer(modifier = Modifier.width(6.dp))
                                 Surface(
-                                    color = AmberGold.copy(alpha = 0.18f),
+                                    color = KickoffImperialNavy,
                                     shape = RoundedCornerShape(4.dp),
-                                    border = BorderStroke(0.5.dp, AmberGold.copy(alpha = 0.65f))
+                                    border = BorderStroke(0.5.dp, KickoffParchmentBorder)
                                 ) {
                                     Text(
                                         text = utcBadge,
-                                        color = AmberGold,
+                                        color = KickoffAgedParchment,
                                         fontSize = 8.5.sp,
                                         fontWeight = FontWeight.ExtraBold,
                                         modifier = Modifier.padding(horizontal = 5.dp, vertical = 1.dp)
@@ -346,7 +336,7 @@ fun OnboardingCountryZoneSelectorCard(
                             }
                             Text(
                                 text = "TV: ${selectedZone.primaryTvProviderName}",
-                                color = KickoffTropicalTeal,
+                                color = KickoffAgedParchment,
                                 fontSize = 10.sp,
                                 fontWeight = FontWeight.SemiBold,
                                 maxLines = 1,
@@ -356,12 +346,13 @@ fun OnboardingCountryZoneSelectorCard(
                     }
 
                     Surface(
-                        color = Color.White.copy(alpha = 0.06f),
-                        shape = RoundedCornerShape(6.dp)
+                        color = KickoffCharcoalSlate,
+                        shape = RoundedCornerShape(6.dp),
+                        border = BorderStroke(0.5.dp, KickoffParchmentBorder)
                     ) {
                         Text(
                             text = selectedZone.iptvCategoryPrefixes.take(2).joinToString(" "),
-                            color = Champagne,
+                            color = KickoffAgedParchment,
                             fontSize = 8.5.sp,
                             fontWeight = FontWeight.Bold,
                             modifier = Modifier.padding(horizontal = 6.dp, vertical = 3.dp)
@@ -388,7 +379,7 @@ fun OnboardingCountryZoneSelectorCard(
                 items(allZones, key = { it.countryCode }) { zone ->
                     val isSelected = zone.countryCode.equals(selectedZone.countryCode, ignoreCase = true)
                     val bg by animateColorAsState(
-                        targetValue = if (isSelected) KickoffTropicalTeal else Color(0xFF0A2230),
+                        targetValue = if (isSelected) KickoffTerracotta else KickoffObsidianBlack,
                         animationSpec = tween(180),
                         label = "onboarding_zone_bg_${zone.countryCode}"
                     )
@@ -397,7 +388,7 @@ fun OnboardingCountryZoneSelectorCard(
                         shape = RoundedCornerShape(50),
                         border = BorderStroke(
                             width = if (isSelected) 1.dp else 0.7.dp,
-                            color = if (isSelected) KickoffPeachCream else Color.White.copy(alpha = 0.14f)
+                            color = if (isSelected) KickoffAlabasterIvory.copy(alpha = 0.55f) else KickoffParchmentBorder
                         ),
                         modifier = Modifier
                             .clip(RoundedCornerShape(50))
@@ -412,7 +403,7 @@ fun OnboardingCountryZoneSelectorCard(
                             Spacer(modifier = Modifier.width(4.dp))
                             Text(
                                 text = zone.countryName,
-                                color = if (isSelected) DarkGraphite else Champagne,
+                                color = if (isSelected) KickoffAlabasterIvory else KickoffAgedParchment,
                                 fontSize = 10.sp,
                                 fontWeight = if (isSelected) FontWeight.ExtraBold else FontWeight.SemiBold,
                                 maxLines = 1
@@ -438,9 +429,9 @@ fun SeasonTimeModeCompactSelectorRow(
     modifier: Modifier = Modifier
 ) {
     Surface(
-        color = Color(0xFF041017),
+        color = KickoffObsidianBlack,
         shape = RoundedCornerShape(10.dp),
-        border = BorderStroke(0.7.dp, AmberGold.copy(alpha = 0.35f)),
+        border = BorderStroke(0.7.dp, KickoffParchmentBorder),
         modifier = modifier
             .fillMaxWidth()
             .testTag("season_time_mode_selector_row")
@@ -458,14 +449,14 @@ fun SeasonTimeModeCompactSelectorRow(
             ) {
                 Text(
                     text = "SEASONAL CLOCK (WINTER / SUMMER TIME)",
-                    color = ChampagneMuted,
+                    color = KickoffAgedParchment,
                     fontSize = 8.5.sp,
                     fontWeight = FontWeight.ExtraBold,
                     letterSpacing = 0.4.sp
                 )
                 Text(
                     text = zone.getActiveSeasonLabel(mode = selectedMode),
-                    color = AmberGold,
+                    color = KickoffAlabasterIvory,
                     fontSize = 9.sp,
                     fontWeight = FontWeight.ExtraBold
                 )
@@ -483,11 +474,11 @@ fun SeasonTimeModeCompactSelectorRow(
                         SeasonTimeMode.SUMMER -> "☀️ Summer (${zone.summerGmtBadge})"
                     }
                     Surface(
-                        color = if (isSelected) AmberGold else Color(0xFF0A202D),
+                        color = if (isSelected) KickoffTerracotta else KickoffCharcoalSlate,
                         shape = RoundedCornerShape(8.dp),
                         border = BorderStroke(
                             width = 0.8.dp,
-                            color = if (isSelected) KickoffPeachCream else Color.White.copy(alpha = 0.14f)
+                            color = if (isSelected) KickoffAlabasterIvory.copy(alpha = 0.55f) else KickoffParchmentBorder
                         ),
                         modifier = Modifier
                             .weight(1f)
@@ -501,7 +492,7 @@ fun SeasonTimeModeCompactSelectorRow(
                         ) {
                             Text(
                                 text = chipLabel,
-                                color = if (isSelected) DarkGraphite else KickoffPeachCream,
+                                color = if (isSelected) KickoffAlabasterIvory else KickoffAgedParchment,
                                 fontSize = 9.5.sp,
                                 fontWeight = if (isSelected) FontWeight.ExtraBold else FontWeight.SemiBold,
                                 maxLines = 1,
@@ -557,7 +548,7 @@ fun UserCountryZoneBottomSheet(
 
     ModalBottomSheet(
         onDismissRequest = onDismiss,
-        containerColor = KickoffOceanBase,
+        containerColor = KickoffObsidianBlack,
         modifier = Modifier.testTag("user_country_zone_bottom_sheet")
     ) {
         Column(
@@ -578,13 +569,13 @@ fun UserCountryZoneBottomSheet(
                         modifier = Modifier
                             .size(36.dp)
                             .clip(CircleShape)
-                            .background(KickoffTropicalTeal.copy(alpha = 0.16f))
-                            .border(1.dp, KickoffTropicalTeal.copy(alpha = 0.65f), CircleShape)
+                            .background(KickoffImperialNavy)
+                            .border(1.dp, KickoffTerracotta.copy(alpha = 0.70f), CircleShape)
                     ) {
                         Icon(
                             imageVector = Icons.Default.Public,
                             contentDescription = null,
-                            tint = KickoffTropicalTeal,
+                            tint = KickoffTerracotta,
                             modifier = Modifier.size(19.dp)
                         )
                     }
@@ -592,13 +583,13 @@ fun UserCountryZoneBottomSheet(
                     Column {
                         Text(
                             text = "The USER's Zone",
-                            color = KickoffPeachCream,
+                            color = KickoffAlabasterIvory,
                             fontSize = 18.sp,
                             fontWeight = FontWeight.ExtraBold
                         )
                         Text(
                             text = "Sync Winter/Summer timezone, kickoff clocks & TV channels",
-                            color = ChampagneMuted,
+                            color = KickoffAgedParchment,
                             fontSize = 11.5.sp
                         )
                     }
@@ -610,7 +601,7 @@ fun UserCountryZoneBottomSheet(
                     Icon(
                         imageVector = Icons.Default.Close,
                         contentDescription = "Close",
-                        tint = KickoffPeachCream
+                        tint = KickoffAlabasterIvory
                     )
                 }
             }
@@ -639,7 +630,7 @@ fun UserCountryZoneBottomSheet(
                 placeholder = {
                     Text(
                         text = "Search country or TV network (Morocco, France, UK, Canal+, Sky, beIN)...",
-                        color = ChampagneMuted,
+                        color = KickoffAgedParchment.copy(alpha = 0.65f),
                         fontSize = 12.sp
                     )
                 },
@@ -647,7 +638,7 @@ fun UserCountryZoneBottomSheet(
                     Icon(
                         imageVector = Icons.Default.Search,
                         contentDescription = "Search Country Zone",
-                        tint = KickoffTropicalTeal
+                        tint = KickoffTerracotta
                     )
                 },
                 trailingIcon = {
@@ -656,19 +647,19 @@ fun UserCountryZoneBottomSheet(
                             Icon(
                                 imageVector = Icons.Default.Close,
                                 contentDescription = "Clear",
-                                tint = Champagne
+                                tint = KickoffAgedParchment
                             )
                         }
                     }
                 },
                 singleLine = true,
                 colors = OutlinedTextFieldDefaults.colors(
-                    focusedBorderColor = KickoffTropicalTeal,
-                    unfocusedBorderColor = Color.White.copy(alpha = 0.14f),
-                    focusedContainerColor = KickoffOceanSurface,
-                    unfocusedContainerColor = KickoffOceanSurface,
-                    focusedTextColor = Color.White,
-                    unfocusedTextColor = Color.White
+                    focusedBorderColor = KickoffTerracotta,
+                    unfocusedBorderColor = KickoffParchmentBorder,
+                    focusedContainerColor = KickoffCharcoalSlate,
+                    unfocusedContainerColor = KickoffCharcoalSlate,
+                    focusedTextColor = KickoffAlabasterIvory,
+                    unfocusedTextColor = KickoffAlabasterIvory
                 ),
                 shape = RoundedCornerShape(12.dp),
                 modifier = Modifier
@@ -686,11 +677,11 @@ fun UserCountryZoneBottomSheet(
                 items(BroadcastMacroRegion.entries, key = { it.name }) { region ->
                     val isSelected = selectedMacroRegion == region
                     Surface(
-                        color = if (isSelected) KickoffTropicalTeal else KickoffOceanSurface,
+                        color = if (isSelected) KickoffTerracotta else KickoffCharcoalSlate,
                         shape = RoundedCornerShape(50),
                         border = BorderStroke(
                             width = 0.9.dp,
-                            color = if (isSelected) KickoffPeachCream else Color.White.copy(alpha = 0.14f)
+                            color = if (isSelected) KickoffAlabasterIvory else KickoffParchmentBorder
                         ),
                         modifier = Modifier
                             .clip(RoundedCornerShape(50))
@@ -699,7 +690,7 @@ fun UserCountryZoneBottomSheet(
                     ) {
                         Text(
                             text = region.displayTitle,
-                            color = if (isSelected) DarkGraphite else Champagne,
+                            color = if (isSelected) KickoffAlabasterIvory else KickoffAgedParchment,
                             fontSize = 11.sp,
                             fontWeight = if (isSelected) FontWeight.ExtraBold else FontWeight.SemiBold,
                             modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp)
@@ -753,15 +744,15 @@ private fun ActiveCountryZoneTelemetryBanner(
     }
 
     Surface(
-        color = KickoffOceanSurface,
+        color = KickoffImperialNavy,
         shape = RoundedCornerShape(16.dp),
         border = BorderStroke(
             width = 1.1.dp,
             brush = Brush.horizontalGradient(
                 listOf(
-                    KickoffTropicalTeal,
-                    KickoffPeachCream.copy(alpha = 0.65f),
-                    AmberGold
+                    KickoffTerracotta,
+                    KickoffAgedParchment.copy(alpha = 0.65f),
+                    KickoffTerracotta
                 )
             )
         ),
@@ -773,8 +764,8 @@ private fun ActiveCountryZoneTelemetryBanner(
                 .background(
                     Brush.horizontalGradient(
                         listOf(
-                            KickoffOceanSurface,
-                            KickoffOceanElevated
+                            KickoffImperialNavy,
+                            KickoffCharcoalSlate
                         )
                     )
                 )
@@ -799,19 +790,19 @@ private fun ActiveCountryZoneTelemetryBanner(
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             Text(
                                 text = zone.countryName,
-                                color = Color.White,
+                                color = KickoffAlabasterIvory,
                                 fontSize = 15.sp,
                                 fontWeight = FontWeight.ExtraBold
                             )
                             Spacer(modifier = Modifier.width(6.dp))
                             Surface(
-                                color = KickoffTropicalTeal.copy(alpha = 0.20f),
+                                color = KickoffTerracotta.copy(alpha = 0.22f),
                                 shape = RoundedCornerShape(50),
-                                border = BorderStroke(0.7.dp, KickoffTropicalTeal)
+                                border = BorderStroke(0.7.dp, KickoffTerracotta)
                             ) {
                                 Text(
                                     text = "ACTIVE ZONE",
-                                    color = KickoffTropicalTeal,
+                                    color = KickoffAlabasterIvory,
                                     fontSize = 8.sp,
                                     fontWeight = FontWeight.ExtraBold,
                                     modifier = Modifier.padding(horizontal = 6.dp, vertical = 1.5.dp)
@@ -820,7 +811,7 @@ private fun ActiveCountryZoneTelemetryBanner(
                         }
                         Text(
                             text = zone.getDualSeasonBadgeSummary(),
-                            color = Champagne,
+                            color = KickoffAgedParchment,
                             fontSize = 10.sp,
                             fontWeight = FontWeight.SemiBold
                         )
@@ -829,9 +820,9 @@ private fun ActiveCountryZoneTelemetryBanner(
 
                 // Auto-Detect Device Zone CTA
                 Surface(
-                    color = AmberGold.copy(alpha = 0.16f),
+                    color = KickoffObsidianBlack,
                     shape = RoundedCornerShape(10.dp),
-                    border = BorderStroke(0.8.dp, AmberGold.copy(alpha = 0.7f)),
+                    border = BorderStroke(0.8.dp, KickoffTerracotta.copy(alpha = 0.7f)),
                     modifier = Modifier
                         .clip(RoundedCornerShape(10.dp))
                         .clickable { onAutoDetect() }
@@ -844,13 +835,13 @@ private fun ActiveCountryZoneTelemetryBanner(
                         Icon(
                             imageVector = Icons.Default.LocationOn,
                             contentDescription = "Auto-Detect Country",
-                            tint = AmberGold,
+                            tint = KickoffTerracotta,
                             modifier = Modifier.size(13.dp)
                         )
                         Spacer(modifier = Modifier.width(4.dp))
                         Text(
                             text = "Auto-Detect",
-                            color = KickoffPeachCream,
+                            color = KickoffAlabasterIvory,
                             fontSize = 10.sp,
                             fontWeight = FontWeight.ExtraBold
                         )
@@ -874,9 +865,9 @@ private fun ActiveCountryZoneTelemetryBanner(
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Surface(
-                    color = Color(0xFF05121A),
+                    color = KickoffObsidianBlack,
                     shape = RoundedCornerShape(8.dp),
-                    border = BorderStroke(0.7.dp, AmberGold.copy(alpha = 0.55f))
+                    border = BorderStroke(0.7.dp, KickoffAgedParchment.copy(alpha = 0.50f))
                 ) {
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
@@ -885,13 +876,13 @@ private fun ActiveCountryZoneTelemetryBanner(
                         Icon(
                             imageVector = Icons.Default.Schedule,
                             contentDescription = null,
-                            tint = AmberGold,
+                            tint = KickoffAgedParchment,
                             modifier = Modifier.size(12.dp)
                         )
                         Spacer(modifier = Modifier.width(4.dp))
                         Text(
                             text = "$localClock • $utcBadge",
-                            color = AmberGold,
+                            color = KickoffAlabasterIvory,
                             fontSize = 10.sp,
                             fontWeight = FontWeight.ExtraBold
                         )
@@ -899,9 +890,9 @@ private fun ActiveCountryZoneTelemetryBanner(
                 }
 
                 Surface(
-                    color = Color(0xFF05121A),
+                    color = KickoffObsidianBlack,
                     shape = RoundedCornerShape(8.dp),
-                    border = BorderStroke(0.7.dp, KickoffTropicalTeal.copy(alpha = 0.50f)),
+                    border = BorderStroke(0.7.dp, KickoffTerracotta.copy(alpha = 0.55f)),
                     modifier = Modifier.weight(1f)
                 ) {
                     Row(
@@ -911,13 +902,13 @@ private fun ActiveCountryZoneTelemetryBanner(
                         Icon(
                             imageVector = Icons.Default.LiveTv,
                             contentDescription = null,
-                            tint = KickoffTropicalTeal,
+                            tint = KickoffTerracotta,
                             modifier = Modifier.size(12.dp)
                         )
                         Spacer(modifier = Modifier.width(5.dp))
                         Text(
                             text = zone.primaryTvProviderName,
-                            color = KickoffPeachCream,
+                            color = KickoffAlabasterIvory,
                             fontSize = 10.sp,
                             fontWeight = FontWeight.Bold,
                             maxLines = 1,
@@ -928,11 +919,11 @@ private fun ActiveCountryZoneTelemetryBanner(
 
                 // 1-Tap Pin Country's Domestic Spotlight Competition
                 Surface(
-                    color = if (spotlightPinnedFeedback) KickoffTropicalTeal else Color(0xFF072330),
+                    color = if (spotlightPinnedFeedback) KickoffTerracotta else KickoffObsidianBlack,
                     shape = RoundedCornerShape(8.dp),
                     border = BorderStroke(
                         0.7.dp,
-                        if (spotlightPinnedFeedback) KickoffPeachCream else KickoffTropicalTeal.copy(alpha = 0.65f)
+                        if (spotlightPinnedFeedback) KickoffAlabasterIvory else KickoffTerracotta.copy(alpha = 0.65f)
                     ),
                     modifier = Modifier
                         .clip(RoundedCornerShape(8.dp))
@@ -946,13 +937,13 @@ private fun ActiveCountryZoneTelemetryBanner(
                         Icon(
                             imageVector = if (spotlightPinnedFeedback) Icons.Default.Check else Icons.Default.EmojiEvents,
                             contentDescription = null,
-                            tint = if (spotlightPinnedFeedback) DarkGraphite else AmberGold,
+                            tint = if (spotlightPinnedFeedback) KickoffAlabasterIvory else KickoffTerracotta,
                             modifier = Modifier.size(11.dp)
                         )
                         Spacer(modifier = Modifier.width(3.dp))
                         Text(
                             text = if (spotlightPinnedFeedback) "Pinned #1" else "Pin League",
-                            color = if (spotlightPinnedFeedback) DarkGraphite else KickoffPeachCream,
+                            color = KickoffAlabasterIvory,
                             fontSize = 9.5.sp,
                             fontWeight = FontWeight.ExtraBold
                         )
@@ -985,11 +976,11 @@ private fun CountryZoneOptionCard(
     }
 
     Surface(
-        color = if (isSelected) Color(0xFF0B2938) else KickoffOceanSurface,
+        color = if (isSelected) KickoffImperialNavy else KickoffCharcoalSlate,
         shape = RoundedCornerShape(14.dp),
         border = BorderStroke(
             width = if (isSelected) 1.3.dp else 0.8.dp,
-            color = if (isSelected) KickoffTropicalTeal else Color.White.copy(alpha = 0.10f)
+            color = if (isSelected) KickoffTerracotta else KickoffParchmentBorder
         ),
         modifier = Modifier
             .fillMaxWidth()
@@ -1015,12 +1006,12 @@ private fun CountryZoneOptionCard(
                         .size(40.dp)
                         .clip(CircleShape)
                         .background(
-                            if (isSelected) KickoffTropicalTeal.copy(alpha = 0.22f)
-                            else Color.White.copy(alpha = 0.06f)
+                            if (isSelected) KickoffTerracotta.copy(alpha = 0.22f)
+                            else KickoffObsidianBlack
                         )
                         .border(
                             width = 0.8.dp,
-                            color = if (isSelected) KickoffTropicalTeal else Color.White.copy(alpha = 0.14f),
+                            color = if (isSelected) KickoffTerracotta else KickoffParchmentBorder,
                             shape = CircleShape
                         )
                 ) {
@@ -1036,19 +1027,19 @@ private fun CountryZoneOptionCard(
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Text(
                             text = zone.countryName,
-                            color = Color.White,
+                            color = KickoffAlabasterIvory,
                             fontSize = 14.sp,
                             fontWeight = FontWeight.ExtraBold
                         )
                         Spacer(modifier = Modifier.width(6.dp))
                         Surface(
-                            color = AmberGold.copy(alpha = 0.16f),
+                            color = KickoffObsidianBlack,
                             shape = RoundedCornerShape(4.dp),
-                            border = BorderStroke(0.5.dp, AmberGold.copy(alpha = 0.65f))
+                            border = BorderStroke(0.5.dp, KickoffAgedParchment.copy(alpha = 0.55f))
                         ) {
                             Text(
                                 text = "$localClock • $utcBadge",
-                                color = AmberGold,
+                                color = KickoffAgedParchment,
                                 fontSize = 8.5.sp,
                                 fontWeight = FontWeight.ExtraBold,
                                 modifier = Modifier.padding(horizontal = 5.dp, vertical = 1.dp)
@@ -1057,7 +1048,7 @@ private fun CountryZoneOptionCard(
                         Spacer(modifier = Modifier.width(5.dp))
                         Text(
                             text = dualSeasonSummary,
-                            color = ChampagneMuted,
+                            color = KickoffAgedParchment,
                             fontSize = 8.5.sp,
                             fontWeight = FontWeight.SemiBold,
                             maxLines = 1
@@ -1068,7 +1059,7 @@ private fun CountryZoneOptionCard(
 
                     Text(
                         text = "TV: ${zone.primaryTvProviderName}",
-                        color = if (isSelected) KickoffPeachCream else Champagne,
+                        color = if (isSelected) KickoffAlabasterIvory else KickoffAgedParchment,
                         fontSize = 11.sp,
                         fontWeight = FontWeight.SemiBold,
                         maxLines = 1,
@@ -1083,13 +1074,13 @@ private fun CountryZoneOptionCard(
                     ) {
                         zone.iptvCategoryPrefixes.take(3).forEach { prefix ->
                             Surface(
-                                color = Color(0xFF05121A),
+                                color = KickoffObsidianBlack,
                                 shape = RoundedCornerShape(4.dp),
-                                border = BorderStroke(0.5.dp, KickoffTropicalTeal.copy(alpha = 0.45f))
+                                border = BorderStroke(0.5.dp, KickoffTerracotta.copy(alpha = 0.55f))
                             ) {
                                 Text(
                                     text = prefix,
-                                    color = KickoffTropicalTeal,
+                                    color = KickoffAlabasterIvory,
                                     fontSize = 8.sp,
                                     fontWeight = FontWeight.ExtraBold,
                                     modifier = Modifier.padding(horizontal = 4.5.dp, vertical = 1.dp)
@@ -1098,7 +1089,7 @@ private fun CountryZoneOptionCard(
                         }
                         Text(
                             text = "• ${zone.satelliteOrPlatformSummary}",
-                            color = ChampagneMuted,
+                            color = KickoffAgedParchment,
                             fontSize = 9.5.sp,
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis
@@ -1115,12 +1106,12 @@ private fun CountryZoneOptionCard(
                     modifier = Modifier
                         .size(26.dp)
                         .clip(CircleShape)
-                        .background(KickoffTropicalTeal)
+                        .background(KickoffTerracotta)
                 ) {
                     Icon(
                         imageVector = Icons.Default.Check,
                         contentDescription = "Selected Country Zone",
-                        tint = DarkGraphite,
+                        tint = KickoffAlabasterIvory,
                         modifier = Modifier.size(16.dp)
                     )
                 }
@@ -1128,3 +1119,4 @@ private fun CountryZoneOptionCard(
         }
     }
 }
+
