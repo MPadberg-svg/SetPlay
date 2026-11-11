@@ -4733,8 +4733,505 @@ class TvSyncDeviceSeparationComposeTest {
         assertEquals(Color(0x2ED8CBB3), KickoffParchmentBorder)
         assertEquals(Color(0xB3D8CBB3), KickoffParchmentMuted)
         assertEquals(Color(0xFF272724), KickoffCharcoalElevated)
+
+        // 6. Phase 1 Strict Senior First-Team Guard, Date Verification, National Team Deduplication & Timezone Source-of-Truth
+        assertFalse(
+            "U21 fixtures must be rejected by isSeniorFirstTeamFixture",
+            com.example.data.repository.FootballRepository.isSeniorFirstTeamFixture("Millwall U21", "Brighton U21", "Premier League 2", "Regular Season")
+        )
+        assertFalse(
+            "Youth/Reserve teams must be rejected even if league name says Premier League",
+            com.example.data.repository.FootballRepository.isSeniorFirstTeamFixture("Arsenal U21", "Chelsea U21", "English Premier League", "Round 12")
+        )
+        assertFalse(
+            "Reserve squads (Castilla / B team) must be rejected",
+            com.example.data.repository.FootballRepository.isSeniorFirstTeamFixture("Real Madrid Castilla", "Barcelona B", "LaLiga", "Matchday 5")
+        )
+        assertTrue(
+            "Senior first-team fixtures must be accepted",
+            com.example.data.repository.FootballRepository.isSeniorFirstTeamFixture("Arsenal", "Chelsea", "English Premier League", "Round 12")
+        )
+
+        // Verify expectedIsoDate filtering rejects wrong-date fixtures
+        assertTrue(
+            com.example.data.repository.FootballRepository.doesEventMatchExpectedIsoDate(
+                rawIsoOrDate = "2026-03-31T19:00:00+00:00",
+                expectedIsoDate = "2026-03-31"
+            )
+        )
+        assertFalse(
+            "Stale or wrong-date fixtures must be rejected when expectedIsoDate is provided",
+            com.example.data.repository.FootballRepository.doesEventMatchExpectedIsoDate(
+                rawIsoOrDate = "2026-02-14T19:00:00+00:00",
+                expectedIsoDate = "2026-03-31"
+            )
+        )
+
+        // Verify Turkiye / Türkiye / Turkey normalize identically and merge into a single fixture
+        assertEquals("turkiye", com.example.data.repository.InternationalRankingResolver.normalizeNationalTeamName("Türkiye"))
+        assertEquals("turkiye", com.example.data.repository.InternationalRankingResolver.normalizeNationalTeamName("Turkiye"))
+        assertEquals("turkiye", com.example.data.repository.InternationalRankingResolver.normalizeNationalTeamName("Turkey"))
+
+        val db = Room.inMemoryDatabaseBuilder(context, StreamVaultDatabase::class.java)
+            .allowMainThreadQueries()
+            .build()
+        try {
+            val repo = com.example.data.repository.FootballRepository(
+                context = context,
+                favoriteTeamDao = db.favoriteTeamDao(),
+                tournamentPreferenceDao = db.tournamentPreferenceDao(),
+                streamDao = db.streamDao()
+            )
+            val multiProviderTurkiyeJson365 = """
+                {
+                  "games": [
+                    {
+                      "id": 99001,
+                      "competitionId": 352,
+                      "competitionDisplayName": "International Friendly",
+                      "startTime": "2025-05-10T18:45:00+00:00",
+                      "statusGroup": 2,
+                      "statusText": "Kickoff",
+                      "homeCompetitor": {"id": 801, "name": "Turkiye", "score": -1},
+                      "awayCompetitor": {"id": 802, "name": "Belgium", "score": -1}
+                    },
+                    {
+                      "id": 99002,
+                      "competitionId": 352,
+                      "competitionDisplayName": "Friendly Match",
+                      "startTime": "2025-05-10T18:45:00+00:00",
+                      "statusGroup": 2,
+                      "statusText": "Kickoff",
+                      "homeCompetitor": {"id": 803, "name": "Turkey", "score": -1},
+                      "awayCompetitor": {"id": 804, "name": "Belgium", "score": -1}
+                    }
+                  ]
+                }
+            """.trimIndent()
+            val parsedTurkiyeFixtures = repo.parse365ScoresAllScoresJson(
+                rawJson = multiProviderTurkiyeJson365,
+                dayTab = com.example.data.repository.MatchDayTab.TODAY,
+                expectedIsoDate = "2025-05-10"
+            )
+            val mergedTurkiyeMatches = repo.deduplicateMatchesByCanonicalTeams(parsedTurkiyeFixtures)
+            assertEquals(
+                "Turkiye vs Belgium and Turkey vs Belgium must merge into 1 canonical fixture",
+                1,
+                mergedTurkiyeMatches.size
+            )
+            assertEquals("Türkiye", mergedTurkiyeMatches[0].homeTeamName)
+            assertEquals("Belgium", mergedTurkiyeMatches[0].awayTeamName)
+        } finally {
+            db.close()
+        }
+
+        // Verify SeasonTimeMode overload of formatDynamicKickoffTime for Morocco Winter (GMT+0) vs Summer (GMT+1)
+        val moroccoZone = com.example.data.repository.UserZoneRegistry.getZoneByCode("MA")
+        val sampleUtc20hEpochMs = 1746907200000L // 2025-05-10T20:00:00Z
+        assertEquals(
+            "20:00",
+            com.example.data.repository.formatDynamicKickoffTime(
+                sampleUtc20hEpochMs,
+                moroccoZone,
+                com.example.data.repository.SeasonTimeMode.WINTER
+            )
+        )
+        assertEquals(
+            "21:00",
+            com.example.data.repository.formatDynamicKickoffTime(
+                sampleUtc20hEpochMs,
+                moroccoZone,
+                com.example.data.repository.SeasonTimeMode.SUMMER
+            )
+        )
+
+        // =========================================================================
+        // 8. Phase 2: KickoffSourceMonitor & Encrypted Runtime API Key Management
+        // =========================================================================
+        val sourceMonitor = com.example.data.repository.KickoffSourceMonitor(
+            context = context,
+            httpClient = IptvRepository.sharedOkHttpClient
+        )
+        assertEquals(6, com.example.data.repository.KickoffProviderId.values().size)
+        val initialStates = sourceMonitor.sourceHealthFlow.value
+        assertEquals(6, initialStates.size)
+        assertTrue(initialStates.any { it.provider == com.example.data.repository.KickoffProviderId.API_FOOTBALL })
+        assertTrue(initialStates.any { it.provider == com.example.data.repository.KickoffProviderId.FOOTBALL_DATA_ORG })
+        assertTrue(initialStates.any { it.provider == com.example.data.repository.KickoffProviderId.SPORT_API_AI })
+        assertTrue(initialStates.any { it.provider == com.example.data.repository.KickoffProviderId.ESPN_SOCCER })
+        assertTrue(initialStates.any { it.provider == com.example.data.repository.KickoffProviderId.SOFASCORE_LIVE })
+        assertTrue(initialStates.any { it.provider == com.example.data.repository.KickoffProviderId.THESPORTSDB })
+
+        // Verify passive runtime HTTP monitoring (200 OK -> HEALTHY, 429 -> QUOTA_WARNING, 401 -> KEY_INVALID_OR_EXPIRED)
+        sourceMonitor.recordRuntimeResponse(
+            provider = com.example.data.repository.KickoffProviderId.API_FOOTBALL,
+            httpCode = 200,
+            remainingQuota = 84,
+            errorNote = "Live match sync succeeded"
+        )
+        val healthyApiFootball = sourceMonitor.sourceHealthFlow.value.first {
+            it.provider == com.example.data.repository.KickoffProviderId.API_FOOTBALL
+        }
+        assertEquals(com.example.data.repository.SourceHealthStatus.HEALTHY, healthyApiFootball.status)
+        assertEquals("84 / 100 req today", healthyApiFootball.remainingQuotaLabel)
+
+        sourceMonitor.recordRuntimeResponse(
+            provider = com.example.data.repository.KickoffProviderId.FOOTBALL_DATA_ORG,
+            httpCode = 429
+        )
+        val rateLimitedFd = sourceMonitor.sourceHealthFlow.value.first {
+            it.provider == com.example.data.repository.KickoffProviderId.FOOTBALL_DATA_ORG
+        }
+        assertEquals(com.example.data.repository.SourceHealthStatus.QUOTA_WARNING, rateLimitedFd.status)
+        assertNotNull(sourceMonitor.activeSourceAlertFlow.value)
+
+        sourceMonitor.dismissAlert()
+        assertNull(sourceMonitor.activeSourceAlertFlow.value)
+
+        sourceMonitor.recordRuntimeResponse(
+            provider = com.example.data.repository.KickoffProviderId.SPORT_API_AI,
+            httpCode = 401
+        )
+        val expiredSportApi = sourceMonitor.sourceHealthFlow.value.first {
+            it.provider == com.example.data.repository.KickoffProviderId.SPORT_API_AI
+        }
+        assertEquals(com.example.data.repository.SourceHealthStatus.KEY_INVALID_OR_EXPIRED, expiredSportApi.status)
+        assertTrue(sourceMonitor.activeSourceAlertFlow.value?.contains("SportAPI.ai") == true)
+
+        // Verify API-Football /status validation response parser (Active Account vs Token Error)
+        val validStatusJson = """
+            {
+              "errors": [],
+              "response": {
+                "account": {"firstname": "Demo", "lastname": "User"},
+                "subscription": {"plan": "Pro", "active": true},
+                "requests": {"current": 12, "limit_day": 7500}
+              }
+            }
+        """.trimIndent()
+        val parsedValid = sourceMonitor.parseValidationResponse(
+            provider = com.example.data.repository.KickoffProviderId.API_FOOTBALL,
+            httpCode = 200,
+            responseBody = validStatusJson,
+            remainingHeader = null
+        )
+        assertTrue(parsedValid.isValid)
+        assertEquals(com.example.data.repository.SourceHealthStatus.HEALTHY, parsedValid.status)
+        assertEquals("7488 / 7500 req today", parsedValid.remainingQuotaLabel)
+
+        val invalidStatusJson = """
+            {
+              "errors": {"token": "Error/Missing application key. Go to https://www.api-football.com to learn how to get your API application key."}
+            }
+        """.trimIndent()
+        val parsedInvalid = sourceMonitor.parseValidationResponse(
+            provider = com.example.data.repository.KickoffProviderId.API_FOOTBALL,
+            httpCode = 200,
+            responseBody = invalidStatusJson,
+            remainingHeader = null
+        )
+        assertFalse(parsedInvalid.isValid)
+        assertEquals(com.example.data.repository.SourceHealthStatus.KEY_INVALID_OR_EXPIRED, parsedInvalid.status)
+
+        // Verify encrypted custom key storage and resetToDefaultKey
+        sourceMonitor.saveCustomApiKeyInternal(
+            com.example.data.repository.KickoffProviderId.API_FOOTBALL,
+            "custom_apifootball_test_key_998877"
+        )
+        assertEquals(
+            "custom_apifootball_test_key_998877",
+            sourceMonitor.resolveActiveApiKey(com.example.data.repository.KickoffProviderId.API_FOOTBALL)
+        )
+        assertTrue(
+            sourceMonitor.sourceHealthFlow.value.first {
+                it.provider == com.example.data.repository.KickoffProviderId.API_FOOTBALL
+            }.isUsingCustomKey
+        )
+        sourceMonitor.resetToDefaultKey(com.example.data.repository.KickoffProviderId.API_FOOTBALL)
+        assertFalse(
+            sourceMonitor.sourceHealthFlow.value.first {
+                it.provider == com.example.data.repository.KickoffProviderId.API_FOOTBALL
+            }.isUsingCustomKey
+        )
+
+        // =========================================================================
+        // 9. Phase 3: "Floodlight Noir & Pitch Emerald" Brand Color Kit & Competition Accents
+        // =========================================================================
+        assertEquals(Color(0xFF070B0A), com.example.ui.theme.KickoffPitchBlack)
+        assertEquals(Color(0xFF0E1614), com.example.ui.theme.KickoffTurfSurface)
+        assertEquals(Color(0xFF15211E), com.example.ui.theme.KickoffCanopyElevated)
+        assertEquals(Color(0xFF1C2C28), com.example.ui.theme.KickoffGlassWell)
+        assertEquals(Color(0xFF10B981), com.example.ui.theme.KickoffPitchEmerald)
+        assertEquals(Color(0xFFD4FF33), com.example.ui.theme.KickoffFloodlightVolt)
+        assertEquals(Color(0xFF0B3B2D), com.example.ui.theme.KickoffStadiumForest)
+        assertEquals(Color(0xFF0F4C3A), com.example.ui.theme.KickoffStadiumTurfAlt)
+        assertEquals(Color(0xFFFF2E54), com.example.ui.theme.KickoffLiveCrimson)
+        assertEquals(Color(0xFFF59E0B), com.example.ui.theme.KickoffTrophyGold)
+        assertEquals(Color(0xFFF2F7F5), com.example.ui.theme.KickoffFloodlightWhite)
+        assertEquals(Color(0xFF99AEA7), com.example.ui.theme.KickoffMistSilver)
+        assertEquals(Color(0xFF5C736B), com.example.ui.theme.KickoffSlateMuted)
+        assertEquals(Color(0x2910B981), com.example.ui.theme.KickoffEmeraldBorder)
+        assertEquals(Color(0x33D4FF33), com.example.ui.theme.KickoffVoltGlow)
+        assertEquals(Color(0x33FF2E54), com.example.ui.theme.KickoffCrimsonGlow)
+        assertEquals(Color(0x14F2F7F5), com.example.ui.theme.KickoffRowDivider)
+
+        assertEquals(com.example.ui.theme.CompUclBlue, com.example.ui.home.resolveCompetitionAccentColor("ucl"))
+        assertEquals(com.example.ui.theme.CompUclBlue, com.example.ui.home.resolveCompetitionAccentColor("uefa_cl"))
+        assertEquals(com.example.ui.theme.CompUelOrange, com.example.ui.home.resolveCompetitionAccentColor("uefa_el"))
+        assertEquals(com.example.ui.theme.CompEplViolet, com.example.ui.home.resolveCompetitionAccentColor("epl"))
+        assertEquals(com.example.ui.theme.CompBotolaCrimson, com.example.ui.home.resolveCompetitionAccentColor("botola_pro"))
+        assertEquals(com.example.ui.theme.CompCafEmerald, com.example.ui.home.resolveCompetitionAccentColor("caf_cl"))
+        assertEquals(com.example.ui.theme.CompCafEmerald, com.example.ui.home.resolveCompetitionAccentColor("caf_confed"))
+        assertEquals(com.example.ui.theme.CompIntlGold, com.example.ui.home.resolveCompetitionAccentColor("intl_friendlies"))
+        assertEquals(com.example.ui.theme.CompIntlGold, com.example.ui.home.resolveCompetitionAccentColor("intl_official"))
+
+        // =========================================================================
+        // 10. Phase 4: HomeScreen Symmetrical Broadcast Telemetry & Chronological Grouping
+        // =========================================================================
+        val sampleLiveMatch = com.example.data.repository.FootballMatch(
+            matchId = "m_live_38",
+            tournamentId = "uefa_cl",
+            tournamentName = "UEFA Champions League",
+            tournamentRegion = "Europe",
+            dayTab = com.example.data.repository.MatchDayTab.TODAY,
+            kickoffTimeFormatted = "20:00",
+            kickoffDateFormatted = "Today",
+            status = com.example.data.repository.MatchStatus.LIVE,
+            liveMinuteOrBadge = "1H • 38'",
+            homeTeamId = "rm",
+            homeTeamName = "Real Madrid",
+            homeTeamBadge = "⚪",
+            homeScore = 1,
+            awayTeamId = "ars",
+            awayTeamName = "Arsenal",
+            awayTeamBadge = "🔴",
+            awayScore = 0,
+            stadiumName = "Santiago Bernabéu",
+            cityName = "Madrid",
+            beinChannel = "beIN Sports 1 HD",
+            beinChannelNumberHint = "beIN 1"
+        )
+        val liveTelemetry1H = com.example.ui.home.parseLiveMatchClockTelemetry(sampleLiveMatch)
+        assertTrue(liveTelemetry1H.periodBadge.contains("1ST HALF"))
+        assertEquals("38'", liveTelemetry1H.heroReadout)
+        assertTrue(liveTelemetry1H.progressFraction in 0.40f..0.45f)
+
+        val liveTelemetryHT = com.example.ui.home.parseLiveMatchClockTelemetry(
+            sampleLiveMatch.copy(status = com.example.data.repository.MatchStatus.HALFTIME, liveMinuteOrBadge = "HT")
+        )
+        assertEquals("HALF TIME", liveTelemetryHT.periodBadge)
+        assertEquals("HT", liveTelemetryHT.heroReadout)
+        assertEquals(0.50f, liveTelemetryHT.progressFraction, 0.01f)
+    }
+
+    @Test
+    fun testKickoffV4SeniorTeamGateDateVerificationSourceMonitorAndBrandKit() {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+
+        // 1. Senior First-Team Gate (isSeniorFirstTeamFixture)
+        assertFalse(
+            com.example.data.repository.FootballRepository.isSeniorFirstTeamFixture(
+                "Millwall U21",
+                "Brighton U21",
+                "Premier League 2",
+                "Regular Season"
+            )
+        )
+        assertFalse(
+            com.example.data.repository.FootballRepository.isSeniorFirstTeamFixture(
+                "Arsenal U23",
+                "Chelsea U23",
+                "English Premier League",
+                "Round 10"
+            )
+        )
+        assertFalse(
+            com.example.data.repository.FootballRepository.isSeniorFirstTeamFixture(
+                "Barcelona B",
+                "Real Madrid Castilla",
+                "LaLiga",
+                "Matchday 8"
+            )
+        )
+        assertFalse(
+            com.example.data.repository.FootballRepository.isSeniorFirstTeamFixture(
+                "Chelsea Women",
+                "Arsenal Women",
+                "English Premier League",
+                "Round 4"
+            )
+        )
+        assertTrue(
+            com.example.data.repository.FootballRepository.isSeniorFirstTeamFixture(
+                "Arsenal",
+                "Liverpool",
+                "English Premier League",
+                "Matchday 28"
+            )
+        )
+        assertTrue(
+            com.example.data.repository.FootballRepository.isSeniorFirstTeamFixture(
+                "Raja Club Athletic",
+                "Wydad AC",
+                "Botola Pro Inwi",
+                "Round 21"
+            )
+        )
+
+        // 2. Foreign League & Wrong-Date Rejection in parse365ScoresAllScoresJson + National-Team Deduplication & Top-N Rule
+        val db = Room.inMemoryDatabaseBuilder(context, StreamVaultDatabase::class.java)
+            .allowMainThreadQueries()
+            .build()
+        try {
+            val repo = com.example.data.repository.FootballRepository(
+                context = context,
+                favoriteTeamDao = db.favoriteTeamDao(),
+                tournamentPreferenceDao = db.tournamentPreferenceDao(),
+                streamDao = db.streamDao()
+            )
+            val foreignAndStale365Json = """
+                {
+                  "games": [
+                    {
+                      "id": 88001,
+                      "competitionId": 552,
+                      "competitionDisplayName": "Egyptian Cup",
+                      "countryName": "Egypt",
+                      "startTime": "2025-05-10T18:00:00+00:00",
+                      "statusGroup": 2,
+                      "statusText": "Kickoff",
+                      "homeCompetitor": {"id": 501, "name": "Al Mokawloon Al Arab", "score": -1},
+                      "awayCompetitor": {"id": 502, "name": "Egypt Telecom", "score": -1}
+                    },
+                    {
+                      "id": 88002,
+                      "competitionId": 9991,
+                      "competitionDisplayName": "Premier League",
+                      "countryName": "Jamaica",
+                      "startTime": "2025-05-10T19:00:00+00:00",
+                      "statusGroup": 2,
+                      "statusText": "Kickoff",
+                      "homeCompetitor": {"id": 503, "name": "Arnett Gardens", "score": -1},
+                      "awayCompetitor": {"id": 504, "name": "Waterhouse FC", "score": -1}
+                    },
+                    {
+                      "id": 88003,
+                      "competitionId": 7,
+                      "competitionDisplayName": "Premier League",
+                      "countryName": "England",
+                      "startTime": "2025-05-09T19:00:00+00:00",
+                      "statusGroup": 2,
+                      "statusText": "Kickoff",
+                      "homeCompetitor": {"id": 505, "name": "Arsenal", "score": -1},
+                      "awayCompetitor": {"id": 506, "name": "Liverpool", "score": -1}
+                    },
+                    {
+                      "id": 88004,
+                      "competitionId": 7,
+                      "competitionDisplayName": "Premier League",
+                      "countryName": "England",
+                      "startTime": "2025-05-10T19:00:00+00:00",
+                      "statusGroup": 2,
+                      "statusText": "Kickoff",
+                      "homeCompetitor": {"id": 505, "name": "Arsenal", "score": -1},
+                      "awayCompetitor": {"id": 506, "name": "Liverpool", "score": -1}
+                    }
+                  ]
+                }
+            """.trimIndent()
+
+            val parsedValidMatches = repo.parse365ScoresAllScoresJson(
+                rawJson = foreignAndStale365Json,
+                dayTab = com.example.data.repository.MatchDayTab.TODAY,
+                expectedIsoDate = "2025-05-10"
+            )
+            assertEquals(1, parsedValidMatches.size)
+            assertEquals("Arsenal", parsedValidMatches[0].homeTeamName)
+            assertEquals("Liverpool", parsedValidMatches[0].awayTeamName)
+
+            // 3. National-Team Deduplication & Single-Team Top-N Rule
+            assertEquals(
+                com.example.data.repository.FootballRepository.normalizeTeamNameForMerge("Turkiye"),
+                com.example.data.repository.FootballRepository.normalizeTeamNameForMerge("Turkey")
+            )
+            val rankingResolver = com.example.data.repository.InternationalRankingResolver(
+                context = context,
+                httpClient = IptvRepository.sharedOkHttpClient
+            )
+            assertTrue(rankingResolver.isQualifiedInternationalFixture("Morocco", "Niger"))
+            assertFalse(rankingResolver.isQualifiedInternationalFixture("San Marino", "Liechtenstein"))
+        } finally {
+            db.close()
+        }
+
+        // 4. API Key Monitoring & Runtime Override (KickoffSourceMonitor)
+        val sourceMonitor = com.example.data.repository.KickoffSourceMonitor(
+            context = context,
+            httpClient = IptvRepository.sharedOkHttpClient
+        )
+        sourceMonitor.saveCustomApiKeyInternal(
+            com.example.data.repository.KickoffProviderId.API_FOOTBALL,
+            "v4_runtime_override_key_12345"
+        )
+        assertEquals(
+            "v4_runtime_override_key_12345",
+            sourceMonitor.resolveActiveApiKey(com.example.data.repository.KickoffProviderId.API_FOOTBALL)
+        )
+        sourceMonitor.recordRuntimeResponse(
+            provider = com.example.data.repository.KickoffProviderId.API_FOOTBALL,
+            httpCode = 401
+        )
+        assertEquals(
+            com.example.data.repository.SourceHealthStatus.KEY_INVALID_OR_EXPIRED,
+            sourceMonitor.sourceHealthFlow.value.first {
+                it.provider == com.example.data.repository.KickoffProviderId.API_FOOTBALL
+            }.status
+        )
+        sourceMonitor.resetToDefaultKey(com.example.data.repository.KickoffProviderId.API_FOOTBALL)
+        assertFalse(
+            sourceMonitor.sourceHealthFlow.value.first {
+                it.provider == com.example.data.repository.KickoffProviderId.API_FOOTBALL
+            }.isUsingCustomKey
+        )
+
+        // 5. Floodlight Noir & Pitch Emerald Brand Color Kit (Color.kt) & Clean Competition Header
+        assertEquals(Color(0xFF070B0A), com.example.ui.theme.KickoffPitchBlack)
+        assertEquals(Color(0xFF0E1614), com.example.ui.theme.KickoffTurfSurface)
+        assertEquals(Color(0xFF10B981), com.example.ui.theme.KickoffPitchEmerald)
+        assertEquals(Color(0xFFD4FF33), com.example.ui.theme.KickoffFloodlightVolt)
+        assertEquals(Color(0xFF0B3B2D), com.example.ui.theme.KickoffStadiumForest)
+        assertEquals(Color(0xFFFF2E54), com.example.ui.theme.KickoffLiveCrimson)
+
+        val intlMatch = com.example.data.repository.FootballMatch(
+            matchId = "intl_1",
+            tournamentId = "intl_official",
+            tournamentName = "International Official Fixtures",
+            tournamentRegion = "International",
+            dayTab = com.example.data.repository.MatchDayTab.TODAY,
+            kickoffTimeFormatted = "20:00",
+            kickoffDateFormatted = "Today",
+            status = com.example.data.repository.MatchStatus.UPCOMING,
+            liveMinuteOrBadge = "20:00",
+            homeTeamId = "mar",
+            homeTeamName = "Morocco",
+            homeTeamBadge = "",
+            homeScore = null,
+            awayTeamId = "nig",
+            awayTeamName = "Niger",
+            awayTeamBadge = "",
+            awayScore = null,
+            stadiumName = "Main Stadium",
+            cityName = "International",
+            beinChannel = "Arryadia TNT HD",
+            beinChannelNumberHint = "Arryadia"
+        )
+        assertEquals(
+            "INTERNATIONAL OFFICIAL FIXTURES",
+            com.example.ui.home.buildCleanCompetitionHeaderTitle(intlMatch)
+        )
     }
 }
+
 
 
 

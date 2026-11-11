@@ -288,6 +288,12 @@ class FootballRepository(
         httpClient = httpClient
     )
 
+    // 7. API Key Monitoring & Source Management Engine
+    val sourceMonitor = KickoffSourceMonitor(
+        context = context,
+        httpClient = httpClient
+    )
+
     internal fun passesInternationalQualificationFilter(
         tournament: TournamentCatalogItem,
         homeTeamName: String,
@@ -517,57 +523,24 @@ class FootballRepository(
     }
 
     internal fun resolveSportApiKey(): String {
-        val primary = try {
-            BuildConfig.SPORTAPI_AI_KEY.trim()
-        } catch (_: Exception) {
-            ""
-        }
-        if (primary.isNotBlank() &&
-            !primary.startsWith("YOUR_", ignoreCase = true) &&
-            !primary.startsWith("MY_", ignoreCase = true) &&
-            primary != "null"
-        ) {
-            return primary
-        }
-        val fallback = try {
-            BuildConfig.SPORT_API_KEY.trim()
-        } catch (_: Exception) {
-            ""
-        }
-        return if (fallback.isNotBlank() &&
-            !fallback.startsWith("YOUR_", ignoreCase = true) &&
-            !fallback.startsWith("MY_", ignoreCase = true) &&
-            fallback != "null"
-        ) {
-            fallback
-        } else {
-            ""
-        }
+        val defaultKey = Companion.resolveSportApiKey()
+        return sourceMonitor.resolveActiveApiKey(KickoffProviderId.SPORT_API_AI, defaultKey)
     }
 
     fun isSportApiKeyConfigured(): Boolean {
         return resolveSportApiKey().isNotEmpty()
     }
 
-    internal fun isApiFootballKeyConfigured(): Boolean = Companion.isApiFootballKeyConfigured()
+    internal fun isApiFootballKeyConfigured(): Boolean = resolveApiFootballKey().isNotEmpty()
 
-    internal fun resolveApiFootballKey(): String = Companion.resolveApiFootballKey()
+    internal fun resolveApiFootballKey(): String {
+        val defaultKey = Companion.resolveApiFootballKey()
+        return sourceMonitor.resolveActiveApiKey(KickoffProviderId.API_FOOTBALL, defaultKey)
+    }
 
     internal fun resolveFootballDataKey(): String {
-        val key = try {
-            BuildConfig.FOOTBALL_DATA_KEY.trim()
-        } catch (_: Exception) {
-            ""
-        }
-        return if (key.isNotBlank() &&
-            !key.startsWith("YOUR_", ignoreCase = true) &&
-            !key.startsWith("MY_", ignoreCase = true) &&
-            key != "null"
-        ) {
-            key
-        } else {
-            ""
-        }
+        val defaultKey = Companion.resolveFootballDataKey()
+        return sourceMonitor.resolveActiveApiKey(KickoffProviderId.FOOTBALL_DATA_ORG, defaultKey)
     }
 
     fun isFootballDataKeyConfigured(): Boolean = resolveFootballDataKey().isNotEmpty()
@@ -598,163 +571,27 @@ class FootballRepository(
      * "Internazionale" / "Inter Milan" -> "inter milan", "Paris Saint-Germain" / "PSG" -> "paris saint germain")
      * so records from SportAPI.ai, ESPN, API-Football, and TheSportsDB always merge into a single match.
      */
-    fun normalizeTeamNameForMerge(rawName: String): String {
-        if (rawName.isBlank()) return ""
-        val decomposed = Normalizer.normalize(rawName, Normalizer.Form.NFD)
-            .replace(Regex("\\p{InCombiningDiacriticalMarks}+"), "")
-            .replace("ø", "o", ignoreCase = true)
-            .replace("æ", "ae", ignoreCase = true)
-            .replace("ß", "ss", ignoreCase = true)
-        val baseTokens = decomposed
-            .lowercase(Locale.ROOT)
-            .replace(Regex("[^a-z0-9\\s]"), " ")
-            .split(Regex("\\s+"))
-            .filter { token ->
-                token.isNotBlank() && token !in IGNORED_TEAM_TOKENS
-            }
-        val finalTokens = if (baseTokens.size > 1 && baseTokens.last() == "athletic" && baseTokens.first() != "athletic") {
-            baseTokens.dropLast(1)
-        } else {
-            baseTokens
-        }
-        val joined = finalTokens.joinToString(" ").trim()
-        return canonicalizeClubMergeName(joined)
-    }
+    fun normalizeTeamNameForMerge(rawName: String): String =
+        Companion.normalizeTeamNameForMerge(rawName)
 
-    internal fun canonicalizeClubMergeName(normalized: String): String {
-        if (normalized.isBlank()) return ""
-        return when {
-            normalized.contains("internazionale") || normalized == "inter" || normalized == "inter milan" || normalized == "internazionale milano" ->
-                "inter milan"
-            normalized.contains("feyenoord") ->
-                "feyenoord"
-            normalized.contains("paris saint") || normalized == "psg" || normalized == "paris sg" ->
-                "paris saint germain"
-            normalized.contains("manchester city") || normalized == "man city" || normalized == "mancity" ->
-                "manchester city"
-            normalized.contains("manchester united") || normalized == "man utd" || normalized == "man united" ->
-                "manchester united"
-            normalized.contains("tottenham") || normalized == "spurs" ->
-                "tottenham"
-            normalized.contains("newcastle") ->
-                "newcastle"
-            normalized.contains("west ham") ->
-                "west ham"
-            normalized.contains("wolverhampton") || normalized == "wolves" ->
-                "wolverhampton"
-            normalized.contains("brighton") ->
-                "brighton"
-            normalized.contains("nottingham") || normalized == "nottm forest" ->
-                "nottingham forest"
-            normalized.contains("atletico madrid") || normalized == "atletico" || normalized == "atl madrid" ->
-                "atletico madrid"
-            normalized.contains("athletic bilbao") || normalized == "athletic" || normalized == "ath bilbao" ->
-                "athletic bilbao"
-            normalized.contains("real sociedad") || normalized == "sociedad" ->
-                "real sociedad"
-            normalized.contains("real betis") || normalized == "betis" ->
-                "real betis"
-            normalized.contains("villarreal") ->
-                "villarreal"
-            normalized.contains("bayern") ->
-                "bayern munich"
-            normalized.contains("dortmund") || normalized == "bvb" ->
-                "borussia dortmund"
-            normalized.contains("leverkusen") ->
-                "bayer leverkusen"
-            normalized.contains("leipzig") ->
-                "rb leipzig"
-            normalized.contains("monchengladbach") || normalized.contains("gladbach") ->
-                "monchengladbach"
-            normalized.contains("frankfurt") ->
-                "eintracht frankfurt"
-            normalized.contains("lille") || normalized == "losc" ->
-                "lille"
-            normalized.contains("marseille") ->
-                "marseille"
-            normalized.contains("lyonnais") || normalized == "lyon" ->
-                "lyon"
-            normalized.contains("monaco") ->
-                "monaco"
-            normalized.contains("brestois") || normalized == "brest" ->
-                "brest"
-            normalized.contains("rennais") || normalized == "rennes" ->
-                "rennes"
-            normalized.contains("psv") || normalized.contains("eindhoven") ->
-                "psv"
-            normalized.contains("ajax") ->
-                "ajax"
-            normalized.contains("sporting") && !normalized.contains("gijon") && !normalized.contains("braga") ->
-                "sporting cp"
-            normalized.contains("benfica") ->
-                "benfica"
-            normalized.contains("porto") ->
-                "porto"
-            normalized.contains("bodo") && normalized.contains("glimt") ->
-                "bodo glimt"
-            normalized.contains("club brugge") || normalized == "brugge" ->
-                "club brugge"
-            normalized.contains("crvena zvezda") || normalized.contains("red star") ->
-                "crvena zvezda"
-            normalized.contains("dinamo zagreb") ->
-                "dinamo zagreb"
-            normalized.contains("young boys") ->
-                "young boys"
-            normalized.contains("sturm graz") ->
-                "sturm graz"
-            normalized.contains("shakhtar") ->
-                "shakhtar donetsk"
-            normalized.contains("salzburg") ->
-                "salzburg"
-            normalized.contains("celtic") ->
-                "celtic"
-            normalized.contains("rangers") && !normalized.contains("queens") ->
-                "rangers"
-            normalized.contains("barcelona") || normalized == "barca" ->
-                "barcelona"
-            normalized.contains("real madrid") ->
-                "real madrid"
-            normalized.contains("raja") ->
-                "raja"
-            normalized.contains("wydad") ->
-                "wydad"
-            normalized.contains("far rabat") || normalized == "far" ->
-                "far rabat"
-            normalized.contains("berkane") ->
-                "berkane"
-            normalized.contains("ahly") && !normalized.contains("shabab") && !normalized.contains("jeddah") && !normalized.contains("saudi") ->
-                "ahly"
-            normalized == "turkiye" || normalized == "turkey" || normalized.startsWith("turkiye ") || normalized.startsWith("turkey ") ->
-                "turkiye"
-            normalized == "cote d ivoire" || normalized == "cote divoire" || normalized == "ivory coast" ||
-                normalized.contains("cote d ivoire") || normalized.contains("ivory coast") ->
-                "ivory coast"
-            normalized == "korea republic" || normalized == "south korea" || normalized == "republic of korea" ||
-                normalized.contains("korea republic") || normalized.contains("south korea") ->
-                "south korea"
-            normalized == "ir iran" || normalized == "iran" || normalized == "islamic republic of iran" ->
-                "iran"
-            normalized == "czechia" || normalized == "czech republic" ->
-                "czechia"
-            normalized == "dr congo" || normalized == "congo dr" || normalized == "rd congo" ||
-                normalized == "democratic republic of congo" || normalized == "d r congo" ->
-                "dr congo"
-            normalized == "cabo verde" || normalized == "cape verde" ->
-                "cape verde"
-            normalized == "usa" || normalized == "u s a" || normalized == "united states" || normalized == "united states of america" ->
-                "united states"
-            normalized == "uae" || normalized == "u a e" || normalized == "united arab emirates" ->
-                "united arab emirates"
-            normalized == "ksa" || normalized == "saudi arabia" ->
-                "saudi arabia"
-            normalized == "bosnia" || normalized == "bosnia and herzegovina" || normalized == "bosnia herzegovina" ->
-                "bosnia and herzegovina"
-            else -> normalized
-        }
-    }
+    internal fun canonicalizeClubMergeName(normalized: String): String =
+        Companion.canonicalizeClubMergeName(normalized)
 
     internal fun canonicalizeDisplayTeamName(rawName: String): String =
         Companion.canonicalizeDisplayTeamName(rawName)
+
+    internal fun isSeniorFirstTeamFixture(
+        homeTeamName: String,
+        awayTeamName: String,
+        rawLeagueName: String = "",
+        stageOrRound: String = ""
+    ): Boolean = Companion.isSeniorFirstTeamFixture(homeTeamName, awayTeamName, rawLeagueName, stageOrRound)
+
+    internal fun doesEventMatchExpectedIsoDate(
+        rawIsoOrDate: String,
+        expectedIsoDate: String?,
+        rawFallbackDate: String = ""
+    ): Boolean = Companion.doesEventMatchExpectedIsoDate(rawIsoOrDate, expectedIsoDate, rawFallbackDate)
 
     internal fun areSameClubNames(nameA: String, nameB: String): Boolean {
         val normA = normalizeTeamNameForMerge(nameA)
@@ -1020,11 +857,17 @@ class FootballRepository(
 
             val request = Request.Builder()
                 .url(url)
-                .header("x-apisports-key", BuildConfig.API_FOOTBALL_KEY)
+                .header("x-apisports-key", resolveApiFootballKey())
                 .build()
 
             httpClient.newCall(request).execute().use { response ->
-                updateApiFootballRemainingQuota(response.header("x-ratelimit-requests-remaining"))
+                val remainingStr = response.header("x-ratelimit-requests-remaining")
+                updateApiFootballRemainingQuota(remainingStr)
+                sourceMonitor.recordRuntimeResponse(
+                    provider = KickoffProviderId.API_FOOTBALL,
+                    httpCode = response.code,
+                    remainingQuota = remainingStr?.trim()?.toIntOrNull()
+                )
                 if (!response.isSuccessful) return emptyList()
                 val body = response.body?.string() ?: return emptyList()
                 val root = JSONObject(body)
@@ -2381,6 +2224,25 @@ class FootballRepository(
         val sportsDbMatches: List<FootballMatch>
     )
 
+    internal fun deduplicateMatchesByCanonicalTeams(matches: List<FootballMatch>): List<FootballMatch> {
+        val mergedMap = LinkedHashMap<String, FootballMatch>()
+        for (match in matches) {
+            val key = findOrBuildMergeKey(mergedMap, match.homeTeamName, match.awayTeamName)
+            val prev = mergedMap[key]
+            if (prev == null) {
+                mergedMap[key] = match
+            } else {
+                val preferCandidate = shouldPreferCandidateLiveState(existing = prev, candidate = match)
+                mergedMap[key] = if (preferCandidate) {
+                    mergeMatchRecords(primaryLive = match, badgeAndTvSource = prev)
+                } else {
+                    mergeMatchRecords(primaryLive = prev, badgeAndTvSource = match)
+                }
+            }
+        }
+        return mergedMap.values.toList()
+    }
+
     /**
      * Synchronizes the match's epoch-anchored local clock in [MatchClockEngine] and ensures that if a match
      * on `TODAY` is marked `LIVE` by an upstream feed without an explicit minute integer (e.g. raw badge `"LIVE"`,
@@ -2496,9 +2358,15 @@ class FootballRepository(
 
                 sportApiDailyCounter.incrementAndGet()
                 httpClient.newCall(request).execute().use { response ->
+                    val remaining = (SPORTAPI_MAX_REQ_PER_DAY - sportApiDailyCounter.get()).coerceAtLeast(0)
+                    sourceMonitor.recordRuntimeResponse(
+                        provider = KickoffProviderId.SPORT_API_AI,
+                        httpCode = response.code,
+                        remainingQuota = remaining
+                    )
                     if (!response.isSuccessful) return@use
                     val body = response.body?.string() ?: return@use
-                    val parsed = parseSportApiAiMatchesJson(body, dayTab)
+                    val parsed = parseSportApiAiMatchesJson(body, dayTab, expectedIsoDate = isoDate)
                     if (parsed.isNotEmpty()) {
                         return parsed
                     }
@@ -2556,9 +2424,15 @@ class FootballRepository(
 
                 sportApiDailyCounter.incrementAndGet()
                 httpClient.newCall(requestBuilder.build()).execute().use { response ->
+                    val remaining = (SPORTAPI_MAX_REQ_PER_DAY - sportApiDailyCounter.get()).coerceAtLeast(0)
+                    sourceMonitor.recordRuntimeResponse(
+                        provider = KickoffProviderId.SPORT_API_AI,
+                        httpCode = response.code,
+                        remainingQuota = remaining
+                    )
                     if (!response.isSuccessful) return@use
                     val body = response.body?.string() ?: return@use
-                    val parsed = parseSportApiAiMatchesJson(body, dayTab)
+                    val parsed = parseSportApiAiMatchesJson(body, dayTab, expectedIsoDate = isoDate)
                         .filter { it.tournamentId in APPROVED_TIER_1_TOURNAMENT_IDS }
                     if (parsed.isNotEmpty()) {
                         sportApiDayCache[isoDate] = now to parsed
@@ -2575,7 +2449,8 @@ class FootballRepository(
 
     internal fun parseSportApiAiMatchesJson(
         rawJson: String,
-        dayTab: MatchDayTab
+        dayTab: MatchDayTab,
+        expectedIsoDate: String? = null
     ): List<FootballMatch> {
         val trimmed = rawJson.trim()
         if (trimmed.isBlank()) return emptyList()
@@ -2607,8 +2482,9 @@ class FootballRepository(
             val countryName = leagueObj?.optString("country", "")
                 ?.ifBlank { item.optString("country", "") }
                 ?: ""
+            val combinedLeagueQuery = "$countryName $leagueName".trim()
 
-            val matchedTournament = matchTournamentCatalog("$countryName $leagueName")
+            val matchedTournament = matchTournamentCatalog(combinedLeagueQuery)
                 ?.takeIf { it.tournamentId in APPROVED_TIER_1_TOURNAMENT_IDS }
                 ?: continue
 
@@ -2619,14 +2495,15 @@ class FootballRepository(
                 ?: item.optJSONObject("awayTeam")
                 ?: item.optJSONObject("teams")?.optJSONObject("away")
 
-            val homeName = canonicalizeDisplayTeamName(
-                (homeObj?.optString("name", "") ?: item.optString("home_name", "")).trim()
-            )
-            val awayName = canonicalizeDisplayTeamName(
-                (awayObj?.optString("name", "") ?: item.optString("away_name", "")).trim()
-            )
+            val rawHomeName = (homeObj?.optString("name", "") ?: item.optString("home_name", "")).trim()
+            val rawAwayName = (awayObj?.optString("name", "") ?: item.optString("away_name", "")).trim()
+            val roundOrStage = leagueObj?.optString("round", item.optString("round", "")).orEmpty()
+            if (!isSeniorFirstTeamFixture(rawHomeName, rawAwayName, combinedLeagueQuery, roundOrStage)) continue
+
+            val homeName = canonicalizeDisplayTeamName(rawHomeName)
+            val awayName = canonicalizeDisplayTeamName(rawAwayName)
             if (homeName.isBlank() || awayName.isBlank()) continue
-            if (!isValidFixtureForTournament(matchedTournament, homeName, awayName, countryName)) continue
+            if (!isValidFixtureForTournament(matchedTournament, homeName, awayName, countryName, combinedLeagueQuery, roundOrStage)) continue
             if (!passesInternationalQualificationFilter(matchedTournament, homeName, awayName)) continue
 
             val homeBadge = homeObj?.optString("logo", homeObj.optString("badge", "")) ?: ""
@@ -2647,6 +2524,7 @@ class FootballRepository(
                 ?: item.optInt("extra_minute", item.optInt("added_time", 0))
 
             val startIso = item.optString("start_time", item.optString("date", item.optString("kickoff", "")))
+            if (!doesEventMatchExpectedIsoDate(startIso, expectedIsoDate)) continue
             val kickoffTime = formatIsoToMoroccoTime(startIso)
             val kickoffEpochMs = parseIsoToEpochMs(startIso, dayTab, kickoffTime)
 
@@ -2867,9 +2745,13 @@ class FootballRepository(
 
             val request = Request.Builder().url(url).build()
             httpClient.newCall(request).execute().use { response ->
+                sourceMonitor.recordRuntimeResponse(
+                    provider = KickoffProviderId.THESPORTSDB,
+                    httpCode = response.code
+                )
                 if (!response.isSuccessful) return cached?.second ?: emptyList()
                 val body = response.body?.string() ?: return cached?.second ?: emptyList()
-                val parsed = parseTheSportsDbEventsJson(body, dayTab)
+                val parsed = parseTheSportsDbEventsJson(body, dayTab, expectedIsoDate = isoDate)
                 if (parsed.isNotEmpty()) {
                     sportsDbEventsCache[isoDate] = now to parsed
                 }
@@ -2911,7 +2793,12 @@ class FootballRepository(
             httpClient.newCall(request).execute().use { response ->
                 if (!response.isSuccessful) return cached?.second ?: emptyList()
                 val body = response.body?.string() ?: return cached?.second ?: emptyList()
-                val parsed = parseTheSportsDbEventsJson(body, dayTab, forcedLeagueId = idLeague)
+                val parsed = parseTheSportsDbEventsJson(
+                    body = body,
+                    dayTab = dayTab,
+                    forcedLeagueId = idLeague,
+                    expectedIsoDate = isoDate
+                )
                 sportsDbEventsCache[cacheKey] = now to parsed
                 parsed
             }
@@ -2920,10 +2807,11 @@ class FootballRepository(
         }
     }
 
-    private fun parseTheSportsDbEventsJson(
+    internal fun parseTheSportsDbEventsJson(
         body: String,
         dayTab: MatchDayTab,
-        forcedLeagueId: String? = null
+        forcedLeagueId: String? = null,
+        expectedIsoDate: String? = null
     ): List<FootballMatch> {
         val root = JSONObject(body)
         val events = root.optJSONArray("events") ?: return emptyList()
@@ -2933,20 +2821,34 @@ class FootballRepository(
             val ev = events.optJSONObject(i) ?: continue
             val idEvent = ev.optString("idEvent", "")
             val rawEventLeagueId = ev.optString("idLeague", "").takeIf { it != "null" }.orEmpty().trim()
-            if (forcedLeagueId != null && rawEventLeagueId.isNotBlank() && rawEventLeagueId != forcedLeagueId) {
-                continue
-            }
-            val idLeague = rawEventLeagueId.ifBlank { forcedLeagueId.orEmpty() }
             val leagueName = ev.optString("strLeague", "").takeIf { it != "null" }.orEmpty().trim()
             val strCountry = ev.optString("strCountry", "").takeIf { it != "null" }.orEmpty().trim()
+            val roundNum = ev.optString("intRound", "").takeIf { it != "null" }.orEmpty().trim()
             val combinedLeagueQuery = "$strCountry $leagueName".trim()
+
+            if (forcedLeagueId != null) {
+                if (rawEventLeagueId.isNotBlank() && rawEventLeagueId != forcedLeagueId) {
+                    continue
+                }
+                if (rawEventLeagueId.isBlank() &&
+                    combinedLeagueQuery.isNotBlank() &&
+                    matchTournamentCatalog(combinedLeagueQuery)?.sportsDbLeagueId != forcedLeagueId
+                ) {
+                    continue
+                }
+            }
+            val idLeague = rawEventLeagueId.ifBlank { forcedLeagueId.orEmpty() }
+
+            val rawHomeName = ev.optString("strHomeTeam", "").trim()
+            val rawAwayName = ev.optString("strAwayTeam", "").trim()
+            if (!isSeniorFirstTeamFixture(rawHomeName, rawAwayName, combinedLeagueQuery, roundNum)) continue
 
             val matchedTournament = matchTournamentBySportsDbIdOrName(idLeague, combinedLeagueQuery) ?: continue
 
-            val homeName = canonicalizeDisplayTeamName(ev.optString("strHomeTeam", "").trim())
-            val awayName = canonicalizeDisplayTeamName(ev.optString("strAwayTeam", "").trim())
+            val homeName = canonicalizeDisplayTeamName(rawHomeName)
+            val awayName = canonicalizeDisplayTeamName(rawAwayName)
             if (homeName.isBlank() || awayName.isBlank()) continue
-            if (!isValidFixtureForTournament(matchedTournament, homeName, awayName, strCountry)) continue
+            if (!isValidFixtureForTournament(matchedTournament, homeName, awayName, strCountry, combinedLeagueQuery, roundNum)) continue
             if (!passesInternationalQualificationFilter(matchedTournament, homeName, awayName)) continue
 
             val timestampRaw = ev.optString("strTimestamp", "").trim()
@@ -2954,10 +2856,11 @@ class FootballRepository(
             val strTimeRaw = ev.optString("strTime", "20:00:00").trim()
             val rawIsoForEpoch = when {
                 timestampRaw.isNotBlank() && timestampRaw != "null" -> timestampRaw
-                dateEventRaw.isNotBlank() && strTimeRaw.isNotBlank() && strTimeRaw != "null" ->
+                dateEventRaw.isNotBlank() && dateEventRaw != "null" && strTimeRaw.isNotBlank() && strTimeRaw != "null" ->
                     "${dateEventRaw}T${strTimeRaw.take(8)}Z"
                 else -> ""
             }
+            if (!doesEventMatchExpectedIsoDate(rawIsoForEpoch, expectedIsoDate, dateEventRaw)) continue
             val timeRaw = when {
                 rawIsoForEpoch.isNotBlank() -> formatIsoToMoroccoTime(rawIsoForEpoch)
                 else -> strTimeRaw.take(5).ifBlank { "20:00" }
@@ -2974,7 +2877,6 @@ class FootballRepository(
             val rawHomeScore = ev.optString("intHomeScore", "").takeIf { it != "null" }?.toIntOrNull()
             val rawAwayScore = ev.optString("intAwayScore", "").takeIf { it != "null" }?.toIntOrNull()
             val statusRaw = ev.optString("strStatus", "").takeIf { it != "null" }.orEmpty().trim()
-            val roundNum = ev.optString("intRound", "").takeIf { it != "null" }.orEmpty().trim()
 
             val isNotStarted = statusRaw.equals("NS", ignoreCase = true) ||
                 statusRaw.contains("Not Started", ignoreCase = true) ||
@@ -3241,6 +3143,10 @@ class FootballRepository(
             .header("Accept", "application/json")
             .build()
         httpClient.newCall(request).execute().use { response ->
+            sourceMonitor.recordRuntimeResponse(
+                provider = KickoffProviderId.SOFASCORE_LIVE,
+                httpCode = response.code
+            )
             if (!response.isSuccessful) return null
             val body = response.body?.string() ?: return null
             if (body.isBlank()) return null
@@ -3263,6 +3169,10 @@ class FootballRepository(
 
             val request = Request.Builder().url(url).build()
             httpClient.newCall(request).execute().use { response ->
+                sourceMonitor.recordRuntimeResponse(
+                    provider = KickoffProviderId.ESPN_SOCCER,
+                    httpCode = response.code
+                )
                 if (!response.isSuccessful) return emptyList()
                 val body = response.body?.string() ?: return emptyList()
                 val root = JSONObject(body)
@@ -3274,7 +3184,7 @@ class FootballRepository(
                     val eventId = ev.optString("id", "${tournament.tournamentId}_$i")
                     val dateIso = ev.optString("date", "")
                     val eventMoroccoDate = formatIsoToMoroccoDate(dateIso)
-                    if (eventMoroccoDate.isNotBlank() && eventMoroccoDate != expectedMoroccoIsoDate) {
+                    if (eventMoroccoDate.isBlank() || eventMoroccoDate != expectedMoroccoIsoDate) {
                         continue
                     }
 
@@ -3308,14 +3218,14 @@ class FootballRepository(
 
                     val homeTeamIdRaw = homeTeamObj.optString("id", "")
                     val awayTeamIdRaw = awayTeamObj.optString("id", "")
-                    val homeName = canonicalizeDisplayTeamName(
-                        homeTeamObj.optString("displayName", homeTeamObj.optString("name", "")).trim()
-                    )
-                    val awayName = canonicalizeDisplayTeamName(
-                        awayTeamObj.optString("displayName", awayTeamObj.optString("name", "")).trim()
-                    )
+                    val rawHomeName = homeTeamObj.optString("displayName", homeTeamObj.optString("name", "")).trim()
+                    val rawAwayName = awayTeamObj.optString("displayName", awayTeamObj.optString("name", "")).trim()
+                    if (!isSeniorFirstTeamFixture(rawHomeName, rawAwayName, tournament.name, tournament.name)) continue
+
+                    val homeName = canonicalizeDisplayTeamName(rawHomeName)
+                    val awayName = canonicalizeDisplayTeamName(rawAwayName)
                     if (homeName.isBlank() || awayName.isBlank()) continue
-                    if (!isValidFixtureForTournament(tournament, homeName, awayName, tournament.countryOrRegion)) continue
+                    if (!isValidFixtureForTournament(tournament, homeName, awayName, tournament.countryOrRegion, tournament.name, tournament.name)) continue
                     if (!passesInternationalQualificationFilter(tournament, homeName, awayName)) continue
 
                     val homeLogo = homeTeamObj.optString("logo", "")
@@ -3527,7 +3437,7 @@ class FootballRepository(
             httpClient.newCall(request).execute().use { response ->
                 if (!response.isSuccessful) return cached?.second ?: emptyList()
                 val body = response.body?.string() ?: return cached?.second ?: emptyList()
-                val parsed = parse365ScoresAllScoresJson(body, dayTab)
+                val parsed = parse365ScoresAllScoresJson(body, dayTab, expectedIsoDate = isoDate)
                 if (parsed.isNotEmpty()) {
                     scores365DayCache[isoDate] = now to parsed
                 }
@@ -3540,7 +3450,8 @@ class FootballRepository(
 
     internal fun parse365ScoresAllScoresJson(
         rawJson: String,
-        dayTab: MatchDayTab
+        dayTab: MatchDayTab,
+        expectedIsoDate: String? = null
     ): List<FootballMatch> {
         val trimmed = rawJson.trim()
         if (trimmed.isBlank()) return emptyList()
@@ -3593,6 +3504,8 @@ class FootballRepository(
                 .ifBlank { game.optString("countryName", "") }
                 .ifBlank { game.optJSONObject("competition")?.optString("countryName", "").orEmpty() }
                 .trim()
+            val stageName = game.optString("stageName", "").trim()
+            val combinedCompLabel = "$compCountryName $compDisplayName".trim()
 
             val matchedTournament = match365ScoresCompetition(compId, compDisplayName, compCountryName) ?: continue
 
@@ -3601,14 +3514,14 @@ class FootballRepository(
 
             val homeId = homeComp.optLong("id", 0L)
             val awayId = awayComp.optLong("id", 0L)
-            val homeName = canonicalizeDisplayTeamName(
-                homeComp.optString("name", homeComp.optString("symbolicName", "")).trim()
-            )
-            val awayName = canonicalizeDisplayTeamName(
-                awayComp.optString("name", awayComp.optString("symbolicName", "")).trim()
-            )
+            val rawHomeName = homeComp.optString("name", homeComp.optString("symbolicName", "")).trim()
+            val rawAwayName = awayComp.optString("name", awayComp.optString("symbolicName", "")).trim()
+            if (!isSeniorFirstTeamFixture(rawHomeName, rawAwayName, combinedCompLabel, stageName)) continue
+
+            val homeName = canonicalizeDisplayTeamName(rawHomeName)
+            val awayName = canonicalizeDisplayTeamName(rawAwayName)
             if (homeName.isBlank() || awayName.isBlank()) continue
-            if (!isValidFixtureForTournament(matchedTournament, homeName, awayName, compCountryName)) continue
+            if (!isValidFixtureForTournament(matchedTournament, homeName, awayName, compCountryName, combinedCompLabel, stageName)) continue
             if (!passesInternationalQualificationFilter(matchedTournament, homeName, awayName)) continue
 
             val homeBadge = homeComp.optString("imageUrl", "").takeIf { it.startsWith("http") }
@@ -3617,6 +3530,7 @@ class FootballRepository(
                 ?: if (awayId > 0L) "https://imagecache.365scores.com/image/upload/f_png,w_80,h_80,c_limit,q_auto:eco/v1/Competitors/$awayId" else ""
 
             val startIso = game.optString("startTime", "")
+            if (!doesEventMatchExpectedIsoDate(startIso, expectedIsoDate)) continue
             val kickoffTime = formatIsoToMoroccoTime(startIso)
             val kickoffEpochMs = parseIsoToEpochMs(startIso, dayTab, kickoffTime)
 
@@ -3821,14 +3735,36 @@ class FootballRepository(
                 .build()
 
             httpClient.newCall(request).execute().use { response ->
-                updateApiFootballRemainingQuota(response.header("x-ratelimit-requests-remaining"))
-                if (!response.isSuccessful) return cached?.second ?: emptyList()
+                val remainingStr = response.header("x-ratelimit-requests-remaining")
+                updateApiFootballRemainingQuota(remainingStr)
+                val remainingInt = remainingStr?.trim()?.toIntOrNull()
+                if (!response.isSuccessful) {
+                    sourceMonitor.recordRuntimeResponse(
+                        provider = KickoffProviderId.API_FOOTBALL,
+                        httpCode = response.code,
+                        remainingQuota = remainingInt
+                    )
+                    return cached?.second ?: emptyList()
+                }
                 val body = response.body?.string() ?: return cached?.second ?: emptyList()
                 val root = JSONObject(body)
                 val errorsObj = root.optJSONObject("errors")
                 if (errorsObj != null && errorsObj.length() > 0) {
+                    val errText = errorsObj.keys().asSequence().firstOrNull()?.let { k -> errorsObj.optString(k, "") }.orEmpty()
+                    val isQuotaErr = errText.contains("limit", ignoreCase = true) || errText.contains("quota", ignoreCase = true)
+                    sourceMonitor.recordRuntimeResponse(
+                        provider = KickoffProviderId.API_FOOTBALL,
+                        httpCode = if (isQuotaErr) 429 else 401,
+                        remainingQuota = if (isQuotaErr) 0 else remainingInt,
+                        errorNote = errText
+                    )
                     return cached?.second ?: emptyList()
                 }
+                sourceMonitor.recordRuntimeResponse(
+                    provider = KickoffProviderId.API_FOOTBALL,
+                    httpCode = response.code,
+                    remainingQuota = remainingInt
+                )
                 val arr = root.optJSONArray("response") ?: return emptyList()
                 val list = mutableListOf<FootballMatch>()
 
@@ -3867,6 +3803,7 @@ class FootballRepository(
                     } else null
 
                     val fixtureDateIso = fixtureObj.optString("date", "")
+                    if (!doesEventMatchExpectedIsoDate(fixtureDateIso, isoDate)) continue
                     val kickoffTime = formatIsoToMoroccoTime(fixtureDateIso)
                     val fixtureTimestampSec = fixtureObj.optLong("timestamp", 0L)
                     val kickoffEpochMs = if (fixtureTimestampSec > 100_000_000L) {
@@ -3876,10 +3813,14 @@ class FootballRepository(
                     }
                     val (status, badge) = parseLiveStatusAndMinuteBadge(shortStatus, elapsed, kickoffTime, extraElapsed)
 
-                    val homeName = canonicalizeDisplayTeamName(homeObj.optString("name", "").trim())
-                    val awayName = canonicalizeDisplayTeamName(awayObj.optString("name", "").trim())
+                    val rawHomeName = homeObj.optString("name", "").trim()
+                    val rawAwayName = awayObj.optString("name", "").trim()
+                    if (!isSeniorFirstTeamFixture(rawHomeName, rawAwayName, "$country $leagueName", roundStr)) continue
+
+                    val homeName = canonicalizeDisplayTeamName(rawHomeName)
+                    val awayName = canonicalizeDisplayTeamName(rawAwayName)
                     if (homeName.isBlank() || awayName.isBlank()) continue
-                    if (!isValidFixtureForTournament(matchedTournament, homeName, awayName, country)) continue
+                    if (!isValidFixtureForTournament(matchedTournament, homeName, awayName, country, "$country $leagueName", roundStr)) continue
                     if (!passesInternationalQualificationFilter(matchedTournament, homeName, awayName)) continue
                     val smartFallbacks = getSmartMenaFallbackChannels(
                         tournamentId = matchedTournament.tournamentId,
@@ -3983,9 +3924,15 @@ class FootballRepository(
                 .build()
 
             httpClient.newCall(request).execute().use { response ->
+                val remainingMin = response.header("X-Requests-Available-Minute")?.trim()?.toIntOrNull()
+                sourceMonitor.recordRuntimeResponse(
+                    provider = KickoffProviderId.FOOTBALL_DATA_ORG,
+                    httpCode = response.code,
+                    remainingQuota = remainingMin
+                )
                 if (!response.isSuccessful) return cached?.second ?: emptyList()
                 val body = response.body?.string() ?: return cached?.second ?: emptyList()
-                val parsed = parseFootballDataOrgMatchesJson(body, dayTab)
+                val parsed = parseFootballDataOrgMatchesJson(body, dayTab, expectedIsoDate = isoDate)
                 if (parsed.isNotEmpty()) {
                     footballDataDayCache[isoDate] = now to parsed
                 }
@@ -3998,7 +3945,8 @@ class FootballRepository(
 
     internal fun parseFootballDataOrgMatchesJson(
         rawJson: String,
-        dayTab: MatchDayTab = MatchDayTab.TODAY
+        dayTab: MatchDayTab = MatchDayTab.TODAY,
+        expectedIsoDate: String? = null
     ): List<FootballMatch> {
         val root = runCatching { JSONObject(rawJson) }.getOrNull() ?: return emptyList()
         val matchesArr = root.optJSONArray("matches") ?: return emptyList()
@@ -4009,22 +3957,24 @@ class FootballRepository(
             val compObj = item.optJSONObject("competition") ?: continue
             val compCode = compObj.optString("code", "").trim().uppercase(Locale.ROOT)
             val compName = compObj.optString("name", "").trim()
+            val areaName = item.optJSONObject("area")?.optString("name", "").orEmpty()
+            val stageStr = item.optString("stage", "").replace("_", " ").trim()
             val matchedTournament = matchFootballDataCompetition(compCode, compName) ?: continue
 
             val homeObj = item.optJSONObject("homeTeam") ?: continue
             val awayObj = item.optJSONObject("awayTeam") ?: continue
-            val homeName = canonicalizeDisplayTeamName(
-                homeObj.optString("name", homeObj.optString("shortName", "")).trim()
-            )
-            val awayName = canonicalizeDisplayTeamName(
-                awayObj.optString("name", awayObj.optString("shortName", "")).trim()
-            )
+            val rawHomeName = homeObj.optString("name", homeObj.optString("shortName", "")).trim()
+            val rawAwayName = awayObj.optString("name", awayObj.optString("shortName", "")).trim()
+            if (!isSeniorFirstTeamFixture(rawHomeName, rawAwayName, "$areaName $compName", stageStr)) continue
+
+            val homeName = canonicalizeDisplayTeamName(rawHomeName)
+            val awayName = canonicalizeDisplayTeamName(rawAwayName)
             if (homeName.isBlank() || awayName.isBlank()) continue
-            val areaName = item.optJSONObject("area")?.optString("name", "").orEmpty()
-            if (!isValidFixtureForTournament(matchedTournament, homeName, awayName, areaName)) continue
+            if (!isValidFixtureForTournament(matchedTournament, homeName, awayName, areaName, "$areaName $compName", stageStr)) continue
             if (!passesInternationalQualificationFilter(matchedTournament, homeName, awayName)) continue
 
             val utcDate = item.optString("utcDate", "")
+            if (!doesEventMatchExpectedIsoDate(utcDate, expectedIsoDate)) continue
             val kickoffTime = formatIsoToMoroccoTime(utcDate)
             val kickoffEpochMs = parseIsoToEpochMs(utcDate, dayTab, kickoffTime)
             val rawStatus = item.optString("status", "TIMED").uppercase(Locale.ROOT)
@@ -4051,7 +4001,6 @@ class FootballRepository(
             val htStr = if (htH != null && htA != null && status != MatchStatus.UPCOMING) "$htH - $htA" else null
 
             val matchdayInt = item.optInt("matchday", 0)
-            val stageStr = item.optString("stage", "").replace("_", " ").trim()
             val roundLabel = when {
                 matchdayInt > 0 -> "Matchday $matchdayInt"
                 stageStr.isNotBlank() -> stageStr
@@ -4767,35 +4716,8 @@ class FootballRepository(
         sportsDbLeagueId: String = ""
     ): TournamentCatalogItem? = Companion.matchTournamentCatalog(rawLeague, espnSlug, sportsDbLeagueId)
 
-    private fun formatIsoToMoroccoDate(isoString: String): String {
-        if (isoString.isBlank()) return ""
-        val normalized = normalizeIsoInput(isoString)
-        val patterns = listOf(
-            "yyyy-MM-dd'T'HH:mm:ss'Z'",
-            "yyyy-MM-dd'T'HH:mm'Z'",
-            "yyyy-MM-dd'T'HH:mm:ssZ",
-            "yyyy-MM-dd'T'HH:mmZ",
-            "yyyy-MM-dd'T'HH:mm:ss",
-            "yyyy-MM-dd'T'HH:mm",
-            "yyyy-MM-dd HH:mm:ss",
-            "yyyy-MM-dd HH:mm",
-            "yyyy-MM-dd"
-        )
-        for (pattern in patterns) {
-            try {
-                val parser = SimpleDateFormat(pattern, Locale.US).apply {
-                    timeZone = TimeZone.getTimeZone("UTC")
-                }
-                val parsed: Date = parser.parse(normalized) ?: continue
-                val formatter = SimpleDateFormat("yyyy-MM-dd", Locale.US).apply {
-                    timeZone = TimeZone.getTimeZone("Africa/Casablanca")
-                }
-                return formatter.format(parsed)
-            } catch (_: Exception) {
-            }
-        }
-        return ""
-    }
+    private fun formatIsoToMoroccoDate(isoString: String): String =
+        Companion.formatIsoToMoroccoDate(isoString)
 
     companion object {
         private const val KEY_ONBOARDING_COMPLETED = "has_completed_teams_onboarding_v1"
@@ -4835,20 +4757,15 @@ class FootballRepository(
         private val sharedSportsDbRequestTimestamps = ConcurrentLinkedDeque<Long>()
 
         internal fun resolveApiFootballKey(): String {
-            val key = try {
-                BuildConfig.API_FOOTBALL_KEY.trim()
-            } catch (_: Exception) {
-                ""
-            }
-            return if (key.isNotBlank() &&
-                !key.startsWith("YOUR_", ignoreCase = true) &&
-                !key.startsWith("MY_", ignoreCase = true) &&
-                key != "null"
-            ) {
-                key
-            } else {
-                ""
-            }
+            return KickoffSourceMonitor.resolveCompanionActiveKey(KickoffProviderId.API_FOOTBALL)
+        }
+
+        internal fun resolveFootballDataKey(): String {
+            return KickoffSourceMonitor.resolveCompanionActiveKey(KickoffProviderId.FOOTBALL_DATA_ORG)
+        }
+
+        internal fun resolveSportApiKey(): String {
+            return KickoffSourceMonitor.resolveCompanionActiveKey(KickoffProviderId.SPORT_API_AI)
         }
 
         internal fun isApiFootballKeyConfigured(): Boolean = resolveApiFootballKey().isNotEmpty()
@@ -5149,8 +5066,105 @@ class FootballRepository(
         fun formatDynamicKickoffTime(kickoffEpochMs: Long, zone: UserCountryZone, isSummer: Boolean): String =
             com.example.data.repository.formatDynamicKickoffTime(kickoffEpochMs, zone, isSummer)
 
+        fun formatDynamicKickoffTime(
+            kickoffEpochMs: Long,
+            zone: UserCountryZone,
+            seasonTimeMode: SeasonTimeMode
+        ): String = com.example.data.repository.formatDynamicKickoffTime(kickoffEpochMs, zone, seasonTimeMode)
+
+        private val YOUTH_OR_RESERVE_TOKEN_REGEX = Regex(
+            """\b(u17|u18|u19|u20|u21|u22|u23|u-17|u-18|u-19|u-20|u-21|u-22|u-23|under\s*\d+|youth|academy|reserves?|eds|pl2|premier\s+league\s+2|premier\s+league\s+cup|development|efl\s+trophy|women'?s?|feminine|féminine|femenina|femminile|frauen|ladies|girls)\b""",
+            RegexOption.IGNORE_CASE
+        )
+
+        private val TEAM_RESERVE_SUFFIX_REGEX = Regex(
+            """(?:\s+(?:b|ii|iii|u\d{2}|reserves?|youth|women|w|ladies)|\s*\((?:w|women|reserves?|u\d{2})\))$""",
+            RegexOption.IGNORE_CASE
+        )
+
+        fun isSeniorFirstTeamFixture(
+            homeTeamName: String,
+            awayTeamName: String,
+            rawLeagueName: String = "",
+            stageOrRound: String = ""
+        ): Boolean {
+            val h = homeTeamName.trim()
+            val a = awayTeamName.trim()
+            if (h.isBlank() || a.isBlank()) return false
+            if (YOUTH_OR_RESERVE_TOKEN_REGEX.containsMatchIn(h) ||
+                YOUTH_OR_RESERVE_TOKEN_REGEX.containsMatchIn(a) ||
+                YOUTH_OR_RESERVE_TOKEN_REGEX.containsMatchIn(rawLeagueName) ||
+                YOUTH_OR_RESERVE_TOKEN_REGEX.containsMatchIn(stageOrRound)
+            ) {
+                return false
+            }
+            if (TEAM_RESERVE_SUFFIX_REGEX.containsMatchIn(h) ||
+                TEAM_RESERVE_SUFFIX_REGEX.containsMatchIn(a)
+            ) {
+                return false
+            }
+            return true
+        }
+
+        internal fun formatIsoToMoroccoDate(isoString: String): String {
+            val trimmed = isoString.trim()
+            if (trimmed.isBlank()) return ""
+            if (Regex("""^\d{4}-\d{2}-\d{2}$""").matches(trimmed)) {
+                return trimmed
+            }
+            var cleaned = trimmed.replace(Regex("""\.\d+(Z|[+-]\d{2}:?\d{2})"""), "$1")
+            if (cleaned.endsWith("+00:00") || cleaned.endsWith("-00:00")) {
+                cleaned = cleaned.dropLast(6) + "Z"
+            } else if (Regex(""".*[+-]\d{2}:\d{2}$""").matches(cleaned)) {
+                val tzPart = cleaned.takeLast(6).replace(":", "")
+                cleaned = cleaned.dropLast(6) + tzPart
+            }
+            val patterns = listOf(
+                "yyyy-MM-dd'T'HH:mm:ss'Z'",
+                "yyyy-MM-dd'T'HH:mm'Z'",
+                "yyyy-MM-dd'T'HH:mm:ssZ",
+                "yyyy-MM-dd'T'HH:mmZ",
+                "yyyy-MM-dd'T'HH:mm:ss",
+                "yyyy-MM-dd'T'HH:mm",
+                "yyyy-MM-dd HH:mm:ss",
+                "yyyy-MM-dd HH:mm",
+                "yyyy-MM-dd"
+            )
+            for (pattern in patterns) {
+                try {
+                    val parser = SimpleDateFormat(pattern, Locale.US).apply {
+                        timeZone = TimeZone.getTimeZone("UTC")
+                    }
+                    val parsed: Date = parser.parse(cleaned) ?: continue
+                    val formatter = SimpleDateFormat("yyyy-MM-dd", Locale.US).apply {
+                        timeZone = TimeZone.getTimeZone("Africa/Casablanca")
+                    }
+                    return formatter.format(parsed)
+                } catch (_: Exception) {
+                }
+            }
+            return ""
+        }
+
+        fun doesEventMatchExpectedIsoDate(
+            rawIsoOrDate: String,
+            expectedIsoDate: String?,
+            rawFallbackDate: String = ""
+        ): Boolean {
+            val expected = expectedIsoDate?.trim().orEmpty()
+            if (expected.isBlank()) return true
+            val moroccoDate = formatIsoToMoroccoDate(rawIsoOrDate)
+            val fallbackDate = rawFallbackDate.trim().take(10)
+            if (moroccoDate.isBlank() && fallbackDate.isBlank()) return false
+            if (moroccoDate.isNotBlank()) {
+                return moroccoDate == expected
+            }
+            return fallbackDate == expected
+        }
+
         /**
          * Strict Tier-1 Tournament Catalog Matcher:
+         * - Eliminates youth/reserve/women competitions BEFORE checking slug/leagueId metadata
          * - Eliminates 2nd-division leagues (`Ligue 2`, `LaLiga Hypermotion`, `Segunda`, `Primera Federación`, `Championship`, `League One`, `League Two`, `Serie B`, `2. Bundesliga`)
          * - Eliminates wrong regional/country leagues (`Côte d'Ivoire`, `Ivory Coast`, `Algeria`, `Congo`, `Andorra`, `Brazil Serie A`, `Scottish Premier`, `Austrian Bundesliga`, etc.)
          */
@@ -5159,6 +5173,14 @@ class FootballRepository(
             espnSlug: String = "",
             sportsDbLeagueId: String = ""
         ): TournamentCatalogItem? {
+            val lower = rawLeague.trim().lowercase(Locale.ROOT)
+                .replace(Regex("\\s+"), " ")
+
+            // Reject youth, women, reserve, futsal, or development tiers globally BEFORE slug/id matching
+            if (lower.isNotBlank() && YOUTH_OR_RESERVE_TOKEN_REGEX.containsMatchIn(lower)) {
+                return null
+            }
+
             val slug = espnSlug.trim().lowercase(Locale.ROOT)
             val sdbId = sportsDbLeagueId.trim()
             if (slug.isNotEmpty() || sdbId.isNotEmpty()) {
@@ -5169,27 +5191,7 @@ class FootballRepository(
                 if (exactByMeta != null) return exactByMeta
             }
 
-            val lower = rawLeague.trim().lowercase(Locale.ROOT)
-                .replace(Regex("\\s+"), " ")
             if (lower.isBlank()) return null
-
-            // Reject youth, women, reserve, futsal, friendly, or cup-only lower tiers globally
-            if (lower.contains("women") ||
-                lower.contains("feminine") ||
-                lower.contains("féminine") ||
-                lower.contains("femenina") ||
-                lower.contains("femminile") ||
-                lower.contains("frauen") ||
-                lower.contains("youth") ||
-                lower.contains("u17") ||
-                lower.contains("u19") ||
-                lower.contains("u20") ||
-                lower.contains("u21") ||
-                lower.contains("u23") ||
-                lower.contains("reserve")
-            ) {
-                return null
-            }
 
             // 1. French Ligue 1 (`espnSlug == "fra.1"`, `sportsDbLeagueId == "4334"`)
             val isRejectedLigue1 = lower.contains("côte d'ivoire") ||
@@ -5523,8 +5525,13 @@ class FootballRepository(
             tournament: TournamentCatalogItem,
             homeTeamName: String,
             awayTeamName: String,
-            rawCountry: String = ""
+            rawCountry: String = "",
+            rawLeagueName: String = "",
+            stageOrRound: String = ""
         ): Boolean {
+            if (!isSeniorFirstTeamFixture(homeTeamName, awayTeamName, rawLeagueName, stageOrRound)) {
+                return false
+            }
             val countryLower = rawCountry.trim().lowercase(Locale.ROOT)
             val combinedTeams = "${homeTeamName.lowercase(Locale.ROOT)} ${awayTeamName.lowercase(Locale.ROOT)}"
 
@@ -5542,7 +5549,8 @@ class FootballRepository(
                     if (countryLower.isNotBlank() &&
                         !countryLower.contains("england") &&
                         !countryLower.contains("united kingdom") &&
-                        !countryLower.contains("great britain")
+                        !countryLower.contains("great britain") &&
+                        countryLower != "uk"
                     ) {
                         return false
                     }
@@ -5794,11 +5802,14 @@ class FootballRepository(
             if (rawName.isBlank()) return ""
             val decomposed = Normalizer.normalize(rawName, Normalizer.Form.NFD)
                 .replace(Regex("\\p{InCombiningDiacriticalMarks}+"), "")
+                .replace("ı", "i", ignoreCase = true)
+                .replace("İ", "i", ignoreCase = true)
                 .replace("ø", "o", ignoreCase = true)
                 .replace("æ", "ae", ignoreCase = true)
                 .replace("ß", "ss", ignoreCase = true)
             val baseTokens = decomposed
                 .lowercase(Locale.ROOT)
+                .replace(Regex("\\b(national\\s+team|mens?\\s+national\\s+team)\\b"), " ")
                 .replace(Regex("[^a-z0-9\\s]"), " ")
                 .split(Regex("\\s+"))
                 .filter { token ->
@@ -5921,23 +5932,25 @@ class FootballRepository(
                 normalized == "cote d ivoire" || normalized == "cote divoire" || normalized == "ivory coast" ||
                     normalized.contains("cote d ivoire") || normalized.contains("ivory coast") ->
                     "ivory coast"
-                normalized == "korea republic" || normalized == "south korea" || normalized == "republic of korea" ||
+                normalized == "korea republic" || normalized == "south korea" || normalized == "republic of korea" || normalized == "korea south" ||
                     normalized.contains("korea republic") || normalized.contains("south korea") ->
                     "south korea"
                 normalized == "ir iran" || normalized == "iran" || normalized == "islamic republic of iran" ->
                     "iran"
-                normalized == "czechia" || normalized == "czech republic" ->
+                normalized == "czechia" || normalized == "czech republic" || normalized == "czech" ->
                     "czechia"
                 normalized == "dr congo" || normalized == "congo dr" || normalized == "rd congo" ||
                     normalized == "democratic republic of congo" || normalized == "d r congo" ->
                     "dr congo"
                 normalized == "cabo verde" || normalized == "cape verde" ->
                     "cape verde"
+                normalized == "holland" || normalized == "the netherlands" || normalized == "nederland" || normalized == "netherlands" ->
+                    "netherlands"
                 normalized == "usa" || normalized == "u s a" || normalized == "united states" || normalized == "united states of america" ->
                     "united states"
                 normalized == "uae" || normalized == "u a e" || normalized == "united arab emirates" ->
                     "united arab emirates"
-                normalized == "ksa" || normalized == "saudi arabia" ->
+                normalized == "ksa" || normalized == "saudi arabia" || normalized == "arabie saoudite" ->
                     "saudi arabia"
                 normalized == "bosnia" || normalized == "bosnia and herzegovina" || normalized == "bosnia herzegovina" ->
                     "bosnia and herzegovina"
@@ -5948,14 +5961,21 @@ class FootballRepository(
         fun canonicalizeDisplayTeamName(rawName: String): String {
             val trimmed = rawName.trim()
             if (trimmed.isBlank()) return ""
-            return when (trimmed.lowercase(Locale.ROOT)) {
-                "turkey", "turkiye", "türkiye" -> "Türkiye"
-                "cote d'ivoire", "côte d'ivoire", "cote divoire", "ivory coast" -> "Ivory Coast"
-                "korea republic", "republic of korea", "south korea" -> "South Korea"
-                "ir iran", "islamic republic of iran" -> "Iran"
+            val lower = Normalizer.normalize(trimmed, Normalizer.Form.NFD)
+                .replace(Regex("\\p{InCombiningDiacriticalMarks}+"), "")
+                .replace("ı", "i", ignoreCase = true)
+                .replace("İ", "i", ignoreCase = true)
+                .lowercase(Locale.ROOT)
+                .trim()
+            return when (lower) {
+                "turkey", "turkiye" -> "Türkiye"
+                "cote d'ivoire", "cote divoire", "ivory coast" -> "Ivory Coast"
+                "korea republic", "republic of korea", "south korea", "korea south" -> "South Korea"
+                "ir iran", "islamic republic of iran", "iran" -> "Iran"
                 "czech republic", "czechia" -> "Czechia"
                 "cabo verde", "cape verde" -> "Cape Verde"
                 "congo dr", "rd congo", "dr congo", "democratic republic of congo" -> "DR Congo"
+                "the netherlands", "holland", "nederland" -> "Netherlands"
                 else -> trimmed
             }
         }

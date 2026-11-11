@@ -350,6 +350,15 @@ fun formatDynamicKickoffTime(kickoffEpochMs: Long, zone: UserCountryZone, isSumm
     return SimpleDateFormat("HH:mm", Locale.US).apply { timeZone = tz }.format(Date(kickoffEpochMs))
 }
 
+fun formatDynamicKickoffTime(
+    kickoffEpochMs: Long,
+    zone: UserCountryZone,
+    seasonTimeMode: SeasonTimeMode
+): String {
+    val isSummer = zone.isSummerTimeActive(mode = seasonTimeMode, epochMs = kickoffEpochMs)
+    return formatDynamicKickoffTime(kickoffEpochMs, zone, isSummer)
+}
+
 object UserZoneRegistry {
     const val DEFAULT_COUNTRY_CODE = "MA"
 

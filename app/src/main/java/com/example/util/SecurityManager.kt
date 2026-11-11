@@ -138,6 +138,10 @@ object SecurityManager {
 
     fun decryptSecret(stored: String): String = decryptCredential(stored)
 
+    fun encryptString(plaintext: String): String = encryptCredential(plaintext)
+
+    fun decryptString(stored: String): String = decryptCredential(stored)
+
     /**
      * Encrypts a plaintext credential using AES-256-GCM.
      * Idempotent: if input already starts with [ENCRYPTED_PREFIX] or [FALLBACK_PREFIX], returns it unchanged.

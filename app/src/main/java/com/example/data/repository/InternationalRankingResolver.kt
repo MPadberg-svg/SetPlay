@@ -405,6 +405,11 @@ class InternationalRankingResolver(
             if (rawName.isBlank()) return ""
             val decomposed = Normalizer.normalize(rawName, Normalizer.Form.NFD)
                 .replace(Regex("\\p{InCombiningDiacriticalMarks}+"), "")
+                .replace("ı", "i", ignoreCase = true)
+                .replace("İ", "i", ignoreCase = true)
+                .replace("ø", "o", ignoreCase = true)
+                .replace("æ", "ae", ignoreCase = true)
+                .replace("ß", "ss", ignoreCase = true)
             val cleaned = decomposed
                 .lowercase(Locale.ROOT)
                 .replace(Regex("\\b(national|team|men|mens|football|soccer|federation|selection|rep|republic)\\b"), " ")
@@ -416,9 +421,9 @@ class InternationalRankingResolver(
                 cleaned == "turkiye" || cleaned == "turkey" -> "turkiye"
                 cleaned == "cote d ivoire" || cleaned == "cote divoire" || cleaned == "ivory coast" -> "ivory coast"
                 cleaned == "korea" || cleaned == "south korea" || cleaned == "korea south" || cleaned == "taeguk warriors" -> "south korea"
-                cleaned == "ir iran" || cleaned == "iran" -> "iran"
+                cleaned == "ir iran" || cleaned == "iran" || cleaned == "islamic of iran" -> "iran"
                 cleaned == "czech" || cleaned == "czechia" -> "czechia"
-                cleaned == "dr congo" || cleaned == "congo dr" || cleaned == "rd congo" || cleaned == "democratic of congo" -> "dr congo"
+                cleaned == "dr congo" || cleaned == "congo dr" || cleaned == "rd congo" || cleaned == "democratic of congo" || cleaned == "d r congo" -> "dr congo"
                 cleaned == "cabo verde" || cleaned == "cape verde" -> "cape verde"
                 cleaned == "holland" || cleaned == "the netherlands" || cleaned == "nederland" || cleaned == "netherlands" -> "netherlands"
                 cleaned == "maroc" || cleaned == "al maghrib" || cleaned == "morocco" -> "morocco"
@@ -437,7 +442,8 @@ class InternationalRankingResolver(
                 cleaned == "cameroun" || cleaned == "cameroon" -> "cameroon"
                 cleaned == "afrique du sud" || cleaned == "south africa" -> "south africa"
                 cleaned == "arabie saoudite" || cleaned == "saudi arabia" || cleaned == "ksa" -> "saudi arabia"
-                cleaned == "uae" || cleaned == "united arab emirates" -> "united arab emirates"
+                cleaned == "uae" || cleaned == "u a e" || cleaned == "united arab emirates" -> "united arab emirates"
+                cleaned == "usa" || cleaned == "u s a" || cleaned == "united states" || cleaned == "united states of america" -> "united states"
                 else -> cleaned
             }
         }

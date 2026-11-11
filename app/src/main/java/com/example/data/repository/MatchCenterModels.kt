@@ -241,7 +241,22 @@ class MatchCenterEnricher(
             if ((nowMs - cachedEntry.timestampMs) < DOSSIER_CACHE_TTL_MS &&
                 cachedEntry.matchScoreSignature == currentSignature
             ) {
-                return@withContext cachedEntry.dossier.copy(seasonTimeMode = seasonTimeMode)
+                val localizedCachedMatch = if (cachedEntry.dossier.match.kickoffEpochMs > 0L) {
+                    cachedEntry.dossier.match.copy(
+                        kickoffTimeFormatted = formatDynamicKickoffTime(
+                            cachedEntry.dossier.match.kickoffEpochMs,
+                            countryZone,
+                            seasonTimeMode
+                        )
+                    )
+                } else {
+                    cachedEntry.dossier.match
+                }
+                return@withContext cachedEntry.dossier.copy(
+                    match = localizedCachedMatch,
+                    countryZone = countryZone,
+                    seasonTimeMode = seasonTimeMode
+                )
             } else {
                 // Score or status changed (e.g. live goal scored) or TTL expired -> invalidate
                 dossierCache.remove(cacheKey)
@@ -971,8 +986,20 @@ class MatchCenterEnricher(
             "TBA / Official Broadcast Feed"
         }
 
+        val localizedMatch = if (match.kickoffEpochMs > 0L) {
+            match.copy(
+                kickoffTimeFormatted = formatDynamicKickoffTime(
+                    match.kickoffEpochMs,
+                    countryZone,
+                    seasonTimeMode
+                )
+            )
+        } else {
+            match
+        }
+
         return MatchFullDossier(
-            match = match,
+            match = localizedMatch,
             halfTimeScoreLabel = halfTimeLabel,
             fullTimeScoreLabel = fullTimeLabel,
             refereeName = ref,

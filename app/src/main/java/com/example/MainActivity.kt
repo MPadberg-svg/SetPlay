@@ -168,9 +168,17 @@ import com.example.ui.theme.FavoritesPaleMint
 import com.example.ui.theme.FavoritesSagePrimary
 import com.example.ui.theme.KickoffCeruleanBlue
 import com.example.ui.theme.KickoffCoralRed
+import com.example.ui.theme.KickoffFloodlightVolt
+import com.example.ui.theme.KickoffFloodlightWhite
+import com.example.ui.theme.KickoffLiveCrimson
 import com.example.ui.theme.KickoffOceanBase
 import com.example.ui.theme.KickoffOceanSurface
 import com.example.ui.theme.KickoffPeachCream
+import com.example.ui.theme.KickoffPitchBlack
+import com.example.ui.theme.KickoffPitchEmerald
+import com.example.ui.theme.KickoffStadiumForest
+import com.example.ui.theme.KickoffTrophyGold
+import com.example.ui.theme.KickoffTurfSurface
 import com.example.data.repository.MatchStatus
 import com.example.ui.theme.KickoffTropicalTeal
 import com.example.ui.theme.LiveCrimson
@@ -609,7 +617,7 @@ fun MainAppContent(
         )
     } else {
         val targetSectionBaseColor = when (currentScreen) {
-            AppScreen.HOME -> KickoffOceanBase
+            AppScreen.HOME -> KickoffPitchBlack
             AppScreen.LIVE_TV -> TvMidnightSlate
             AppScreen.MOVIES -> MoviesSapphireNavy
             AppScreen.SERIES -> SeriesPineBase
@@ -1446,18 +1454,18 @@ fun TopStreamingBar(
     onSearchClick: () -> Unit
 ) {
     val (targetSurface, targetPrimary, sectionBadgeTitle) = when (currentScreen) {
-        AppScreen.HOME -> Triple(KickoffOceanBase, KickoffTropicalTeal, "KICKOFF ARENA")
+        AppScreen.HOME -> Triple(KickoffPitchBlack, KickoffPitchEmerald, "KICKOFF ARENA")
         AppScreen.LIVE_TV -> Triple(TvMidnightSlate, TvBroadcastScarlet, "LIVE TV")
         AppScreen.MOVIES -> Triple(MoviesSapphireNavy, MoviesCyanTeal, "MOVIES")
         AppScreen.SERIES -> Triple(SeriesPineBase, SeriesMistTeal, "SERIES")
         AppScreen.FAVORITES -> Triple(FavoritesObsidianBase, FavoritesSagePrimary, "FAVORITES")
         AppScreen.PLAYLISTS -> Triple(DarkGraphite, AmberGold, "XTREAM SERVERS")
-        AppScreen.GLOBAL_SEARCH -> Triple(DarkGraphite, KickoffTropicalTeal, "GLOBAL SEARCH")
+        AppScreen.GLOBAL_SEARCH -> Triple(DarkGraphite, KickoffPitchEmerald, "GLOBAL SEARCH")
         AppScreen.PARENTAL_SETTINGS -> Triple(DarkGraphite, AmberGold, "PARENTAL LOCK")
     }
 
     val sectionUnderlineStops = when (currentScreen) {
-        AppScreen.HOME -> listOf(AmberGold, KickoffTropicalTeal, KickoffPeachCream, KickoffCoralRed)
+        AppScreen.HOME -> listOf(KickoffPitchEmerald, KickoffFloodlightVolt, KickoffTrophyGold, KickoffLiveCrimson)
         AppScreen.LIVE_TV -> listOf(AmberGold, TvBroadcastScarlet, TvCrimsonRose, TvPlumMagenta)
         AppScreen.MOVIES -> listOf(MoviesMintSpring, MoviesAquamarine, MoviesCyanTeal, MoviesAtlanticTeal)
         AppScreen.SERIES -> listOf(SeriesIceAqua, SeriesMistTeal, SeriesSeaJade, AmberGold)
@@ -1746,7 +1754,7 @@ fun BottomStreamingNav(
     val haptic = LocalHapticFeedback.current
 
     val targetDockSurface = when (currentScreen) {
-        AppScreen.HOME -> Color(0xFF06151E)
+        AppScreen.HOME -> KickoffPitchBlack
         AppScreen.LIVE_TV -> Color(0xFF131622)
         AppScreen.MOVIES -> Color(0xFF061928)
         AppScreen.SERIES -> Color(0xFF081C1B)
@@ -1768,10 +1776,10 @@ fun BottomStreamingNav(
                 defaultMicroTag = "MATCHES",
                 filledIcon = Icons.Filled.SportsSoccer,
                 outlinedIcon = Icons.Outlined.SportsSoccer,
-                crestNeonColor = Color(0xFF2EC4B6),       // Vibrant KickOff Tropical Cyan-Teal
-                crestCoreHighlight = KickoffPeachCream,   // Warm Sand-Gold Crown Highlight
-                chamberTint = KickoffTropicalTeal,
-                activeLabelColor = Color.White,
+                crestNeonColor = KickoffPitchEmerald,     // #10B981 Pitch Emerald Brand Identity
+                crestCoreHighlight = KickoffFloodlightVolt, // #D4FF33 Floodlight Volt Kinetic Highlight
+                chamberTint = KickoffStadiumForest,       // #0B3B2D Deep Stadium Turf Forest
+                activeLabelColor = KickoffFloodlightWhite,
                 kineticStyle = NavKineticStyle.SOCCER_ORBIT
             ),
             LuxuryNavItemSpec(
@@ -2573,19 +2581,19 @@ private fun LuxuryBottomNavSectionSlot(
                         .align(Alignment.TopEnd)
                         .offset(x = 5.dp, y = (-1).dp)
                         .background(
-                            color = if (isLiveMatchBadge) LiveRed else Color(0xFF081520).copy(alpha = 0.96f),
+                            color = if (isLiveMatchBadge) KickoffLiveCrimson else KickoffTurfSurface.copy(alpha = 0.96f),
                             shape = RoundedCornerShape(50)
                         )
                         .border(
                             width = 0.85.dp,
-                            color = if (isLiveMatchBadge) Color.White.copy(alpha = 0.85f) else item.crestNeonColor.copy(alpha = 0.78f),
+                            color = if (isLiveMatchBadge) KickoffFloodlightWhite.copy(alpha = 0.85f) else item.crestNeonColor.copy(alpha = 0.78f),
                             shape = RoundedCornerShape(50)
                         )
                         .padding(horizontal = 4.5.dp, vertical = 1.dp)
                 ) {
                     Text(
                         text = inactiveBadgeText,
-                        color = if (isLiveMatchBadge) Color.White else item.crestCoreHighlight,
+                        color = if (isLiveMatchBadge) KickoffFloodlightWhite else item.crestCoreHighlight,
                         fontSize = 7.5.sp,
                         lineHeight = 8.sp,
                         fontWeight = FontWeight.ExtraBold,
@@ -2693,7 +2701,7 @@ fun TvLeftNavigationRail(
                 testTag = "nav_home",
                 targetScreen = AppScreen.HOME,
                 badgeText = if (liveMatchesCount > 0) "$liveMatchesCount LIVE" else null,
-                accentColor = KickoffTropicalTeal
+                accentColor = KickoffPitchEmerald
             ),
             TvRailNavEntry(
                 label = "📺 Live TV",

@@ -43,10 +43,50 @@ val KickoffTerracottaGlow = Color(0x33D9541E)   // 20% #D9541E for live match ca
 val KickoffParchmentBorder = Color(0x2ED8CBB3)  // 18% #D8CBB3 for crisp 0.8dp architectural borders
 val KickoffParchmentMuted = Color(0xB3D8CBB3)   // 70% #D8CBB3 for secondary captions
 
-// Dark ocean-stadium companion surfaces mapped to Official 6-Color Architectural Palette
-val KickoffOceanBase = KickoffObsidianBlack
-val KickoffOceanSurface = KickoffCharcoalSlate
-val KickoffOceanElevated = KickoffImperialNavy
+// =========================================================================
+// KICKOFF BRAND COLOR KIT — "FLOODLIGHT NOIR & PITCH EMERALD"
+// =========================================================================
+
+// 1. 4-Layer Stadium Depth Surfaces
+val KickoffPitchBlack = Color(0xFF070B0A)       // Level 0: Root nocturnal stadium canvas & nav bar base
+val KickoffTurfSurface = Color(0xFF0E1614)      // Level 1: Primary competition group & match card surface
+val KickoffCanopyElevated = Color(0xFF15211E)   // Level 2: Sticky ribbon, active filter pods & modal headers
+val KickoffGlassWell = Color(0xFF1C2C28)        // Level 3: Recessed center scorebugs, time pills & stat tracks
+
+// 2. Primary, Secondary & Signal Brand Accents
+val KickoffPitchEmerald = Color(0xFF10B981)     // Primary Brand Identity: Watch CTAs, active pillar/tab fills, confirmed XI
+val KickoffFloodlightVolt = Color(0xFFD4FF33)   // Kinetic Highlight: Active date laser bar, TV D-Pad focus rim, MVP crown
+val KickoffStadiumForest = Color(0xFF0B3B2D)    // Deep Secondary Surface: Hero live match gradient & 2D pitch turf base
+val KickoffStadiumTurfAlt = Color(0xFF0F4C3A)   // Alternating 2D tactical pitch stripe
+val KickoffLiveCrimson = Color(0xFFFF2E54)      // Exclusive Live Signal: Pulsing LIVE badge, live minute clock & red cards
+val KickoffTrophyGold = Color(0xFFF59E0B)       // Championship & Warning: Pinned items, HT/Stoppage badge & quota alerts
+
+// 3. Typography, Borders & Interactive State Tokens
+val KickoffFloodlightWhite = Color(0xFFF2F7F5)  // Primary high-contrast team names, tabular scores & headlines
+val KickoffMistSilver = Color(0xFF99AEA7)       // Secondary metadata, broadcaster labels, stadium & referee text
+val KickoffSlateMuted = Color(0xFF5C736B)       // Muted finished losing team, disabled controls & subtle captions
+val KickoffEmeraldBorder = Color(0x2910B981)    // 16% Pitch Emerald for 0.8dp card & container borders
+val KickoffVoltGlow = Color(0x33D4FF33)         // 20% Floodlight Volt for D-Pad focus halo & active date glow
+val KickoffCrimsonGlow = Color(0x33FF2E54)      // 20% Live Crimson for in-play match aura
+val KickoffRowDivider = Color(0x14F2F7F5)       // 8% Floodlight White for crisp 0.5dp match row dividers
+
+// 4. Competition-Specific Signature Accents
+val CompUclBlue = Color(0xFF3B82F6)
+val CompUelOrange = Color(0xFFF97316)
+val CompEplViolet = Color(0xFFA855F7)
+val CompLaLigaCoral = Color(0xFFFF4B4B)
+val CompSerieACyan = Color(0xFF06B6D4)
+val CompBundesligaRed = Color(0xFFEF4444)
+val CompLigue1Gold = Color(0xFFEAB308)
+val CompCafEmerald = Color(0xFF10B981)
+val CompBotolaCrimson = Color(0xFFE11D48)
+val CompSaudiJade = Color(0xFF14B8A6)
+val CompIntlGold = Color(0xFFF59E0B)
+
+// Dark stadium companion surfaces mapped to Floodlight Noir & Pitch Emerald
+val KickoffOceanBase = KickoffPitchBlack
+val KickoffOceanSurface = KickoffTurfSurface
+val KickoffOceanElevated = KickoffCanopyElevated
 
 // 2. LIVE TV PALETTE (TV-colors.jpg: #1F313B, #383852, #784259, #B94E56, #BE4039, #683536)
 val TvMidnightSlate = Color(0xFF1F313B)      // #1F313B — Deep Midnight Slate-Navy background base

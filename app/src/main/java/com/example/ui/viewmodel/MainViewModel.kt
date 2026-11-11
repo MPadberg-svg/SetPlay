@@ -8,11 +8,14 @@ import com.example.data.model.FavoriteTeamEntity
 import com.example.data.model.PlaylistEntity
 import com.example.data.model.StreamEntity
 import com.example.data.model.TournamentPreferenceEntity
+import com.example.data.repository.ApiKeyValidationResult
 import com.example.data.repository.CompetitionCategory
 import com.example.data.repository.FootballMatch
 import com.example.data.repository.FootballRepository
 import com.example.data.repository.FootballTeam
 import com.example.data.repository.IptvRepository
+import com.example.data.repository.KickoffProviderId
+import com.example.data.repository.KickoffSourceHealthState
 import com.example.data.repository.LiveScoreSyncState
 import com.example.data.repository.MatchDayTab
 import com.example.data.repository.MatchFullDossier
@@ -265,6 +268,15 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     private val _liveScoreSyncState = MutableStateFlow(LiveScoreSyncState())
     val liveScoreSyncState: StateFlow<LiveScoreSyncState> = _liveScoreSyncState.asStateFlow()
+
+    val kickoffSourceHealth: StateFlow<List<KickoffSourceHealthState>> =
+        footballRepository.sourceMonitor.sourceHealthFlow
+
+    val kickoffSourceAlert: StateFlow<String?> =
+        footballRepository.sourceMonitor.activeSourceAlertFlow
+
+    private val _isCheckingSourcesHealth = MutableStateFlow(false)
+    val isCheckingSourcesHealth: StateFlow<Boolean> = _isCheckingSourcesHealth.asStateFlow()
 
     // In-Player Live Goal Alert State (auto-dismissed after 5 seconds)
     private val _activeGoalAlert = MutableStateFlow<LiveGoalAlertEvent?>(null)
@@ -903,6 +915,45 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch {
             footballRepository.enableAllTournaments()
         }
+    }
+
+    fun checkAllKickoffSourcesHealth() {
+        if (_isCheckingSourcesHealth.value) return
+        viewModelScope.launch {
+            _isCheckingSourcesHealth.value = true
+            try {
+                footballRepository.sourceMonitor.checkAllSourcesHealth()
+            } finally {
+                _isCheckingSourcesHealth.value = false
+            }
+        }
+    }
+
+    fun validateAndUpdateKickoffApiKey(
+        provider: KickoffProviderId,
+        newKey: String,
+        onResult: (ApiKeyValidationResult) -> Unit = {}
+    ) {
+        viewModelScope.launch {
+            val result = footballRepository.sourceMonitor.validateAndSaveApiKey(
+                provider = provider,
+                candidateKey = newKey,
+                saveIfValid = true
+            )
+            onResult(result)
+            if (result.isValid) {
+                refreshFootballSchedules()
+                refreshKickOffMatches(_selectedMatchDay.value)
+            }
+        }
+    }
+
+    fun resetKickoffApiKey(provider: KickoffProviderId) {
+        footballRepository.sourceMonitor.resetToDefaultKey(provider)
+    }
+
+    fun dismissKickoffSourceAlert() {
+        footballRepository.sourceMonitor.dismissAlert()
     }
 
     /**
