@@ -94,15 +94,18 @@ import com.example.data.repository.SeasonTimeMode
 import com.example.data.repository.SourceHealthStatus
 import com.example.data.repository.UserCountryZone
 import com.example.data.repository.UserZoneRegistry
-import com.example.ui.theme.KickoffAgedParchment
-import com.example.ui.theme.KickoffAlabasterIvory
-import com.example.ui.theme.KickoffCharcoalElevated
-import com.example.ui.theme.KickoffCharcoalSlate
-import com.example.ui.theme.KickoffImperialNavy
-import com.example.ui.theme.KickoffObsidianBlack
-import com.example.ui.theme.KickoffParchmentBorder
-import com.example.ui.theme.KickoffTerracotta
-import com.example.ui.theme.KickoffTerracottaGlow
+import com.example.ui.theme.KickoffCanopyElevated
+import com.example.ui.theme.KickoffEmeraldBorder
+import com.example.ui.theme.KickoffFloodlightVolt
+import com.example.ui.theme.KickoffFloodlightWhite
+import com.example.ui.theme.KickoffGlassWell
+import com.example.ui.theme.KickoffLiveCrimson
+import com.example.ui.theme.KickoffMistSilver
+import com.example.ui.theme.KickoffPitchBlack
+import com.example.ui.theme.KickoffPitchEmerald
+import com.example.ui.theme.KickoffStadiumForest
+import com.example.ui.theme.KickoffTrophyGold
+import com.example.ui.theme.KickoffTurfSurface
 import com.example.ui.theme.TabularNumeralTextStyle
 import com.example.ui.viewmodel.LiveGoalAlertEvent
 
@@ -143,11 +146,11 @@ fun UserCountryZoneCapsuleButton(
     }
 
     Surface(
-        color = KickoffCharcoalSlate,
+        color = KickoffTurfSurface,
         shape = RoundedCornerShape(10.dp),
         border = BorderStroke(
             width = 0.9.dp,
-            color = KickoffParchmentBorder
+            color = KickoffEmeraldBorder
         ),
         modifier = modifier
             .graphicsLayer {
@@ -176,7 +179,7 @@ fun UserCountryZoneCapsuleButton(
             )
             Text(
                 text = selectedZone.shortIso3,
-                color = KickoffAlabasterIvory,
+                color = KickoffFloodlightWhite,
                 fontSize = 10.sp,
                 fontWeight = FontWeight.ExtraBold,
                 letterSpacing = 0.3.sp,
@@ -187,11 +190,11 @@ fun UserCountryZoneCapsuleButton(
                 modifier = Modifier
                     .size(3.dp)
                     .clip(CircleShape)
-                    .background(KickoffTerracotta)
+                    .background(KickoffPitchEmerald)
             )
             Text(
                 text = "$seasonEmoji$utcBadge",
-                color = KickoffAgedParchment,
+                color = KickoffMistSilver,
                 fontSize = 9.5.sp,
                 fontWeight = FontWeight.ExtraBold,
                 maxLines = 1,
@@ -200,7 +203,7 @@ fun UserCountryZoneCapsuleButton(
             Icon(
                 imageVector = Icons.Default.KeyboardArrowDown,
                 contentDescription = "Change Country Zone",
-                tint = KickoffAgedParchment,
+                tint = KickoffMistSilver,
                 modifier = Modifier.size(13.dp)
             )
         }
@@ -226,12 +229,16 @@ fun OnboardingCountryZoneSelectorCard(
         selectedZone.getUtcOffsetBadge(mode = seasonTimeMode)
     }
 
+    val providerStyle = remember(selectedZone.primaryTvProviderName) {
+        resolveBroadcastProviderBadgeStyle(selectedZone.primaryTvProviderName)
+    }
+
     Surface(
-        color = KickoffCharcoalSlate,
+        color = KickoffTurfSurface,
         shape = RoundedCornerShape(14.dp),
         border = BorderStroke(
             width = 1.dp,
-            color = KickoffParchmentBorder
+            color = KickoffEmeraldBorder
         ),
         modifier = Modifier
             .fillMaxWidth()
@@ -253,13 +260,13 @@ fun OnboardingCountryZoneSelectorCard(
                     Icon(
                         imageVector = Icons.Default.Public,
                         contentDescription = null,
-                        tint = KickoffTerracotta,
+                        tint = KickoffPitchEmerald,
                         modifier = Modifier.size(15.dp)
                     )
                     Spacer(modifier = Modifier.width(6.dp))
                     Text(
                         text = "USER'S ZONE • COUNTRY, TIME & TV",
-                        color = KickoffAlabasterIvory,
+                        color = KickoffFloodlightWhite,
                         fontSize = 10.5.sp,
                         fontWeight = FontWeight.ExtraBold,
                         letterSpacing = 0.3.sp
@@ -268,9 +275,9 @@ fun OnboardingCountryZoneSelectorCard(
 
                 Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                     Surface(
-                        color = KickoffImperialNavy,
+                        color = KickoffCanopyElevated,
                         shape = RoundedCornerShape(50),
-                        border = BorderStroke(0.7.dp, KickoffParchmentBorder),
+                        border = BorderStroke(0.7.dp, KickoffEmeraldBorder),
                         modifier = Modifier
                             .clip(RoundedCornerShape(50))
                             .clickable { onAutoDetectCountry() }
@@ -283,13 +290,13 @@ fun OnboardingCountryZoneSelectorCard(
                             Icon(
                                 imageVector = Icons.Default.LocationOn,
                                 contentDescription = null,
-                                tint = KickoffTerracotta,
+                                tint = KickoffPitchEmerald,
                                 modifier = Modifier.size(11.dp)
                             )
                             Spacer(modifier = Modifier.width(3.dp))
                             Text(
                                 text = "Auto-Detect",
-                                color = KickoffAlabasterIvory,
+                                color = KickoffFloodlightWhite,
                                 fontSize = 9.sp,
                                 fontWeight = FontWeight.ExtraBold
                             )
@@ -297,9 +304,9 @@ fun OnboardingCountryZoneSelectorCard(
                     }
 
                     Surface(
-                        color = KickoffTerracottaGlow,
+                        color = KickoffPitchEmerald.copy(alpha = 0.18f),
                         shape = RoundedCornerShape(50),
-                        border = BorderStroke(0.7.dp, KickoffTerracotta),
+                        border = BorderStroke(0.7.dp, KickoffPitchEmerald),
                         modifier = Modifier
                             .clip(RoundedCornerShape(50))
                             .clickable { onOpenFullZoneSheet() }
@@ -307,7 +314,7 @@ fun OnboardingCountryZoneSelectorCard(
                     ) {
                         Text(
                             text = "All Zones (${allZones.size})",
-                            color = KickoffAlabasterIvory,
+                            color = KickoffFloodlightWhite,
                             fontSize = 9.sp,
                             fontWeight = FontWeight.ExtraBold,
                             modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
@@ -318,9 +325,9 @@ fun OnboardingCountryZoneSelectorCard(
 
             // Active Country Summary Pill (Flag + Name + Timezone + Primary TV Broadcaster)
             Surface(
-                color = KickoffObsidianBlack,
+                color = KickoffGlassWell,
                 shape = RoundedCornerShape(10.dp),
-                border = BorderStroke(0.8.dp, KickoffParchmentBorder),
+                border = BorderStroke(0.8.dp, KickoffEmeraldBorder),
                 modifier = Modifier.fillMaxWidth()
             ) {
                 Row(
@@ -343,19 +350,19 @@ fun OnboardingCountryZoneSelectorCard(
                             Row(verticalAlignment = Alignment.CenterVertically) {
                                 Text(
                                     text = selectedZone.countryName,
-                                    color = KickoffAlabasterIvory,
+                                    color = KickoffFloodlightWhite,
                                     fontSize = 12.5.sp,
                                     fontWeight = FontWeight.ExtraBold
                                 )
                                 Spacer(modifier = Modifier.width(6.dp))
                                 Surface(
-                                    color = KickoffImperialNavy,
+                                    color = KickoffStadiumForest,
                                     shape = RoundedCornerShape(4.dp),
-                                    border = BorderStroke(0.5.dp, KickoffParchmentBorder)
+                                    border = BorderStroke(0.5.dp, KickoffEmeraldBorder)
                                 ) {
                                     Text(
                                         text = utcBadge,
-                                        color = KickoffAgedParchment,
+                                        color = KickoffFloodlightVolt,
                                         fontSize = 8.5.sp,
                                         fontWeight = FontWeight.ExtraBold,
                                         modifier = Modifier.padding(horizontal = 5.dp, vertical = 1.dp)
@@ -364,7 +371,7 @@ fun OnboardingCountryZoneSelectorCard(
                             }
                             Text(
                                 text = "TV: ${selectedZone.primaryTvProviderName}",
-                                color = KickoffAgedParchment,
+                                color = providerStyle.textColor,
                                 fontSize = 10.sp,
                                 fontWeight = FontWeight.SemiBold,
                                 maxLines = 1,
@@ -374,13 +381,13 @@ fun OnboardingCountryZoneSelectorCard(
                     }
 
                     Surface(
-                        color = KickoffCharcoalSlate,
+                        color = providerStyle.surfaceColor,
                         shape = RoundedCornerShape(6.dp),
-                        border = BorderStroke(0.5.dp, KickoffParchmentBorder)
+                        border = BorderStroke(0.6.dp, providerStyle.borderColor)
                     ) {
                         Text(
                             text = selectedZone.iptvCategoryPrefixes.take(2).joinToString(" "),
-                            color = KickoffAgedParchment,
+                            color = providerStyle.textColor,
                             fontSize = 8.5.sp,
                             fontWeight = FontWeight.Bold,
                             modifier = Modifier.padding(horizontal = 6.dp, vertical = 3.dp)
@@ -407,7 +414,7 @@ fun OnboardingCountryZoneSelectorCard(
                 items(allZones, key = { it.countryCode }) { zone ->
                     val isSelected = zone.countryCode.equals(selectedZone.countryCode, ignoreCase = true)
                     val bg by animateColorAsState(
-                        targetValue = if (isSelected) KickoffTerracotta else KickoffObsidianBlack,
+                        targetValue = if (isSelected) KickoffPitchEmerald else KickoffGlassWell,
                         animationSpec = tween(180),
                         label = "onboarding_zone_bg_${zone.countryCode}"
                     )
@@ -416,7 +423,7 @@ fun OnboardingCountryZoneSelectorCard(
                         shape = RoundedCornerShape(50),
                         border = BorderStroke(
                             width = if (isSelected) 1.dp else 0.7.dp,
-                            color = if (isSelected) KickoffAlabasterIvory.copy(alpha = 0.55f) else KickoffParchmentBorder
+                            color = if (isSelected) KickoffFloodlightVolt.copy(alpha = 0.75f) else KickoffEmeraldBorder
                         ),
                         modifier = Modifier
                             .clip(RoundedCornerShape(50))
@@ -431,7 +438,7 @@ fun OnboardingCountryZoneSelectorCard(
                             Spacer(modifier = Modifier.width(4.dp))
                             Text(
                                 text = zone.countryName,
-                                color = if (isSelected) KickoffAlabasterIvory else KickoffAgedParchment,
+                                color = if (isSelected) KickoffPitchBlack else KickoffFloodlightWhite,
                                 fontSize = 10.sp,
                                 fontWeight = if (isSelected) FontWeight.ExtraBold else FontWeight.SemiBold,
                                 maxLines = 1
@@ -457,9 +464,9 @@ fun SeasonTimeModeCompactSelectorRow(
     modifier: Modifier = Modifier
 ) {
     Surface(
-        color = KickoffObsidianBlack,
+        color = KickoffGlassWell,
         shape = RoundedCornerShape(10.dp),
-        border = BorderStroke(0.7.dp, KickoffParchmentBorder),
+        border = BorderStroke(0.7.dp, KickoffEmeraldBorder),
         modifier = modifier
             .fillMaxWidth()
             .testTag("season_time_mode_selector_row")
@@ -477,14 +484,14 @@ fun SeasonTimeModeCompactSelectorRow(
             ) {
                 Text(
                     text = "SEASONAL CLOCK (WINTER / SUMMER TIME)",
-                    color = KickoffAgedParchment,
+                    color = KickoffMistSilver,
                     fontSize = 8.5.sp,
                     fontWeight = FontWeight.ExtraBold,
                     letterSpacing = 0.4.sp
                 )
                 Text(
                     text = zone.getActiveSeasonLabel(mode = selectedMode),
-                    color = KickoffAlabasterIvory,
+                    color = KickoffFloodlightVolt,
                     fontSize = 9.sp,
                     fontWeight = FontWeight.ExtraBold
                 )
@@ -502,11 +509,11 @@ fun SeasonTimeModeCompactSelectorRow(
                         SeasonTimeMode.SUMMER -> "☀️ Summer (${zone.summerGmtBadge})"
                     }
                     Surface(
-                        color = if (isSelected) KickoffTerracotta else KickoffCharcoalSlate,
+                        color = if (isSelected) KickoffPitchEmerald else KickoffTurfSurface,
                         shape = RoundedCornerShape(8.dp),
                         border = BorderStroke(
                             width = 0.8.dp,
-                            color = if (isSelected) KickoffAlabasterIvory.copy(alpha = 0.55f) else KickoffParchmentBorder
+                            color = if (isSelected) KickoffFloodlightVolt.copy(alpha = 0.75f) else KickoffEmeraldBorder
                         ),
                         modifier = Modifier
                             .weight(1f)
@@ -520,7 +527,7 @@ fun SeasonTimeModeCompactSelectorRow(
                         ) {
                             Text(
                                 text = chipLabel,
-                                color = if (isSelected) KickoffAlabasterIvory else KickoffAgedParchment,
+                                color = if (isSelected) KickoffPitchBlack else KickoffFloodlightWhite,
                                 fontSize = 9.5.sp,
                                 fontWeight = if (isSelected) FontWeight.ExtraBold else FontWeight.SemiBold,
                                 maxLines = 1,
@@ -576,7 +583,7 @@ fun UserCountryZoneBottomSheet(
 
     ModalBottomSheet(
         onDismissRequest = onDismiss,
-        containerColor = KickoffObsidianBlack,
+        containerColor = KickoffPitchBlack,
         modifier = Modifier.testTag("user_country_zone_bottom_sheet")
     ) {
         Column(
@@ -597,13 +604,13 @@ fun UserCountryZoneBottomSheet(
                         modifier = Modifier
                             .size(36.dp)
                             .clip(CircleShape)
-                            .background(KickoffImperialNavy)
-                            .border(1.dp, KickoffTerracotta.copy(alpha = 0.70f), CircleShape)
+                            .background(KickoffStadiumForest)
+                            .border(1.dp, KickoffPitchEmerald.copy(alpha = 0.70f), CircleShape)
                     ) {
                         Icon(
                             imageVector = Icons.Default.Public,
                             contentDescription = null,
-                            tint = KickoffTerracotta,
+                            tint = KickoffPitchEmerald,
                             modifier = Modifier.size(19.dp)
                         )
                     }
@@ -611,13 +618,13 @@ fun UserCountryZoneBottomSheet(
                     Column {
                         Text(
                             text = "The USER's Zone",
-                            color = KickoffAlabasterIvory,
+                            color = KickoffFloodlightWhite,
                             fontSize = 18.sp,
                             fontWeight = FontWeight.ExtraBold
                         )
                         Text(
                             text = "Sync Winter/Summer timezone, kickoff clocks & TV channels",
-                            color = KickoffAgedParchment,
+                            color = KickoffMistSilver,
                             fontSize = 11.5.sp
                         )
                     }
@@ -629,7 +636,7 @@ fun UserCountryZoneBottomSheet(
                     Icon(
                         imageVector = Icons.Default.Close,
                         contentDescription = "Close",
-                        tint = KickoffAlabasterIvory
+                        tint = KickoffFloodlightWhite
                     )
                 }
             }
@@ -658,7 +665,7 @@ fun UserCountryZoneBottomSheet(
                 placeholder = {
                     Text(
                         text = "Search country or TV network (Morocco, France, UK, Canal+, Sky, beIN)...",
-                        color = KickoffAgedParchment.copy(alpha = 0.65f),
+                        color = KickoffMistSilver.copy(alpha = 0.65f),
                         fontSize = 12.sp
                     )
                 },
@@ -666,7 +673,7 @@ fun UserCountryZoneBottomSheet(
                     Icon(
                         imageVector = Icons.Default.Search,
                         contentDescription = "Search Country Zone",
-                        tint = KickoffTerracotta
+                        tint = KickoffPitchEmerald
                     )
                 },
                 trailingIcon = {
@@ -675,19 +682,19 @@ fun UserCountryZoneBottomSheet(
                             Icon(
                                 imageVector = Icons.Default.Close,
                                 contentDescription = "Clear",
-                                tint = KickoffAgedParchment
+                                tint = KickoffMistSilver
                             )
                         }
                     }
                 },
                 singleLine = true,
                 colors = OutlinedTextFieldDefaults.colors(
-                    focusedBorderColor = KickoffTerracotta,
-                    unfocusedBorderColor = KickoffParchmentBorder,
-                    focusedContainerColor = KickoffCharcoalSlate,
-                    unfocusedContainerColor = KickoffCharcoalSlate,
-                    focusedTextColor = KickoffAlabasterIvory,
-                    unfocusedTextColor = KickoffAlabasterIvory
+                    focusedBorderColor = KickoffPitchEmerald,
+                    unfocusedBorderColor = KickoffEmeraldBorder,
+                    focusedContainerColor = KickoffTurfSurface,
+                    unfocusedContainerColor = KickoffTurfSurface,
+                    focusedTextColor = KickoffFloodlightWhite,
+                    unfocusedTextColor = KickoffFloodlightWhite
                 ),
                 shape = RoundedCornerShape(12.dp),
                 modifier = Modifier
@@ -705,11 +712,11 @@ fun UserCountryZoneBottomSheet(
                 items(BroadcastMacroRegion.entries, key = { it.name }) { region ->
                     val isSelected = selectedMacroRegion == region
                     Surface(
-                        color = if (isSelected) KickoffTerracotta else KickoffCharcoalSlate,
+                        color = if (isSelected) KickoffPitchEmerald else KickoffTurfSurface,
                         shape = RoundedCornerShape(50),
                         border = BorderStroke(
                             width = 0.9.dp,
-                            color = if (isSelected) KickoffAlabasterIvory else KickoffParchmentBorder
+                            color = if (isSelected) KickoffFloodlightVolt else KickoffEmeraldBorder
                         ),
                         modifier = Modifier
                             .clip(RoundedCornerShape(50))
@@ -718,7 +725,7 @@ fun UserCountryZoneBottomSheet(
                     ) {
                         Text(
                             text = region.displayTitle,
-                            color = if (isSelected) KickoffAlabasterIvory else KickoffAgedParchment,
+                            color = if (isSelected) KickoffPitchBlack else KickoffFloodlightWhite,
                             fontSize = 11.sp,
                             fontWeight = if (isSelected) FontWeight.ExtraBold else FontWeight.SemiBold,
                             modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp)
@@ -770,17 +777,20 @@ private fun ActiveCountryZoneTelemetryBanner(
     val utcBadge = remember(zone.countryCode, seasonTimeMode) {
         zone.getUtcOffsetBadge(mode = seasonTimeMode)
     }
+    val providerStyle = remember(zone.primaryTvProviderName) {
+        resolveBroadcastProviderBadgeStyle(zone.primaryTvProviderName)
+    }
 
     Surface(
-        color = KickoffImperialNavy,
+        color = KickoffStadiumForest,
         shape = RoundedCornerShape(16.dp),
         border = BorderStroke(
             width = 1.1.dp,
             brush = Brush.horizontalGradient(
                 listOf(
-                    KickoffTerracotta,
-                    KickoffAgedParchment.copy(alpha = 0.65f),
-                    KickoffTerracotta
+                    KickoffPitchEmerald,
+                    KickoffFloodlightVolt.copy(alpha = 0.65f),
+                    KickoffPitchEmerald
                 )
             )
         ),
@@ -792,8 +802,8 @@ private fun ActiveCountryZoneTelemetryBanner(
                 .background(
                     Brush.horizontalGradient(
                         listOf(
-                            KickoffImperialNavy,
-                            KickoffCharcoalSlate
+                            KickoffStadiumForest,
+                            KickoffTurfSurface
                         )
                     )
                 )
@@ -818,19 +828,19 @@ private fun ActiveCountryZoneTelemetryBanner(
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             Text(
                                 text = zone.countryName,
-                                color = KickoffAlabasterIvory,
+                                color = KickoffFloodlightWhite,
                                 fontSize = 15.sp,
                                 fontWeight = FontWeight.ExtraBold
                             )
                             Spacer(modifier = Modifier.width(6.dp))
                             Surface(
-                                color = KickoffTerracotta.copy(alpha = 0.22f),
+                                color = KickoffPitchEmerald.copy(alpha = 0.22f),
                                 shape = RoundedCornerShape(50),
-                                border = BorderStroke(0.7.dp, KickoffTerracotta)
+                                border = BorderStroke(0.7.dp, KickoffPitchEmerald)
                             ) {
                                 Text(
                                     text = "ACTIVE ZONE",
-                                    color = KickoffAlabasterIvory,
+                                    color = KickoffFloodlightVolt,
                                     fontSize = 8.sp,
                                     fontWeight = FontWeight.ExtraBold,
                                     modifier = Modifier.padding(horizontal = 6.dp, vertical = 1.5.dp)
@@ -839,7 +849,7 @@ private fun ActiveCountryZoneTelemetryBanner(
                         }
                         Text(
                             text = zone.getDualSeasonBadgeSummary(),
-                            color = KickoffAgedParchment,
+                            color = KickoffMistSilver,
                             fontSize = 10.sp,
                             fontWeight = FontWeight.SemiBold
                         )
@@ -848,9 +858,9 @@ private fun ActiveCountryZoneTelemetryBanner(
 
                 // Auto-Detect Device Zone CTA
                 Surface(
-                    color = KickoffObsidianBlack,
+                    color = KickoffGlassWell,
                     shape = RoundedCornerShape(10.dp),
-                    border = BorderStroke(0.8.dp, KickoffTerracotta.copy(alpha = 0.7f)),
+                    border = BorderStroke(0.8.dp, KickoffPitchEmerald.copy(alpha = 0.7f)),
                     modifier = Modifier
                         .clip(RoundedCornerShape(10.dp))
                         .clickable { onAutoDetect() }
@@ -863,13 +873,13 @@ private fun ActiveCountryZoneTelemetryBanner(
                         Icon(
                             imageVector = Icons.Default.LocationOn,
                             contentDescription = "Auto-Detect Country",
-                            tint = KickoffTerracotta,
+                            tint = KickoffPitchEmerald,
                             modifier = Modifier.size(13.dp)
                         )
                         Spacer(modifier = Modifier.width(4.dp))
                         Text(
                             text = "Auto-Detect",
-                            color = KickoffAlabasterIvory,
+                            color = KickoffFloodlightWhite,
                             fontSize = 10.sp,
                             fontWeight = FontWeight.ExtraBold
                         )
@@ -893,9 +903,9 @@ private fun ActiveCountryZoneTelemetryBanner(
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Surface(
-                    color = KickoffObsidianBlack,
+                    color = KickoffGlassWell,
                     shape = RoundedCornerShape(8.dp),
-                    border = BorderStroke(0.7.dp, KickoffAgedParchment.copy(alpha = 0.50f))
+                    border = BorderStroke(0.7.dp, KickoffEmeraldBorder)
                 ) {
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
@@ -904,13 +914,13 @@ private fun ActiveCountryZoneTelemetryBanner(
                         Icon(
                             imageVector = Icons.Default.Schedule,
                             contentDescription = null,
-                            tint = KickoffAgedParchment,
+                            tint = KickoffPitchEmerald,
                             modifier = Modifier.size(12.dp)
                         )
                         Spacer(modifier = Modifier.width(4.dp))
                         Text(
                             text = "$localClock • $utcBadge",
-                            color = KickoffAlabasterIvory,
+                            color = KickoffFloodlightWhite,
                             fontSize = 10.sp,
                             fontWeight = FontWeight.ExtraBold
                         )
@@ -918,9 +928,9 @@ private fun ActiveCountryZoneTelemetryBanner(
                 }
 
                 Surface(
-                    color = KickoffObsidianBlack,
+                    color = providerStyle.surfaceColor,
                     shape = RoundedCornerShape(8.dp),
-                    border = BorderStroke(0.7.dp, KickoffTerracotta.copy(alpha = 0.55f)),
+                    border = BorderStroke(0.7.dp, providerStyle.borderColor),
                     modifier = Modifier.weight(1f)
                 ) {
                     Row(
@@ -930,13 +940,13 @@ private fun ActiveCountryZoneTelemetryBanner(
                         Icon(
                             imageVector = Icons.Default.LiveTv,
                             contentDescription = null,
-                            tint = KickoffTerracotta,
+                            tint = providerStyle.borderColor,
                             modifier = Modifier.size(12.dp)
                         )
                         Spacer(modifier = Modifier.width(5.dp))
                         Text(
                             text = zone.primaryTvProviderName,
-                            color = KickoffAlabasterIvory,
+                            color = providerStyle.textColor,
                             fontSize = 10.sp,
                             fontWeight = FontWeight.Bold,
                             maxLines = 1,
@@ -947,11 +957,11 @@ private fun ActiveCountryZoneTelemetryBanner(
 
                 // 1-Tap Pin Country's Domestic Spotlight Competition
                 Surface(
-                    color = if (spotlightPinnedFeedback) KickoffTerracotta else KickoffObsidianBlack,
+                    color = if (spotlightPinnedFeedback) KickoffTrophyGold else KickoffGlassWell,
                     shape = RoundedCornerShape(8.dp),
                     border = BorderStroke(
                         0.7.dp,
-                        if (spotlightPinnedFeedback) KickoffAlabasterIvory else KickoffTerracotta.copy(alpha = 0.65f)
+                        if (spotlightPinnedFeedback) KickoffFloodlightWhite else KickoffTrophyGold.copy(alpha = 0.65f)
                     ),
                     modifier = Modifier
                         .clip(RoundedCornerShape(8.dp))
@@ -965,13 +975,13 @@ private fun ActiveCountryZoneTelemetryBanner(
                         Icon(
                             imageVector = if (spotlightPinnedFeedback) Icons.Default.Check else Icons.Default.EmojiEvents,
                             contentDescription = null,
-                            tint = if (spotlightPinnedFeedback) KickoffAlabasterIvory else KickoffTerracotta,
+                            tint = if (spotlightPinnedFeedback) KickoffPitchBlack else KickoffTrophyGold,
                             modifier = Modifier.size(11.dp)
                         )
                         Spacer(modifier = Modifier.width(3.dp))
                         Text(
                             text = if (spotlightPinnedFeedback) "Pinned #1" else "Pin League",
-                            color = KickoffAlabasterIvory,
+                            color = if (spotlightPinnedFeedback) KickoffPitchBlack else KickoffFloodlightWhite,
                             fontSize = 9.5.sp,
                             fontWeight = FontWeight.ExtraBold
                         )
@@ -1002,13 +1012,16 @@ private fun CountryZoneOptionCard(
             "Permanent ${zone.winterGmtBadge}"
         }
     }
+    val providerStyle = remember(zone.primaryTvProviderName) {
+        resolveBroadcastProviderBadgeStyle(zone.primaryTvProviderName)
+    }
 
     Surface(
-        color = if (isSelected) KickoffImperialNavy else KickoffCharcoalSlate,
+        color = if (isSelected) KickoffCanopyElevated else KickoffTurfSurface,
         shape = RoundedCornerShape(14.dp),
         border = BorderStroke(
             width = if (isSelected) 1.3.dp else 0.8.dp,
-            color = if (isSelected) KickoffTerracotta else KickoffParchmentBorder
+            color = if (isSelected) KickoffPitchEmerald else KickoffEmeraldBorder
         ),
         modifier = Modifier
             .fillMaxWidth()
@@ -1034,12 +1047,12 @@ private fun CountryZoneOptionCard(
                         .size(40.dp)
                         .clip(CircleShape)
                         .background(
-                            if (isSelected) KickoffTerracotta.copy(alpha = 0.22f)
-                            else KickoffObsidianBlack
+                            if (isSelected) KickoffPitchEmerald.copy(alpha = 0.22f)
+                            else KickoffGlassWell
                         )
                         .border(
                             width = 0.8.dp,
-                            color = if (isSelected) KickoffTerracotta else KickoffParchmentBorder,
+                            color = if (isSelected) KickoffPitchEmerald else KickoffEmeraldBorder,
                             shape = CircleShape
                         )
                 ) {
@@ -1055,19 +1068,19 @@ private fun CountryZoneOptionCard(
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Text(
                             text = zone.countryName,
-                            color = KickoffAlabasterIvory,
+                            color = KickoffFloodlightWhite,
                             fontSize = 14.sp,
                             fontWeight = FontWeight.ExtraBold
                         )
                         Spacer(modifier = Modifier.width(6.dp))
                         Surface(
-                            color = KickoffObsidianBlack,
+                            color = KickoffGlassWell,
                             shape = RoundedCornerShape(4.dp),
-                            border = BorderStroke(0.5.dp, KickoffAgedParchment.copy(alpha = 0.55f))
+                            border = BorderStroke(0.5.dp, KickoffEmeraldBorder)
                         ) {
                             Text(
                                 text = "$localClock • $utcBadge",
-                                color = KickoffAgedParchment,
+                                color = KickoffFloodlightVolt,
                                 fontSize = 8.5.sp,
                                 fontWeight = FontWeight.ExtraBold,
                                 modifier = Modifier.padding(horizontal = 5.dp, vertical = 1.dp)
@@ -1076,7 +1089,7 @@ private fun CountryZoneOptionCard(
                         Spacer(modifier = Modifier.width(5.dp))
                         Text(
                             text = dualSeasonSummary,
-                            color = KickoffAgedParchment,
+                            color = KickoffMistSilver,
                             fontSize = 8.5.sp,
                             fontWeight = FontWeight.SemiBold,
                             maxLines = 1
@@ -1087,7 +1100,7 @@ private fun CountryZoneOptionCard(
 
                     Text(
                         text = "TV: ${zone.primaryTvProviderName}",
-                        color = if (isSelected) KickoffAlabasterIvory else KickoffAgedParchment,
+                        color = providerStyle.textColor,
                         fontSize = 11.sp,
                         fontWeight = FontWeight.SemiBold,
                         maxLines = 1,
@@ -1102,13 +1115,13 @@ private fun CountryZoneOptionCard(
                     ) {
                         zone.iptvCategoryPrefixes.take(3).forEach { prefix ->
                             Surface(
-                                color = KickoffObsidianBlack,
+                                color = providerStyle.surfaceColor,
                                 shape = RoundedCornerShape(4.dp),
-                                border = BorderStroke(0.5.dp, KickoffTerracotta.copy(alpha = 0.55f))
+                                border = BorderStroke(0.5.dp, providerStyle.borderColor)
                             ) {
                                 Text(
                                     text = prefix,
-                                    color = KickoffAlabasterIvory,
+                                    color = providerStyle.textColor,
                                     fontSize = 8.sp,
                                     fontWeight = FontWeight.ExtraBold,
                                     modifier = Modifier.padding(horizontal = 4.5.dp, vertical = 1.dp)
@@ -1117,7 +1130,7 @@ private fun CountryZoneOptionCard(
                         }
                         Text(
                             text = "• ${zone.satelliteOrPlatformSummary}",
-                            color = KickoffAgedParchment,
+                            color = KickoffMistSilver,
                             fontSize = 9.5.sp,
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis
@@ -1134,12 +1147,12 @@ private fun CountryZoneOptionCard(
                     modifier = Modifier
                         .size(26.dp)
                         .clip(CircleShape)
-                        .background(KickoffTerracotta)
+                        .background(KickoffPitchEmerald)
                 ) {
                     Icon(
                         imageVector = Icons.Default.Check,
                         contentDescription = "Selected Country Zone",
-                        tint = KickoffAlabasterIvory,
+                        tint = KickoffPitchBlack,
                         modifier = Modifier.size(16.dp)
                     )
                 }
@@ -1149,10 +1162,7 @@ private fun CountryZoneOptionCard(
 }
 
 /**
- * Live Goal Alert Banner (`LiveGoalAlertBanner`) harmonized with the Official 6-Color Kickoff Palette.
- * Highlights real-time goal increments in `KickoffImperialNavy` (#0F1B3D), `KickoffTerracotta` (#D9541E),
- * `KickoffObsidianBlack` (#111111), `KickoffCharcoalSlate` (#1E1E1C), `KickoffAlabasterIvory` (#F3EEE3),
- * and `KickoffAgedParchment` (#D8CBB3).
+ * Live Goal Alert Banner (`LiveGoalAlertBanner`) harmonized with the Floodlight Noir & Pitch Emerald Brand Kit.
  */
 @Composable
 fun LiveGoalAlertBanner(
@@ -1162,9 +1172,9 @@ fun LiveGoalAlertBanner(
     modifier: Modifier = Modifier
 ) {
     Surface(
-        color = KickoffImperialNavy,
+        color = KickoffStadiumForest,
         shape = RoundedCornerShape(16.dp),
-        border = BorderStroke(1.3.dp, KickoffTerracotta),
+        border = BorderStroke(1.3.dp, KickoffFloodlightVolt),
         modifier = modifier
             .fillMaxWidth()
             .padding(horizontal = 16.dp, vertical = 6.dp)
@@ -1176,9 +1186,9 @@ fun LiveGoalAlertBanner(
                 .background(
                     Brush.horizontalGradient(
                         listOf(
-                            KickoffImperialNavy,
-                            KickoffCharcoalSlate,
-                            KickoffObsidianBlack
+                            KickoffStadiumForest,
+                            KickoffTurfSurface,
+                            KickoffPitchBlack
                         )
                     )
                 )
@@ -1192,9 +1202,9 @@ fun LiveGoalAlertBanner(
                 modifier = Modifier.weight(1f)
             ) {
                 Surface(
-                    color = KickoffTerracotta,
+                    color = KickoffLiveCrimson,
                     shape = RoundedCornerShape(8.dp),
-                    border = BorderStroke(0.8.dp, KickoffAlabasterIvory.copy(alpha = 0.55f))
+                    border = BorderStroke(0.8.dp, KickoffFloodlightWhite.copy(alpha = 0.55f))
                 ) {
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
@@ -1203,13 +1213,13 @@ fun LiveGoalAlertBanner(
                         Icon(
                             imageVector = Icons.Default.SportsSoccer,
                             contentDescription = "Goal Scored",
-                            tint = KickoffAlabasterIvory,
+                            tint = KickoffFloodlightWhite,
                             modifier = Modifier.size(14.dp)
                         )
                         Spacer(modifier = Modifier.width(4.dp))
                         Text(
                             text = "GOAL! • ${alert.minuteLabel}",
-                            color = KickoffAlabasterIvory,
+                            color = KickoffFloodlightWhite,
                             fontSize = 10.sp,
                             fontWeight = FontWeight.ExtraBold
                         )
@@ -1219,7 +1229,7 @@ fun LiveGoalAlertBanner(
                 Column(modifier = Modifier.weight(1f)) {
                     Text(
                         text = "${alert.homeTeamName}  ${alert.homeScore} - ${alert.awayScore}  ${alert.awayTeamName}",
-                        color = KickoffAlabasterIvory,
+                        color = KickoffFloodlightWhite,
                         fontSize = 13.sp,
                         fontWeight = FontWeight.ExtraBold,
                         style = TabularNumeralTextStyle,
@@ -1228,7 +1238,7 @@ fun LiveGoalAlertBanner(
                     )
                     Text(
                         text = "⚽ Scored by ${alert.scoringTeamName} • Tap for Match Center Dossier",
-                        color = KickoffAgedParchment,
+                        color = KickoffMistSilver,
                         fontSize = 10.5.sp,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis
@@ -1245,7 +1255,7 @@ fun LiveGoalAlertBanner(
                 Icon(
                     imageVector = Icons.Default.Close,
                     contentDescription = "Dismiss Goal Alert",
-                    tint = KickoffAgedParchment,
+                    tint = KickoffMistSilver,
                     modifier = Modifier.size(16.dp)
                 )
             }
@@ -1255,7 +1265,7 @@ fun LiveGoalAlertBanner(
 
 /**
  * First-Time Favorite Teams & Country Zone Onboarding Modal (`FirstTimeFavoriteTeamsDialog`)
- * styled with the Official 6-Color Kickoff Architectural Palette.
+ * styled with the Floodlight Noir & Pitch Emerald Brand Color Kit.
  */
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
@@ -1280,9 +1290,9 @@ fun FirstTimeFavoriteTeamsDialog(
         properties = DialogProperties(usePlatformDefaultWidth = false)
     ) {
         Surface(
-            color = KickoffObsidianBlack,
+            color = KickoffPitchBlack,
             shape = RoundedCornerShape(22.dp),
-            border = BorderStroke(1.2.dp, KickoffTerracotta),
+            border = BorderStroke(1.2.dp, KickoffPitchEmerald),
             modifier = Modifier
                 .fillMaxWidth(0.95f)
                 .heightIn(max = 680.dp)
@@ -1302,20 +1312,20 @@ fun FirstTimeFavoriteTeamsDialog(
                         Icon(
                             imageVector = Icons.Default.SportsSoccer,
                             contentDescription = null,
-                            tint = KickoffTerracotta,
+                            tint = KickoffPitchEmerald,
                             modifier = Modifier.size(24.dp)
                         )
                         Spacer(modifier = Modifier.width(10.dp))
                         Column {
                             Text(
                                 text = "Welcome to KickOff Arena",
-                                color = KickoffAlabasterIvory,
+                                color = KickoffFloodlightWhite,
                                 fontSize = 17.5.sp,
                                 fontWeight = FontWeight.ExtraBold
                             )
                             Text(
                                 text = "Choose your Country Zone (time & TV channels) and follow your teams",
-                                color = KickoffAgedParchment,
+                                color = KickoffMistSilver,
                                 fontSize = 11.5.sp
                             )
                         }
@@ -1343,7 +1353,7 @@ fun FirstTimeFavoriteTeamsDialog(
                     placeholder = {
                         Text(
                             text = "Type a team name (e.g., Real Madrid, Raja, Arsenal, PSG)...",
-                            color = KickoffAgedParchment.copy(alpha = 0.65f),
+                            color = KickoffMistSilver.copy(alpha = 0.65f),
                             fontSize = 13.sp
                         )
                     },
@@ -1351,7 +1361,7 @@ fun FirstTimeFavoriteTeamsDialog(
                         Icon(
                             imageVector = Icons.Default.Search,
                             contentDescription = "Search Global Teams",
-                            tint = KickoffTerracotta
+                            tint = KickoffPitchEmerald
                         )
                     },
                     trailingIcon = {
@@ -1360,19 +1370,19 @@ fun FirstTimeFavoriteTeamsDialog(
                                 Icon(
                                     imageVector = Icons.Default.Close,
                                     contentDescription = "Clear search",
-                                    tint = KickoffAgedParchment
+                                    tint = KickoffMistSilver
                                 )
                             }
                         }
                     },
                     singleLine = true,
                     colors = OutlinedTextFieldDefaults.colors(
-                        focusedBorderColor = KickoffTerracotta,
-                        unfocusedBorderColor = KickoffParchmentBorder,
-                        focusedContainerColor = KickoffCharcoalSlate,
-                        unfocusedContainerColor = KickoffCharcoalSlate,
-                        focusedTextColor = KickoffAlabasterIvory,
-                        unfocusedTextColor = KickoffAlabasterIvory
+                        focusedBorderColor = KickoffPitchEmerald,
+                        unfocusedBorderColor = KickoffEmeraldBorder,
+                        focusedContainerColor = KickoffTurfSurface,
+                        unfocusedContainerColor = KickoffTurfSurface,
+                        focusedTextColor = KickoffFloodlightWhite,
+                        unfocusedTextColor = KickoffFloodlightWhite
                     ),
                     shape = RoundedCornerShape(12.dp),
                     modifier = Modifier
@@ -1385,7 +1395,7 @@ fun FirstTimeFavoriteTeamsDialog(
                     Spacer(modifier = Modifier.height(10.dp))
                     Text(
                         text = "SELECTED TEAMS (${selectedFavorites.size})",
-                        color = KickoffAgedParchment,
+                        color = KickoffMistSilver,
                         fontSize = 11.sp,
                         fontWeight = FontWeight.ExtraBold
                     )
@@ -1396,9 +1406,9 @@ fun FirstTimeFavoriteTeamsDialog(
                     ) {
                         selectedFavorites.forEach { fav ->
                             Surface(
-                                color = KickoffImperialNavy,
+                                color = KickoffCanopyElevated,
                                 shape = RoundedCornerShape(50),
-                                border = BorderStroke(1.dp, KickoffTerracotta)
+                                border = BorderStroke(1.dp, KickoffPitchEmerald)
                             ) {
                                 Row(
                                     verticalAlignment = Alignment.CenterVertically,
@@ -1412,7 +1422,7 @@ fun FirstTimeFavoriteTeamsDialog(
                                     Spacer(modifier = Modifier.width(6.dp))
                                     Text(
                                         text = fav.teamName,
-                                        color = KickoffAlabasterIvory,
+                                        color = KickoffFloodlightWhite,
                                         fontSize = 11.sp,
                                         fontWeight = FontWeight.Bold
                                     )
@@ -1420,7 +1430,7 @@ fun FirstTimeFavoriteTeamsDialog(
                                     Icon(
                                         imageVector = Icons.Default.Close,
                                         contentDescription = "Remove ${fav.teamName}",
-                                        tint = KickoffTerracotta,
+                                        tint = KickoffPitchEmerald,
                                         modifier = Modifier
                                             .size(14.dp)
                                             .clickable { onRemoveFavoriteTeam(fav.teamId) }
@@ -1440,7 +1450,7 @@ fun FirstTimeFavoriteTeamsDialog(
                         .heightIn(min = 140.dp, max = 230.dp)
                         .fillMaxWidth()
                         .clip(RoundedCornerShape(12.dp))
-                        .background(KickoffCharcoalSlate)
+                        .background(KickoffTurfSurface)
                         .padding(8.dp)
                 ) {
                     when {
@@ -1451,7 +1461,7 @@ fun FirstTimeFavoriteTeamsDialog(
                                     .height(150.dp),
                                 contentAlignment = Alignment.Center
                             ) {
-                                CircularProgressIndicator(color = KickoffTerracotta)
+                                CircularProgressIndicator(color = KickoffPitchEmerald)
                             }
                         }
                         searchQuery.isBlank() -> {
@@ -1464,20 +1474,20 @@ fun FirstTimeFavoriteTeamsDialog(
                                 Icon(
                                     imageVector = Icons.Default.Search,
                                     contentDescription = null,
-                                    tint = KickoffTerracotta.copy(alpha = 0.85f),
+                                    tint = KickoffPitchEmerald.copy(alpha = 0.85f),
                                     modifier = Modifier.size(28.dp)
                                 )
                                 Spacer(modifier = Modifier.height(6.dp))
                                 Text(
                                     text = "Search Any Team Globally",
-                                    color = KickoffAlabasterIvory,
+                                    color = KickoffFloodlightWhite,
                                     fontSize = 13.5.sp,
                                     fontWeight = FontWeight.Bold
                                 )
                                 Spacer(modifier = Modifier.height(4.dp))
                                 Text(
                                     text = "Popular in ${selectedCountryZone.flagEmoji} ${selectedCountryZone.countryName}: ${selectedCountryZone.popularLocalClubs.joinToString(", ")}. Type any club above to add it.",
-                                    color = KickoffAgedParchment,
+                                    color = KickoffMistSilver,
                                     fontSize = 11.5.sp,
                                     textAlign = TextAlign.Center
                                 )
@@ -1492,7 +1502,7 @@ fun FirstTimeFavoriteTeamsDialog(
                             ) {
                                 Text(
                                     text = "No teams found for \"$searchQuery\". Try another club name.",
-                                    color = KickoffAgedParchment,
+                                    color = KickoffMistSilver,
                                     fontSize = 12.sp
                                 )
                             }
@@ -1525,19 +1535,19 @@ fun FirstTimeFavoriteTeamsDialog(
                 ) {
                     OutlinedButton(
                         onClick = onCompleteOnboarding,
-                        border = BorderStroke(1.dp, KickoffParchmentBorder),
+                        border = BorderStroke(1.dp, KickoffEmeraldBorder),
                         modifier = Modifier
                             .weight(1f)
                             .testTag("onboarding_skip_btn")
                     ) {
-                        Text("Skip for Now", color = KickoffAgedParchment, fontWeight = FontWeight.Bold)
+                        Text("Skip for Now", color = KickoffMistSilver, fontWeight = FontWeight.Bold)
                     }
 
                     Button(
                         onClick = onCompleteOnboarding,
                         colors = ButtonDefaults.buttonColors(
-                            containerColor = KickoffTerracotta,
-                            contentColor = KickoffAlabasterIvory
+                            containerColor = KickoffPitchEmerald,
+                            contentColor = KickoffPitchBlack
                         ),
                         modifier = Modifier
                             .weight(1.4f)
@@ -1563,11 +1573,11 @@ internal fun TeamSearchResultRow(
     onToggle: () -> Unit
 ) {
     Surface(
-        color = if (isSelected) KickoffImperialNavy else KickoffObsidianBlack,
+        color = if (isSelected) KickoffCanopyElevated else KickoffGlassWell,
         shape = RoundedCornerShape(10.dp),
         border = BorderStroke(
             width = 0.8.dp,
-            color = if (isSelected) KickoffTerracotta else KickoffParchmentBorder
+            color = if (isSelected) KickoffPitchEmerald else KickoffEmeraldBorder
         ),
         modifier = Modifier
             .fillMaxWidth()
@@ -1594,13 +1604,13 @@ internal fun TeamSearchResultRow(
                 Column {
                     Text(
                         text = team.name,
-                        color = KickoffAlabasterIvory,
+                        color = KickoffFloodlightWhite,
                         fontSize = 14.sp,
                         fontWeight = FontWeight.Bold
                     )
                     Text(
                         text = "${team.country} • ${team.primaryLeague}",
-                        color = KickoffAgedParchment,
+                        color = KickoffMistSilver,
                         fontSize = 11.sp
                     )
                 }
@@ -1609,7 +1619,7 @@ internal fun TeamSearchResultRow(
             Icon(
                 imageVector = if (isSelected) Icons.Default.Star else Icons.Default.StarBorder,
                 contentDescription = if (isSelected) "Remove Favorite" else "Add Favorite",
-                tint = if (isSelected) KickoffTerracotta else KickoffAgedParchment
+                tint = if (isSelected) KickoffTrophyGold else KickoffMistSilver
             )
         }
     }
@@ -1627,9 +1637,9 @@ fun KickoffSourceStatusAlertBanner(
     modifier: Modifier = Modifier
 ) {
     Surface(
-        color = KickoffImperialNavy,
+        color = KickoffTurfSurface,
         shape = RoundedCornerShape(14.dp),
-        border = BorderStroke(1.dp, KickoffTerracotta),
+        border = BorderStroke(1.dp, KickoffTrophyGold),
         modifier = modifier
             .fillMaxWidth()
             .padding(horizontal = 16.dp, vertical = 4.dp)
@@ -1647,12 +1657,12 @@ fun KickoffSourceStatusAlertBanner(
                 modifier = Modifier.weight(1f)
             ) {
                 Surface(
-                    color = KickoffTerracotta,
+                    color = KickoffTrophyGold,
                     shape = RoundedCornerShape(6.dp)
                 ) {
                     Text(
                         text = "SOURCE ALERT",
-                        color = KickoffAlabasterIvory,
+                        color = KickoffPitchBlack,
                         fontSize = 9.sp,
                         fontWeight = FontWeight.ExtraBold,
                         modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.5.dp)
@@ -1661,7 +1671,7 @@ fun KickoffSourceStatusAlertBanner(
                 Spacer(modifier = Modifier.width(8.dp))
                 Text(
                     text = alertMessage,
-                    color = KickoffAlabasterIvory,
+                    color = KickoffFloodlightWhite,
                     fontSize = 11.sp,
                     fontWeight = FontWeight.SemiBold,
                     maxLines = 2,
@@ -1674,9 +1684,9 @@ fun KickoffSourceStatusAlertBanner(
 
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Surface(
-                    color = KickoffCharcoalSlate,
+                    color = KickoffCanopyElevated,
                     shape = RoundedCornerShape(8.dp),
-                    border = BorderStroke(0.8.dp, KickoffTerracotta),
+                    border = BorderStroke(0.8.dp, KickoffPitchEmerald),
                     modifier = Modifier
                         .clip(RoundedCornerShape(8.dp))
                         .clickable { onManageSourcesClick() }
@@ -1684,7 +1694,7 @@ fun KickoffSourceStatusAlertBanner(
                 ) {
                     Text(
                         text = "Sources & Keys",
-                        color = KickoffAlabasterIvory,
+                        color = KickoffFloodlightWhite,
                         fontSize = 10.sp,
                         fontWeight = FontWeight.ExtraBold,
                         modifier = Modifier.padding(horizontal = 8.dp, vertical = 5.dp)
@@ -1700,7 +1710,7 @@ fun KickoffSourceStatusAlertBanner(
                     Icon(
                         imageVector = Icons.Default.Close,
                         contentDescription = "Dismiss Source Alert",
-                        tint = KickoffAgedParchment,
+                        tint = KickoffMistSilver,
                         modifier = Modifier.size(15.dp)
                     )
                 }
@@ -1786,7 +1796,7 @@ fun CustomizeTeamsAndTournamentsSheet(
 
     ModalBottomSheet(
         onDismissRequest = onDismiss,
-        containerColor = KickoffObsidianBlack
+        containerColor = KickoffPitchBlack
     ) {
         Column(
             modifier = Modifier
@@ -1802,18 +1812,18 @@ fun CustomizeTeamsAndTournamentsSheet(
                 Column {
                     Text(
                         text = "Customize KickOff Arena",
-                        color = KickoffAlabasterIvory,
+                        color = KickoffFloodlightWhite,
                         fontSize = 18.sp,
                         fontWeight = FontWeight.ExtraBold
                     )
                     Text(
                         text = "Teams, 3-Pillar Competitions, Country Zone & Data Sources",
-                        color = KickoffAgedParchment,
+                        color = KickoffMistSilver,
                         fontSize = 12.sp
                     )
                 }
                 IconButton(onClick = onDismiss) {
-                    Icon(Icons.Default.Close, contentDescription = "Close", tint = KickoffAlabasterIvory)
+                    Icon(Icons.Default.Close, contentDescription = "Close", tint = KickoffFloodlightWhite)
                 }
             }
 
@@ -1848,7 +1858,7 @@ fun CustomizeTeamsAndTournamentsSheet(
                 modifier = Modifier
                     .fillMaxWidth()
                     .clip(RoundedCornerShape(10.dp))
-                    .background(KickoffCharcoalSlate)
+                    .background(KickoffTurfSurface)
                     .padding(4.dp),
                 horizontalArrangement = Arrangement.spacedBy(4.dp)
             ) {
@@ -1861,7 +1871,7 @@ fun CustomizeTeamsAndTournamentsSheet(
                 tabTitles.forEachIndexed { index, title ->
                     val isSelected = activeTab == index
                     Surface(
-                        color = if (isSelected) KickoffTerracotta else Color.Transparent,
+                        color = if (isSelected) KickoffPitchEmerald else Color.Transparent,
                         shape = RoundedCornerShape(8.dp),
                         modifier = Modifier
                             .weight(1f)
@@ -1870,7 +1880,7 @@ fun CustomizeTeamsAndTournamentsSheet(
                     ) {
                         Text(
                             text = title,
-                            color = if (isSelected) KickoffAlabasterIvory else KickoffAgedParchment,
+                            color = if (isSelected) KickoffPitchBlack else KickoffFloodlightWhite,
                             fontSize = 10.5.sp,
                             fontWeight = FontWeight.ExtraBold,
                             textAlign = TextAlign.Center,
@@ -1893,28 +1903,28 @@ fun CustomizeTeamsAndTournamentsSheet(
                         placeholder = {
                             Text(
                                 text = "Search global teams to add (e.g., Wydad, Barcelona, Liverpool)...",
-                                color = KickoffAgedParchment.copy(alpha = 0.65f),
+                                color = KickoffMistSilver.copy(alpha = 0.65f),
                                 fontSize = 12.sp
                             )
                         },
                         leadingIcon = {
-                            Icon(Icons.Default.Search, contentDescription = null, tint = KickoffTerracotta)
+                            Icon(Icons.Default.Search, contentDescription = null, tint = KickoffPitchEmerald)
                         },
                         trailingIcon = {
                             if (searchQuery.isNotBlank()) {
                                 IconButton(onClick = { onSearchQueryChange("") }) {
-                                    Icon(Icons.Default.Close, contentDescription = "Clear", tint = KickoffAgedParchment)
+                                    Icon(Icons.Default.Close, contentDescription = "Clear", tint = KickoffMistSilver)
                                 }
                             }
                         },
                         singleLine = true,
                         colors = OutlinedTextFieldDefaults.colors(
-                            focusedBorderColor = KickoffTerracotta,
-                            unfocusedBorderColor = KickoffParchmentBorder,
-                            focusedContainerColor = KickoffCharcoalSlate,
-                            unfocusedContainerColor = KickoffCharcoalSlate,
-                            focusedTextColor = KickoffAlabasterIvory,
-                            unfocusedTextColor = KickoffAlabasterIvory
+                            focusedBorderColor = KickoffPitchEmerald,
+                            unfocusedBorderColor = KickoffEmeraldBorder,
+                            focusedContainerColor = KickoffTurfSurface,
+                            unfocusedContainerColor = KickoffTurfSurface,
+                            focusedTextColor = KickoffFloodlightWhite,
+                            unfocusedTextColor = KickoffFloodlightWhite
                         ),
                         shape = RoundedCornerShape(12.dp),
                         modifier = Modifier
@@ -1939,7 +1949,7 @@ fun CustomizeTeamsAndTournamentsSheet(
                                             .padding(20.dp),
                                         contentAlignment = Alignment.Center
                                     ) {
-                                        CircularProgressIndicator(color = KickoffTerracotta)
+                                        CircularProgressIndicator(color = KickoffPitchEmerald)
                                     }
                                 }
                             } else {
@@ -1960,7 +1970,7 @@ fun CustomizeTeamsAndTournamentsSheet(
                                 item {
                                     Text(
                                         text = "No favorite teams saved yet. Use the search bar above to find and follow your favorite clubs.",
-                                        color = KickoffAgedParchment,
+                                        color = KickoffMistSilver,
                                         fontSize = 12.sp,
                                         modifier = Modifier.padding(vertical = 16.dp)
                                     )
@@ -1968,9 +1978,9 @@ fun CustomizeTeamsAndTournamentsSheet(
                             } else {
                                 items(favoriteTeams, key = { "fav_${it.teamId}" }) { fav ->
                                     Surface(
-                                        color = KickoffCharcoalSlate,
+                                        color = KickoffTurfSurface,
                                         shape = RoundedCornerShape(10.dp),
-                                        border = BorderStroke(0.8.dp, KickoffParchmentBorder),
+                                        border = BorderStroke(0.8.dp, KickoffEmeraldBorder),
                                         modifier = Modifier.fillMaxWidth()
                                     ) {
                                         Row(
@@ -1990,14 +2000,14 @@ fun CustomizeTeamsAndTournamentsSheet(
                                                 Column {
                                                     Text(
                                                         text = fav.teamName,
-                                                        color = KickoffAlabasterIvory,
+                                                        color = KickoffFloodlightWhite,
                                                         fontSize = 14.sp,
                                                         fontWeight = FontWeight.Bold
                                                     )
                                                     if (fav.primaryLeague.isNotBlank()) {
                                                         Text(
                                                             text = "${fav.country} • ${fav.primaryLeague}",
-                                                            color = KickoffAgedParchment,
+                                                            color = KickoffMistSilver,
                                                             fontSize = 11.sp
                                                         )
                                                     }
@@ -2010,7 +2020,7 @@ fun CustomizeTeamsAndTournamentsSheet(
                                                 Icon(
                                                     imageVector = Icons.Default.Close,
                                                     contentDescription = "Remove ${fav.teamName}",
-                                                    tint = KickoffTerracotta
+                                                    tint = KickoffLiveCrimson
                                                 )
                                             }
                                         }
@@ -2030,11 +2040,11 @@ fun CustomizeTeamsAndTournamentsSheet(
                     ) {
                         Text(
                             text = "Toggle tournaments or pin them to the top",
-                            color = KickoffAgedParchment,
+                            color = KickoffMistSilver,
                             fontSize = 12.sp
                         )
                         TextButton(onClick = onEnableAllTournaments) {
-                            Text("Enable All", color = KickoffTerracotta, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                            Text("Enable All", color = KickoffPitchEmerald, fontSize = 12.sp, fontWeight = FontWeight.Bold)
                         }
                     }
 
@@ -2052,9 +2062,9 @@ fun CustomizeTeamsAndTournamentsSheet(
                             }
                             item(key = "cat_header_${category.name}") {
                                 Surface(
-                                    color = KickoffImperialNavy,
+                                    color = KickoffStadiumForest,
                                     shape = RoundedCornerShape(8.dp),
-                                    border = BorderStroke(0.8.dp, KickoffParchmentBorder),
+                                    border = BorderStroke(0.8.dp, KickoffEmeraldBorder),
                                     modifier = Modifier
                                         .fillMaxWidth()
                                         .padding(top = 4.dp)
@@ -2062,7 +2072,7 @@ fun CustomizeTeamsAndTournamentsSheet(
                                 ) {
                                     Text(
                                         text = categoryHeaderTitle,
-                                        color = KickoffAlabasterIvory,
+                                        color = KickoffFloodlightWhite,
                                         fontSize = 11.sp,
                                         fontWeight = FontWeight.ExtraBold,
                                         modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp)
@@ -2071,12 +2081,13 @@ fun CustomizeTeamsAndTournamentsSheet(
                             }
 
                             items(prefsForCategory, key = { it.tournamentId }) { pref ->
+                                val compAccent = resolveCompetitionAccentColor(pref.tournamentId)
                                 Surface(
-                                    color = KickoffCharcoalSlate,
+                                    color = KickoffTurfSurface,
                                     shape = RoundedCornerShape(10.dp),
                                     border = BorderStroke(
                                         width = 0.8.dp,
-                                        color = if (pref.isPinned) KickoffTerracotta else KickoffParchmentBorder
+                                        color = if (pref.isPinned) compAccent else KickoffEmeraldBorder
                                     ),
                                     modifier = Modifier.fillMaxWidth()
                                 ) {
@@ -2098,7 +2109,7 @@ fun CustomizeTeamsAndTournamentsSheet(
                                                 Icon(
                                                     imageVector = Icons.Default.PushPin,
                                                     contentDescription = "Pin ${pref.tournamentName}",
-                                                    tint = if (pref.isPinned) KickoffTerracotta else KickoffAgedParchment.copy(alpha = 0.65f),
+                                                    tint = if (pref.isPinned) KickoffTrophyGold else KickoffMistSilver.copy(alpha = 0.65f),
                                                     modifier = Modifier.size(16.dp)
                                                 )
                                             }
@@ -2106,13 +2117,13 @@ fun CustomizeTeamsAndTournamentsSheet(
                                             Column {
                                                 Text(
                                                     text = pref.tournamentName,
-                                                    color = KickoffAlabasterIvory,
+                                                    color = KickoffFloodlightWhite,
                                                     fontSize = 13.sp,
                                                     fontWeight = FontWeight.Bold
                                                 )
                                                 Text(
                                                     text = pref.countryOrRegion,
-                                                    color = KickoffAgedParchment,
+                                                    color = KickoffMistSilver,
                                                     fontSize = 11.sp
                                                 )
                                             }
@@ -2124,10 +2135,10 @@ fun CustomizeTeamsAndTournamentsSheet(
                                                 onSetTournamentEnabled(pref.tournamentId, enabled)
                                             },
                                             colors = SwitchDefaults.colors(
-                                                checkedThumbColor = KickoffAlabasterIvory,
-                                                checkedTrackColor = KickoffTerracotta,
-                                                uncheckedThumbColor = KickoffAgedParchment,
-                                                uncheckedTrackColor = KickoffObsidianBlack
+                                                checkedThumbColor = KickoffPitchBlack,
+                                                checkedTrackColor = KickoffPitchEmerald,
+                                                uncheckedThumbColor = KickoffMistSilver,
+                                                uncheckedTrackColor = KickoffGlassWell
                                             ),
                                             modifier = Modifier.testTag("toggle_tournament_${pref.tournamentId}")
                                         )
@@ -2160,21 +2171,21 @@ fun CustomizeTeamsAndTournamentsSheet(
                         placeholder = {
                             Text(
                                 text = "Filter Country Zone or TV broadcaster (e.g. Morocco, Spain, France)...",
-                                color = KickoffAgedParchment.copy(alpha = 0.65f),
+                                color = KickoffMistSilver.copy(alpha = 0.65f),
                                 fontSize = 12.sp
                             )
                         },
                         leadingIcon = {
-                            Icon(Icons.Default.Public, contentDescription = null, tint = KickoffTerracotta)
+                            Icon(Icons.Default.Public, contentDescription = null, tint = KickoffPitchEmerald)
                         },
                         singleLine = true,
                         colors = OutlinedTextFieldDefaults.colors(
-                            focusedBorderColor = KickoffTerracotta,
-                            unfocusedBorderColor = KickoffParchmentBorder,
-                            focusedContainerColor = KickoffCharcoalSlate,
-                            unfocusedContainerColor = KickoffCharcoalSlate,
-                            focusedTextColor = KickoffAlabasterIvory,
-                            unfocusedTextColor = KickoffAlabasterIvory
+                            focusedBorderColor = KickoffPitchEmerald,
+                            unfocusedBorderColor = KickoffEmeraldBorder,
+                            focusedContainerColor = KickoffTurfSurface,
+                            unfocusedContainerColor = KickoffTurfSurface,
+                            focusedTextColor = KickoffFloodlightWhite,
+                            unfocusedTextColor = KickoffFloodlightWhite
                         ),
                         shape = RoundedCornerShape(12.dp),
                         modifier = Modifier
@@ -2246,9 +2257,9 @@ private fun KickoffSourcesAndKeysTabContent(
     ) {
         // Summary Health Bar + "Verify All Sources" Button
         Surface(
-            color = KickoffImperialNavy,
+            color = KickoffStadiumForest,
             shape = RoundedCornerShape(12.dp),
-            border = BorderStroke(1.dp, KickoffParchmentBorder),
+            border = BorderStroke(1.dp, KickoffEmeraldBorder),
             modifier = Modifier.fillMaxWidth()
         ) {
             Row(
@@ -2261,7 +2272,7 @@ private fun KickoffSourcesAndKeysTabContent(
                 Column(modifier = Modifier.weight(1f)) {
                     Text(
                         text = "$healthyCount / ${sourceStates.size} DATA SOURCES ACTIVE",
-                        color = KickoffAlabasterIvory,
+                        color = KickoffFloodlightWhite,
                         fontSize = 12.sp,
                         fontWeight = FontWeight.ExtraBold
                     )
@@ -2271,7 +2282,7 @@ private fun KickoffSourcesAndKeysTabContent(
                         } else {
                             "$warningOrInvalidCount source(s) need attention • Automatic fallback is active"
                         },
-                        color = KickoffAgedParchment,
+                        color = KickoffMistSilver,
                         fontSize = 10.5.sp
                     )
                 }
@@ -2279,9 +2290,9 @@ private fun KickoffSourcesAndKeysTabContent(
                 Spacer(modifier = Modifier.width(8.dp))
 
                 Surface(
-                    color = KickoffTerracotta,
+                    color = KickoffPitchEmerald,
                     shape = RoundedCornerShape(8.dp),
-                    border = BorderStroke(0.8.dp, KickoffAlabasterIvory.copy(alpha = 0.5f)),
+                    border = BorderStroke(0.8.dp, KickoffFloodlightVolt.copy(alpha = 0.7f)),
                     modifier = Modifier
                         .clip(RoundedCornerShape(8.dp))
                         .clickable(enabled = !isCheckingSourcesHealth) { onCheckAllSourcesHealth() }
@@ -2293,7 +2304,7 @@ private fun KickoffSourcesAndKeysTabContent(
                     ) {
                         if (isCheckingSourcesHealth) {
                             CircularProgressIndicator(
-                                color = KickoffAlabasterIvory,
+                                color = KickoffPitchBlack,
                                 strokeWidth = 2.dp,
                                 modifier = Modifier.size(12.dp)
                             )
@@ -2301,7 +2312,7 @@ private fun KickoffSourcesAndKeysTabContent(
                         }
                         Text(
                             text = if (isCheckingSourcesHealth) "Checking..." else "Verify All Sources",
-                            color = KickoffAlabasterIvory,
+                            color = KickoffPitchBlack,
                             fontSize = 10.5.sp,
                             fontWeight = FontWeight.ExtraBold
                         )
@@ -2345,19 +2356,33 @@ private fun KickoffProviderHealthCard(
     }
 
     val badgeColor = when (state.status) {
-        SourceHealthStatus.HEALTHY -> KickoffImperialNavy
-        SourceHealthStatus.QUOTA_WARNING,
+        SourceHealthStatus.HEALTHY -> KickoffStadiumForest
+        SourceHealthStatus.QUOTA_WARNING -> KickoffTrophyGold.copy(alpha = 0.25f)
         SourceHealthStatus.KEY_INVALID_OR_EXPIRED,
-        SourceHealthStatus.UNREACHABLE -> KickoffTerracotta
-        SourceHealthStatus.UNCONFIGURED -> KickoffObsidianBlack
+        SourceHealthStatus.UNREACHABLE -> KickoffLiveCrimson.copy(alpha = 0.25f)
+        SourceHealthStatus.UNCONFIGURED -> KickoffGlassWell
+    }
+
+    val badgeBorderColor = when (state.status) {
+        SourceHealthStatus.HEALTHY -> KickoffPitchEmerald
+        SourceHealthStatus.QUOTA_WARNING -> KickoffTrophyGold
+        SourceHealthStatus.KEY_INVALID_OR_EXPIRED,
+        SourceHealthStatus.UNREACHABLE -> KickoffLiveCrimson
+        SourceHealthStatus.UNCONFIGURED -> KickoffEmeraldBorder
     }
 
     Surface(
-        color = KickoffCharcoalSlate,
+        color = KickoffTurfSurface,
         shape = RoundedCornerShape(12.dp),
         border = BorderStroke(
             width = if (state.status == SourceHealthStatus.KEY_INVALID_OR_EXPIRED || state.status == SourceHealthStatus.QUOTA_WARNING) 1.1.dp else 0.8.dp,
-            color = if (state.status == SourceHealthStatus.KEY_INVALID_OR_EXPIRED || state.status == SourceHealthStatus.QUOTA_WARNING) KickoffTerracotta else KickoffParchmentBorder
+            color = if (state.status == SourceHealthStatus.KEY_INVALID_OR_EXPIRED) {
+                KickoffLiveCrimson
+            } else if (state.status == SourceHealthStatus.QUOTA_WARNING) {
+                KickoffTrophyGold
+            } else {
+                KickoffEmeraldBorder
+            }
         ),
         modifier = Modifier
             .fillMaxWidth()
@@ -2378,14 +2403,14 @@ private fun KickoffProviderHealthCard(
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Text(
                             text = state.provider.displayName,
-                            color = KickoffAlabasterIvory,
+                            color = KickoffFloodlightWhite,
                             fontSize = 13.sp,
                             fontWeight = FontWeight.ExtraBold
                         )
                         Spacer(modifier = Modifier.width(6.dp))
                         Text(
                             text = "• ${state.provider.endpointSummary}",
-                            color = KickoffAgedParchment,
+                            color = KickoffMistSilver,
                             fontSize = 9.5.sp,
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis
@@ -2393,7 +2418,7 @@ private fun KickoffProviderHealthCard(
                     }
                     Text(
                         text = state.provider.dependentFeatures,
-                        color = KickoffAgedParchment,
+                        color = KickoffMistSilver,
                         fontSize = 10.5.sp
                     )
                 }
@@ -2401,12 +2426,12 @@ private fun KickoffProviderHealthCard(
                 Surface(
                     color = badgeColor,
                     shape = RoundedCornerShape(6.dp),
-                    border = BorderStroke(0.7.dp, KickoffParchmentBorder),
+                    border = BorderStroke(0.7.dp, badgeBorderColor),
                     modifier = Modifier.testTag("source_status_badge_${state.provider.id}")
                 ) {
                     Text(
                         text = state.status.label,
-                        color = KickoffAlabasterIvory,
+                        color = KickoffFloodlightWhite,
                         fontSize = 9.sp,
                         fontWeight = FontWeight.ExtraBold,
                         modifier = Modifier.padding(horizontal = 7.dp, vertical = 3.dp)
@@ -2422,7 +2447,7 @@ private fun KickoffProviderHealthCard(
             ) {
                 Text(
                     text = "Quota: ${state.remainingQuotaLabel}",
-                    color = KickoffAlabasterIvory,
+                    color = KickoffFloodlightWhite,
                     fontSize = 10.5.sp,
                     fontWeight = FontWeight.SemiBold,
                     style = TabularNumeralTextStyle
@@ -2433,14 +2458,14 @@ private fun KickoffProviderHealthCard(
                     } else {
                         "Key: ${state.maskedKeyPreview}"
                     },
-                    color = KickoffAgedParchment,
+                    color = KickoffMistSilver,
                     fontSize = 10.sp
                 )
             }
 
             Text(
                 text = state.statusDetail,
-                color = KickoffAgedParchment,
+                color = KickoffMistSilver,
                 fontSize = 10.sp
             )
 
@@ -2451,9 +2476,9 @@ private fun KickoffProviderHealthCard(
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Surface(
-                        color = KickoffObsidianBlack,
+                        color = KickoffGlassWell,
                         shape = RoundedCornerShape(8.dp),
-                        border = BorderStroke(0.7.dp, KickoffTerracotta),
+                        border = BorderStroke(0.7.dp, KickoffPitchEmerald),
                         modifier = Modifier
                             .clip(RoundedCornerShape(8.dp))
                             .clickable { isEditorExpanded = !isEditorExpanded }
@@ -2461,7 +2486,7 @@ private fun KickoffProviderHealthCard(
                     ) {
                         Text(
                             text = if (isEditorExpanded) "Hide Key Editor" else "Update / Validate API Key",
-                            color = KickoffAlabasterIvory,
+                            color = KickoffFloodlightWhite,
                             fontSize = 10.sp,
                             fontWeight = FontWeight.ExtraBold,
                             modifier = Modifier.padding(horizontal = 9.dp, vertical = 5.dp)
@@ -2470,9 +2495,9 @@ private fun KickoffProviderHealthCard(
 
                     if (state.isUsingCustomKey) {
                         Surface(
-                            color = KickoffObsidianBlack,
+                            color = KickoffGlassWell,
                             shape = RoundedCornerShape(8.dp),
-                            border = BorderStroke(0.7.dp, KickoffParchmentBorder),
+                            border = BorderStroke(0.7.dp, KickoffEmeraldBorder),
                             modifier = Modifier
                                 .clip(RoundedCornerShape(8.dp))
                                 .clickable {
@@ -2483,7 +2508,7 @@ private fun KickoffProviderHealthCard(
                         ) {
                             Text(
                                 text = "Reset Default",
-                                color = KickoffAgedParchment,
+                                color = KickoffMistSilver,
                                 fontSize = 10.sp,
                                 fontWeight = FontWeight.Bold,
                                 modifier = Modifier.padding(horizontal = 9.dp, vertical = 5.dp)
@@ -2500,18 +2525,18 @@ private fun KickoffProviderHealthCard(
                         placeholder = {
                             Text(
                                 text = "Paste replacement ${state.provider.displayName} key...",
-                                color = KickoffAgedParchment.copy(alpha = 0.65f),
+                                color = KickoffMistSilver.copy(alpha = 0.65f),
                                 fontSize = 11.sp
                             )
                         },
                         singleLine = true,
                         colors = OutlinedTextFieldDefaults.colors(
-                            focusedBorderColor = KickoffTerracotta,
-                            unfocusedBorderColor = KickoffParchmentBorder,
-                            focusedContainerColor = KickoffObsidianBlack,
-                            unfocusedContainerColor = KickoffObsidianBlack,
-                            focusedTextColor = KickoffAlabasterIvory,
-                            unfocusedTextColor = KickoffAlabasterIvory
+                            focusedBorderColor = KickoffPitchEmerald,
+                            unfocusedBorderColor = KickoffEmeraldBorder,
+                            focusedContainerColor = KickoffGlassWell,
+                            unfocusedContainerColor = KickoffGlassWell,
+                            focusedTextColor = KickoffFloodlightWhite,
+                            unfocusedTextColor = KickoffFloodlightWhite
                         ),
                         shape = RoundedCornerShape(10.dp),
                         modifier = Modifier
@@ -2542,8 +2567,8 @@ private fun KickoffProviderHealthCard(
                             },
                             enabled = !isValidatingKey,
                             colors = ButtonDefaults.buttonColors(
-                                containerColor = KickoffTerracotta,
-                                contentColor = KickoffAlabasterIvory
+                                containerColor = KickoffPitchEmerald,
+                                contentColor = KickoffPitchBlack
                             ),
                             modifier = Modifier
                                 .weight(1f)
@@ -2562,12 +2587,12 @@ private fun KickoffProviderHealthCard(
                                 keyInput = ""
                                 validationFeedback = "Restored default BuildConfig key."
                             },
-                            border = BorderStroke(0.8.dp, KickoffParchmentBorder),
+                            border = BorderStroke(0.8.dp, KickoffEmeraldBorder),
                             modifier = Modifier.testTag("inline_reset_key_btn_${state.provider.id}")
                         ) {
                             Text(
                                 text = "Reset Default",
-                                color = KickoffAgedParchment,
+                                color = KickoffMistSilver,
                                 fontSize = 10.5.sp,
                                 fontWeight = FontWeight.Bold
                             )
@@ -2577,7 +2602,7 @@ private fun KickoffProviderHealthCard(
                     validationFeedback?.let { feedback ->
                         Text(
                             text = feedback,
-                            color = KickoffAlabasterIvory,
+                            color = KickoffFloodlightWhite,
                             fontSize = 10.5.sp,
                             fontWeight = FontWeight.SemiBold,
                             modifier = Modifier.testTag("source_validation_feedback_${state.provider.id}")

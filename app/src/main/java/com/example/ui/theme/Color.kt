@@ -83,6 +83,31 @@ val CompBotolaCrimson = Color(0xFFE11D48)
 val CompSaudiJade = Color(0xFF14B8A6)
 val CompIntlGold = Color(0xFFF59E0B)
 
+// 5. Broadcast Provider Identity Tokens (Match Cards, Studio Dock & TV Guide)
+val ProviderBeinSurface = Color(0xFF2E1065)
+val ProviderBeinBorder = Color(0xFF8B5CF6)
+val ProviderBeinText = Color(0xFFEDE9FE)
+
+val ProviderArryadiaSurface = Color(0xFF3B0A14)
+val ProviderArryadiaBorder = Color(0xFFF43F5E)
+val ProviderArryadiaText = Color(0xFFFFE4E6)
+
+val ProviderSscSurface = Color(0xFF3B2106)
+val ProviderSscBorder = Color(0xFFF59E0B)
+val ProviderSscText = Color(0xFFFEF3C7)
+
+val ProviderAdSportsSurface = Color(0xFF0C2442)
+val ProviderAdSportsBorder = Color(0xFF38BDF8)
+val ProviderAdSportsText = Color(0xFFE0F2FE)
+
+val ProviderCanalDaznSurface = Color(0xFF111C24)
+val ProviderCanalDaznBorder = Color(0xFF2DD4BF)
+val ProviderCanalDaznText = Color(0xFFCCFBF1)
+
+val ProviderSkyTntSurface = Color(0xFF2A0F2D)
+val ProviderSkyTntBorder = Color(0xFFE879F9)
+val ProviderSkyTntText = Color(0xFFFAE8FF)
+
 // Dark stadium companion surfaces mapped to Floodlight Noir & Pitch Emerald
 val KickoffOceanBase = KickoffPitchBlack
 val KickoffOceanSurface = KickoffTurfSurface

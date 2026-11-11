@@ -41,14 +41,17 @@ enum class MatchDayTab(val defaultLabel: String, val dayOffset: Int) {
     TODAY("Today", 0),
     TOMORROW("Tomorrow", 1),
     DAY_PLUS_2("+2 Days", 2),
-    DAY_PLUS_3("+3 Days", 3);
+    DAY_PLUS_3("+3 Days", 3),
+    DAY_PLUS_4("+4 Days", 4),
+    DAY_PLUS_5("+5 Days", 5),
+    DAY_PLUS_6("+6 Days", 6);
 
     fun getDynamicTitle(timeZoneId: String = "Africa/Casablanca"): String {
         return when (this) {
             YESTERDAY -> "Yesterday"
             TODAY -> "Today"
             TOMORROW -> "Tomorrow"
-            DAY_PLUS_2, DAY_PLUS_3 -> {
+            DAY_PLUS_2, DAY_PLUS_3, DAY_PLUS_4, DAY_PLUS_5, DAY_PLUS_6 -> {
                 val tz = TimeZone.getTimeZone(timeZoneId)
                 val cal = Calendar.getInstance(tz)
                 cal.add(Calendar.DAY_OF_YEAR, dayOffset)
@@ -100,7 +103,7 @@ enum class MatchDayTab(val defaultLabel: String, val dayOffset: Int) {
             YESTERDAY -> "YEST"
             TODAY -> "TODAY"
             TOMORROW -> "TOM"
-            DAY_PLUS_2, DAY_PLUS_3 -> {
+            DAY_PLUS_2, DAY_PLUS_3, DAY_PLUS_4, DAY_PLUS_5, DAY_PLUS_6 -> {
                 val tz = TimeZone.getTimeZone(timeZoneId)
                 val cal = Calendar.getInstance(tz)
                 cal.add(Calendar.DAY_OF_YEAR, dayOffset)
@@ -114,13 +117,29 @@ enum class MatchDayTab(val defaultLabel: String, val dayOffset: Int) {
     // Backwards-compatible property used by UI components
     val label: String
         get() = getDynamicTitle()
+
+    companion object {
+        val FORWARD_SEVEN_DAYS: List<MatchDayTab> = listOf(
+            TODAY,
+            TOMORROW,
+            DAY_PLUS_2,
+            DAY_PLUS_3,
+            DAY_PLUS_4,
+            DAY_PLUS_5,
+            DAY_PLUS_6
+        )
+
+        val forwardTimelineTabs: List<MatchDayTab> = FORWARD_SEVEN_DAYS
+    }
 }
 
 enum class MatchStatus {
     LIVE,
     HALFTIME,
     UPCOMING,
-    FINISHED
+    FINISHED,
+    POSTPONED,
+    CANCELLED
 }
 
 data class FootballTeam(
@@ -2713,6 +2732,12 @@ class FootballRepository(
             upper == "FT" || upper == "AET" || upper == "AP" || upper.contains("FINISH") || upper.contains("ENDED") ->
                 MatchStatus.FINISHED to "FT"
 
+            upper == "PST" || upper.contains("POSTPON") ->
+                MatchStatus.POSTPONED to "PST"
+
+            upper == "CANC" || upper == "ABD" || upper.contains("CANCEL") || upper.contains("ABANDON") ->
+                MatchStatus.CANCELLED to "CANC"
+
             else -> MatchStatus.UPCOMING to kickoffTime
         }
     }
@@ -2884,6 +2909,10 @@ class FootballRepository(
                 statusRaw.contains("Cancelled", ignoreCase = true)
 
             val (status, badgeText) = when {
+                statusRaw.contains("Postpon", true) || statusRaw.equals("PST", true) ->
+                    MatchStatus.POSTPONED to "PST"
+                statusRaw.contains("Cancel", true) || statusRaw.contains("Abandon", true) || statusRaw.equals("CANC", true) ->
+                    MatchStatus.CANCELLED to "CANC"
                 statusRaw.contains("FT", true) || statusRaw.contains("Finished", true) || statusRaw.contains("AET", true) || statusRaw.contains("Pen", true) ->
                     MatchStatus.FINISHED to "FT"
                 statusRaw.contains("HT", true) || statusRaw.contains("Halftime", true) ->
@@ -2900,8 +2929,8 @@ class FootballRepository(
                     MatchStatus.UPCOMING to timeRaw
             }
 
-            val homeScore = if (status == MatchStatus.UPCOMING) null else rawHomeScore
-            val awayScore = if (status == MatchStatus.UPCOMING) null else rawAwayScore
+            val homeScore = if (status == MatchStatus.UPCOMING || status == MatchStatus.POSTPONED || status == MatchStatus.CANCELLED) null else rawHomeScore
+            val awayScore = if (status == MatchStatus.UPCOMING || status == MatchStatus.POSTPONED || status == MatchStatus.CANCELLED) null else rawAwayScore
 
             val isMarquee = isMarqueeMenaMatch(homeName, awayName)
             val smartFallbacks = getSmartMenaFallbackChannels(
@@ -3985,6 +4014,8 @@ class FootballRepository(
                 "IN_PLAY" -> if (minuteVal > 45) "2H" else "1H"
                 "PAUSED" -> "HT"
                 "FINISHED", "AWARDED" -> "FT"
+                "POSTPONED" -> "PST"
+                "CANCELLED", "SUSPENDED" -> "CANC"
                 else -> "NS"
             }
             val (status, badge) = parseLiveStatusAndMinuteBadge(mappedShortStatus, minuteVal, kickoffTime, injuryTimeVal)

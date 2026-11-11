@@ -40,10 +40,140 @@ import com.example.ui.theme.KickoffFloodlightWhite
 import com.example.ui.theme.KickoffLiveCrimson
 import com.example.ui.theme.KickoffMistSilver
 import com.example.ui.theme.KickoffPitchEmerald
+import com.example.ui.theme.KickoffStadiumForest
 import com.example.ui.theme.KickoffTrophyGold
+import com.example.ui.theme.ProviderAdSportsBorder
+import com.example.ui.theme.ProviderAdSportsSurface
+import com.example.ui.theme.ProviderAdSportsText
+import com.example.ui.theme.ProviderArryadiaBorder
+import com.example.ui.theme.ProviderArryadiaSurface
+import com.example.ui.theme.ProviderArryadiaText
+import com.example.ui.theme.ProviderBeinBorder
+import com.example.ui.theme.ProviderBeinSurface
+import com.example.ui.theme.ProviderBeinText
+import com.example.ui.theme.ProviderCanalDaznBorder
+import com.example.ui.theme.ProviderCanalDaznSurface
+import com.example.ui.theme.ProviderCanalDaznText
+import com.example.ui.theme.ProviderSkyTntBorder
+import com.example.ui.theme.ProviderSkyTntSurface
+import com.example.ui.theme.ProviderSkyTntText
+import com.example.ui.theme.ProviderSscBorder
+import com.example.ui.theme.ProviderSscSurface
+import com.example.ui.theme.ProviderSscText
 import java.util.Locale
 import kotlin.math.cos
 import kotlin.math.sin
+
+/**
+ * User display preferences for the Kickoff Match Center feed.
+ */
+data class KickoffUiPreferences(
+    val hideLiveAndFinalScores: Boolean = false,
+    val compactCardDensity: Boolean = false
+)
+
+/**
+ * Broadcast Provider Identity Badge styling resolved from the channel or provider name.
+ */
+data class BroadcastProviderBadgeStyle(
+    val surfaceColor: Color,
+    val borderColor: Color,
+    val textColor: Color,
+    val providerTag: String
+)
+
+/**
+ * Broadcaster visual identity tokens for match cards, TV grid cards, and studio docks.
+ */
+data class BroadcasterVisualIdentity(
+    val containerColor: Color,
+    val borderColor: Color,
+    val textColor: Color,
+    val providerShortTag: String
+)
+
+/**
+ * Resolves the Broadcast Provider Identity colors (`Provider*Surface`, `Provider*Border`, `Provider*Text`)
+ * for Match Cards, Match Center Studio Dock, and Country Zone TV Guide pills.
+ */
+fun resolveBroadcastProviderBadgeStyle(channelOrProviderName: String): BroadcastProviderBadgeStyle {
+    val lower = channelOrProviderName.lowercase(Locale.ROOT).trim()
+    return when {
+        lower.contains("arryadia") || lower.contains("snrt") || lower.contains("tamazight") || lower.contains("maghribia") || lower.contains("al aoula") ->
+            BroadcastProviderBadgeStyle(
+                surfaceColor = ProviderArryadiaSurface,
+                borderColor = ProviderArryadiaBorder,
+                textColor = ProviderArryadiaText,
+                providerTag = "ARRYADIA"
+            )
+        lower.contains("ssc") || lower.contains("shahid") || lower.contains("saudi") ->
+            BroadcastProviderBadgeStyle(
+                surfaceColor = ProviderSscSurface,
+                borderColor = ProviderSscBorder,
+                textColor = ProviderSscText,
+                providerTag = "SSC"
+            )
+        lower.contains("ad sport") || lower.contains("abu dhabi") || lower.contains("starz") || lower.contains("alkass") || lower.contains("al kass") || lower.contains("dubai") || lower.contains("on time") || lower.contains("ontime") ->
+            BroadcastProviderBadgeStyle(
+                surfaceColor = ProviderAdSportsSurface,
+                borderColor = ProviderAdSportsBorder,
+                textColor = ProviderAdSportsText,
+                providerTag = "AD SPORTS"
+            )
+        lower.contains("canal") || lower.contains("dazn") || lower.contains("rmc") || lower.contains("movistar") || lower.contains("sport tv") || lower.contains("ziggo") ->
+            BroadcastProviderBadgeStyle(
+                surfaceColor = ProviderCanalDaznSurface,
+                borderColor = ProviderCanalDaznBorder,
+                textColor = ProviderCanalDaznText,
+                providerTag = if (lower.contains("dazn")) "DAZN" else "CANAL+"
+            )
+        lower.contains("sky") || lower.contains("tnt") || lower.contains("bt sport") || lower.contains("premier sport") || lower.contains("cbs") || lower.contains("paramount") || lower.contains("espn") ->
+            BroadcastProviderBadgeStyle(
+                surfaceColor = ProviderSkyTntSurface,
+                borderColor = ProviderSkyTntBorder,
+                textColor = ProviderSkyTntText,
+                providerTag = if (lower.contains("tnt")) "TNT SPORTS" else "SKY SPORTS"
+            )
+        lower.contains("bein") || lower.contains("be in") || lower.contains("tod") ->
+            BroadcastProviderBadgeStyle(
+                surfaceColor = ProviderBeinSurface,
+                borderColor = ProviderBeinBorder,
+                textColor = ProviderBeinText,
+                providerTag = "beIN SPORTS"
+            )
+        else ->
+            BroadcastProviderBadgeStyle(
+                surfaceColor = KickoffStadiumForest,
+                borderColor = KickoffPitchEmerald,
+                textColor = KickoffFloodlightWhite,
+                providerTag = "LIVE TV"
+            )
+    }
+}
+
+/**
+ * Resolves the provider-branded [BroadcasterVisualIdentity] (`containerColor`, `borderColor`, `textColor`, `providerShortTag`).
+ */
+fun resolveBroadcasterVisualIdentity(channelOrProviderName: String): BroadcasterVisualIdentity {
+    val style = resolveBroadcastProviderBadgeStyle(channelOrProviderName)
+    val shortTag = when (style.providerTag) {
+        "beIN SPORTS" -> "beIN"
+        "ARRYADIA" -> "SNRT"
+        "SSC" -> "SSC"
+        "AD SPORTS" -> "AD"
+        "DAZN" -> "DAZN"
+        "CANAL+" -> "CANAL+"
+        "TNT SPORTS" -> "TNT"
+        "SKY SPORTS" -> "SKY"
+        else -> "TV"
+    }
+    return BroadcasterVisualIdentity(
+        containerColor = style.surfaceColor,
+        borderColor = style.borderColor,
+        textColor = style.textColor,
+        providerShortTag = shortTag
+    )
+}
 
 /**
  * Resolves the signature broadcast accent color for each supported football competition.

@@ -5230,8 +5230,110 @@ class TvSyncDeviceSeparationComposeTest {
             com.example.ui.home.buildCleanCompetitionHeaderTitle(intlMatch)
         )
     }
+
+    @Test
+    fun testKickoffV5OverhaulSevenDayTimelineBroadcastIdentityUnifiedDeckAndStageDedup() {
+        // 1. 7-Day Forward Timeline (TODAY + 6 upcoming days, YESTERDAY excluded from forward tabs)
+        val forwardTabs = com.example.data.repository.MatchDayTab.forwardTimelineTabs
+        assertEquals(7, forwardTabs.size)
+        assertEquals(com.example.data.repository.MatchDayTab.TODAY, forwardTabs[0])
+        assertEquals(com.example.data.repository.MatchDayTab.DAY_PLUS_6, forwardTabs[6])
+        assertFalse(forwardTabs.contains(com.example.data.repository.MatchDayTab.YESTERDAY))
+        assertEquals(listOf(0, 1, 2, 3, 4, 5, 6), forwardTabs.map { it.dayOffset })
+        assertEquals("TODAY", com.example.data.repository.MatchDayTab.TODAY.getShortDayCode())
+        assertEquals("TOM", com.example.data.repository.MatchDayTab.TOMORROW.getShortDayCode())
+
+        // 2. Broadcast Provider Identity Color Tokens & Resolver
+        val beinIdentity = com.example.ui.home.resolveBroadcasterVisualIdentity("beIN Sports 1 HD Premium")
+        assertEquals("beIN", beinIdentity.providerShortTag)
+        assertEquals(com.example.ui.theme.ProviderBeinSurface, beinIdentity.containerColor)
+        assertEquals(com.example.ui.theme.ProviderBeinBorder, beinIdentity.borderColor)
+
+        val arryadiaIdentity = com.example.ui.home.resolveBroadcasterVisualIdentity("Arryadia TNT HD")
+        assertEquals("SNRT", arryadiaIdentity.providerShortTag)
+        assertEquals(com.example.ui.theme.ProviderArryadiaSurface, arryadiaIdentity.containerColor)
+
+        val sscIdentity = com.example.ui.home.resolveBroadcasterVisualIdentity("SSC 1 HD")
+        assertEquals("SSC", sscIdentity.providerShortTag)
+        assertEquals(com.example.ui.theme.ProviderSscSurface, sscIdentity.containerColor)
+
+        val daznIdentity = com.example.ui.home.resolveBroadcasterVisualIdentity("DAZN 1 FR")
+        assertEquals("DAZN", daznIdentity.providerShortTag)
+        assertEquals(com.example.ui.theme.ProviderCanalDaznSurface, daznIdentity.containerColor)
+
+        // 3. Unified Competition Grouping (Each tournamentId appears at most ONCE per matchday)
+        val eplMorning = com.example.data.repository.FootballMatch(
+            matchId = "epl_early",
+            tournamentId = "epl",
+            tournamentName = "Premier League",
+            tournamentRegion = "England",
+            dayTab = com.example.data.repository.MatchDayTab.TODAY,
+            kickoffTimeFormatted = "13:30",
+            kickoffDateFormatted = "Today",
+            status = com.example.data.repository.MatchStatus.FINISHED,
+            liveMinuteOrBadge = "FT",
+            homeTeamId = "ars",
+            homeTeamName = "Arsenal",
+            homeTeamBadge = "",
+            homeScore = 2,
+            awayTeamId = "che",
+            awayTeamName = "Chelsea",
+            awayTeamBadge = "",
+            awayScore = 1,
+            stadiumName = "Emirates Stadium",
+            cityName = "London",
+            beinChannel = "beIN Sports 1 English",
+            beinChannelNumberHint = "beIN EN 1"
+        )
+        val laligaMid = eplMorning.copy(
+            matchId = "laliga_mid",
+            tournamentId = "laliga",
+            tournamentName = "LaLiga",
+            tournamentRegion = "Spain",
+            kickoffTimeFormatted = "16:15",
+            status = com.example.data.repository.MatchStatus.LIVE,
+            liveMinuteOrBadge = "64'"
+        )
+        val eplEvening = eplMorning.copy(
+            matchId = "epl_late",
+            tournamentId = "epl",
+            tournamentName = "Premier League",
+            tournamentRegion = "England",
+            kickoffTimeFormatted = "20:00",
+            status = com.example.data.repository.MatchStatus.UPCOMING,
+            liveMinuteOrBadge = "20:00",
+            homeScore = null,
+            awayScore = null
+        )
+        val unifiedSections = com.example.ui.home.buildUnifiedTournamentSections(
+            matches = listOf(eplMorning, laligaMid, eplEvening)
+        )
+        assertEquals(2, unifiedSections.size)
+        assertEquals(1, unifiedSections.count { it.tournamentId == "epl" })
+        val eplSection = unifiedSections.first { it.tournamentId == "epl" }
+        assertEquals(2, eplSection.matches.size)
+
+        // 4. Rich Statuses (POSTPONED & CANCELLED) & Stage Label Deduplication
+        val postponedMatch = eplEvening.copy(
+            status = com.example.data.repository.MatchStatus.POSTPONED,
+            liveMinuteOrBadge = "PST"
+        )
+        val telemetry = com.example.ui.home.parseLiveMatchClockTelemetry(postponedMatch)
+        assertEquals("PST", telemetry.heroReadout)
+        assertEquals("POSTPONED", telemetry.periodBadge)
+        assertEquals(0f, telemetry.progressFraction, 0.001f)
+
+        assertEquals(
+            "",
+            com.example.ui.home.buildDistinctStageLabel("Premier League", "Premier League")
+        )
+        assertEquals(
+            "",
+            com.example.ui.home.buildDistinctStageLabel("Botola Pro Inwi", "Botola Pro Inwi • Regular Season")
+        )
+        assertEquals(
+            "Quarter-Finals",
+            com.example.ui.home.buildDistinctStageLabel("UEFA Champions League", "UEFA Champions League - Quarter-Finals")
+        )
+    }
 }
-
-
-
-

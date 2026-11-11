@@ -282,12 +282,13 @@ private fun TvWidescreenMatchCenterStudioLayout(
                             )
                         }
                         dossier.menaBroadcastGuide.take(3).forEach { item ->
+                            val identity = resolveBroadcasterVisualIdentity(item.channelName)
                             Surface(
-                                color = if (item.isPrimaryBroadcaster) KickoffStadiumForest else KickoffCanopyElevated,
+                                color = identity.containerColor,
                                 shape = RoundedCornerShape(8.dp),
                                 border = BorderStroke(
-                                    width = if (item.isPrimaryBroadcaster) 1.dp else 0.7.dp,
-                                    color = if (item.isPrimaryBroadcaster) KickoffPitchEmerald else KickoffEmeraldBorder
+                                    width = if (item.isPrimaryBroadcaster) 1.1.dp else 0.8.dp,
+                                    color = if (item.isPrimaryBroadcaster) KickoffFloodlightVolt else identity.borderColor
                                 ),
                                 modifier = Modifier
                                     .fillMaxWidth()
@@ -304,15 +305,27 @@ private fun TvWidescreenMatchCenterStudioLayout(
                                     horizontalArrangement = Arrangement.SpaceBetween,
                                     verticalAlignment = Alignment.CenterVertically
                                 ) {
-                                    Text(
-                                        text = item.channelName,
-                                        color = KickoffFloodlightWhite,
-                                        fontSize = 11.sp,
-                                        fontWeight = FontWeight.ExtraBold,
-                                        maxLines = 1,
-                                        overflow = TextOverflow.Ellipsis,
+                                    Row(
+                                        verticalAlignment = Alignment.CenterVertically,
                                         modifier = Modifier.weight(1f)
-                                    )
+                                    ) {
+                                        Text(
+                                            text = "[${identity.providerShortTag}]",
+                                            color = identity.borderColor,
+                                            fontSize = 9.sp,
+                                            fontWeight = FontWeight.ExtraBold
+                                        )
+                                        Spacer(modifier = Modifier.width(5.dp))
+                                        Text(
+                                            text = item.channelName,
+                                            color = identity.textColor,
+                                            fontSize = 11.sp,
+                                            fontWeight = FontWeight.ExtraBold,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis
+                                        )
+                                    }
+                                    Spacer(modifier = Modifier.width(6.dp))
                                     Text(
                                         text = item.qualityBadge,
                                         color = KickoffFloodlightVolt,
@@ -398,6 +411,22 @@ internal fun buildCleanCompetitionHeaderTitle(match: FootballMatch): String {
     }
 }
 
+internal fun buildDistinctStageLabel(tournamentName: String, stageOrRound: String): String {
+    val cleanStage = stageOrRound.trim()
+    if (cleanStage.isBlank()) return ""
+    val cleanTour = tournamentName.trim()
+    if (cleanStage.equals(cleanTour, ignoreCase = true)) return ""
+    if (cleanStage.contains(cleanTour, ignoreCase = true)) {
+        val stripped = cleanStage
+            .replace(cleanTour, "", ignoreCase = true)
+            .replace("•", "")
+            .replace("SportAPI.ai Live", "", ignoreCase = true)
+            .trim { it.isWhitespace() || it == '•' || it == '-' || it == '–' || it == '|' || it == ':' }
+        return if (stripped.equals("Regular Season", ignoreCase = true)) "" else stripped
+    }
+    return cleanStage
+}
+
 @Composable
 private fun MatchCenterScoreboardHeader(
     dossier: MatchFullDossier,
@@ -462,6 +491,9 @@ private fun MatchCenterScoreboardHeader(
             val cleanCompTitle = remember(match.tournamentRegion, match.tournamentName) {
                 buildCleanCompetitionHeaderTitle(match)
             }
+            val distinctStageLabel = remember(match.tournamentName, match.stageOrRound) {
+                buildDistinctStageLabel(match.tournamentName, match.stageOrRound)
+            }
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
@@ -493,7 +525,7 @@ private fun MatchCenterScoreboardHeader(
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis
                     )
-                    if (match.stageOrRound.isNotBlank()) {
+                    if (distinctStageLabel.isNotBlank()) {
                         Spacer(modifier = Modifier.width(6.dp))
                         Surface(
                             color = KickoffTurfSurface,
@@ -501,7 +533,7 @@ private fun MatchCenterScoreboardHeader(
                             border = BorderStroke(0.7.dp, KickoffEmeraldBorder)
                         ) {
                             Text(
-                                text = match.stageOrRound,
+                                text = distinctStageLabel,
                                 color = KickoffMistSilver,
                                 fontSize = 9.5.sp,
                                 fontWeight = FontWeight.SemiBold,
@@ -701,6 +733,8 @@ private fun MatchCenterScoreboardHeader(
                                         MatchStatus.LIVE -> "LIVE • ${liveClockTelemetry.heroReadoutSeconds}"
                                         MatchStatus.HALFTIME -> "HALF TIME"
                                         MatchStatus.FINISHED -> "FULL TIME"
+                                        MatchStatus.POSTPONED -> "POSTPONED"
+                                        MatchStatus.CANCELLED -> "CANCELLED"
                                         MatchStatus.UPCOMING -> "${match.kickoffDateFormatted} • $dynamicKickoffTime"
                                     },
                                     color = when {
@@ -881,8 +915,8 @@ private fun MatchCenterScoreboardHeader(
                                     add(dossier.attendanceLabel)
                                 }
                             }.joinToString(" • ").ifBlank {
-                                if (match.stageOrRound.isNotBlank()) {
-                                    "${match.tournamentName} • ${match.stageOrRound}"
+                                if (distinctStageLabel.isNotBlank()) {
+                                    "${match.tournamentName} • $distinctStageLabel"
                                 } else {
                                     match.tournamentName
                                 }
@@ -1135,10 +1169,11 @@ private fun MatchSummaryTabContent(
                     Spacer(modifier = Modifier.height(8.dp))
                     LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         items(dossier.menaBroadcastGuide, key = { it.channelName }) { item ->
+                            val identity = resolveBroadcasterVisualIdentity(item.channelName)
                             Surface(
-                                color = KickoffStadiumForest,
+                                color = identity.containerColor,
                                 shape = RoundedCornerShape(8.dp),
-                                border = BorderStroke(0.9.dp, KickoffPitchEmerald),
+                                border = BorderStroke(0.9.dp, identity.borderColor),
                                 modifier = Modifier.tvFocusablePill(
                                     accentColor = KickoffFloodlightVolt,
                                     shape = RoundedCornerShape(8.dp),
@@ -1149,14 +1184,21 @@ private fun MatchSummaryTabContent(
                                     verticalAlignment = Alignment.CenterVertically,
                                     modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp)
                                 ) {
+                                    Text(
+                                        text = "[${identity.providerShortTag}]",
+                                        color = identity.borderColor,
+                                        fontSize = 9.sp,
+                                        fontWeight = FontWeight.ExtraBold
+                                    )
+                                    Spacer(modifier = Modifier.width(5.dp))
                                     KickoffBroadcastWaveIcon(
-                                        tint = KickoffPitchEmerald,
+                                        tint = identity.textColor,
                                         size = 13.dp
                                     )
                                     Spacer(modifier = Modifier.width(5.dp))
                                     Text(
                                         text = item.channelName,
-                                        color = KickoffFloodlightWhite,
+                                        color = identity.textColor,
                                         fontSize = 11.sp,
                                         fontWeight = FontWeight.ExtraBold
                                     )
@@ -1207,10 +1249,11 @@ private fun MatchSummaryTabContent(
                     ) {
                         MatchInfoKeyValueRow("Attendance", dossier.attendanceLabel)
                     }
+                    val distinctStage = buildDistinctStageLabel(match.tournamentName, match.stageOrRound)
                     MatchInfoKeyValueRow(
                         "Competition",
-                        if (match.stageOrRound.isNotBlank()) {
-                            "${match.tournamentName} (${match.stageOrRound})"
+                        if (distinctStage.isNotBlank()) {
+                            "${match.tournamentName} ($distinctStage)"
                         } else {
                             match.tournamentName
                         }
@@ -3158,14 +3201,25 @@ private fun PitchPlayerAvatarNode(
                     modifier = Modifier.padding(horizontal = 5.5.dp, vertical = 1.5.dp)
                 ) {
                     if (isPlayedOrLive && player.goals > 0) {
-                        Text(
-                            text = if (player.goals > 1) "⚽${player.goals} " else "⚽ ",
-                            fontSize = 7.5.sp
+                        KickoffMatchGoalBallIcon(
+                            modifier = Modifier.size(9.dp),
+                            tint = KickoffFloodlightVolt
                         )
+                        if (player.goals > 1) {
+                            Text(
+                                text = "${player.goals}",
+                                color = KickoffFloodlightVolt,
+                                fontSize = 7.5.sp,
+                                fontWeight = FontWeight.ExtraBold
+                            )
+                        }
+                        Spacer(modifier = Modifier.width(3.dp))
                     } else if (isPlayedOrLive && player.assists > 0) {
                         Text(
-                            text = "🎯 ",
-                            fontSize = 7.5.sp
+                            text = "A ",
+                            color = KickoffPitchEmerald,
+                            fontSize = 7.5.sp,
+                            fontWeight = FontWeight.ExtraBold
                         )
                     }
                     Text(
@@ -3211,8 +3265,8 @@ private fun PlayerTacticalSpotlightCard(
     }
 
     val subBadgeText = when {
-        player.subbedOnMinute != null -> "🔄 In ${player.subbedOnMinute}"
-        player.subbedOffMinute != null -> "🔄 Out ${player.subbedOffMinute}"
+        player.subbedOnMinute != null -> "▲ In ${player.subbedOnMinute}"
+        player.subbedOffMinute != null -> "▼ Out ${player.subbedOffMinute}"
         else -> null
     }
 
@@ -3301,10 +3355,10 @@ private fun PlayerTacticalSpotlightCard(
                         val detailParts = buildList {
                             add(teamName)
                             if (isPlayedOrLive) {
-                                if (player.goals > 0) add("⚽ ${player.goals} Goal(s)")
-                                if (player.assists > 0) add("🎯 ${player.assists} Assist(s)")
-                                if (player.hasYellowCard) add("🟨 Yellow Card")
-                                if (player.hasRedCard) add("🟥 Red Card")
+                                if (player.goals > 0) add("${player.goals} Goal(s)")
+                                if (player.assists > 0) add("${player.assists} Assist(s)")
+                                if (player.hasYellowCard) add("Yellow Card")
+                                if (player.hasRedCard) add("Red Card")
                                 player.subbedOffMinute?.let { add("▼ Subbed off $it") }
                                 player.subbedOnMinute?.let { add("▲ Subbed on $it") }
                             } else {
@@ -3772,14 +3826,21 @@ internal fun AttackMomentumWaveCard(
                 Text("1'", color = KickoffMistSilver, fontSize = 9.sp, fontWeight = FontWeight.Bold)
                 Text("HT (45')", color = KickoffFloodlightWhite, fontSize = 9.sp, fontWeight = FontWeight.ExtraBold)
                 if (goalEvents.isNotEmpty()) {
-                    Text(
-                        text = goalEvents.joinToString(" • ") { "⚽ ${it.minute}'" },
-                        color = KickoffFloodlightVolt,
-                        fontSize = 9.sp,
-                        fontWeight = FontWeight.ExtraBold,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
-                    )
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        KickoffMatchGoalBallIcon(
+                            modifier = Modifier.size(10.dp),
+                            tint = KickoffFloodlightVolt
+                        )
+                        Spacer(modifier = Modifier.width(4.dp))
+                        Text(
+                            text = goalEvents.joinToString(" • ") { "${it.minute}'" },
+                            color = KickoffFloodlightVolt,
+                            fontSize = 9.sp,
+                            fontWeight = FontWeight.ExtraBold,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
                 }
                 Text("90'", color = KickoffMistSilver, fontSize = 9.sp, fontWeight = FontWeight.Bold)
             }
@@ -4501,12 +4562,15 @@ private fun MenaBroadcastChannelCard(
     info: MenaBroadcastChannelInfo,
     onWatchClicked: () -> Unit
 ) {
+    val identity = remember(info.channelName, info.providerGroup) {
+        resolveBroadcasterVisualIdentity(info.channelName.ifBlank { info.providerGroup })
+    }
     Surface(
-        color = KickoffTurfSurface,
+        color = identity.containerColor,
         shape = RoundedCornerShape(14.dp),
         border = BorderStroke(
-            width = if (info.isPrimaryBroadcaster) 1.2.dp else 0.8.dp,
-            color = if (info.isPrimaryBroadcaster) KickoffPitchEmerald else KickoffEmeraldBorder
+            width = if (info.isPrimaryBroadcaster) 1.3.dp else 0.9.dp,
+            color = if (info.isPrimaryBroadcaster) KickoffFloodlightVolt else identity.borderColor
         ),
         modifier = Modifier
             .fillMaxWidth()
@@ -4525,14 +4589,21 @@ private fun MenaBroadcastChannelCard(
         ) {
             Column(modifier = Modifier.weight(1f)) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        text = "[${identity.providerShortTag}]",
+                        color = identity.borderColor,
+                        fontSize = 10.sp,
+                        fontWeight = FontWeight.ExtraBold
+                    )
+                    Spacer(modifier = Modifier.width(6.dp))
                     KickoffBroadcastWaveIcon(
-                        tint = KickoffPitchEmerald,
+                        tint = identity.textColor,
                         size = 16.dp
                     )
                     Spacer(modifier = Modifier.width(6.dp))
                     Text(
                         text = info.channelName,
-                        color = KickoffFloodlightWhite,
+                        color = identity.textColor,
                         fontSize = 14.sp,
                         fontWeight = FontWeight.ExtraBold
                     )
@@ -4553,9 +4624,9 @@ private fun MenaBroadcastChannelCard(
                         Spacer(modifier = Modifier.width(6.dp))
                     }
                     Surface(
-                        color = KickoffStadiumForest,
+                        color = KickoffPitchBlack.copy(alpha = 0.45f),
                         shape = RoundedCornerShape(4.dp),
-                        border = BorderStroke(0.6.dp, KickoffEmeraldBorder)
+                        border = BorderStroke(0.6.dp, identity.borderColor)
                     ) {
                         Text(
                             text = info.qualityBadge,
