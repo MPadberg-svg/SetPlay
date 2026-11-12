@@ -19,6 +19,8 @@ import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
@@ -29,8 +31,10 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
@@ -107,7 +111,9 @@ import com.example.ui.theme.KickoffStadiumForest
 import com.example.ui.theme.KickoffTrophyGold
 import com.example.ui.theme.KickoffTurfSurface
 import com.example.ui.theme.TabularNumeralTextStyle
+import com.example.ui.theme.tvFocusableControl
 import com.example.ui.viewmodel.LiveGoalAlertEvent
+import com.example.util.SetPlayEdition
 
 /**
  * Interactive Country Zone Capsule Button displayed in the KickOff Arena Header Bar.
@@ -1754,9 +1760,14 @@ fun CustomizeTeamsAndTournamentsSheet(
     onCheckAllSourcesHealth: () -> Unit = {},
     onValidateAndUpdateApiKey: (KickoffProviderId, String, (ApiKeyValidationResult) -> Unit) -> Unit = { _, _, _ -> },
     onResetApiKey: (KickoffProviderId) -> Unit = {},
-    onDismissSourceAlert: () -> Unit = {}
+    onDismissSourceAlert: () -> Unit = {},
+    activeEdition: SetPlayEdition = SetPlayEdition.PHONE,
+    uiPreferences: KickoffUiPreferences = KickoffUiPreferences(),
+    onUpdateUiPreferences: ((KickoffUiPreferences) -> KickoffUiPreferences) -> Unit = {}
 ) {
     var activeTab by remember(initialTabIndex) { mutableIntStateOf(initialTabIndex.coerceIn(0, 3)) }
+    // Domain 0 sub-filter: 0 = Favorite Teams, 1 = Followed Leagues, 2 = Both (All)
+    var domainZeroSubFilter by remember { mutableIntStateOf(2) }
     var zoneTabSearchQuery by remember { mutableStateOf("") }
 
     val effectiveSourceStates = remember(sourceHealthStates) {
@@ -1794,235 +1805,326 @@ fun CustomizeTeamsAndTournamentsSheet(
         }
     }
 
-    ModalBottomSheet(
-        onDismissRequest = onDismiss,
-        containerColor = KickoffPitchBlack
+    val unhealthySourcesCount = remember(effectiveSourceStates, sourceAlertMessage) {
+        val count = effectiveSourceStates.count {
+            it.status == SourceHealthStatus.KEY_INVALID_OR_EXPIRED ||
+                it.status == SourceHealthStatus.QUOTA_WARNING ||
+                it.status == SourceHealthStatus.UNREACHABLE
+        }
+        if (count == 0 && !sourceAlertMessage.isNullOrBlank()) 1 else count
+    }
+
+    val domainDescriptors = remember(
+        favoriteTeams.size,
+        tournamentPreferences,
+        selectedCountryZone.shortIso3,
+        unhealthySourcesCount
     ) {
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .navigationBarsPadding()
-                .padding(horizontal = 20.dp, vertical = 8.dp)
-        ) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Column {
-                    Text(
-                        text = "Customize KickOff Arena",
-                        color = KickoffFloodlightWhite,
-                        fontSize = 18.sp,
-                        fontWeight = FontWeight.ExtraBold
-                    )
-                    Text(
-                        text = "Teams, 3-Pillar Competitions, Country Zone & Data Sources",
-                        color = KickoffMistSilver,
-                        fontSize = 12.sp
-                    )
-                }
-                IconButton(onClick = onDismiss) {
-                    Icon(Icons.Default.Close, contentDescription = "Close", tint = KickoffFloodlightWhite)
-                }
-            }
+        val enabledLeaguesCount = tournamentPreferences.count { it.isEnabled }
+        listOf(
+            Triple("Teams & Leagues", "${favoriteTeams.size} Clubs • $enabledLeaguesCount Leagues", false),
+            Triple("Region & Clocks", "${selectedCountryZone.flagEmoji} ${selectedCountryZone.shortIso3} • Timezone", false),
+            Triple("Viewing & UX", "Spoilers • Density • Fallback", false),
+            Triple(
+                "Sources & Keys",
+                if (unhealthySourcesCount > 0) "$unhealthySourcesCount Alert(s) Active" else "6 Feeds Healthy",
+                unhealthySourcesCount > 0
+            )
+        )
+    }
 
-            if (!sourceAlertMessage.isNullOrBlank()) {
-                Spacer(modifier = Modifier.height(6.dp))
-                KickoffSourceStatusAlertBanner(
-                    alertMessage = sourceAlertMessage,
-                    onManageSourcesClick = { activeTab = 3 },
-                    onDismiss = onDismissSourceAlert,
-                    modifier = Modifier.padding(horizontal = 0.dp)
-                )
-            }
-
-            Spacer(modifier = Modifier.height(10.dp))
-
-            // Quick Country Zone & Winter/Summer Clock Switcher inside Customize Sheet
-            if (activeTab != 3) {
-                OnboardingCountryZoneSelectorCard(
-                    selectedZone = selectedCountryZone,
-                    onSelectCountryCode = onSelectCountryZone,
-                    onAutoDetectCountry = onAutoDetectCountryZone,
-                    onOpenFullZoneSheet = onOpenFullCountryZoneSheet,
-                    seasonTimeMode = selectedSeasonTimeMode,
-                    onSelectSeasonTimeMode = onSelectSeasonTimeMode
-                )
-
-                Spacer(modifier = Modifier.height(10.dp))
-            }
-
-            // 4-Tab Navigation Bar: My Teams | Competitions | Zone & Clock | Sources & Keys
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .clip(RoundedCornerShape(10.dp))
-                    .background(KickoffTurfSurface)
-                    .padding(4.dp),
-                horizontalArrangement = Arrangement.spacedBy(4.dp)
-            ) {
-                val tabTitles = listOf(
-                    "My Favorite Teams (${favoriteTeams.size})",
-                    "Tournaments (${tournamentPreferences.count { it.isEnabled }})",
-                    "Zone & Clock",
-                    "Sources & Keys"
-                )
-                tabTitles.forEachIndexed { index, title ->
-                    val isSelected = activeTab == index
-                    Surface(
-                        color = if (isSelected) KickoffPitchEmerald else Color.Transparent,
-                        shape = RoundedCornerShape(8.dp),
-                        modifier = Modifier
-                            .weight(1f)
-                            .clickable { activeTab = index }
-                            .testTag("customize_tab_$index")
-                    ) {
-                        Text(
-                            text = title,
-                            color = if (isSelected) KickoffPitchBlack else KickoffFloodlightWhite,
-                            fontSize = 10.5.sp,
-                            fontWeight = FontWeight.ExtraBold,
-                            textAlign = TextAlign.Center,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                            modifier = Modifier.padding(horizontal = 4.dp, vertical = 8.dp)
-                        )
-                    }
-                }
-            }
-
-            Spacer(modifier = Modifier.height(12.dp))
-
+    val renderActiveDomainContent: @Composable (Modifier) -> Unit = { contentModifier ->
+        Column(modifier = contentModifier) {
             when (activeTab) {
                 0 -> {
-                    // Tab 0: Manual Global Team Search + Saved Favorites List
-                    OutlinedTextField(
-                        value = searchQuery,
-                        onValueChange = onSearchQueryChange,
-                        placeholder = {
-                            Text(
-                                text = "Search global teams to add (e.g., Wydad, Barcelona, Liverpool)...",
-                                color = KickoffMistSilver.copy(alpha = 0.65f),
-                                fontSize = 12.sp
-                            )
-                        },
-                        leadingIcon = {
-                            Icon(Icons.Default.Search, contentDescription = null, tint = KickoffPitchEmerald)
-                        },
-                        trailingIcon = {
-                            if (searchQuery.isNotBlank()) {
-                                IconButton(onClick = { onSearchQueryChange("") }) {
-                                    Icon(Icons.Default.Close, contentDescription = "Clear", tint = KickoffMistSilver)
-                                }
-                            }
-                        },
-                        singleLine = true,
-                        colors = OutlinedTextFieldDefaults.colors(
-                            focusedBorderColor = KickoffPitchEmerald,
-                            unfocusedBorderColor = KickoffEmeraldBorder,
-                            focusedContainerColor = KickoffTurfSurface,
-                            unfocusedContainerColor = KickoffTurfSurface,
-                            focusedTextColor = KickoffFloodlightWhite,
-                            unfocusedTextColor = KickoffFloodlightWhite
-                        ),
-                        shape = RoundedCornerShape(12.dp),
+                    // Domain 0: Teams & Leagues (Segmented sub-toggle: Favorite Teams | Followed Leagues | Both)
+                    Row(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .testTag("customize_team_search_input")
-                    )
+                            .clip(RoundedCornerShape(10.dp))
+                            .background(KickoffTurfSurface)
+                            .border(0.8.dp, KickoffEmeraldBorder, RoundedCornerShape(10.dp))
+                            .padding(4.dp),
+                        horizontalArrangement = Arrangement.spacedBy(4.dp)
+                    ) {
+                        val subTabs = listOf(
+                            "★ Favorite Teams (${favoriteTeams.size})",
+                            "🏆 Followed Leagues (${tournamentPreferences.count { it.isEnabled }})",
+                            "All"
+                        )
+                        subTabs.forEachIndexed { idx, label ->
+                            val selected = domainZeroSubFilter == idx
+                            Surface(
+                                color = if (selected) KickoffPitchEmerald else Color.Transparent,
+                                shape = RoundedCornerShape(7.dp),
+                                modifier = Modifier
+                                    .weight(if (idx == 2) 0.55f else 1f)
+                                    .clip(RoundedCornerShape(7.dp))
+                                    .tvFocusableControl(
+                                        accentColor = KickoffPitchEmerald,
+                                        shape = RoundedCornerShape(7.dp),
+                                        onClick = { domainZeroSubFilter = idx }
+                                    )
+                                    .testTag("domain0_subfilter_$idx")
+                            ) {
+                                Text(
+                                    text = label,
+                                    color = if (selected) KickoffPitchBlack else KickoffFloodlightWhite,
+                                    fontSize = 10.5.sp,
+                                    fontWeight = FontWeight.ExtraBold,
+                                    textAlign = TextAlign.Center,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                    modifier = Modifier.padding(horizontal = 6.dp, vertical = 7.dp)
+                                )
+                            }
+                        }
+                    }
 
                     Spacer(modifier = Modifier.height(10.dp))
+
+                    if (domainZeroSubFilter == 0 || domainZeroSubFilter == 2) {
+                        OutlinedTextField(
+                            value = searchQuery,
+                            onValueChange = onSearchQueryChange,
+                            placeholder = {
+                                Text(
+                                    text = "Search global teams to add (e.g., Wydad, Barcelona, Liverpool)...",
+                                    color = KickoffMistSilver.copy(alpha = 0.65f),
+                                    fontSize = 12.sp
+                                )
+                            },
+                            leadingIcon = {
+                                Icon(Icons.Default.Search, contentDescription = null, tint = KickoffPitchEmerald)
+                            },
+                            trailingIcon = {
+                                if (searchQuery.isNotBlank()) {
+                                    IconButton(onClick = { onSearchQueryChange("") }) {
+                                        Icon(Icons.Default.Close, contentDescription = "Clear", tint = KickoffMistSilver)
+                                    }
+                                }
+                            },
+                            singleLine = true,
+                            colors = OutlinedTextFieldDefaults.colors(
+                                focusedBorderColor = KickoffPitchEmerald,
+                                unfocusedBorderColor = KickoffEmeraldBorder,
+                                focusedContainerColor = KickoffTurfSurface,
+                                unfocusedContainerColor = KickoffTurfSurface,
+                                focusedTextColor = KickoffFloodlightWhite,
+                                unfocusedTextColor = KickoffFloodlightWhite
+                            ),
+                            shape = RoundedCornerShape(12.dp),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .testTag("customize_team_search_input")
+                        )
+
+                        Spacer(modifier = Modifier.height(8.dp))
+                    }
+
+                    if (domainZeroSubFilter == 1 || domainZeroSubFilter == 2) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(
+                                text = "Toggle tournaments or pin them to the top",
+                                color = KickoffMistSilver,
+                                fontSize = 11.5.sp
+                            )
+                            TextButton(onClick = onEnableAllTournaments) {
+                                Text("Enable All", color = KickoffPitchEmerald, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                            }
+                        }
+                    }
 
                     LazyColumn(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .heightIn(max = 360.dp),
+                            .weight(1f, fill = false),
                         verticalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
-                        if (searchQuery.isNotBlank()) {
-                            if (isSearching) {
-                                item {
-                                    Box(
-                                        modifier = Modifier
-                                            .fillMaxWidth()
-                                            .padding(20.dp),
-                                        contentAlignment = Alignment.Center
-                                    ) {
-                                        CircularProgressIndicator(color = KickoffPitchEmerald)
+                        if (domainZeroSubFilter == 0 || domainZeroSubFilter == 2) {
+                            if (searchQuery.isNotBlank()) {
+                                if (isSearching) {
+                                    item(key = "team_searching_spinner") {
+                                        Box(
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .padding(20.dp),
+                                            contentAlignment = Alignment.Center
+                                        ) {
+                                            CircularProgressIndicator(color = KickoffPitchEmerald)
+                                        }
+                                    }
+                                } else {
+                                    items(searchResults, key = { "search_${it.teamId}" }) { team ->
+                                        val isFav = favoriteTeams.any {
+                                            it.teamId.equals(team.teamId, ignoreCase = true) ||
+                                                it.teamName.equals(team.name, ignoreCase = true)
+                                        }
+                                        TeamSearchResultRow(
+                                            team = team,
+                                            isSelected = isFav,
+                                            onToggle = { onToggleFavoriteTeam(team) }
+                                        )
                                     }
                                 }
                             } else {
-                                items(searchResults, key = { "search_${it.teamId}" }) { team ->
-                                    val isFav = favoriteTeams.any {
-                                        it.teamId.equals(team.teamId, ignoreCase = true) ||
-                                            it.teamName.equals(team.name, ignoreCase = true)
+                                if (favoriteTeams.isEmpty()) {
+                                    item(key = "empty_fav_teams_hint") {
+                                        Text(
+                                            text = "No favorite teams saved yet. Use the search bar above to find and follow your favorite clubs.",
+                                            color = KickoffMistSilver,
+                                            fontSize = 12.sp,
+                                            modifier = Modifier.padding(vertical = 8.dp)
+                                        )
                                     }
-                                    TeamSearchResultRow(
-                                        team = team,
-                                        isSelected = isFav,
-                                        onToggle = { onToggleFavoriteTeam(team) }
-                                    )
+                                } else {
+                                    items(favoriteTeams, key = { "fav_${it.teamId}" }) { fav ->
+                                        Surface(
+                                            color = KickoffTurfSurface,
+                                            shape = RoundedCornerShape(10.dp),
+                                            border = BorderStroke(0.8.dp, KickoffEmeraldBorder),
+                                            modifier = Modifier.fillMaxWidth()
+                                        ) {
+                                            Row(
+                                                modifier = Modifier
+                                                    .fillMaxWidth()
+                                                    .padding(horizontal = 12.dp, vertical = 10.dp),
+                                                verticalAlignment = Alignment.CenterVertically,
+                                                horizontalArrangement = Arrangement.SpaceBetween
+                                            ) {
+                                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                                    TeamCrestImage(
+                                                        badgeUrl = fav.badgeUrl,
+                                                        teamName = fav.teamName,
+                                                        sizeDp = 26
+                                                    )
+                                                    Spacer(modifier = Modifier.width(10.dp))
+                                                    Column {
+                                                        Text(
+                                                            text = fav.teamName,
+                                                            color = KickoffFloodlightWhite,
+                                                            fontSize = 14.sp,
+                                                            fontWeight = FontWeight.Bold
+                                                        )
+                                                        if (fav.primaryLeague.isNotBlank()) {
+                                                            Text(
+                                                                text = "${fav.country} • ${fav.primaryLeague}",
+                                                                color = KickoffMistSilver,
+                                                                fontSize = 11.sp
+                                                            )
+                                                        }
+                                                    }
+                                                }
+                                                IconButton(
+                                                    onClick = { onRemoveFavoriteTeam(fav.teamId) },
+                                                    modifier = Modifier.testTag("remove_fav_team_${fav.teamId}")
+                                                ) {
+                                                    Icon(
+                                                        imageVector = Icons.Default.Close,
+                                                        contentDescription = "Remove ${fav.teamName}",
+                                                        tint = KickoffLiveCrimson
+                                                    )
+                                                }
+                                            }
+                                        }
+                                    }
                                 }
                             }
-                        } else {
-                            if (favoriteTeams.isEmpty()) {
-                                item {
-                                    Text(
-                                        text = "No favorite teams saved yet. Use the search bar above to find and follow your favorite clubs.",
-                                        color = KickoffMistSilver,
-                                        fontSize = 12.sp,
-                                        modifier = Modifier.padding(vertical = 16.dp)
-                                    )
+                        }
+
+                        if (domainZeroSubFilter == 1 || domainZeroSubFilter == 2) {
+                            groupedTournamentsByCategory.forEach { (category, prefsForCategory) ->
+                                val categoryHeaderTitle = when (category) {
+                                    CompetitionCategory.EUROPEAN -> "European Competitions"
+                                    CompetitionCategory.AFRICAN_ARAB -> "African & Arab Competitions"
+                                    CompetitionCategory.INTERNATIONAL -> "International Fixtures"
                                 }
-                            } else {
-                                items(favoriteTeams, key = { "fav_${it.teamId}" }) { fav ->
+                                item(key = "cat_header_${category.name}") {
+                                    Surface(
+                                        color = KickoffStadiumForest,
+                                        shape = RoundedCornerShape(8.dp),
+                                        border = BorderStroke(0.8.dp, KickoffEmeraldBorder),
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .padding(top = 4.dp)
+                                            .testTag("customize_category_header_${category.name.lowercase()}")
+                                    ) {
+                                        Text(
+                                            text = categoryHeaderTitle,
+                                            color = KickoffFloodlightWhite,
+                                            fontSize = 11.sp,
+                                            fontWeight = FontWeight.ExtraBold,
+                                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp)
+                                        )
+                                    }
+                                }
+
+                                items(prefsForCategory, key = { it.tournamentId }) { pref ->
+                                    val compAccent = resolveCompetitionAccentColor(pref.tournamentId)
                                     Surface(
                                         color = KickoffTurfSurface,
                                         shape = RoundedCornerShape(10.dp),
-                                        border = BorderStroke(0.8.dp, KickoffEmeraldBorder),
+                                        border = BorderStroke(
+                                            width = 0.8.dp,
+                                            color = if (pref.isPinned) compAccent else KickoffEmeraldBorder
+                                        ),
                                         modifier = Modifier.fillMaxWidth()
                                     ) {
                                         Row(
                                             modifier = Modifier
                                                 .fillMaxWidth()
-                                                .padding(horizontal = 12.dp, vertical = 10.dp),
+                                                .padding(horizontal = 12.dp, vertical = 8.dp),
                                             verticalAlignment = Alignment.CenterVertically,
                                             horizontalArrangement = Arrangement.SpaceBetween
                                         ) {
-                                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                                TeamCrestImage(
-                                                    badgeUrl = fav.badgeUrl,
-                                                    teamName = fav.teamName,
-                                                    sizeDp = 26
-                                                )
-                                                Spacer(modifier = Modifier.width(10.dp))
+                                            Row(
+                                                verticalAlignment = Alignment.CenterVertically,
+                                                modifier = Modifier.weight(1f)
+                                            ) {
+                                                IconButton(
+                                                    onClick = { onToggleTournamentPinned(pref.tournamentId) },
+                                                    modifier = Modifier.size(32.dp)
+                                                ) {
+                                                    Icon(
+                                                        imageVector = Icons.Default.PushPin,
+                                                        contentDescription = "Pin ${pref.tournamentName}",
+                                                        tint = if (pref.isPinned) KickoffTrophyGold else KickoffMistSilver.copy(alpha = 0.65f),
+                                                        modifier = Modifier.size(16.dp)
+                                                    )
+                                                }
+                                                Spacer(modifier = Modifier.width(6.dp))
                                                 Column {
                                                     Text(
-                                                        text = fav.teamName,
+                                                        text = pref.tournamentName,
                                                         color = KickoffFloodlightWhite,
-                                                        fontSize = 14.sp,
+                                                        fontSize = 13.sp,
                                                         fontWeight = FontWeight.Bold
                                                     )
-                                                    if (fav.primaryLeague.isNotBlank()) {
-                                                        Text(
-                                                            text = "${fav.country} • ${fav.primaryLeague}",
-                                                            color = KickoffMistSilver,
-                                                            fontSize = 11.sp
-                                                        )
-                                                    }
+                                                    Text(
+                                                        text = pref.countryOrRegion,
+                                                        color = KickoffMistSilver,
+                                                        fontSize = 11.sp
+                                                    )
                                                 }
                                             }
-                                            IconButton(
-                                                onClick = { onRemoveFavoriteTeam(fav.teamId) },
-                                                modifier = Modifier.testTag("remove_fav_team_${fav.teamId}")
-                                            ) {
-                                                Icon(
-                                                    imageVector = Icons.Default.Close,
-                                                    contentDescription = "Remove ${fav.teamName}",
-                                                    tint = KickoffLiveCrimson
-                                                )
-                                            }
+
+                                            Switch(
+                                                checked = pref.isEnabled,
+                                                onCheckedChange = { enabled ->
+                                                    onSetTournamentEnabled(pref.tournamentId, enabled)
+                                                },
+                                                colors = SwitchDefaults.colors(
+                                                    checkedThumbColor = KickoffPitchBlack,
+                                                    checkedTrackColor = KickoffPitchEmerald,
+                                                    uncheckedThumbColor = KickoffMistSilver,
+                                                    uncheckedTrackColor = KickoffGlassWell
+                                                ),
+                                                modifier = Modifier.testTag("toggle_tournament_${pref.tournamentId}")
+                                            )
                                         }
                                     }
                                 }
@@ -2032,125 +2134,73 @@ fun CustomizeTeamsAndTournamentsSheet(
                 }
 
                 1 -> {
-                    // Tab 1: Tournaments Visibility & Pinning grouped by the 3 Competition Categories
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Text(
-                            text = "Toggle tournaments or pin them to the top",
-                            color = KickoffMistSilver,
-                            fontSize = 12.sp
+                    // Domain 1: Region & Clocks (Unified Localization Center — Zero Duplication)
+                    ActiveCountryZoneTelemetryBanner(
+                        zone = selectedCountryZone,
+                        seasonTimeMode = selectedSeasonTimeMode,
+                        onSelectSeasonTimeMode = onSelectSeasonTimeMode,
+                        onAutoDetect = onAutoDetectCountryZone,
+                        spotlightPinnedFeedback = false,
+                        onPrioritizeCountryLeague = {}
+                    )
+
+                    if (!selectedCountryZone.hasSeasonalTimeChange) {
+                        Spacer(modifier = Modifier.height(8.dp))
+                        SeasonTimeModeCompactSelectorRow(
+                            zone = selectedCountryZone,
+                            selectedMode = selectedSeasonTimeMode,
+                            onSelectMode = onSelectSeasonTimeMode
                         )
-                        TextButton(onClick = onEnableAllTournaments) {
-                            Text("Enable All", color = KickoffPitchEmerald, fontSize = 12.sp, fontWeight = FontWeight.Bold)
-                        }
                     }
 
-                    LazyColumn(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .heightIn(max = 360.dp),
-                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                    Spacer(modifier = Modifier.height(8.dp))
+
+                    // 24-Hour Broadcast Clock Preference Switch
+                    Surface(
+                        color = KickoffTurfSurface,
+                        shape = RoundedCornerShape(12.dp),
+                        border = BorderStroke(0.8.dp, KickoffEmeraldBorder),
+                        modifier = Modifier.fillMaxWidth()
                     ) {
-                        groupedTournamentsByCategory.forEach { (category, prefsForCategory) ->
-                            val categoryHeaderTitle = when (category) {
-                                CompetitionCategory.EUROPEAN -> "European Competitions"
-                                CompetitionCategory.AFRICAN_ARAB -> "African & Arab Competitions"
-                                CompetitionCategory.INTERNATIONAL -> "International Fixtures"
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 14.dp, vertical = 10.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    text = "24-Hour Broadcast Clock",
+                                    color = KickoffFloodlightWhite,
+                                    fontSize = 13.sp,
+                                    fontWeight = FontWeight.ExtraBold
+                                )
+                                Text(
+                                    text = "Display kickoff times in 24-hour stadium format (e.g. 20:00 vs 8:00 PM)",
+                                    color = KickoffMistSilver,
+                                    fontSize = 11.sp
+                                )
                             }
-                            item(key = "cat_header_${category.name}") {
-                                Surface(
-                                    color = KickoffStadiumForest,
-                                    shape = RoundedCornerShape(8.dp),
-                                    border = BorderStroke(0.8.dp, KickoffEmeraldBorder),
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .padding(top = 4.dp)
-                                        .testTag("customize_category_header_${category.name.lowercase()}")
-                                ) {
-                                    Text(
-                                        text = categoryHeaderTitle,
-                                        color = KickoffFloodlightWhite,
-                                        fontSize = 11.sp,
-                                        fontWeight = FontWeight.ExtraBold,
-                                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp)
-                                    )
-                                }
-                            }
-
-                            items(prefsForCategory, key = { it.tournamentId }) { pref ->
-                                val compAccent = resolveCompetitionAccentColor(pref.tournamentId)
-                                Surface(
-                                    color = KickoffTurfSurface,
-                                    shape = RoundedCornerShape(10.dp),
-                                    border = BorderStroke(
-                                        width = 0.8.dp,
-                                        color = if (pref.isPinned) compAccent else KickoffEmeraldBorder
-                                    ),
-                                    modifier = Modifier.fillMaxWidth()
-                                ) {
-                                    Row(
-                                        modifier = Modifier
-                                            .fillMaxWidth()
-                                            .padding(horizontal = 12.dp, vertical = 8.dp),
-                                        verticalAlignment = Alignment.CenterVertically,
-                                        horizontalArrangement = Arrangement.SpaceBetween
-                                    ) {
-                                        Row(
-                                            verticalAlignment = Alignment.CenterVertically,
-                                            modifier = Modifier.weight(1f)
-                                        ) {
-                                            IconButton(
-                                                onClick = { onToggleTournamentPinned(pref.tournamentId) },
-                                                modifier = Modifier.size(32.dp)
-                                            ) {
-                                                Icon(
-                                                    imageVector = Icons.Default.PushPin,
-                                                    contentDescription = "Pin ${pref.tournamentName}",
-                                                    tint = if (pref.isPinned) KickoffTrophyGold else KickoffMistSilver.copy(alpha = 0.65f),
-                                                    modifier = Modifier.size(16.dp)
-                                                )
-                                            }
-                                            Spacer(modifier = Modifier.width(6.dp))
-                                            Column {
-                                                Text(
-                                                    text = pref.tournamentName,
-                                                    color = KickoffFloodlightWhite,
-                                                    fontSize = 13.sp,
-                                                    fontWeight = FontWeight.Bold
-                                                )
-                                                Text(
-                                                    text = pref.countryOrRegion,
-                                                    color = KickoffMistSilver,
-                                                    fontSize = 11.sp
-                                                )
-                                            }
-                                        }
-
-                                        Switch(
-                                            checked = pref.isEnabled,
-                                            onCheckedChange = { enabled ->
-                                                onSetTournamentEnabled(pref.tournamentId, enabled)
-                                            },
-                                            colors = SwitchDefaults.colors(
-                                                checkedThumbColor = KickoffPitchBlack,
-                                                checkedTrackColor = KickoffPitchEmerald,
-                                                uncheckedThumbColor = KickoffMistSilver,
-                                                uncheckedTrackColor = KickoffGlassWell
-                                            ),
-                                            modifier = Modifier.testTag("toggle_tournament_${pref.tournamentId}")
-                                        )
-                                    }
-                                }
-                            }
+                            Spacer(modifier = Modifier.width(10.dp))
+                            Switch(
+                                checked = uiPreferences.use24HourFormat,
+                                onCheckedChange = { enabled ->
+                                    onUpdateUiPreferences { it.copy(use24HourFormat = enabled) }
+                                },
+                                colors = SwitchDefaults.colors(
+                                    checkedThumbColor = KickoffPitchBlack,
+                                    checkedTrackColor = KickoffPitchEmerald,
+                                    uncheckedThumbColor = KickoffMistSilver,
+                                    uncheckedTrackColor = KickoffGlassWell
+                                ),
+                                modifier = Modifier.testTag("pref_switch_24h_format")
+                            )
                         }
                     }
-                }
 
-                2 -> {
-                    // Tab 2: Dedicated Region & Seasonal Clock Hub
+                    Spacer(modifier = Modifier.height(8.dp))
+
                     val filteredTabZones = remember(zoneTabSearchQuery) {
                         val q = zoneTabSearchQuery.trim().lowercase()
                         if (q.isBlank()) {
@@ -2198,10 +2248,10 @@ fun CustomizeTeamsAndTournamentsSheet(
                     LazyColumn(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .heightIn(max = 320.dp),
+                            .weight(1f, fill = false),
                         verticalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
-                        items(filteredTabZones, key = { "tab2_${it.countryCode}" }) { zone ->
+                        items(filteredTabZones, key = { "tab1_${it.countryCode}" }) { zone ->
                             val isSelected = zone.countryCode.equals(selectedCountryZone.countryCode, ignoreCase = true)
                             CountryZoneOptionCard(
                                 zone = zone,
@@ -2213,8 +2263,58 @@ fun CustomizeTeamsAndTournamentsSheet(
                     }
                 }
 
+                2 -> {
+                    // Domain 2: Viewing & UX Preferences
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .verticalScroll(rememberScrollState()),
+                        verticalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                        KickoffPreferenceToggleCard(
+                            title = "Spoiler-Free Scoreboard",
+                            subtitle = "Hide live and final goal scores on match cards until you open the Match Center dossier.",
+                            checked = uiPreferences.hideLiveAndFinalScores,
+                            onCheckedChange = { enabled ->
+                                onUpdateUiPreferences { it.copy(hideLiveAndFinalScores = enabled) }
+                            },
+                            testTag = "pref_switch_spoiler_free"
+                        )
+
+                        KickoffPreferenceToggleCard(
+                            title = "Compact Match Card Density",
+                            subtitle = "Use tighter vertical spacing across match cards for high-volume weekend matchdays.",
+                            checked = uiPreferences.compactCardDensity,
+                            onCheckedChange = { enabled ->
+                                onUpdateUiPreferences { it.copy(compactCardDensity = enabled) }
+                            },
+                            testTag = "pref_switch_compact_density"
+                        )
+
+                        KickoffPreferenceToggleCard(
+                            title = "Smart Empty-League Auto-Fallback",
+                            subtitle = "Automatically reset the league filter to All Matches if the selected competition has 0 fixtures on a newly chosen day.",
+                            checked = uiPreferences.autoFallbackEmptyLeagueDay,
+                            onCheckedChange = { enabled ->
+                                onUpdateUiPreferences { it.copy(autoFallbackEmptyLeagueDay = enabled) }
+                            },
+                            testTag = "pref_switch_auto_fallback_day"
+                        )
+                    }
+                }
+
                 3 -> {
-                    // Tab 3: Data Sources & API Key Management Hub
+                    // Domain 3: Data Sources & API Key Management Hub
+                    if (!sourceAlertMessage.isNullOrBlank()) {
+                        KickoffSourceStatusAlertBanner(
+                            alertMessage = sourceAlertMessage,
+                            onManageSourcesClick = { activeTab = 3 },
+                            onDismiss = onDismissSourceAlert,
+                            modifier = Modifier.padding(horizontal = 0.dp)
+                        )
+                        Spacer(modifier = Modifier.height(8.dp))
+                    }
+
                     KickoffSourcesAndKeysTabContent(
                         sourceStates = effectiveSourceStates,
                         isCheckingSourcesHealth = isCheckingSourcesHealth,
@@ -2224,8 +2324,342 @@ fun CustomizeTeamsAndTournamentsSheet(
                     )
                 }
             }
+        }
+    }
 
-            Spacer(modifier = Modifier.height(14.dp))
+    if (activeEdition == SetPlayEdition.TV) {
+        // =========================================================================
+        // 10-FOOT ANDROID TV TWO-PANE WIDESCREEN SETTINGS DIALOG
+        // =========================================================================
+        Dialog(
+            onDismissRequest = onDismiss,
+            properties = DialogProperties(usePlatformDefaultWidth = false)
+        ) {
+            Surface(
+                color = KickoffPitchBlack,
+                modifier = Modifier
+                    .fillMaxSize()
+                    .testTag("tv_kickoff_settings_hub_dialog")
+            ) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .padding(24.dp),
+                    horizontalArrangement = Arrangement.spacedBy(20.dp)
+                ) {
+                    // Left Pane (250.dp): Vertical 4-Domain D-Pad Rail
+                    Column(
+                        modifier = Modifier
+                            .width(250.dp)
+                            .fillMaxHeight()
+                            .clip(RoundedCornerShape(16.dp))
+                            .background(KickoffTurfSurface)
+                            .border(1.dp, KickoffEmeraldBorder, RoundedCornerShape(16.dp))
+                            .padding(14.dp),
+                        verticalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                KickoffSettingsHexGearIcon(
+                                    modifier = Modifier.size(20.dp),
+                                    tint = KickoffFloodlightVolt
+                                )
+                                Column {
+                                    Text(
+                                        text = "KICKOFF CONTROL",
+                                        color = KickoffFloodlightWhite,
+                                        fontSize = 14.sp,
+                                        fontWeight = FontWeight.ExtraBold
+                                    )
+                                    Text(
+                                        text = "4-Domain Studio Hub",
+                                        color = KickoffMistSilver,
+                                        fontSize = 10.5.sp
+                                    )
+                                }
+                            }
+
+                            Spacer(modifier = Modifier.height(4.dp))
+
+                            domainDescriptors.forEachIndexed { index, (title, subtitle, hasAlert) ->
+                                val isSelected = activeTab == index
+                                val borderColor = when {
+                                    isSelected -> KickoffFloodlightVolt
+                                    hasAlert -> KickoffTrophyGold
+                                    else -> KickoffEmeraldBorder
+                                }
+                                Surface(
+                                    color = if (isSelected) KickoffPitchEmerald else KickoffCanopyElevated,
+                                    shape = RoundedCornerShape(12.dp),
+                                    border = BorderStroke(if (isSelected) 1.4.dp else 0.8.dp, borderColor),
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .clip(RoundedCornerShape(12.dp))
+                                        .tvFocusableControl(
+                                            accentColor = KickoffFloodlightVolt,
+                                            shape = RoundedCornerShape(12.dp),
+                                            onClick = { activeTab = index }
+                                        )
+                                        .testTag("customize_tab_$index")
+                                ) {
+                                    Column(
+                                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp)
+                                    ) {
+                                        Row(
+                                            modifier = Modifier.fillMaxWidth(),
+                                            horizontalArrangement = Arrangement.SpaceBetween,
+                                            verticalAlignment = Alignment.CenterVertically
+                                        ) {
+                                            Text(
+                                                text = title,
+                                                color = if (isSelected) KickoffPitchBlack else KickoffFloodlightWhite,
+                                                fontSize = 12.5.sp,
+                                                fontWeight = FontWeight.ExtraBold,
+                                                maxLines = 1
+                                            )
+                                            if (hasAlert) {
+                                                Box(
+                                                    modifier = Modifier
+                                                        .size(8.dp)
+                                                        .clip(CircleShape)
+                                                        .background(KickoffLiveCrimson)
+                                                )
+                                            }
+                                        }
+                                        Text(
+                                            text = subtitle,
+                                            color = if (isSelected) KickoffPitchBlack.copy(alpha = 0.8f) else KickoffMistSilver,
+                                            fontSize = 10.sp,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis
+                                        )
+                                    }
+                                }
+                            }
+                        }
+
+                        Surface(
+                            color = KickoffCanopyElevated,
+                            shape = RoundedCornerShape(10.dp),
+                            border = BorderStroke(0.8.dp, KickoffEmeraldBorder),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(10.dp))
+                                .tvFocusableControl(
+                                    accentColor = KickoffPitchEmerald,
+                                    shape = RoundedCornerShape(10.dp),
+                                    onClick = onDismiss
+                                )
+                        ) {
+                            Text(
+                                text = "Close Settings",
+                                color = KickoffFloodlightWhite,
+                                fontSize = 12.sp,
+                                fontWeight = FontWeight.Bold,
+                                textAlign = TextAlign.Center,
+                                modifier = Modifier.padding(vertical = 10.dp)
+                            )
+                        }
+                    }
+
+                    // Right Pane (weight 1f): Active Domain Content
+                    Surface(
+                        color = KickoffTurfSurface.copy(alpha = 0.55f),
+                        shape = RoundedCornerShape(16.dp),
+                        border = BorderStroke(1.dp, KickoffEmeraldBorder),
+                        modifier = Modifier
+                            .weight(1f)
+                            .fillMaxHeight()
+                    ) {
+                        renderActiveDomainContent(
+                            Modifier
+                                .fillMaxSize()
+                                .padding(18.dp)
+                        )
+                    }
+                }
+            }
+        }
+    } else {
+        // =========================================================================
+        // MOBILE FULL-HEIGHT SHEET WITH 2x2 DOMAIN GRID
+        // =========================================================================
+        ModalBottomSheet(
+            onDismissRequest = onDismiss,
+            containerColor = KickoffPitchBlack
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .fillMaxHeight(0.92f)
+                    .navigationBarsPadding()
+                    .padding(horizontal = 18.dp, vertical = 6.dp)
+            ) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        KickoffSettingsHexGearIcon(
+                            modifier = Modifier.size(19.dp),
+                            tint = KickoffFloodlightVolt
+                        )
+                        Column {
+                            Text(
+                                text = "KickOff Settings Center",
+                                color = KickoffFloodlightWhite,
+                                fontSize = 17.sp,
+                                fontWeight = FontWeight.ExtraBold
+                            )
+                            Text(
+                                text = "Teams & Leagues • Region & Clocks • Viewing UX • Sources",
+                                color = KickoffMistSilver,
+                                fontSize = 11.sp
+                            )
+                        }
+                    }
+                    IconButton(onClick = onDismiss) {
+                        Icon(Icons.Default.Close, contentDescription = "Close", tint = KickoffFloodlightWhite)
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(10.dp))
+
+                // 2x2 Non-Truncating Domain Grid (`customize_tab_0`..`customize_tab_3`)
+                Column(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    for (rowIdx in 0..1) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            for (colIdx in 0..1) {
+                                val domainIdx = rowIdx * 2 + colIdx
+                                val (title, subtitle, hasAlert) = domainDescriptors[domainIdx]
+                                val isSelected = activeTab == domainIdx
+                                Surface(
+                                    color = if (isSelected) KickoffPitchEmerald else KickoffTurfSurface,
+                                    shape = RoundedCornerShape(10.dp),
+                                    border = BorderStroke(
+                                        width = if (isSelected) 1.2.dp else 0.8.dp,
+                                        color = when {
+                                            isSelected -> KickoffFloodlightVolt
+                                            hasAlert -> KickoffTrophyGold
+                                            else -> KickoffEmeraldBorder
+                                        }
+                                    ),
+                                    modifier = Modifier
+                                        .weight(1f)
+                                        .clip(RoundedCornerShape(10.dp))
+                                        .clickable { activeTab = domainIdx }
+                                        .testTag("customize_tab_$domainIdx")
+                                ) {
+                                    Column(
+                                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp)
+                                    ) {
+                                        Row(
+                                            modifier = Modifier.fillMaxWidth(),
+                                            horizontalArrangement = Arrangement.SpaceBetween,
+                                            verticalAlignment = Alignment.CenterVertically
+                                        ) {
+                                            Text(
+                                                text = title,
+                                                color = if (isSelected) KickoffPitchBlack else KickoffFloodlightWhite,
+                                                fontSize = 12.sp,
+                                                fontWeight = FontWeight.ExtraBold,
+                                                maxLines = 1
+                                            )
+                                            if (hasAlert) {
+                                                Box(
+                                                    modifier = Modifier
+                                                        .size(7.dp)
+                                                        .clip(CircleShape)
+                                                        .background(KickoffLiveCrimson)
+                                                )
+                                            }
+                                        }
+                                        Text(
+                                            text = subtitle,
+                                            color = if (isSelected) KickoffPitchBlack.copy(alpha = 0.8f) else KickoffMistSilver,
+                                            fontSize = 10.sp,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(10.dp))
+
+                renderActiveDomainContent(
+                    Modifier
+                        .fillMaxWidth()
+                        .weight(1f)
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun KickoffPreferenceToggleCard(
+    title: String,
+    subtitle: String,
+    checked: Boolean,
+    onCheckedChange: (Boolean) -> Unit,
+    testTag: String
+) {
+    Surface(
+        color = KickoffTurfSurface,
+        shape = RoundedCornerShape(12.dp),
+        border = BorderStroke(0.8.dp, if (checked) KickoffPitchEmerald else KickoffEmeraldBorder),
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 14.dp, vertical = 12.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween
+        ) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = title,
+                    color = KickoffFloodlightWhite,
+                    fontSize = 13.5.sp,
+                    fontWeight = FontWeight.ExtraBold
+                )
+                Spacer(modifier = Modifier.height(2.dp))
+                Text(
+                    text = subtitle,
+                    color = KickoffMistSilver,
+                    fontSize = 11.sp
+                )
+            }
+            Spacer(modifier = Modifier.width(12.dp))
+            Switch(
+                checked = checked,
+                onCheckedChange = onCheckedChange,
+                colors = SwitchDefaults.colors(
+                    checkedThumbColor = KickoffPitchBlack,
+                    checkedTrackColor = KickoffPitchEmerald,
+                    uncheckedThumbColor = KickoffMistSilver,
+                    uncheckedTrackColor = KickoffGlassWell
+                ),
+                modifier = Modifier.testTag(testTag)
+            )
         }
     }
 }

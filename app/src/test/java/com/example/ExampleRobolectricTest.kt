@@ -5336,4 +5336,153 @@ class TvSyncDeviceSeparationComposeTest {
             com.example.ui.home.buildDistinctStageLabel("UEFA Champions League", "UEFA Champions League - Quarter-Finals")
         )
     }
+
+    @Test
+    fun testKickoffV6OnDemandSelectorsTopBarSettingsCenterAndCrestMatchCards() {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val db = Room.inMemoryDatabaseBuilder(context, StreamVaultDatabase::class.java)
+            .allowMainThreadQueries()
+            .build()
+        try {
+            val repo = com.example.data.repository.FootballRepository(
+                context = context,
+                favoriteTeamDao = db.favoriteTeamDao(),
+                tournamentPreferenceDao = db.tournamentPreferenceDao(),
+                streamDao = db.streamDao()
+            )
+
+            // 1. Persisted KickoffUiPreferences Round-Trip
+            val expectedPrefs = com.example.ui.home.KickoffUiPreferences(
+                use24HourFormat = false,
+                hideLiveAndFinalScores = true,
+                compactCardDensity = true,
+                autoFallbackEmptyLeagueDay = true
+            )
+            repo.saveKickoffUiPreferences(expectedPrefs)
+            val loadedPrefs = repo.getKickoffUiPreferences()
+            assertEquals(expectedPrefs, loadedPrefs)
+            assertFalse(loadedPrefs.use24HourFormat)
+            assertTrue(loadedPrefs.hideLiveAndFinalScores)
+            assertTrue(loadedPrefs.compactCardDensity)
+            assertTrue(loadedPrefs.autoFallbackEmptyLeagueDay)
+
+            // 2. Competition Header Region Deduplication (shouldShowTournamentRegionBadge)
+            assertFalse(
+                com.example.ui.home.shouldShowTournamentRegionBadge(
+                    "International Official Fixtures",
+                    "International"
+                )
+            )
+            assertFalse(
+                com.example.ui.home.shouldShowTournamentRegionBadge(
+                    "International Friendlies",
+                    "International"
+                )
+            )
+            assertTrue(
+                com.example.ui.home.shouldShowTournamentRegionBadge(
+                    "Premier League",
+                    "England"
+                )
+            )
+
+            // 3. Emoji-Free Match Buzz Insights
+            val sampleMatch = com.example.data.repository.FootballMatch(
+                matchId = "v6_match_1",
+                tournamentId = "premier_league",
+                tournamentName = "Premier League",
+                tournamentRegion = "England",
+                dayTab = com.example.data.repository.MatchDayTab.TODAY,
+                kickoffTimeFormatted = "20:00",
+                kickoffDateFormatted = "Today",
+                status = com.example.data.repository.MatchStatus.UPCOMING,
+                liveMinuteOrBadge = "20:00",
+                homeTeamId = "ars",
+                homeTeamName = "Arsenal",
+                homeTeamBadge = "",
+                homeScore = null,
+                awayTeamId = "liv",
+                awayTeamName = "Liverpool",
+                awayTeamBadge = "",
+                awayScore = null,
+                stadiumName = "Emirates Stadium",
+                cityName = "London",
+                beinChannel = "beIN Sports 1 English",
+                beinChannelNumberHint = "beIN EN 1"
+            )
+            val dossier = com.example.data.repository.MatchCenterEnricher(okhttp3.OkHttpClient())
+                .buildCompleteDossier(sampleMatch)
+            assertTrue(dossier.matchBuzzInsights.isNotEmpty())
+            val forbiddenEmojis = listOf("🏟", "📺", "🔥", "⚽", "🏆")
+            dossier.matchBuzzInsights.forEach { insight ->
+                forbiddenEmojis.forEach { emoji ->
+                    assertFalse(
+                        "Match buzz insight should not start with raw emoji $emoji: $insight",
+                        insight.trimStart().startsWith(emoji)
+                    )
+                }
+            }
+
+            // 4. Postponed & Cancelled Upstream Parser Mapping
+            val postponed365Json = """
+                {
+                  "games": [
+                    {
+                      "id": 99001,
+                      "competitionId": 7,
+                      "competitionDisplayName": "Premier League",
+                      "countryName": "England",
+                      "startTime": "2025-05-10T19:00:00+00:00",
+                      "statusGroup": 2,
+                      "statusText": "Postponed",
+                      "homeCompetitor": {"id": 505, "name": "Arsenal", "score": 0},
+                      "awayCompetitor": {"id": 506, "name": "Liverpool", "score": 0}
+                    }
+                  ]
+                }
+            """.trimIndent()
+            val parsed365 = repo.parse365ScoresAllScoresJson(
+                rawJson = postponed365Json,
+                dayTab = com.example.data.repository.MatchDayTab.TODAY,
+                expectedIsoDate = "2025-05-10"
+            )
+            assertEquals(1, parsed365.size)
+            assertEquals(com.example.data.repository.MatchStatus.POSTPONED, parsed365[0].status)
+            assertNull(parsed365[0].homeScore)
+            assertNull(parsed365[0].awayScore)
+
+            val postponedFdoJson = """
+                {
+                  "matches": [
+                    {
+                      "id": 99002,
+                      "utcDate": "2025-05-10T19:00:00Z",
+                      "status": "POSTPONED",
+                      "matchday": 36,
+                      "stage": "REGULAR_SEASON",
+                      "area": {"name": "England"},
+                      "competition": {"code": "PL", "name": "Premier League"},
+                      "homeTeam": {"id": 57, "name": "Arsenal FC", "shortName": "Arsenal"},
+                      "awayTeam": {"id": 64, "name": "Liverpool FC", "shortName": "Liverpool"},
+                      "score": {
+                        "fullTime": {"home": 0, "away": 0},
+                        "halfTime": {"home": 0, "away": 0}
+                      }
+                    }
+                  ]
+                }
+            """.trimIndent()
+            val parsedFdo = repo.parseFootballDataOrgMatchesJson(
+                rawJson = postponedFdoJson,
+                dayTab = com.example.data.repository.MatchDayTab.TODAY,
+                expectedIsoDate = "2025-05-10"
+            )
+            assertEquals(1, parsedFdo.size)
+            assertEquals(com.example.data.repository.MatchStatus.POSTPONED, parsedFdo[0].status)
+            assertNull(parsedFdo[0].homeScore)
+            assertNull(parsedFdo[0].awayScore)
+        } finally {
+            db.close()
+        }
+    }
 }

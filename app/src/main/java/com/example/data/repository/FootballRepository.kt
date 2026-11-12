@@ -8,6 +8,7 @@ import com.example.data.local.TournamentPreferenceDao
 import com.example.data.model.FavoriteTeamEntity
 import com.example.data.model.StreamEntity
 import com.example.data.model.TournamentPreferenceEntity
+import com.example.ui.home.KickoffUiPreferences
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
@@ -380,6 +381,25 @@ class FootballRepository(
             .putString(KEY_SELECTED_SEASON_TIME_MODE, mode.code)
             .apply()
         return mode
+    }
+
+    fun getKickoffUiPreferences(): KickoffUiPreferences {
+        return KickoffUiPreferences(
+            use24HourFormat = prefs.getBoolean("kickoff_pref_24h", true),
+            hideLiveAndFinalScores = prefs.getBoolean("kickoff_pref_hide_scores", false),
+            compactCardDensity = prefs.getBoolean("kickoff_pref_compact_cards", false),
+            autoFallbackEmptyLeagueDay = prefs.getBoolean("kickoff_pref_auto_fallback_day", true)
+        )
+    }
+
+    fun saveKickoffUiPreferences(prefsModel: KickoffUiPreferences): KickoffUiPreferences {
+        prefs.edit()
+            .putBoolean("kickoff_pref_24h", prefsModel.use24HourFormat)
+            .putBoolean("kickoff_pref_hide_scores", prefsModel.hideLiveAndFinalScores)
+            .putBoolean("kickoff_pref_compact_cards", prefsModel.compactCardDensity)
+            .putBoolean("kickoff_pref_auto_fallback_day", prefsModel.autoFallbackEmptyLeagueDay)
+            .apply()
+        return prefsModel
     }
 
     suspend fun prioritizeCountrySpotlightTournament(zone: UserCountryZone = getSelectedCountryZone()) {
@@ -2732,7 +2752,7 @@ class FootballRepository(
             upper == "FT" || upper == "AET" || upper == "AP" || upper.contains("FINISH") || upper.contains("ENDED") ->
                 MatchStatus.FINISHED to "FT"
 
-            upper == "PST" || upper.contains("POSTPON") ->
+            upper == "PST" || upper == "SUSP" || upper.contains("POSTPON") || upper.contains("SUSPEND") ->
                 MatchStatus.POSTPONED to "PST"
 
             upper == "CANC" || upper == "ABD" || upper.contains("CANCEL") || upper.contains("ABANDON") ->
@@ -2906,12 +2926,14 @@ class FootballRepository(
             val isNotStarted = statusRaw.equals("NS", ignoreCase = true) ||
                 statusRaw.contains("Not Started", ignoreCase = true) ||
                 statusRaw.contains("Postponed", ignoreCase = true) ||
-                statusRaw.contains("Cancelled", ignoreCase = true)
+                statusRaw.contains("Suspended", ignoreCase = true) ||
+                statusRaw.contains("Cancelled", ignoreCase = true) ||
+                statusRaw.contains("Abandoned", ignoreCase = true)
 
             val (status, badgeText) = when {
-                statusRaw.contains("Postpon", true) || statusRaw.equals("PST", true) ->
+                statusRaw.contains("Postpon", true) || statusRaw.contains("Suspend", true) || statusRaw.equals("PST", true) || statusRaw.equals("SUSP", true) ->
                     MatchStatus.POSTPONED to "PST"
-                statusRaw.contains("Cancel", true) || statusRaw.contains("Abandon", true) || statusRaw.equals("CANC", true) ->
+                statusRaw.contains("Cancel", true) || statusRaw.contains("Abandon", true) || statusRaw.equals("CANC", true) || statusRaw.equals("ABD", true) ->
                     MatchStatus.CANCELLED to "CANC"
                 statusRaw.contains("FT", true) || statusRaw.contains("Finished", true) || statusRaw.contains("AET", true) || statusRaw.contains("Pen", true) ->
                     MatchStatus.FINISHED to "FT"
@@ -2929,8 +2951,8 @@ class FootballRepository(
                     MatchStatus.UPCOMING to timeRaw
             }
 
-            val homeScore = if (status == MatchStatus.UPCOMING || status == MatchStatus.POSTPONED || status == MatchStatus.CANCELLED) null else rawHomeScore
-            val awayScore = if (status == MatchStatus.UPCOMING || status == MatchStatus.POSTPONED || status == MatchStatus.CANCELLED) null else rawAwayScore
+            val homeScore = if (status in setOf(MatchStatus.UPCOMING, MatchStatus.POSTPONED, MatchStatus.CANCELLED)) null else rawHomeScore
+            val awayScore = if (status in setOf(MatchStatus.UPCOMING, MatchStatus.POSTPONED, MatchStatus.CANCELLED)) null else rawAwayScore
 
             val isMarquee = isMarqueeMenaMatch(homeName, awayName)
             val smartFallbacks = getSmartMenaFallbackChannels(
@@ -3263,8 +3285,22 @@ class FootballRepository(
                     val kickoffTime = formatIsoToMoroccoTime(dateIso)
                     val kickoffEpochMs = parseIsoToEpochMs(dateIso, dayTab, kickoffTime)
 
-                    val (matchStatus, badgeText) = when (stateStr.lowercase(Locale.ROOT)) {
-                        "in" -> {
+                    val statusName = statusType?.optString("name", "") ?: ""
+                    val statusDesc = statusType?.optString("description", "") ?: ""
+                    val combinedEspnStatus = "$shortDetail $statusName $statusDesc"
+
+                    val (matchStatus, badgeText) = when {
+                        combinedEspnStatus.contains("Postponed", ignoreCase = true) ||
+                            combinedEspnStatus.contains("Suspended", ignoreCase = true) ||
+                            shortDetail.equals("PST", ignoreCase = true) ->
+                            MatchStatus.POSTPONED to "PST"
+                        combinedEspnStatus.contains("Canceled", ignoreCase = true) ||
+                            combinedEspnStatus.contains("Cancelled", ignoreCase = true) ||
+                            combinedEspnStatus.contains("Abandoned", ignoreCase = true) ||
+                            shortDetail.equals("CANC", ignoreCase = true) ||
+                            shortDetail.equals("ABD", ignoreCase = true) ->
+                            MatchStatus.CANCELLED to "CANC"
+                        stateStr.equals("in", ignoreCase = true) -> {
                             when {
                                 shortDetail.contains("HT", ignoreCase = true) || shortDetail.contains("Half", ignoreCase = true) ->
                                     MatchStatus.HALFTIME to "HT"
@@ -3275,12 +3311,12 @@ class FootballRepository(
                                 else -> MatchStatus.LIVE to (displayClock.ifBlank { "LIVE" })
                             }
                         }
-                        "post" -> MatchStatus.FINISHED to "FT"
+                        stateStr.equals("post", ignoreCase = true) -> MatchStatus.FINISHED to "FT"
                         else -> MatchStatus.UPCOMING to kickoffTime
                     }
 
-                    val homeScore = if (matchStatus == MatchStatus.UPCOMING) null else homeComp?.optString("score")?.toIntOrNull()
-                    val awayScore = if (matchStatus == MatchStatus.UPCOMING) null else awayComp?.optString("score")?.toIntOrNull()
+                    val homeScore = if (matchStatus in setOf(MatchStatus.UPCOMING, MatchStatus.POSTPONED, MatchStatus.CANCELLED)) null else homeComp?.optString("score")?.toIntOrNull()
+                    val awayScore = if (matchStatus in setOf(MatchStatus.UPCOMING, MatchStatus.POSTPONED, MatchStatus.CANCELLED)) null else awayComp?.optString("score")?.toIntOrNull()
 
                     // Parse real 1st-half linescore when match has reached/passed Half-Time
                     val isHalftimeOrLater = matchStatus == MatchStatus.HALFTIME ||
@@ -3569,6 +3605,14 @@ class FootballRepository(
                 ?: 0
 
             val (matchStatus, liveBadge) = when {
+                statusText.equals("PST", ignoreCase = true) ||
+                    statusText.contains("Postponed", ignoreCase = true) ||
+                    statusText.contains("Suspended", ignoreCase = true) -> MatchStatus.POSTPONED to "PST"
+                statusText.equals("CANC", ignoreCase = true) ||
+                    statusText.equals("ABD", ignoreCase = true) ||
+                    statusText.contains("Cancelled", ignoreCase = true) ||
+                    statusText.contains("Canceled", ignoreCase = true) ||
+                    statusText.contains("Abandoned", ignoreCase = true) -> MatchStatus.CANCELLED to "CANC"
                 statusText.contains("Final", ignoreCase = true) ||
                     statusText.contains("Ended", ignoreCase = true) ||
                     statusText.equals("FT", ignoreCase = true) ||
@@ -3599,12 +3643,12 @@ class FootballRepository(
                 else -> MatchStatus.UPCOMING to kickoffTime
             }
 
-            val homeScore = if (matchStatus == MatchStatus.UPCOMING) {
+            val homeScore = if (matchStatus in setOf(MatchStatus.UPCOMING, MatchStatus.POSTPONED, MatchStatus.CANCELLED)) {
                 null
             } else {
                 homeComp.optDouble("score", -1.0).toInt().takeIf { it >= 0 }
             }
-            val awayScore = if (matchStatus == MatchStatus.UPCOMING) {
+            val awayScore = if (matchStatus in setOf(MatchStatus.UPCOMING, MatchStatus.POSTPONED, MatchStatus.CANCELLED)) {
                 null
             } else {
                 awayComp.optDouble("score", -1.0).toInt().takeIf { it >= 0 }
@@ -3862,8 +3906,8 @@ class FootballRepository(
                     val primaryChannel = smartFallbacks.firstOrNull()
                         ?: matchedTournament.defaultBeinPool[list.size % matchedTournament.defaultBeinPool.size]
 
-                    val homeGoalsVal = if (status == MatchStatus.UPCOMING) null else goalsObj?.optInt("home")
-                    val awayGoalsVal = if (status == MatchStatus.UPCOMING) null else goalsObj?.optInt("away")
+                    val homeGoalsVal = if (status in setOf(MatchStatus.UPCOMING, MatchStatus.POSTPONED, MatchStatus.CANCELLED)) null else goalsObj?.optInt("home")
+                    val awayGoalsVal = if (status in setOf(MatchStatus.UPCOMING, MatchStatus.POSTPONED, MatchStatus.CANCELLED)) null else goalsObj?.optInt("away")
 
                     list.add(
                         FootballMatch(
@@ -4014,8 +4058,8 @@ class FootballRepository(
                 "IN_PLAY" -> if (minuteVal > 45) "2H" else "1H"
                 "PAUSED" -> "HT"
                 "FINISHED", "AWARDED" -> "FT"
-                "POSTPONED" -> "PST"
-                "CANCELLED", "SUSPENDED" -> "CANC"
+                "POSTPONED", "SUSPENDED", "PST" -> "PST"
+                "CANCELLED", "CANCELED", "ABANDONED", "CANC", "ABD" -> "CANC"
                 else -> "NS"
             }
             val (status, badge) = parseLiveStatusAndMinuteBadge(mappedShortStatus, minuteVal, kickoffTime, injuryTimeVal)
@@ -4024,12 +4068,12 @@ class FootballRepository(
             val fullTimeObj = scoreObj?.optJSONObject("fullTime")
             val halfTimeObj = scoreObj?.optJSONObject("halfTime")
 
-            val hGoals = if (status == MatchStatus.UPCOMING) null else fullTimeObj?.optInt("home", -1)?.takeIf { it >= 0 }
-            val aGoals = if (status == MatchStatus.UPCOMING) null else fullTimeObj?.optInt("away", -1)?.takeIf { it >= 0 }
+            val hGoals = if (status in setOf(MatchStatus.UPCOMING, MatchStatus.POSTPONED, MatchStatus.CANCELLED)) null else fullTimeObj?.optInt("home", -1)?.takeIf { it >= 0 }
+            val aGoals = if (status in setOf(MatchStatus.UPCOMING, MatchStatus.POSTPONED, MatchStatus.CANCELLED)) null else fullTimeObj?.optInt("away", -1)?.takeIf { it >= 0 }
 
             val htH = halfTimeObj?.optInt("home", -1)?.takeIf { it >= 0 }
             val htA = halfTimeObj?.optInt("away", -1)?.takeIf { it >= 0 }
-            val htStr = if (htH != null && htA != null && status != MatchStatus.UPCOMING) "$htH - $htA" else null
+            val htStr = if (htH != null && htA != null && status !in setOf(MatchStatus.UPCOMING, MatchStatus.POSTPONED, MatchStatus.CANCELLED)) "$htH - $htA" else null
 
             val matchdayInt = item.optInt("matchday", 0)
             val roundLabel = when {

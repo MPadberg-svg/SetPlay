@@ -68,8 +68,10 @@ import kotlin.math.sin
  * User display preferences for the Kickoff Match Center feed.
  */
 data class KickoffUiPreferences(
+    val use24HourFormat: Boolean = true,
     val hideLiveAndFinalScores: Boolean = false,
-    val compactCardDensity: Boolean = false
+    val compactCardDensity: Boolean = false,
+    val autoFallbackEmptyLeagueDay: Boolean = true
 )
 
 /**
@@ -783,3 +785,165 @@ fun KickoffBroadcastWaveIcon(
     )
 }
 
+/**
+ * Custom vector icon for the Matchday Calendar / 7-Day Timeline Selector.
+ * Renders a rounded calendar frame, top binding rings, header divider, and a 2x3 day dot matrix.
+ */
+@Composable
+fun KickoffCalendarSelectorIcon(
+    modifier: Modifier = Modifier.size(16.dp),
+    tint: Color = KickoffPitchEmerald
+) {
+    Canvas(modifier = modifier) {
+        val w = size.width
+        val h = size.height
+        val strokeW = (size.minDimension * 0.10f).coerceAtLeast(1.3f)
+
+        // Calendar outer frame
+        drawRoundRect(
+            color = tint,
+            topLeft = Offset(w * 0.12f, h * 0.20f),
+            size = Size(w * 0.76f, h * 0.68f),
+            cornerRadius = CornerRadius(w * 0.14f, h * 0.14f),
+            style = Stroke(width = strokeW)
+        )
+
+        // Top binding rings
+        drawLine(
+            color = tint,
+            start = Offset(w * 0.32f, h * 0.10f),
+            end = Offset(w * 0.32f, h * 0.28f),
+            strokeWidth = strokeW,
+            cap = StrokeCap.Round
+        )
+        drawLine(
+            color = tint,
+            start = Offset(w * 0.68f, h * 0.10f),
+            end = Offset(w * 0.68f, h * 0.28f),
+            strokeWidth = strokeW,
+            cap = StrokeCap.Round
+        )
+
+        // Header divider line
+        drawLine(
+            color = tint,
+            start = Offset(w * 0.14f, h * 0.42f),
+            end = Offset(w * 0.86f, h * 0.42f),
+            strokeWidth = strokeW * 0.85f
+        )
+
+        // 2x3 day grid dots
+        val dotRadius = (size.minDimension * 0.055f).coerceAtLeast(1.0f)
+        val cols = listOf(0.32f, 0.50f, 0.68f)
+        val rows = listOf(0.56f, 0.72f)
+        for (ry in rows) {
+            for (cx in cols) {
+                drawCircle(
+                    color = tint,
+                    radius = dotRadius,
+                    center = Offset(w * cx, h * ry)
+                )
+            }
+        }
+    }
+}
+
+/**
+ * Custom vector icon for the League / Competition Shield Selector.
+ * Renders a tournament crest shield outline with an inner chevron/star emblem.
+ */
+@Composable
+fun KickoffLeagueShieldSelectorIcon(
+    modifier: Modifier = Modifier.size(16.dp),
+    tint: Color = KickoffPitchEmerald
+) {
+    Canvas(modifier = modifier) {
+        val w = size.width
+        val h = size.height
+        val strokeW = (size.minDimension * 0.10f).coerceAtLeast(1.3f)
+
+        val shieldPath = Path().apply {
+            moveTo(w * 0.50f, h * 0.10f)
+            lineTo(w * 0.86f, h * 0.22f)
+            lineTo(w * 0.82f, h * 0.56f)
+            quadraticTo(w * 0.78f, h * 0.78f, w * 0.50f, h * 0.90f)
+            quadraticTo(w * 0.22f, h * 0.78f, w * 0.18f, h * 0.56f)
+            lineTo(w * 0.14f, h * 0.22f)
+            close()
+        }
+        drawPath(
+            path = shieldPath,
+            color = tint,
+            style = Stroke(width = strokeW, join = StrokeJoin.Round)
+        )
+
+        // Inner tactical chevron + star core
+        val innerChevron = Path().apply {
+            moveTo(w * 0.34f, h * 0.46f)
+            lineTo(w * 0.50f, h * 0.62f)
+            lineTo(w * 0.66f, h * 0.46f)
+        }
+        drawPath(
+            path = innerChevron,
+            color = tint,
+            style = Stroke(width = strokeW * 0.9f, cap = StrokeCap.Round, join = StrokeJoin.Round)
+        )
+        drawCircle(
+            color = tint,
+            radius = (size.minDimension * 0.065f).coerceAtLeast(1.1f),
+            center = Offset(w * 0.50f, h * 0.33f)
+        )
+    }
+}
+
+/**
+ * Custom vector icon for the Unified Kickoff Settings & Control Center button.
+ * Renders a 6-point hexagonal tactical gear with radial teeth and a central bearing ring.
+ */
+@Composable
+fun KickoffSettingsHexGearIcon(
+    modifier: Modifier = Modifier.size(18.dp),
+    tint: Color = KickoffPitchEmerald
+) {
+    Canvas(modifier = modifier) {
+        val cx = size.width / 2f
+        val cy = size.height / 2f
+        val rOuter = (size.minDimension / 2f) * 0.84f
+        val rHex = (size.minDimension / 2f) * 0.64f
+        val strokeW = (size.minDimension * 0.10f).coerceAtLeast(1.3f)
+
+        val hexPath = Path()
+        for (i in 0 until 6) {
+            val angleRad = Math.toRadians((i * 60.0) - 30.0)
+            val vx = cx + (rHex * cos(angleRad)).toFloat()
+            val vy = cy + (rHex * sin(angleRad)).toFloat()
+            if (i == 0) hexPath.moveTo(vx, vy) else hexPath.lineTo(vx, vy)
+
+            val toothStartX = cx + (rHex * 0.95f * cos(angleRad)).toFloat()
+            val toothStartY = cy + (rHex * 0.95f * sin(angleRad)).toFloat()
+            val toothEndX = cx + (rOuter * cos(angleRad)).toFloat()
+            val toothEndY = cy + (rOuter * sin(angleRad)).toFloat()
+            drawLine(
+                color = tint,
+                start = Offset(toothStartX, toothStartY),
+                end = Offset(toothEndX, toothEndY),
+                strokeWidth = strokeW * 1.15f,
+                cap = StrokeCap.Round
+            )
+        }
+        hexPath.close()
+
+        drawPath(
+            path = hexPath,
+            color = tint,
+            style = Stroke(width = strokeW, join = StrokeJoin.Round)
+        )
+
+        drawCircle(
+            color = tint,
+            radius = rHex * 0.42f,
+            center = Offset(cx, cy),
+            style = Stroke(width = strokeW * 0.9f)
+        )
+    }
+}

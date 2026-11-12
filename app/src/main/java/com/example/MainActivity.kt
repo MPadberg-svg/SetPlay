@@ -79,6 +79,7 @@ import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Security
 import androidx.compose.material.icons.filled.SportsSoccer
 import androidx.compose.material.icons.filled.Star
+import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material.icons.filled.Tv
 import androidx.compose.material.icons.filled.VideoLibrary
 import androidx.compose.material.icons.outlined.LiveTv
@@ -147,6 +148,7 @@ import com.example.data.model.PlaylistEntity
 import com.example.data.model.StreamEntity
 import com.example.ui.favorites.FavoritesScreen
 import com.example.ui.home.HomeScreen
+import com.example.ui.home.KickoffSettingsHexGearIcon
 import com.example.ui.livetv.LiveTvScreen
 import com.example.ui.livetv.LiveTvViewModel
 import com.example.ui.parental.ParentalControlsScreen
@@ -297,6 +299,15 @@ fun MainAppContent(
     val liveCategories by liveTvViewModel.categories.collectAsStateWithLifecycle()
     val movieCategories by vodViewModel.movieCategories.collectAsStateWithLifecycle()
     val seriesCategories by vodViewModel.seriesCategories.collectAsStateWithLifecycle()
+    val kickoffSourceHealth by mainViewModel.kickoffSourceHealth.collectAsStateWithLifecycle()
+    val kickoffSourceAlert by mainViewModel.kickoffSourceAlert.collectAsStateWithLifecycle()
+    val hasKickoffSourceIssue = remember(kickoffSourceAlert, kickoffSourceHealth) {
+        kickoffSourceAlert != null || kickoffSourceHealth.any {
+            it.status == com.example.data.repository.SourceHealthStatus.KEY_INVALID_OR_EXPIRED ||
+                it.status == com.example.data.repository.SourceHealthStatus.QUOTA_WARNING ||
+                it.status == com.example.data.repository.SourceHealthStatus.UNREACHABLE
+        }
+    }
 
     val liveMatchesCount = remember(todayMatches) {
         todayMatches.count { it.status == MatchStatus.LIVE || it.status == MatchStatus.HALFTIME }
@@ -846,6 +857,10 @@ fun MainAppContent(
                         mainViewModel.startTvHostMode()
                         openTvSyncSheetOnHostTab = true
                         showTvSyncSheet = true
+                    },
+                    hasKickoffSourceIssue = hasKickoffSourceIssue,
+                    onOpenKickoffSettings = {
+                        mainViewModel.openKickoffSettingsCenter(if (hasKickoffSourceIssue) 3 else 0)
                     }
                 )
 
@@ -871,6 +886,7 @@ fun MainAppContent(
                         liveMatchesCount = liveMatchesCount,
                         halftimeRemainingSeconds = playerUiState.halftimeTimerRemainingSeconds,
                         isTvSyncActive = tvSyncState.isSyncActive,
+                        hasKickoffSourceIssue = hasKickoffSourceIssue,
                         onReturnToHalftimeMatch = {
                             playerViewModel.returnToHalftimeChannel()
                             isFullScreenPlayer = true
@@ -881,7 +897,10 @@ fun MainAppContent(
                             showTvSyncSheet = true
                         },
                         onCastOrAccountsClick = { mainViewModel.setScreen(AppScreen.PLAYLISTS) },
-                        onSearchClick = { mainViewModel.setScreen(AppScreen.GLOBAL_SEARCH) }
+                        onSearchClick = { mainViewModel.setScreen(AppScreen.GLOBAL_SEARCH) },
+                        onKickoffSettingsClick = {
+                            mainViewModel.openKickoffSettingsCenter(if (hasKickoffSourceIssue) 3 else 0)
+                        }
                     )
                 },
                 bottomBar = {
@@ -1447,11 +1466,13 @@ fun TopStreamingBar(
     liveMatchesCount: Int = 0,
     halftimeRemainingSeconds: Int? = null,
     isTvSyncActive: Boolean = false,
+    hasKickoffSourceIssue: Boolean = false,
     onReturnToHalftimeMatch: () -> Unit = {},
     onDrawerMenuClick: () -> Unit,
     onTvSyncClick: () -> Unit = {},
     onCastOrAccountsClick: () -> Unit,
-    onSearchClick: () -> Unit
+    onSearchClick: () -> Unit,
+    onKickoffSettingsClick: () -> Unit = onSearchClick
 ) {
     val (targetSurface, targetPrimary, sectionBadgeTitle) = when (currentScreen) {
         AppScreen.HOME -> Triple(KickoffPitchBlack, KickoffPitchEmerald, "KICKOFF ARENA")
@@ -1643,14 +1664,55 @@ fun TopStreamingBar(
 
             Spacer(modifier = Modifier.width(6.dp))
 
-            GhostTopBarIconButton(
-                icon = Icons.Default.Search,
-                contentDescription = "Search",
-                iconTint = Color.White.copy(alpha = 0.88f),
-                accentColor = sectionPrimaryAccent,
-                onClick = onSearchClick,
-                testTag = "top_search_btn"
-            )
+            if (currentScreen == AppScreen.HOME) {
+                val settingsIconTint = if (hasKickoffSourceIssue) KickoffTrophyGold else KickoffFloodlightVolt
+                val settingsDotColor = if (hasKickoffSourceIssue) KickoffLiveCrimson else KickoffPitchEmerald
+                Box(
+                    contentAlignment = Alignment.Center,
+                    modifier = Modifier
+                        .size(38.dp)
+                        .clip(CircleShape)
+                        .background(Color.White.copy(alpha = 0.06f))
+                        .border(
+                            width = 0.8.dp,
+                            brush = Brush.verticalGradient(
+                                listOf(
+                                    Color.White.copy(alpha = 0.18f),
+                                    KickoffPitchEmerald.copy(alpha = 0.30f)
+                                )
+                            ),
+                            shape = CircleShape
+                        )
+                        .tvFocusableControl(
+                            accentColor = KickoffPitchEmerald,
+                            shape = CircleShape,
+                            onClick = onKickoffSettingsClick
+                        )
+                        .padding(7.dp)
+                        .testTag("top_search_btn")
+                ) {
+                    KickoffSettingsHexGearIcon(
+                        modifier = Modifier.size(19.dp),
+                        tint = settingsIconTint
+                    )
+                    Box(
+                        modifier = Modifier
+                            .align(Alignment.TopEnd)
+                            .size(6.5.dp)
+                            .clip(CircleShape)
+                            .background(settingsDotColor)
+                    )
+                }
+            } else {
+                GhostTopBarIconButton(
+                    icon = Icons.Default.Search,
+                    contentDescription = "Search",
+                    iconTint = Color.White.copy(alpha = 0.88f),
+                    accentColor = sectionPrimaryAccent,
+                    onClick = onSearchClick,
+                    testTag = "top_search_btn"
+                )
+            }
         }
     }
 }
@@ -2691,9 +2753,11 @@ fun TvLeftNavigationRail(
     tvSyncState: com.example.data.sync.TvSyncSessionState,
     onScreenSelected: (AppScreen) -> Unit,
     onOpenTvSyncQr: () -> Unit,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    hasKickoffSourceIssue: Boolean = false,
+    onOpenKickoffSettings: () -> Unit = {}
 ) {
-    val entries = remember(liveMatchesCount, favoritesCount) {
+    val entries = remember(currentScreen, liveMatchesCount, favoritesCount, hasKickoffSourceIssue) {
         listOf(
             TvRailNavEntry(
                 label = "⚽ KickOff Arena",
@@ -2732,13 +2796,24 @@ fun TvLeftNavigationRail(
                 badgeText = if (favoritesCount > 0) favoritesCount.toString() else null,
                 accentColor = FavoritesSagePrimary
             ),
-            TvRailNavEntry(
-                label = "🔍 Global Search",
-                icon = Icons.Default.Search,
-                testTag = "top_search_btn",
-                targetScreen = AppScreen.GLOBAL_SEARCH,
-                accentColor = AmberGold
-            ),
+            if (currentScreen == AppScreen.HOME) {
+                TvRailNavEntry(
+                    label = "⚙️ KickOff Settings",
+                    icon = Icons.Default.Tune,
+                    testTag = "top_search_btn",
+                    badgeText = if (hasKickoffSourceIssue) "ALERT" else null,
+                    accentColor = if (hasKickoffSourceIssue) KickoffTrophyGold else KickoffPitchEmerald,
+                    customAction = onOpenKickoffSettings
+                )
+            } else {
+                TvRailNavEntry(
+                    label = "🔍 Global Search",
+                    icon = Icons.Default.Search,
+                    testTag = "top_search_btn",
+                    targetScreen = AppScreen.GLOBAL_SEARCH,
+                    accentColor = AmberGold
+                )
+            },
             TvRailNavEntry(
                 label = "📲 Phone Sync QR",
                 icon = Icons.Default.Tv,

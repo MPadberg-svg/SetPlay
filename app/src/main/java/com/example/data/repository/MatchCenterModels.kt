@@ -3123,35 +3123,35 @@ class MatchCenterEnricher(
             val unbeatenCount = homeFormLast5.count { it == "W" || it == "D" }
             val winCount = homeFormLast5.count { it == "W" }
             if (winCount >= 3) {
-                insights.add("🔥 Form Streak: ${match.homeTeamName} won $winCount of their last ${homeFormLast5.size} matches")
+                insights.add("Form Streak: ${match.homeTeamName} won $winCount of their last ${homeFormLast5.size} matches")
             } else if (unbeatenCount >= 3) {
-                insights.add("🔥 Form Streak: ${match.homeTeamName} unbeaten in $unbeatenCount of last ${homeFormLast5.size} matches")
+                insights.add("Form Streak: ${match.homeTeamName} unbeaten in $unbeatenCount of last ${homeFormLast5.size} matches")
             }
         }
         if (awayFormLast5.isNotEmpty() && insights.isEmpty()) {
             val unbeatenCount = awayFormLast5.count { it == "W" || it == "D" }
             if (unbeatenCount >= 3) {
-                insights.add("🔥 Form Streak: ${match.awayTeamName} unbeaten in $unbeatenCount of last ${awayFormLast5.size} matches")
+                insights.add("Form Streak: ${match.awayTeamName} unbeaten in $unbeatenCount of last ${awayFormLast5.size} matches")
             }
         }
 
         if (h2hMeetings.isNotEmpty()) {
             val totalGoals = h2hMeetings.sumOf { it.homeScore + it.awayScore }
             val avgGoals = String.format(Locale.US, "%.1f", totalGoals.toDouble() / h2hMeetings.size.toDouble())
-            insights.add("⚽ H2H Goal Avg: $avgGoals goals per match across last ${h2hMeetings.size} meetings")
+            insights.add("H2H Goal Avg: $avgGoals goals per match across last ${h2hMeetings.size} meetings")
         }
 
         if (standingsTable.isNotEmpty()) {
             val homeRow = standingsTable.find { it.isHomeTeam || FootballRepository.areSameClubNames(it.teamName, match.homeTeamName) }
             val awayRow = standingsTable.find { it.isAwayTeam || FootballRepository.areSameClubNames(it.teamName, match.awayTeamName) }
             if (homeRow != null && awayRow != null) {
-                insights.add("🏆 Standings Clash: #${homeRow.rank} ${match.homeTeamName} (${homeRow.points} pts) vs #${awayRow.rank} ${match.awayTeamName} (${awayRow.points} pts)")
+                insights.add("Standings Clash: #${homeRow.rank} ${match.homeTeamName} (${homeRow.points} pts) vs #${awayRow.rank} ${match.awayTeamName} (${awayRow.points} pts)")
             }
         }
 
         if (insights.isEmpty()) {
-            insights.add("🏟️ Featured Clash: ${match.homeTeamName} vs ${match.awayTeamName} in ${match.tournamentName}")
-            insights.add("📺 Official Broadcast: Live coverage on ${match.beinChannel} (${match.menaProviderName})")
+            insights.add("Featured Clash: ${match.homeTeamName} vs ${match.awayTeamName} in ${match.tournamentName}")
+            insights.add("Official Broadcast: Live coverage on ${match.beinChannel} (${match.menaProviderName})")
         }
 
         return insights.take(3)

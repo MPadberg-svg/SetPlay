@@ -31,6 +31,7 @@ import com.example.data.sync.SyncRole
 import com.example.data.sync.TvSyncManager
 import com.example.data.sync.TvSyncSessionState
 import com.example.data.sync.VaultSyncPayload
+import com.example.ui.home.KickoffUiPreferences
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.Job
@@ -217,6 +218,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     private val _showCustomizeTeamsModal = MutableStateFlow(false)
     val showCustomizeTeamsModal: StateFlow<Boolean> = _showCustomizeTeamsModal.asStateFlow()
+
+    private val _kickoffUiPreferences = MutableStateFlow(footballRepository.getKickoffUiPreferences())
+    val kickoffUiPreferences: StateFlow<KickoffUiPreferences> = _kickoffUiPreferences.asStateFlow()
+
+    private val _kickoffSettingsInitialDomain = MutableStateFlow(0)
+    val kickoffSettingsInitialDomain: StateFlow<Int> = _kickoffSettingsInitialDomain.asStateFlow()
 
     private val _selectedMatchDay = MutableStateFlow(MatchDayTab.TODAY)
     val selectedMatchDay: StateFlow<MatchDayTab> = _selectedMatchDay.asStateFlow()
@@ -604,7 +611,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             _isLoadingMatches.value = true
             try {
                 val updatedMap = coroutineScope {
-                    MatchDayTab.entries.map { tab ->
+                    MatchDayTab.forwardTimelineTabs.map { tab ->
                         async {
                             tab to footballRepository.fetchMatchesForDay(
                                 dayTab = tab,
@@ -758,6 +765,15 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun selectMatchDay(dayTab: MatchDayTab) {
         _selectedMatchDay.value = dayTab
+        if (_kickoffUiPreferences.value.autoFallbackEmptyLeagueDay) {
+            val dayList = _matchesByDay.value[dayTab].orEmpty()
+            if (dayList.isNotEmpty() &&
+                _selectedTournamentFilter.value !in setOf("ALL", "LIVE", "MY_TEAMS") &&
+                dayList.none { it.tournamentId == _selectedTournamentFilter.value }
+            ) {
+                _selectedTournamentFilter.value = "ALL"
+            }
+        }
         if (tvSyncState.value.role == SyncRole.PHONE_CONTROLLER && tvSyncState.value.isSyncActive) {
             tvSyncManager.sendNavMirror(
                 RemoteNavMirrorCommand(
@@ -772,6 +788,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 val current = _matchesByDay.value.toMutableMap()
                 current[dayTab] = fetched
                 _matchesByDay.value = current
+                if (_kickoffUiPreferences.value.autoFallbackEmptyLeagueDay &&
+                    _selectedMatchDay.value == dayTab &&
+                    fetched.isNotEmpty() &&
+                    _selectedTournamentFilter.value !in setOf("ALL", "LIVE", "MY_TEAMS") &&
+                    fetched.none { it.tournamentId == _selectedTournamentFilter.value }
+                ) {
+                    _selectedTournamentFilter.value = "ALL"
+                }
             }
         }
     }
@@ -885,6 +909,18 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         _showFirstTimeTeamsOnboarding.value = false
         _teamSearchQuery.value = ""
         _teamSearchResults.value = emptyList()
+    }
+
+    fun updateKickoffUiPreferences(transform: (KickoffUiPreferences) -> KickoffUiPreferences) {
+        val updated = footballRepository.saveKickoffUiPreferences(transform(_kickoffUiPreferences.value))
+        _kickoffUiPreferences.value = updated
+    }
+
+    fun openKickoffSettingsCenter(domainIndex: Int = 0) {
+        _kickoffSettingsInitialDomain.value = domainIndex.coerceIn(0, 3)
+        _teamSearchQuery.value = ""
+        _teamSearchResults.value = emptyList()
+        _showCustomizeTeamsModal.value = true
     }
 
     fun openCustomizeTeamsModal() {
