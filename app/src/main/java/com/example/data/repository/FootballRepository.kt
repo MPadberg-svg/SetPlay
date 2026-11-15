@@ -3777,6 +3777,7 @@ class FootballRepository(
         @Suppress("UNUSED_PARAMETER") forceLiveRefresh: Boolean = false
     ): List<FootballMatch> {
         if (!isApiFootballKeyConfigured()) return emptyList()
+        if (dayTab !in setOf(MatchDayTab.YESTERDAY, MatchDayTab.TODAY, MatchDayTab.TOMORROW)) return emptyList()
 
         val now = System.currentTimeMillis()
         val cached = apiFootballDayCache[isoDate]
@@ -3824,6 +3825,18 @@ class FootballRepository(
                 val errorsObj = root.optJSONObject("errors")
                 if (errorsObj != null && errorsObj.length() > 0) {
                     val errText = errorsObj.keys().asSequence().firstOrNull()?.let { k -> errorsObj.optString(k, "") }.orEmpty()
+                    val isPlanWindowNotice = errText.contains("Free plans", ignoreCase = true) ||
+                        errText.contains("do not have access to this date", ignoreCase = true) ||
+                        errText.contains("plan", ignoreCase = true)
+                    if (isPlanWindowNotice) {
+                        sourceMonitor.recordRuntimeResponse(
+                            provider = KickoffProviderId.API_FOOTBALL,
+                            httpCode = 200,
+                            remainingQuota = remainingInt,
+                            errorNote = "Active • Free tier covers Today & Tomorrow"
+                        )
+                        return cached?.second ?: emptyList()
+                    }
                     val isQuotaErr = errText.contains("limit", ignoreCase = true) || errText.contains("quota", ignoreCase = true)
                     sourceMonitor.recordRuntimeResponse(
                         provider = KickoffProviderId.API_FOOTBALL,

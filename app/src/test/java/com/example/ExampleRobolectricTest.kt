@@ -5485,4 +5485,95 @@ class TvSyncDeviceSeparationComposeTest {
             db.close()
         }
     }
+
+    @Test
+    fun testKickoffV7ApiFootballDateWindowStickyDateStripSidePanelAndCleanCards() {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+
+        // 1. API-Football v3 Free-Plan Date Window Protection
+        val sourceMonitor = com.example.data.repository.KickoffSourceMonitor(
+            context = context,
+            httpClient = IptvRepository.sharedOkHttpClient
+        )
+        sourceMonitor.recordRuntimeResponse(
+            provider = com.example.data.repository.KickoffProviderId.API_FOOTBALL,
+            httpCode = 200,
+            remainingQuota = 99,
+            errorNote = "Free plans do not have access to this date, try from 2026-11-14 to 2026-11-16."
+        )
+        val apiFootballSnapshot = sourceMonitor.sourceHealthFlow.value.first {
+            it.provider == com.example.data.repository.KickoffProviderId.API_FOOTBALL
+        }
+        assertEquals(
+            com.example.data.repository.SourceHealthStatus.HEALTHY,
+            apiFootballSnapshot.status
+        )
+        assertNull(sourceMonitor.activeSourceAlertFlow.value)
+
+        // 2. 7-Day Forward Instant Date Strip & Non-Empty Competition Grouping
+        val forwardTabs = com.example.data.repository.MatchDayTab.forwardTimelineTabs
+        assertEquals(7, forwardTabs.size)
+        assertEquals(com.example.data.repository.MatchDayTab.TODAY, forwardTabs.first())
+        assertEquals(com.example.data.repository.MatchDayTab.DAY_PLUS_6, forwardTabs.last())
+
+        val earlyFixture = com.example.data.repository.FootballMatch(
+            matchId = "v7_epl_1",
+            tournamentId = "premier_league",
+            tournamentName = "Premier League",
+            tournamentRegion = "England",
+            dayTab = com.example.data.repository.MatchDayTab.TODAY,
+            kickoffTimeFormatted = "14:00",
+            kickoffDateFormatted = "Today",
+            status = com.example.data.repository.MatchStatus.UPCOMING,
+            liveMinuteOrBadge = "14:00",
+            homeTeamId = "ars",
+            homeTeamName = "Arsenal",
+            homeTeamBadge = "",
+            homeScore = null,
+            awayTeamId = "che",
+            awayTeamName = "Chelsea",
+            awayTeamBadge = "",
+            awayScore = null,
+            stadiumName = "Emirates Stadium",
+            cityName = "London",
+            beinChannel = "beIN Sports 1 HD",
+            beinChannelNumberHint = "beIN 1"
+        )
+        val midFixture = earlyFixture.copy(
+            matchId = "v7_laliga_1",
+            tournamentId = "laliga",
+            tournamentName = "LaLiga",
+            tournamentRegion = "Spain",
+            kickoffTimeFormatted = "17:00"
+        )
+        val lateFixture = earlyFixture.copy(
+            matchId = "v7_epl_2",
+            kickoffTimeFormatted = "20:00",
+            homeTeamId = "liv",
+            homeTeamName = "Liverpool",
+            awayTeamId = "mci",
+            awayTeamName = "Manchester City"
+        )
+        val sections = com.example.ui.home.buildUnifiedTournamentSections(
+            matches = listOf(earlyFixture, midFixture, lateFixture)
+        )
+        assertEquals(2, sections.size)
+        assertEquals(1, sections.count { it.tournamentId == "premier_league" })
+        assertEquals(2, sections.first { it.tournamentId == "premier_league" }.matches.size)
+
+        // 3. Dark-Glass Medallion & Broadcaster Identity Resolution
+        val beinIdentity = com.example.ui.home.resolveBroadcasterVisualIdentity("beIN Sports 1 HD")
+        assertEquals("beIN", beinIdentity.providerShortTag)
+        assertEquals(
+            "Sports 1 HD",
+            com.example.ui.home.formatCleanBroadcastChannelSuffix("beIN Sports 1 HD", beinIdentity.providerShortTag)
+        )
+        assertFalse(
+            com.example.ui.home.shouldShowTournamentRegionBadge(
+                "International Official Fixtures",
+                "International"
+            )
+        )
+    }
 }
+

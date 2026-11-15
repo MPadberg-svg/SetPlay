@@ -1315,12 +1315,21 @@ fun FirstTimeFavoriteTeamsDialog(
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
-                        Icon(
-                            imageVector = Icons.Default.SportsSoccer,
-                            contentDescription = null,
-                            tint = KickoffPitchEmerald,
-                            modifier = Modifier.size(24.dp)
-                        )
+                        Box(
+                            contentAlignment = Alignment.Center,
+                            modifier = Modifier
+                                .size(38.dp)
+                                .clip(CircleShape)
+                                .background(KickoffStadiumForest)
+                                .border(1.1.dp, KickoffFloodlightVolt, CircleShape)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.SportsSoccer,
+                                contentDescription = null,
+                                tint = KickoffPitchEmerald,
+                                modifier = Modifier.size(21.dp)
+                            )
+                        }
                         Spacer(modifier = Modifier.width(10.dp))
                         Column {
                             Text(
@@ -1331,8 +1340,9 @@ fun FirstTimeFavoriteTeamsDialog(
                             )
                             Text(
                                 text = "Choose your Country Zone (time & TV channels) and follow your teams",
-                                color = KickoffMistSilver,
-                                fontSize = 11.5.sp
+                                color = KickoffPitchEmerald,
+                                fontSize = 11.5.sp,
+                                fontWeight = FontWeight.SemiBold
                             )
                         }
                     }
@@ -1541,16 +1551,17 @@ fun FirstTimeFavoriteTeamsDialog(
                 ) {
                     OutlinedButton(
                         onClick = onCompleteOnboarding,
-                        border = BorderStroke(1.dp, KickoffEmeraldBorder),
+                        border = BorderStroke(1.dp, KickoffPitchEmerald),
                         modifier = Modifier
                             .weight(1f)
                             .testTag("onboarding_skip_btn")
                     ) {
-                        Text("Skip for Now", color = KickoffMistSilver, fontWeight = FontWeight.Bold)
+                        Text("Skip for Now", color = KickoffFloodlightVolt, fontWeight = FontWeight.Bold)
                     }
 
                     Button(
                         onClick = onCompleteOnboarding,
+                        border = BorderStroke(1.dp, KickoffFloodlightVolt),
                         colors = ButtonDefaults.buttonColors(
                             containerColor = KickoffPitchEmerald,
                             contentColor = KickoffPitchBlack
@@ -1640,7 +1651,8 @@ fun KickoffSourceStatusAlertBanner(
     alertMessage: String,
     onManageSourcesClick: () -> Unit,
     onDismiss: () -> Unit,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    showManageButton: Boolean = true
 ) {
     Surface(
         color = KickoffTurfSurface,
@@ -1689,24 +1701,26 @@ fun KickoffSourceStatusAlertBanner(
             Spacer(modifier = Modifier.width(8.dp))
 
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Surface(
-                    color = KickoffCanopyElevated,
-                    shape = RoundedCornerShape(8.dp),
-                    border = BorderStroke(0.8.dp, KickoffPitchEmerald),
-                    modifier = Modifier
-                        .clip(RoundedCornerShape(8.dp))
-                        .clickable { onManageSourcesClick() }
-                        .testTag("kickoff_source_alert_manage_btn")
-                ) {
-                    Text(
-                        text = "Sources & Keys",
-                        color = KickoffFloodlightWhite,
-                        fontSize = 10.sp,
-                        fontWeight = FontWeight.ExtraBold,
-                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 5.dp)
-                    )
+                if (showManageButton) {
+                    Surface(
+                        color = KickoffCanopyElevated,
+                        shape = RoundedCornerShape(8.dp),
+                        border = BorderStroke(0.8.dp, KickoffPitchEmerald),
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(8.dp))
+                            .clickable { onManageSourcesClick() }
+                            .testTag("kickoff_source_alert_manage_btn")
+                    ) {
+                        Text(
+                            text = "Sources & Keys",
+                            color = KickoffFloodlightWhite,
+                            fontSize = 10.sp,
+                            fontWeight = FontWeight.ExtraBold,
+                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 5.dp)
+                        )
+                    }
+                    Spacer(modifier = Modifier.width(4.dp))
                 }
-                Spacer(modifier = Modifier.width(4.dp))
                 IconButton(
                     onClick = onDismiss,
                     modifier = Modifier
@@ -2310,7 +2324,8 @@ fun CustomizeTeamsAndTournamentsSheet(
                             alertMessage = sourceAlertMessage,
                             onManageSourcesClick = { activeTab = 3 },
                             onDismiss = onDismissSourceAlert,
-                            modifier = Modifier.padding(horizontal = 0.dp)
+                            modifier = Modifier.padding(horizontal = 0.dp),
+                            showManageButton = false
                         )
                         Spacer(modifier = Modifier.height(8.dp))
                     }

@@ -133,6 +133,42 @@ class KickoffSourceMonitor(
     init {
         syncCustomKeysIntoCompanionCache()
         _sourceHealthFlow.value = buildInitialHealthStates()
+        loadPersistedStates()
+    }
+
+    internal fun loadPersistedStates() {
+        var anyHealed = false
+        val healedStates = _sourceHealthFlow.value.map { state ->
+            val persistedDetail = prefs.getString("persisted_detail_${state.provider.id}", null)
+            val persistedStatusName = prefs.getString("persisted_status_${state.provider.id}", null)
+            val persistedStatus = persistedStatusName?.let { name ->
+                runCatching { SourceHealthStatus.valueOf(name) }.getOrNull()
+            }
+            val effectiveStatus = persistedStatus ?: state.status
+            val effectiveDetail = persistedDetail ?: state.statusDetail
+
+            val isFalsePlanError = effectiveStatus == SourceHealthStatus.KEY_INVALID_OR_EXPIRED &&
+                (effectiveDetail.contains("Free plans", ignoreCase = true) ||
+                    effectiveDetail.contains("do not have access to this date", ignoreCase = true))
+
+            if (isFalsePlanError) {
+                anyHealed = true
+                prefs.edit()
+                    .remove("persisted_status_${state.provider.id}")
+                    .remove("persisted_detail_${state.provider.id}")
+                    .apply()
+                state.copy(
+                    status = SourceHealthStatus.HEALTHY,
+                    statusDetail = "Active & Healthy • Verified live response"
+                )
+            } else {
+                state
+            }
+        }
+        if (anyHealed) {
+            _sourceHealthFlow.value = healedStates
+        }
+        refreshAlertBannerFromCurrentStates()
     }
 
     private fun syncCustomKeysIntoCompanionCache() {
@@ -229,7 +265,14 @@ class KickoffSourceMonitor(
             else -> currentEntry?.remainingQuotaLabel ?: defaultQuotaLabel(provider, true)
         }
 
+        val isPlanWindowNotice = errorNote != null &&
+            (errorNote.contains("Free plans", ignoreCase = true) ||
+                errorNote.contains("do not have access to this date", ignoreCase = true))
+
         val (newStatus, detail) = when {
+            isPlanWindowNotice -> {
+                SourceHealthStatus.HEALTHY to "Active & Healthy • Free tier 3-day window"
+            }
             httpCode == 401 || httpCode == 403 -> {
                 SourceHealthStatus.KEY_INVALID_OR_EXPIRED to
                     (errorNote?.takeIf { it.isNotBlank() }
@@ -433,21 +476,32 @@ class KickoffSourceMonitor(
                     errorsObj.optString(k, "")
                 }.orEmpty()
                 val lowerErr = firstError.lowercase(Locale.ROOT)
-                return if (lowerErr.contains("limit") || lowerErr.contains("quota") || lowerErr.contains("request")) {
-                    ApiKeyValidationResult(
-                        provider = provider,
-                        isValid = false,
-                        status = SourceHealthStatus.QUOTA_WARNING,
-                        message = firstError.ifBlank { "API-Football daily quota reached." },
-                        remainingQuotaLabel = "0 / 100 req today"
-                    )
-                } else {
-                    ApiKeyValidationResult(
-                        provider = provider,
-                        isValid = false,
-                        status = SourceHealthStatus.KEY_INVALID_OR_EXPIRED,
-                        message = firstError.ifBlank { "Invalid or expired API-Football key." }
-                    )
+                return when {
+                    lowerErr.contains("free plans") || lowerErr.contains("do not have access to this date") -> {
+                        ApiKeyValidationResult(
+                            provider = provider,
+                            isValid = true,
+                            status = SourceHealthStatus.HEALTHY,
+                            message = "Active & Healthy • Free tier 3-day window"
+                        )
+                    }
+                    lowerErr.contains("limit") || lowerErr.contains("quota") || lowerErr.contains("request") -> {
+                        ApiKeyValidationResult(
+                            provider = provider,
+                            isValid = false,
+                            status = SourceHealthStatus.QUOTA_WARNING,
+                            message = firstError.ifBlank { "API-Football daily quota reached." },
+                            remainingQuotaLabel = "0 / 100 req today"
+                        )
+                    }
+                    else -> {
+                        ApiKeyValidationResult(
+                            provider = provider,
+                            isValid = false,
+                            status = SourceHealthStatus.KEY_INVALID_OR_EXPIRED,
+                            message = firstError.ifBlank { "Invalid or expired API-Football key." }
+                        )
+                    }
                 }
             }
 
