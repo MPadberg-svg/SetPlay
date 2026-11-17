@@ -150,19 +150,47 @@ class KickoffSourceMonitor(
             val isFalsePlanError = effectiveStatus == SourceHealthStatus.KEY_INVALID_OR_EXPIRED &&
                 (effectiveDetail.contains("Free plans", ignoreCase = true) ||
                     effectiveDetail.contains("do not have access to this date", ignoreCase = true))
+            val isKeylessFalseInvalid = !state.provider.requiresApiKey &&
+                effectiveStatus == SourceHealthStatus.KEY_INVALID_OR_EXPIRED
+            val isDefaultSportApiFalseError = state.provider == KickoffProviderId.SPORT_API_AI &&
+                !state.isUsingCustomKey &&
+                effectiveStatus != SourceHealthStatus.HEALTHY
 
-            if (isFalsePlanError) {
-                anyHealed = true
-                prefs.edit()
-                    .remove("persisted_status_${state.provider.id}")
-                    .remove("persisted_detail_${state.provider.id}")
-                    .apply()
-                state.copy(
-                    status = SourceHealthStatus.HEALTHY,
-                    statusDetail = "Active & Healthy • Verified live response"
-                )
-            } else {
-                state
+            when {
+                isFalsePlanError -> {
+                    anyHealed = true
+                    prefs.edit()
+                        .remove("persisted_status_${state.provider.id}")
+                        .remove("persisted_detail_${state.provider.id}")
+                        .apply()
+                    state.copy(
+                        status = SourceHealthStatus.HEALTHY,
+                        statusDetail = "Active & Healthy • Verified live response"
+                    )
+                }
+                isKeylessFalseInvalid -> {
+                    anyHealed = true
+                    prefs.edit()
+                        .remove("persisted_status_${state.provider.id}")
+                        .remove("persisted_detail_${state.provider.id}")
+                        .apply()
+                    state.copy(
+                        status = SourceHealthStatus.HEALTHY,
+                        statusDetail = "Public feed active • Automatic fallback ready"
+                    )
+                }
+                isDefaultSportApiFalseError -> {
+                    anyHealed = true
+                    prefs.edit()
+                        .remove("persisted_status_${state.provider.id}")
+                        .remove("persisted_detail_${state.provider.id}")
+                        .apply()
+                    state.copy(
+                        status = SourceHealthStatus.UNCONFIGURED,
+                        statusDetail = "Optional secondary feed • Primary sources active"
+                    )
+                }
+                else -> state
             }
         }
         if (anyHealed) {
@@ -272,6 +300,12 @@ class KickoffSourceMonitor(
         val (newStatus, detail) = when {
             isPlanWindowNotice -> {
                 SourceHealthStatus.HEALTHY to "Active & Healthy • Free tier 3-day window"
+            }
+            !provider.requiresApiKey && (httpCode == 401 || httpCode == 403 || httpCode == 429) -> {
+                SourceHealthStatus.HEALTHY to "Public feed active • Cooldown fallback ready"
+            }
+            provider == KickoffProviderId.SPORT_API_AI && !isUsingCustomKey(provider) && httpCode !in 200..299 -> {
+                SourceHealthStatus.UNCONFIGURED to "Optional secondary feed • Primary schedule sources active"
             }
             httpCode == 401 || httpCode == 403 -> {
                 SourceHealthStatus.KEY_INVALID_OR_EXPIRED to
@@ -442,6 +476,14 @@ class KickoffSourceMonitor(
         remainingHeader: String? = null
     ): ApiKeyValidationResult {
         val remainingInt = remainingHeader?.trim()?.toIntOrNull()
+        if (!provider.requiresApiKey && (httpCode == 401 || httpCode == 403)) {
+            return ApiKeyValidationResult(
+                provider = provider,
+                isValid = true,
+                status = SourceHealthStatus.HEALTHY,
+                message = "${provider.displayName} public feed active (multi-provider fallback ready)."
+            )
+        }
         if (httpCode == 401 || httpCode == 403) {
             return ApiKeyValidationResult(
                 provider = provider,
@@ -744,26 +786,42 @@ class KickoffSourceMonitor(
 
     private fun refreshAlertBannerFromCurrentStates() {
         val states = _sourceHealthFlow.value
-        val invalidKeyState = states.firstOrNull { it.status == SourceHealthStatus.KEY_INVALID_OR_EXPIRED }
-        if (invalidKeyState != null) {
+        val invalidCustomKeyState = states.firstOrNull {
+            it.isUsingCustomKey && it.status == SourceHealthStatus.KEY_INVALID_OR_EXPIRED
+        }
+        if (invalidCustomKeyState != null) {
             _activeSourceAlertFlow.value =
-                "${invalidKeyState.provider.displayName}: ${invalidKeyState.statusDetail}"
+                "${invalidCustomKeyState.provider.displayName}: ${invalidCustomKeyState.statusDetail}"
             return
         }
-        val quotaState = states.firstOrNull { it.status == SourceHealthStatus.QUOTA_WARNING }
-        if (quotaState != null) {
-            _activeSourceAlertFlow.value =
-                "${quotaState.provider.displayName}: ${quotaState.statusDetail}"
+
+        val apiFootballUnhealthy = states.firstOrNull { it.provider == KickoffProviderId.API_FOOTBALL }?.status in
+            setOf(SourceHealthStatus.KEY_INVALID_OR_EXPIRED, SourceHealthStatus.UNREACHABLE)
+        val footballDataUnhealthy = states.firstOrNull { it.provider == KickoffProviderId.FOOTBALL_DATA_ORG }?.status in
+            setOf(SourceHealthStatus.KEY_INVALID_OR_EXPIRED, SourceHealthStatus.UNREACHABLE)
+        if (apiFootballUnhealthy && footballDataUnhealthy) {
+            val primaryFail = states.firstOrNull {
+                it.provider == KickoffProviderId.API_FOOTBALL || it.provider == KickoffProviderId.FOOTBALL_DATA_ORG
+            }
+            _activeSourceAlertFlow.value = primaryFail?.let {
+                "${it.provider.displayName}: ${it.statusDetail}"
+            } ?: "Primary keyed schedule feeds are currently unavailable."
             return
         }
-        val unreachableKeyedState = states.firstOrNull {
-            it.provider.requiresApiKey && it.status == SourceHealthStatus.UNREACHABLE
-        }
-        if (unreachableKeyedState != null) {
-            _activeSourceAlertFlow.value =
-                "${unreachableKeyedState.provider.displayName}: ${unreachableKeyedState.statusDetail}"
+
+        val healthyCount = states.count { it.status == SourceHealthStatus.HEALTHY }
+        if (healthyCount < 2) {
+            val degradedState = states.firstOrNull {
+                it.status == SourceHealthStatus.KEY_INVALID_OR_EXPIRED ||
+                    it.status == SourceHealthStatus.UNREACHABLE ||
+                    it.status == SourceHealthStatus.QUOTA_WARNING
+            }
+            _activeSourceAlertFlow.value = degradedState?.let {
+                "${it.provider.displayName}: ${it.statusDetail}"
+            } ?: "Multiple Kickoff data sources are currently degraded."
             return
         }
+
         _activeSourceAlertFlow.value = null
     }
 

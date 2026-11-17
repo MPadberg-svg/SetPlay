@@ -109,6 +109,7 @@ import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import coil.compose.AsyncImage
+import coil.compose.SubcomposeAsyncImage
 import com.example.data.model.FavoriteTeamEntity
 import com.example.data.model.PlaylistEntity
 import com.example.data.model.StreamEntity
@@ -482,7 +483,9 @@ fun HomeScreen(
                         matchesByDay = matchesByDay,
                         liveCountToday = liveMatchesCount,
                         onSelectDay = { mainViewModel.selectMatchDay(it) },
-                        activeEdition = SetPlayEdition.PHONE
+                        activeEdition = SetPlayEdition.PHONE,
+                        onOpenDateSelectorModal = { showDateSelectorModal = true },
+                        onResetToToday = { mainViewModel.selectMatchDay(MatchDayTab.TODAY) }
                     )
                 }
             }
@@ -594,7 +597,11 @@ fun HomeScreen(
                             },
                             onOpenCustomize = {
                                 mainViewModel.openKickoffSettingsCenter(0)
-                            }
+                            },
+                            selectedDay = selectedMatchDay,
+                            selectedCountryZone = selectedCountryZone,
+                            matchesByDay = matchesByDay,
+                            onSelectDay = { mainViewModel.selectMatchDay(it) }
                         )
                     }
                 } else {
@@ -1219,6 +1226,7 @@ private fun KickOffArenaHeaderCard(
                 ),
                 modifier = Modifier
                     .weight(1f)
+                    .widthIn(min = if (isTv) 165.dp else 135.dp, max = if (isTv) 280.dp else 215.dp)
                     .clip(RoundedCornerShape(9.dp))
                     .tvFocusableControl(
                         accentColor = KickoffFloodlightVolt,
@@ -1295,7 +1303,7 @@ private fun KickOffArenaHeaderCard(
 
             Spacer(modifier = Modifier.width(6.dp))
 
-            // Right Cluster: 1. Live Pulse Filter Pill + 2. Calendar Overview Icon Pill (+ Today reset) + 3. Timezone & Refresh
+            // Right Cluster: 1. Live Pulse Filter Pill + 2. Compact Region & Offset Chip + 3. Circular Refresh Button
             Row(
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(5.dp)
@@ -1341,65 +1349,7 @@ private fun KickOffArenaHeaderCard(
                     }
                 }
 
-                // 2. Calendar Overview Icon Pill (`kickoff_date_selector_btn`)
-                Surface(
-                    color = KickoffCanopyElevated,
-                    shape = RoundedCornerShape(9.dp),
-                    border = BorderStroke(0.85.dp, KickoffPitchEmerald),
-                    modifier = Modifier
-                        .clip(RoundedCornerShape(9.dp))
-                        .tvFocusableControl(
-                            accentColor = KickoffFloodlightVolt,
-                            shape = RoundedCornerShape(9.dp),
-                            onClick = onOpenDateSelectorModal
-                        )
-                        .testTag("kickoff_date_selector_btn")
-                ) {
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        modifier = Modifier.padding(horizontal = 7.dp, vertical = if (isTv) 5.dp else 4.dp)
-                    ) {
-                        KickoffCalendarSelectorIcon(
-                            modifier = Modifier.size(if (isTv) 14.dp else 13.dp),
-                            tint = KickoffFloodlightVolt
-                        )
-                        Spacer(modifier = Modifier.width(4.dp))
-                        Text(
-                            text = selectedMatchDay.getDynamicDateSubtitle(selectedCountryZone.timeZoneId),
-                            color = KickoffFloodlightWhite,
-                            fontSize = if (isTv) 10.sp else 9.sp,
-                            fontWeight = FontWeight.ExtraBold,
-                            style = TabularNumeralTextStyle,
-                            maxLines = 1
-                        )
-                    }
-                }
-
-                if (selectedMatchDay != MatchDayTab.TODAY) {
-                    Surface(
-                        color = KickoffPitchEmerald.copy(alpha = 0.20f),
-                        shape = RoundedCornerShape(50),
-                        border = BorderStroke(0.8.dp, KickoffPitchEmerald),
-                        modifier = Modifier
-                            .clip(RoundedCornerShape(50))
-                            .tvFocusableControl(
-                                accentColor = KickoffFloodlightVolt,
-                                shape = RoundedCornerShape(50),
-                                onClick = { onSelectMatchDay(MatchDayTab.TODAY) }
-                            )
-                            .testTag("kickoff_reset_today_btn")
-                    ) {
-                        Text(
-                            text = "↩",
-                            color = KickoffFloodlightVolt,
-                            fontSize = if (isTv) 10.5.sp else 9.5.sp,
-                            fontWeight = FontWeight.ExtraBold,
-                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 3.dp)
-                        )
-                    }
-                }
-
-                // 3. Compact Region Pill (`customize_teams_tournaments_btn`) + Refresh (`refresh_matches_btn`)
+                // 2. Ultra-Compact Region & Offset Chip (`customize_teams_tournaments_btn`)
                 Surface(
                     color = KickoffGlassWell,
                     shape = RoundedCornerShape(50),
@@ -1427,6 +1377,7 @@ private fun KickOffArenaHeaderCard(
                     }
                 }
 
+                // 3. Circular Refresh Button (`refresh_matches_btn`)
                 Box(
                     contentAlignment = Alignment.Center,
                     modifier = Modifier
@@ -1462,11 +1413,10 @@ private fun KickOffArenaHeaderCard(
 }
 
 /**
- * Tier 2 of the Pinned Sticky Command Header (`InstantSevenDayDateStrip`, `34.dp` height, `.testTag("five_day_timeline_ribbon")`):
- * - Sleek `34.dp`-tall horizontal `LazyRow` (Mobile) / 7-column `Row` (TV) iterating over `MatchDayTab.forwardTimelineTabs` (`TODAY`..`DAY_PLUS_6`).
- * - Each day pill (`day_tab_${day.name.lowercase()}`, `height = 30.dp`, `RoundedCornerShape(9.dp)`) displays a single crisp line:
- *   Day code (`TODAY`, `TOM`, `TUE`, etc.) + date number (`15`, `16`, `17`) + match count badge (`"3"`, `"12"` or `"·"` when `0`).
- * - Tapping any day pill switches the matchday immediately in 1 tap without opening any modal!
+ * Tier 2 of the Pinned Sticky Command Header (`InstantSevenDayDateStrip`, `36.dp` height, `.testTag("five_day_timeline_ribbon")`):
+ * - Leading edge (when `selectedDay != MatchDayTab.TODAY`): Compact `↩` Reset-to-Today pill (`kickoff_reset_today_btn`).
+ * - Center: 7 forward day pills (`day_tab_${day.name.lowercase(Locale.ROOT)}`) iterating over `MatchDayTab.forwardTimelineTabs` (`TODAY`..`DAY_PLUS_6`).
+ * - Trailing edge: Compact `[ 📅 ]` 7-Day Agenda Overview button (`kickoff_date_selector_btn`).
  */
 @Composable
 private fun InstantSevenDayDateStrip(
@@ -1475,7 +1425,9 @@ private fun InstantSevenDayDateStrip(
     matchesByDay: Map<MatchDayTab, List<FootballMatch>>,
     liveCountToday: Int,
     onSelectDay: (MatchDayTab) -> Unit,
-    activeEdition: SetPlayEdition = SetPlayEdition.PHONE
+    activeEdition: SetPlayEdition = SetPlayEdition.PHONE,
+    onOpenDateSelectorModal: () -> Unit = {},
+    onResetToToday: () -> Unit = { onSelectDay(MatchDayTab.TODAY) }
 ) {
     val isTv = activeEdition == SetPlayEdition.TV
     val forwardTabs = remember { MatchDayTab.forwardTimelineTabs }
@@ -1538,12 +1490,41 @@ private fun InstantSevenDayDateStrip(
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .height(34.dp)
+                .height(36.dp)
                 .padding(horizontal = 14.dp, vertical = 2.dp)
                 .testTag("five_day_timeline_ribbon"),
             horizontalArrangement = Arrangement.spacedBy(6.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
+            if (selectedDay != MatchDayTab.TODAY) {
+                Surface(
+                    color = KickoffPitchEmerald.copy(alpha = 0.20f),
+                    shape = RoundedCornerShape(9.dp),
+                    border = BorderStroke(0.85.dp, KickoffPitchEmerald),
+                    modifier = Modifier
+                        .height(30.dp)
+                        .clip(RoundedCornerShape(9.dp))
+                        .tvFocusableControl(
+                            accentColor = KickoffFloodlightVolt,
+                            shape = RoundedCornerShape(9.dp),
+                            onClick = onResetToToday
+                        )
+                        .testTag("kickoff_reset_today_btn")
+                ) {
+                    Box(
+                        contentAlignment = Alignment.Center,
+                        modifier = Modifier.padding(horizontal = 9.dp)
+                    ) {
+                        Text(
+                            text = "↩",
+                            color = KickoffFloodlightVolt,
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.ExtraBold
+                        )
+                    }
+                }
+            }
+
             forwardTabs.forEach { day ->
                 val isSelected = day == selectedDay
                 val matchCount = matchesByDay[day].orEmpty().size
@@ -1578,48 +1559,135 @@ private fun InstantSevenDayDateStrip(
                     }
                 }
             }
+
+            Surface(
+                color = KickoffCanopyElevated,
+                shape = RoundedCornerShape(9.dp),
+                border = BorderStroke(0.85.dp, KickoffPitchEmerald),
+                modifier = Modifier
+                    .height(30.dp)
+                    .clip(RoundedCornerShape(9.dp))
+                    .tvFocusableControl(
+                        accentColor = KickoffFloodlightVolt,
+                        shape = RoundedCornerShape(9.dp),
+                        onClick = onOpenDateSelectorModal
+                    )
+                    .testTag("kickoff_date_selector_btn")
+            ) {
+                Box(
+                    contentAlignment = Alignment.Center,
+                    modifier = Modifier.padding(horizontal = 9.dp)
+                ) {
+                    KickoffCalendarSelectorIcon(
+                        modifier = Modifier.size(15.dp),
+                        tint = KickoffFloodlightVolt
+                    )
+                }
+            }
         }
     } else {
-        LazyRow(
+        Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .height(34.dp)
-                .testTag("five_day_timeline_ribbon"),
+                .height(36.dp)
+                .padding(horizontal = 14.dp, vertical = 2.dp),
             horizontalArrangement = Arrangement.spacedBy(6.dp),
-            contentPadding = PaddingValues(horizontal = 14.dp, vertical = 2.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            items(forwardTabs, key = { "instant_strip_${it.name}" }) { day ->
-                val isSelected = day == selectedDay
-                val matchCount = matchesByDay[day].orEmpty().size
-                val hasLive = day == MatchDayTab.TODAY && liveCountToday > 0
-                val tag = "day_tab_${day.name.lowercase(Locale.ROOT)}"
-
+            if (selectedDay != MatchDayTab.TODAY) {
                 Surface(
-                    color = if (isSelected) KickoffCanopyElevated else KickoffTurfSurface,
+                    color = KickoffPitchEmerald.copy(alpha = 0.20f),
                     shape = RoundedCornerShape(9.dp),
-                    border = BorderStroke(
-                        width = if (isSelected) 1.2.dp else 0.75.dp,
-                        color = when {
-                            isSelected -> KickoffFloodlightVolt
-                            hasLive -> KickoffLiveCrimson.copy(alpha = 0.6f)
-                            else -> KickoffEmeraldBorder
-                        }
-                    ),
+                    border = BorderStroke(0.85.dp, KickoffPitchEmerald),
                     modifier = Modifier
                         .height(30.dp)
-                        .alpha(if (matchCount == 0 && !isSelected) 0.48f else 1f)
                         .clip(RoundedCornerShape(9.dp))
                         .tvFocusableControl(
                             accentColor = KickoffFloodlightVolt,
                             shape = RoundedCornerShape(9.dp),
-                            onClick = { onSelectDay(day) }
+                            onClick = onResetToToday
                         )
-                        .testTag(tag)
+                        .testTag("kickoff_reset_today_btn")
                 ) {
-                    Box(contentAlignment = Alignment.Center, modifier = Modifier.fillMaxHeight()) {
-                        renderDayPillContent(day, isSelected, matchCount, hasLive)
+                    Box(
+                        contentAlignment = Alignment.Center,
+                        modifier = Modifier.padding(horizontal = 8.dp)
+                    ) {
+                        Text(
+                            text = "↩",
+                            color = KickoffFloodlightVolt,
+                            fontSize = 10.sp,
+                            fontWeight = FontWeight.ExtraBold
+                        )
                     }
+                }
+            }
+
+            LazyRow(
+                modifier = Modifier
+                    .weight(1f)
+                    .fillMaxHeight()
+                    .testTag("five_day_timeline_ribbon"),
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                items(forwardTabs, key = { "instant_strip_${it.name}" }) { day ->
+                    val isSelected = day == selectedDay
+                    val matchCount = matchesByDay[day].orEmpty().size
+                    val hasLive = day == MatchDayTab.TODAY && liveCountToday > 0
+                    val tag = "day_tab_${day.name.lowercase(Locale.ROOT)}"
+
+                    Surface(
+                        color = if (isSelected) KickoffCanopyElevated else KickoffTurfSurface,
+                        shape = RoundedCornerShape(9.dp),
+                        border = BorderStroke(
+                            width = if (isSelected) 1.2.dp else 0.75.dp,
+                            color = when {
+                                isSelected -> KickoffFloodlightVolt
+                                hasLive -> KickoffLiveCrimson.copy(alpha = 0.6f)
+                                else -> KickoffEmeraldBorder
+                            }
+                        ),
+                        modifier = Modifier
+                            .height(30.dp)
+                            .alpha(if (matchCount == 0 && !isSelected) 0.48f else 1f)
+                            .clip(RoundedCornerShape(9.dp))
+                            .tvFocusableControl(
+                                accentColor = KickoffFloodlightVolt,
+                                shape = RoundedCornerShape(9.dp),
+                                onClick = { onSelectDay(day) }
+                            )
+                            .testTag(tag)
+                    ) {
+                        Box(contentAlignment = Alignment.Center, modifier = Modifier.fillMaxHeight()) {
+                            renderDayPillContent(day, isSelected, matchCount, hasLive)
+                        }
+                    }
+                }
+            }
+
+            Surface(
+                color = KickoffCanopyElevated,
+                shape = RoundedCornerShape(9.dp),
+                border = BorderStroke(0.85.dp, KickoffPitchEmerald),
+                modifier = Modifier
+                    .height(30.dp)
+                    .clip(RoundedCornerShape(9.dp))
+                    .tvFocusableControl(
+                        accentColor = KickoffFloodlightVolt,
+                        shape = RoundedCornerShape(9.dp),
+                        onClick = onOpenDateSelectorModal
+                    )
+                    .testTag("kickoff_date_selector_btn")
+            ) {
+                Box(
+                    contentAlignment = Alignment.Center,
+                    modifier = Modifier.padding(horizontal = 8.dp)
+                ) {
+                    KickoffCalendarSelectorIcon(
+                        modifier = Modifier.size(14.dp),
+                        tint = KickoffFloodlightVolt
+                    )
                 }
             }
         }
@@ -2027,7 +2095,9 @@ private fun KickoffCompetitionsSelectorModal(
     val zeroTodayTournaments = remember(enabledCatalogTournaments, matchCountByTournament) {
         enabledCatalogTournaments.filter { (matchCountByTournament[it.tournamentId] ?: 0) == 0 }
     }
-    var showZeroMatchLeagues by remember { mutableStateOf(activeTodayTournaments.isEmpty()) }
+    var showZeroMatchLeagues by remember(activeTodayTournaments.size) {
+        mutableStateOf(activeTodayTournaments.isEmpty())
+    }
 
     Dialog(
         onDismissRequest = onDismiss,
@@ -2153,10 +2223,10 @@ private fun KickoffCompetitionsSelectorModal(
                             }
                         }
 
-                        // Quick Filter Stack: All Matches | ★ My Teams | ● Live Now
-                        Column(
+                        // Quick Filter Row: All Matches | ★ My Teams
+                        Row(
                             modifier = Modifier.fillMaxWidth(),
-                            verticalArrangement = Arrangement.spacedBy(6.dp)
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
                         ) {
                             val isAllSelected = selectedFilter == "ALL"
                             Surface(
@@ -2167,7 +2237,8 @@ private fun KickoffCompetitionsSelectorModal(
                                     if (isAllSelected) KickoffFloodlightVolt else KickoffEmeraldBorder
                                 ),
                                 modifier = Modifier
-                                    .fillMaxWidth()
+                                    .weight(1f)
+                                    .height(38.dp)
                                     .clip(RoundedCornerShape(10.dp))
                                     .tvFocusableControl(
                                         accentColor = KickoffFloodlightVolt,
@@ -2176,37 +2247,48 @@ private fun KickoffCompetitionsSelectorModal(
                                     )
                                     .testTag("filter_chip_all")
                             ) {
-                                Text(
-                                    text = "All Matches (${activeDayMatches.size})",
-                                    color = if (isAllSelected) KickoffPitchBlack else KickoffFloodlightWhite,
-                                    fontSize = 11.5.sp,
-                                    fontWeight = FontWeight.ExtraBold,
-                                    maxLines = 1,
-                                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 7.dp)
-                                )
+                                Box(
+                                    contentAlignment = Alignment.Center,
+                                    modifier = Modifier
+                                        .fillMaxSize()
+                                        .padding(horizontal = 8.dp)
+                                ) {
+                                    Text(
+                                        text = "All Matches (${activeDayMatches.size})",
+                                        color = if (isAllSelected) KickoffPitchBlack else KickoffFloodlightWhite,
+                                        fontSize = 10.5.sp,
+                                        fontWeight = FontWeight.ExtraBold,
+                                        textAlign = TextAlign.Center,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                }
                             }
 
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.spacedBy(6.dp)
+                            val isMyTeamsSelected = selectedFilter == "MY_TEAMS"
+                            Surface(
+                                color = if (isMyTeamsSelected) KickoffTrophyGold else KickoffTurfSurface,
+                                shape = RoundedCornerShape(10.dp),
+                                border = BorderStroke(
+                                    if (isMyTeamsSelected) 1.2.dp else 0.8.dp,
+                                    if (isMyTeamsSelected) KickoffFloodlightVolt else KickoffTrophyGold.copy(alpha = 0.65f)
+                                ),
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .height(38.dp)
+                                    .clip(RoundedCornerShape(10.dp))
+                                    .tvFocusableControl(
+                                        accentColor = KickoffFloodlightVolt,
+                                        shape = RoundedCornerShape(10.dp),
+                                        onClick = { onSelectFilter("MY_TEAMS") }
+                                    )
+                                    .testTag("filter_chip_my_teams")
                             ) {
-                                val isMyTeamsSelected = selectedFilter == "MY_TEAMS"
-                                Surface(
-                                    color = if (isMyTeamsSelected) KickoffTrophyGold else KickoffTurfSurface,
-                                    shape = RoundedCornerShape(10.dp),
-                                    border = BorderStroke(
-                                        if (isMyTeamsSelected) 1.2.dp else 0.8.dp,
-                                        if (isMyTeamsSelected) KickoffFloodlightVolt else KickoffTrophyGold.copy(alpha = 0.65f)
-                                    ),
+                                Box(
+                                    contentAlignment = Alignment.Center,
                                     modifier = Modifier
-                                        .weight(1f)
-                                        .clip(RoundedCornerShape(10.dp))
-                                        .tvFocusableControl(
-                                            accentColor = KickoffFloodlightVolt,
-                                            shape = RoundedCornerShape(10.dp),
-                                            onClick = { onSelectFilter("MY_TEAMS") }
-                                        )
-                                        .testTag("filter_chip_my_teams")
+                                        .fillMaxSize()
+                                        .padding(horizontal = 6.dp)
                                 ) {
                                     Text(
                                         text = "★ My Teams ($favoriteTeamsCount)",
@@ -2215,36 +2297,7 @@ private fun KickoffCompetitionsSelectorModal(
                                         fontWeight = FontWeight.ExtraBold,
                                         textAlign = TextAlign.Center,
                                         maxLines = 1,
-                                        modifier = Modifier.padding(horizontal = 6.dp, vertical = 7.dp)
-                                    )
-                                }
-
-                                val isLiveSelected = selectedFilter == "LIVE"
-                                Surface(
-                                    color = if (isLiveSelected) KickoffLiveCrimson else KickoffTurfSurface,
-                                    shape = RoundedCornerShape(10.dp),
-                                    border = BorderStroke(
-                                        if (isLiveSelected) 1.2.dp else 0.8.dp,
-                                        if (isLiveSelected || liveMatchesCount > 0) KickoffLiveCrimson else KickoffEmeraldBorder
-                                    ),
-                                    modifier = Modifier
-                                        .weight(1f)
-                                        .clip(RoundedCornerShape(10.dp))
-                                        .tvFocusableControl(
-                                            accentColor = KickoffFloodlightVolt,
-                                            shape = RoundedCornerShape(10.dp),
-                                            onClick = { onSelectFilter("LIVE") }
-                                        )
-                                        .testTag("filter_chip_live")
-                                ) {
-                                    Text(
-                                        text = "● Live Now ($liveMatchesCount)",
-                                        color = KickoffFloodlightWhite,
-                                        fontSize = 10.5.sp,
-                                        fontWeight = FontWeight.ExtraBold,
-                                        textAlign = TextAlign.Center,
-                                        maxLines = 1,
-                                        modifier = Modifier.padding(horizontal = 6.dp, vertical = 7.dp)
+                                        overflow = TextOverflow.Ellipsis
                                     )
                                 }
                             }
@@ -2276,6 +2329,23 @@ private fun KickoffCompetitionsSelectorModal(
                                     val count = matchCountByTournament[tournament.tournamentId] ?: 0
                                     val isSelected = selectedFilter == tournament.tournamentId
                                     val compAccent = resolveCompetitionAccentColor(tournament.tournamentId)
+                                    val compMatches = activeDayMatches.filter { it.tournamentId == tournament.tournamentId }
+                                    val compLiveCount = compMatches.count {
+                                        it.status == MatchStatus.LIVE || it.status == MatchStatus.HALFTIME
+                                    }
+                                    val nextUpcomingTime = compMatches
+                                        .filter { it.status == MatchStatus.UPCOMING }
+                                        .minByOrNull { parseKickoffTimeToMinutes(it.kickoffTimeFormatted) }
+                                        ?.kickoffTimeFormatted
+                                    val (subtitleText, subtitleColor) = when {
+                                        compLiveCount > 0 ->
+                                            "● $compLiveCount LIVE • ${tournament.countryOrRegion}" to KickoffLiveCrimson
+                                        nextUpcomingTime != null ->
+                                            "${tournament.countryOrRegion} • Next $nextUpcomingTime" to KickoffFloodlightVolt.copy(alpha = 0.9f)
+                                        else ->
+                                            "${tournament.countryOrRegion} • Completed" to KickoffMistSilver
+                                    }
+
                                     Surface(
                                         color = if (isSelected) KickoffStadiumForest else KickoffTurfSurface,
                                         shape = RoundedCornerShape(12.dp),
@@ -2327,15 +2397,15 @@ private fun KickoffCompetitionsSelectorModal(
                                                         text = tournament.name,
                                                         color = KickoffFloodlightWhite,
                                                         fontSize = 12.sp,
-                                                        lineHeight = 13.5.sp,
                                                         fontWeight = FontWeight.ExtraBold,
-                                                        maxLines = 2,
+                                                        maxLines = 1,
                                                         overflow = TextOverflow.Ellipsis
                                                     )
                                                     Text(
-                                                        text = tournament.countryOrRegion,
-                                                        color = KickoffMistSilver,
+                                                        text = subtitleText,
+                                                        color = subtitleColor,
                                                         fontSize = 9.5.sp,
+                                                        fontWeight = FontWeight.SemiBold,
                                                         maxLines = 1,
                                                         overflow = TextOverflow.Ellipsis
                                                     )
@@ -2416,7 +2486,7 @@ private fun KickoffCompetitionsSelectorModal(
                                             ),
                                             modifier = Modifier
                                                 .fillMaxWidth()
-                                                .height(44.dp)
+                                                .height(36.dp)
                                                 .clip(RoundedCornerShape(10.dp))
                                                 .tvFocusableControl(
                                                     accentColor = KickoffFloodlightVolt,
@@ -2428,7 +2498,7 @@ private fun KickoffCompetitionsSelectorModal(
                                             Row(
                                                 modifier = Modifier
                                                     .fillMaxSize()
-                                                    .padding(horizontal = 8.dp, vertical = 4.dp),
+                                                    .padding(horizontal = 8.dp, vertical = 3.dp),
                                                 verticalAlignment = Alignment.CenterVertically,
                                                 horizontalArrangement = Arrangement.SpaceBetween
                                             ) {
@@ -2442,7 +2512,7 @@ private fun KickoffCompetitionsSelectorModal(
                                                         tournamentName = tournament.name,
                                                         isSelected = isSelected,
                                                         accentColor = compAccent,
-                                                        sizeDp = 24
+                                                        sizeDp = 22
                                                     )
                                                     Text(
                                                         text = tournament.name,
@@ -3344,6 +3414,9 @@ internal fun TournamentLogoMedallion(
     val monogram = remember(tournamentId, tournamentName) {
         resolveTournamentShortMonogram(tournamentId, tournamentName)
     }
+    val useCustomVector = remember(tournamentId) {
+        hasCustomCompetitionVectorEmblem(tournamentId)
+    }
     val badgeScale by animateFloatAsState(
         targetValue = if (isSelected) 1.08f else 1f,
         animationSpec = spring(
@@ -3352,6 +3425,24 @@ internal fun TournamentLogoMedallion(
         ),
         label = "tournament_logo_scale_$tournamentId"
     )
+    val emblemShape = RoundedCornerShape((sizeDp * 0.28f).coerceIn(6f, 10f).dp)
+
+    val renderMonogramFallback: @Composable () -> Unit = {
+        Box(
+            contentAlignment = Alignment.Center,
+            modifier = Modifier
+                .fillMaxSize()
+                .background(KickoffCanopyElevated)
+        ) {
+            Text(
+                text = monogram,
+                color = accentColor,
+                fontSize = (sizeDp * 0.31f).sp,
+                fontWeight = FontWeight.ExtraBold,
+                maxLines = 1
+            )
+        }
+    }
 
     Box(
         contentAlignment = Alignment.Center,
@@ -3361,37 +3452,56 @@ internal fun TournamentLogoMedallion(
                 scaleX = badgeScale
                 scaleY = badgeScale
             }
-            .clip(CircleShape)
-            .background(
-                Brush.radialGradient(
-                    colors = listOf(
-                        KickoffCanopyElevated,
-                        KickoffTurfSurface
-                    )
-                )
-            )
-            .border(
-                width = 1.dp,
-                color = if (isSelected) KickoffFloodlightVolt else accentColor.copy(alpha = 0.85f),
-                shape = CircleShape
-            )
+            .clip(emblemShape)
     ) {
-        Text(
-            text = monogram,
-            color = KickoffFloodlightVolt,
-            fontSize = (sizeDp * 0.31f).sp,
-            fontWeight = FontWeight.ExtraBold,
-            maxLines = 1
-        )
-        if (logoUrl.isNotBlank()) {
-            AsyncImage(
-                model = logoUrl,
-                contentDescription = tournamentName,
-                contentScale = ContentScale.Fit,
-                modifier = Modifier
-                    .size((sizeDp - 4).dp)
-                    .clip(CircleShape)
+        if (useCustomVector) {
+            KickoffCustomCompetitionEmblem(
+                tournamentId = tournamentId,
+                modifier = Modifier.fillMaxSize()
             )
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .border(
+                        width = 1.1.dp,
+                        color = if (isSelected) KickoffFloodlightVolt else accentColor.copy(alpha = 0.9f),
+                        shape = emblemShape
+                    )
+            )
+        } else {
+            Box(
+                contentAlignment = Alignment.Center,
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(
+                        Brush.verticalGradient(
+                            listOf(
+                                Color(0xFFF4F8F6),
+                                Color(0xFFE4ECE8)
+                            )
+                        )
+                    )
+                    .border(
+                        width = 1.1.dp,
+                        color = if (isSelected) KickoffFloodlightVolt else accentColor.copy(alpha = 0.92f),
+                        shape = emblemShape
+                    )
+            ) {
+                if (logoUrl.isNotBlank()) {
+                    SubcomposeAsyncImage(
+                        model = logoUrl,
+                        contentDescription = tournamentName,
+                        contentScale = ContentScale.Fit,
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .padding((sizeDp * 0.13f).coerceAtLeast(2.5f).dp),
+                        loading = { renderMonogramFallback() },
+                        error = { renderMonogramFallback() }
+                    )
+                } else {
+                    renderMonogramFallback()
+                }
+            }
         }
     }
 }
@@ -4460,7 +4570,7 @@ private fun FlashscoreMatchCard(
                 Row(
                     modifier = Modifier
                         .weight(1f)
-                        .padding(start = 8.dp, end = 10.dp),
+                        .padding(start = 8.dp, end = 6.dp),
                     horizontalArrangement = Arrangement.Start,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
@@ -4500,6 +4610,28 @@ private fun FlashscoreMatchCard(
                         )
                     }
                 }
+
+                // 4. Far-Right Match Pin Star (`pin_match_btn_${match.matchId}`)
+                Box(
+                    contentAlignment = Alignment.Center,
+                    modifier = Modifier
+                        .padding(end = 8.dp)
+                        .size(26.dp)
+                        .clip(CircleShape)
+                        .clickable { onTogglePinMatch() }
+                        .testTag("pin_match_btn_${match.matchId}")
+                ) {
+                    Icon(
+                        imageVector = if (isMatchPinned || hasFavTeam) Icons.Default.Star else Icons.Default.StarBorder,
+                        contentDescription = "Pin Match",
+                        tint = when {
+                            isMatchPinned -> KickoffTrophyGold
+                            hasFavTeam -> KickoffPitchEmerald
+                            else -> KickoffSlateMuted.copy(alpha = 0.50f)
+                        },
+                        modifier = Modifier.size(14.dp)
+                    )
+                }
             }
 
             // SUBTLE DIVIDER BETWEEN SCOREBOARD ROW AND STREAMLINED BROADCAST STRIP
@@ -4518,7 +4650,7 @@ private fun FlashscoreMatchCard(
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                // Left: Single Sleek Provider Micro-Pill + Clean Channel Suffix + `+N` Alternate Pill + Compact Pin Button
+                // Left: Single Sleek Provider Micro-Pill + Clean Channel Suffix + `+N` Alternate Pill
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(5.dp),
@@ -4562,26 +4694,6 @@ private fun FlashscoreMatchCard(
                                 modifier = Modifier.padding(horizontal = 5.dp, vertical = 1.dp)
                             )
                         }
-                    }
-
-                    Box(
-                        contentAlignment = Alignment.Center,
-                        modifier = Modifier
-                            .size(20.dp)
-                            .clip(CircleShape)
-                            .clickable { onTogglePinMatch() }
-                            .testTag("pin_match_btn_${match.matchId}")
-                    ) {
-                        Icon(
-                            imageVector = if (isMatchPinned || hasFavTeam) Icons.Default.Star else Icons.Default.StarBorder,
-                            contentDescription = "Pin Match",
-                            tint = when {
-                                isMatchPinned -> KickoffTrophyGold
-                                hasFavTeam -> KickoffPitchEmerald
-                                else -> KickoffSlateMuted.copy(alpha = 0.55f)
-                            },
-                            modifier = Modifier.size(13.dp)
-                        )
                     }
                 }
 
@@ -4761,7 +4873,9 @@ private fun TvKickoffStadiumScreen(
             matchesByDay = matchesByDay,
             liveCountToday = liveMatchesCount,
             onSelectDay = onSelectMatchDay,
-            activeEdition = SetPlayEdition.TV
+            activeEdition = SetPlayEdition.TV,
+            onOpenDateSelectorModal = onOpenDateSelectorModal,
+            onResetToToday = { onSelectMatchDay(MatchDayTab.TODAY) }
         )
 
         // 60% / 40% Widescreen Split-Board
@@ -4785,7 +4899,11 @@ private fun TvKickoffStadiumScreen(
                         EmptyMatchesCard(
                             selectedFilter = selectedTournamentFilter,
                             onResetFilter = onResetFilter,
-                            onOpenCustomize = { onOpenCustomizeModal(0) }
+                            onOpenCustomize = { onOpenCustomizeModal(0) },
+                            selectedDay = selectedMatchDay,
+                            selectedCountryZone = selectedCountryZone,
+                            matchesByDay = matchesByDay,
+                            onSelectDay = onSelectMatchDay
                         )
                     }
                 } else {
@@ -5612,8 +5730,19 @@ fun TeamCrestImage(
 private fun EmptyMatchesCard(
     selectedFilter: String,
     onResetFilter: () -> Unit,
-    onOpenCustomize: () -> Unit
+    onOpenCustomize: () -> Unit,
+    selectedDay: MatchDayTab = MatchDayTab.TODAY,
+    selectedCountryZone: UserCountryZone = UserZoneRegistry.defaultCountryZone,
+    matchesByDay: Map<MatchDayTab, List<FootballMatch>> = emptyMap(),
+    onSelectDay: (MatchDayTab) -> Unit = {}
 ) {
+    val nextActiveDay = remember(selectedDay, matchesByDay) {
+        MatchDayTab.forwardTimelineTabs.firstOrNull {
+            it != selectedDay && matchesByDay[it].orEmpty().isNotEmpty()
+        }
+    }
+    val isQuietAllDayWithNextSlate = selectedFilter == "ALL" && nextActiveDay != null
+
     Card(
         colors = CardDefaults.cardColors(containerColor = KickoffTurfSurface),
         shape = RoundedCornerShape(16.dp),
@@ -5636,11 +5765,14 @@ private fun EmptyMatchesCard(
             )
             Spacer(modifier = Modifier.height(10.dp))
             Text(
-                text = if (selectedFilter == "MY_TEAMS") {
-                    "No Matches Found for Your Favorite Teams"
-                } else {
-                    "No Matches Match Current Filter"
-                } ,
+                text = when {
+                    isQuietAllDayWithNextSlate ->
+                        "Quiet Matchday on ${selectedDay.getDynamicDateSubtitle(selectedCountryZone.timeZoneId)}"
+                    selectedFilter == "MY_TEAMS" ->
+                        "No Matches Found for Your Favorite Teams"
+                    else ->
+                        "No Matches Match Current Filter"
+                },
                 color = KickoffFloodlightWhite,
                 fontSize = 15.sp,
                 fontWeight = FontWeight.ExtraBold,
@@ -5648,12 +5780,33 @@ private fun EmptyMatchesCard(
             )
             Spacer(modifier = Modifier.height(6.dp))
             Text(
-                text = "You can switch back to All Leagues or customize your favorite teams and active competitions.",
+                text = if (isQuietAllDayWithNextSlate) {
+                    "No Tier-1 fixtures are scheduled for this date. Jump directly to the next active broadcast slate."
+                } else {
+                    "You can switch back to All Leagues or customize your favorite teams and active competitions."
+                },
                 color = KickoffMistSilver,
                 fontSize = 12.sp,
                 textAlign = TextAlign.Center
             )
             Spacer(modifier = Modifier.height(14.dp))
+            if (isQuietAllDayWithNextSlate && nextActiveDay != null) {
+                Button(
+                    onClick = { onSelectDay(nextActiveDay) },
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = KickoffFloodlightVolt,
+                        contentColor = KickoffPitchBlack
+                    ),
+                    modifier = Modifier.testTag("jump_next_active_day_btn")
+                ) {
+                    Text(
+                        text = "Jump to ${nextActiveDay.getShortDayCode(selectedCountryZone.timeZoneId)} ${nextActiveDay.getDynamicDateSubtitle(selectedCountryZone.timeZoneId)} (${matchesByDay[nextActiveDay].orEmpty().size} Matches) →",
+                        fontWeight = FontWeight.ExtraBold,
+                        fontSize = 12.sp
+                    )
+                }
+                Spacer(modifier = Modifier.height(10.dp))
+            }
             Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                 Button(
                     onClick = onResetFilter,

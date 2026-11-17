@@ -302,11 +302,13 @@ fun MainAppContent(
     val kickoffSourceHealth by mainViewModel.kickoffSourceHealth.collectAsStateWithLifecycle()
     val kickoffSourceAlert by mainViewModel.kickoffSourceAlert.collectAsStateWithLifecycle()
     val hasKickoffSourceIssue = remember(kickoffSourceAlert, kickoffSourceHealth) {
-        kickoffSourceAlert != null || kickoffSourceHealth.any {
-            it.status == com.example.data.repository.SourceHealthStatus.KEY_INVALID_OR_EXPIRED ||
-                it.status == com.example.data.repository.SourceHealthStatus.QUOTA_WARNING ||
-                it.status == com.example.data.repository.SourceHealthStatus.UNREACHABLE
+        val customKeyBroken = kickoffSourceHealth.any {
+            it.isUsingCustomKey && it.status == com.example.data.repository.SourceHealthStatus.KEY_INVALID_OR_EXPIRED
         }
+        val healthyCount = kickoffSourceHealth.count {
+            it.status == com.example.data.repository.SourceHealthStatus.HEALTHY
+        }
+        kickoffSourceAlert != null || customKeyBroken || healthyCount < 2
     }
 
     val liveMatchesCount = remember(todayMatches) {

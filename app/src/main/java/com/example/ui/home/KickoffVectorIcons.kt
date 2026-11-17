@@ -947,3 +947,307 @@ fun KickoffSettingsHexGearIcon(
         )
     }
 }
+
+/**
+ * Returns `true` when [tournamentId] uses a bespoke high-precision Compose Canvas vector emblem
+ * instead of an upstream PNG badge (`intl_official`, `intl_friendly`, `caf_cl`, `caf_confed`).
+ */
+fun hasCustomCompetitionVectorEmblem(tournamentId: String): Boolean {
+    return tournamentId in setOf("intl_official", "intl_friendly", "caf_cl", "caf_confed")
+}
+
+private fun DrawScopeDrawStar(
+    path: Path,
+    cx: Float,
+    cy: Float,
+    outerRadius: Float,
+    innerRadius: Float = outerRadius * 0.44f
+) {
+    path.reset()
+    for (i in 0 until 10) {
+        val radius = if (i % 2 == 0) outerRadius else innerRadius
+        val angleRad = Math.toRadians((i * 36.0) - 90.0)
+        val px = cx + (radius * cos(angleRad)).toFloat()
+        val py = cy + (radius * sin(angleRad)).toFloat()
+        if (i == 0) path.moveTo(px, py) else path.lineTo(px, py)
+    }
+    path.close()
+}
+
+/**
+ * Bespoke multi-layered Compose Canvas vector emblems for International and CAF competitions:
+ * - `"intl_official"`: Deep royal obsidian-emerald squircle with gold globe meridians and World Championship Trophy silhouette + crown star.
+ * - `"intl_friendly"`: Deep sapphire-slate squircle with Sky-Cyan & Gold dual interlocking national shields + central 5-point international star.
+ * - `"caf_cl"`: Deep stadium-emerald squircle with bold Gold hexagonal championship shield, stylized African continent silhouette, and 3 championship stars above a central cup.
+ * - `"caf_confed"`: Deep teal-jade squircle with Mint-Jade & Copper-Gold diamond-ribboned crest and central laurel wreath + star.
+ */
+@Composable
+fun KickoffCustomCompetitionEmblem(
+    tournamentId: String,
+    modifier: Modifier = Modifier
+) {
+    Canvas(modifier = modifier) {
+        val w = size.width
+        val h = size.height
+        val minDim = size.minDimension
+        val cx = w * 0.5f
+        val cy = h * 0.5f
+        val cornerR = CornerRadius(minDim * 0.24f, minDim * 0.24f)
+        val starPath = Path()
+
+        when (tournamentId) {
+            "intl_official" -> {
+                // Deep royal obsidian-emerald squircle background
+                drawRoundRect(
+                    brush = Brush.verticalGradient(
+                        colors = listOf(Color(0xFF19382E), Color(0xFF0E221C))
+                    ),
+                    cornerRadius = cornerR
+                )
+                // Inner gold crest ring
+                val ringRadius = minDim * 0.36f
+                drawCircle(
+                    color = KickoffTrophyGold.copy(alpha = 0.32f),
+                    radius = ringRadius,
+                    center = Offset(cx, cy),
+                    style = Stroke(width = (minDim * 0.045f).coerceAtLeast(1.0f))
+                )
+                // Globe latitude & meridian arcs in soft gold
+                drawArc(
+                    color = KickoffTrophyGold.copy(alpha = 0.28f),
+                    startAngle = 200f,
+                    sweepAngle = 140f,
+                    useCenter = false,
+                    topLeft = Offset(cx - ringRadius * 0.85f, cy - ringRadius * 0.45f),
+                    size = Size(ringRadius * 1.7f, ringRadius * 0.9f),
+                    style = Stroke(width = (minDim * 0.035f).coerceAtLeast(0.8f))
+                )
+                drawArc(
+                    color = KickoffTrophyGold.copy(alpha = 0.28f),
+                    startAngle = 20f,
+                    sweepAngle = 140f,
+                    useCenter = false,
+                    topLeft = Offset(cx - ringRadius * 0.85f, cy - ringRadius * 0.45f),
+                    size = Size(ringRadius * 1.7f, ringRadius * 0.9f),
+                    style = Stroke(width = (minDim * 0.035f).coerceAtLeast(0.8f))
+                )
+                // Central gleaming World Championship Trophy silhouette
+                val trophyPath = Path().apply {
+                    moveTo(w * 0.37f, h * 0.34f)
+                    lineTo(w * 0.63f, h * 0.34f)
+                    quadraticTo(w * 0.61f, h * 0.54f, w * 0.535f, h * 0.58f)
+                    lineTo(w * 0.56f, h * 0.72f)
+                    lineTo(w * 0.62f, h * 0.76f)
+                    lineTo(w * 0.38f, h * 0.76f)
+                    lineTo(w * 0.44f, h * 0.72f)
+                    lineTo(w * 0.465f, h * 0.58f)
+                    quadraticTo(w * 0.39f, h * 0.54f, w * 0.37f, h * 0.34f)
+                    close()
+                }
+                drawPath(
+                    path = trophyPath,
+                    brush = Brush.verticalGradient(
+                        colors = listOf(Color(0xFFFFE082), KickoffTrophyGold, Color(0xFFD99B26))
+                    )
+                )
+                // Globe crown sphere at top of trophy + top star
+                drawCircle(
+                    color = Color(0xFFFFE58F),
+                    radius = minDim * 0.11f,
+                    center = Offset(cx, h * 0.35f)
+                )
+                DrawScopeDrawStar(
+                    path = starPath,
+                    cx = cx,
+                    cy = h * 0.19f,
+                    outerRadius = minDim * 0.085f
+                )
+                drawPath(path = starPath, color = KickoffFloodlightVolt)
+            }
+
+            "intl_friendly" -> {
+                // Deep sapphire-slate squircle background
+                drawRoundRect(
+                    brush = Brush.verticalGradient(
+                        colors = listOf(Color(0xFF163854), Color(0xFF0F2537))
+                    ),
+                    cornerRadius = cornerR
+                )
+                val strokeW = (minDim * 0.065f).coerceAtLeast(1.2f)
+                // Left national shield in Sky-Cyan (#38BDF8)
+                val leftShield = Path().apply {
+                    moveTo(w * 0.38f, h * 0.22f)
+                    lineTo(w * 0.58f, h * 0.27f)
+                    lineTo(w * 0.55f, h * 0.54f)
+                    quadraticTo(w * 0.48f, h * 0.71f, w * 0.36f, h * 0.77f)
+                    quadraticTo(w * 0.24f, h * 0.69f, w * 0.21f, h * 0.52f)
+                    lineTo(w * 0.20f, h * 0.27f)
+                    close()
+                }
+                drawPath(
+                    path = leftShield,
+                    color = Color(0xFF38BDF8).copy(alpha = 0.24f)
+                )
+                drawPath(
+                    path = leftShield,
+                    color = Color(0xFF38BDF8),
+                    style = Stroke(width = strokeW, join = StrokeJoin.Round)
+                )
+
+                // Right interlocking shield in Gold (#F5C451)
+                val rightShield = Path().apply {
+                    moveTo(w * 0.62f, h * 0.22f)
+                    lineTo(w * 0.80f, h * 0.27f)
+                    lineTo(w * 0.79f, h * 0.52f)
+                    quadraticTo(w * 0.76f, h * 0.69f, w * 0.64f, h * 0.77f)
+                    quadraticTo(w * 0.52f, h * 0.71f, w * 0.45f, h * 0.54f)
+                    lineTo(w * 0.42f, h * 0.27f)
+                    close()
+                }
+                drawPath(
+                    path = rightShield,
+                    color = KickoffTrophyGold.copy(alpha = 0.20f)
+                )
+                drawPath(
+                    path = rightShield,
+                    color = KickoffTrophyGold,
+                    style = Stroke(width = strokeW, join = StrokeJoin.Round)
+                )
+
+                // Central 5-point international star
+                DrawScopeDrawStar(
+                    path = starPath,
+                    cx = cx,
+                    cy = cy * 0.98f,
+                    outerRadius = minDim * 0.16f
+                )
+                drawPath(path = starPath, color = KickoffFloodlightWhite)
+            }
+
+            "caf_cl" -> {
+                // Deep stadium-emerald squircle (#0B261E)
+                drawRoundRect(
+                    brush = Brush.verticalGradient(
+                        colors = listOf(Color(0xFF11382C), Color(0xFF0B261E))
+                    ),
+                    cornerRadius = cornerR
+                )
+                // Bold Gold (#F5C451) hexagonal championship shield
+                val hexShield = Path().apply {
+                    moveTo(cx, h * 0.13f)
+                    lineTo(w * 0.82f, h * 0.28f)
+                    lineTo(w * 0.78f, h * 0.66f)
+                    lineTo(cx, h * 0.87f)
+                    lineTo(w * 0.22f, h * 0.66f)
+                    lineTo(w * 0.18f, h * 0.28f)
+                    close()
+                }
+                drawPath(
+                    path = hexShield,
+                    color = Color(0xFF071A14)
+                )
+                drawPath(
+                    path = hexShield,
+                    color = KickoffTrophyGold,
+                    style = Stroke(width = (minDim * 0.065f).coerceAtLeast(1.2f), join = StrokeJoin.Round)
+                )
+
+                // Stylized African continent silhouette in #10B981
+                val africaPath = Path().apply {
+                    moveTo(w * 0.36f, h * 0.36f)
+                    lineTo(w * 0.56f, h * 0.34f)
+                    lineTo(w * 0.67f, h * 0.45f)
+                    lineTo(w * 0.58f, h * 0.58f)
+                    lineTo(w * 0.53f, h * 0.76f)
+                    lineTo(w * 0.44f, h * 0.72f)
+                    lineTo(w * 0.43f, h * 0.55f)
+                    lineTo(w * 0.32f, h * 0.46f)
+                    close()
+                }
+                drawPath(
+                    path = africaPath,
+                    color = KickoffPitchEmerald.copy(alpha = 0.55f)
+                )
+
+                // Central gold cup icon
+                val cupPath = Path().apply {
+                    moveTo(w * 0.40f, h * 0.42f)
+                    lineTo(w * 0.60f, h * 0.42f)
+                    lineTo(w * 0.55f, h * 0.62f)
+                    lineTo(w * 0.57f, h * 0.72f)
+                    lineTo(w * 0.43f, h * 0.72f)
+                    lineTo(w * 0.45f, h * 0.62f)
+                    close()
+                }
+                drawPath(path = cupPath, color = KickoffTrophyGold)
+
+                // 3 gold championship stars above the cup
+                val starRadius = minDim * 0.058f
+                DrawScopeDrawStar(starPath, cx - minDim * 0.14f, h * 0.29f, starRadius)
+                drawPath(starPath, color = KickoffTrophyGold)
+                DrawScopeDrawStar(starPath, cx, h * 0.25f, starRadius * 1.15f)
+                drawPath(starPath, color = KickoffFloodlightVolt)
+                DrawScopeDrawStar(starPath, cx + minDim * 0.14f, h * 0.29f, starRadius)
+                drawPath(starPath, color = KickoffTrophyGold)
+            }
+
+            else -> {
+                // "caf_confed" (CAF Confederation Cup): Deep teal-jade squircle (#0A2928)
+                drawRoundRect(
+                    brush = Brush.verticalGradient(
+                        colors = listOf(Color(0xFF113D3B), Color(0xFF0A2928))
+                    ),
+                    cornerRadius = cornerR
+                )
+                // Mint-Jade (#34D399) & Copper-Gold (#FBBF24) diamond-ribboned crest
+                val diamondPath = Path().apply {
+                    moveTo(cx, h * 0.12f)
+                    lineTo(w * 0.86f, cy)
+                    lineTo(cx, h * 0.88f)
+                    lineTo(w * 0.14f, cy)
+                    close()
+                }
+                drawPath(
+                    path = diamondPath,
+                    color = Color(0xFF34D399).copy(alpha = 0.20f)
+                )
+                drawPath(
+                    path = diamondPath,
+                    color = Color(0xFF34D399),
+                    style = Stroke(width = (minDim * 0.065f).coerceAtLeast(1.2f), join = StrokeJoin.Round)
+                )
+
+                // Copper-Gold laurel wreath arcs
+                val wreathStroke = (minDim * 0.055f).coerceAtLeast(1.0f)
+                drawArc(
+                    color = Color(0xFFFBBF24),
+                    startAngle = 115f,
+                    sweepAngle = 130f,
+                    useCenter = false,
+                    topLeft = Offset(w * 0.27f, h * 0.28f),
+                    size = Size(w * 0.46f, h * 0.44f),
+                    style = Stroke(width = wreathStroke, cap = StrokeCap.Round)
+                )
+                drawArc(
+                    color = Color(0xFFFBBF24),
+                    startAngle = 295f,
+                    sweepAngle = 130f,
+                    useCenter = false,
+                    topLeft = Offset(w * 0.27f, h * 0.28f),
+                    size = Size(w * 0.46f, h * 0.44f),
+                    style = Stroke(width = wreathStroke, cap = StrokeCap.Round)
+                )
+
+                // Central star in Copper-Gold
+                DrawScopeDrawStar(
+                    path = starPath,
+                    cx = cx,
+                    cy = cy,
+                    outerRadius = minDim * 0.145f
+                )
+                drawPath(path = starPath, color = Color(0xFFFBBF24))
+            }
+        }
+    }
+}
+

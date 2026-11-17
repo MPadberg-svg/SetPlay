@@ -4883,20 +4883,31 @@ class TvSyncDeviceSeparationComposeTest {
             it.provider == com.example.data.repository.KickoffProviderId.FOOTBALL_DATA_ORG
         }
         assertEquals(com.example.data.repository.SourceHealthStatus.QUOTA_WARNING, rateLimitedFd.status)
-        assertNotNull(sourceMonitor.activeSourceAlertFlow.value)
-
-        sourceMonitor.dismissAlert()
+        // V8 non-alarmist rule: single-provider rate limit does not raise an alert while API_FOOTBALL & keyless feeds are healthy
         assertNull(sourceMonitor.activeSourceAlertFlow.value)
 
         sourceMonitor.recordRuntimeResponse(
             provider = com.example.data.repository.KickoffProviderId.SPORT_API_AI,
             httpCode = 401
         )
-        val expiredSportApi = sourceMonitor.sourceHealthFlow.value.first {
+        val unconfiguredSportApi = sourceMonitor.sourceHealthFlow.value.first {
             it.provider == com.example.data.repository.KickoffProviderId.SPORT_API_AI
         }
-        assertEquals(com.example.data.repository.SourceHealthStatus.KEY_INVALID_OR_EXPIRED, expiredSportApi.status)
-        assertTrue(sourceMonitor.activeSourceAlertFlow.value?.contains("SportAPI.ai") == true)
+        assertEquals(com.example.data.repository.SourceHealthStatus.UNCONFIGURED, unconfiguredSportApi.status)
+        assertNull(sourceMonitor.activeSourceAlertFlow.value)
+
+        // When both primary keyed feeds (API_FOOTBALL & FOOTBALL_DATA_ORG) fail with 401, the alert banner activates
+        sourceMonitor.recordRuntimeResponse(
+            provider = com.example.data.repository.KickoffProviderId.API_FOOTBALL,
+            httpCode = 401
+        )
+        sourceMonitor.recordRuntimeResponse(
+            provider = com.example.data.repository.KickoffProviderId.FOOTBALL_DATA_ORG,
+            httpCode = 401
+        )
+        assertNotNull(sourceMonitor.activeSourceAlertFlow.value)
+        sourceMonitor.dismissAlert()
+        assertNull(sourceMonitor.activeSourceAlertFlow.value)
 
         // Verify API-Football /status validation response parser (Active Account vs Token Error)
         val validStatusJson = """
@@ -5575,5 +5586,54 @@ class TvSyncDeviceSeparationComposeTest {
             )
         )
     }
+
+    @Test
+    fun testKickoffV8SmartSourceAlertsSquircleEmblemsAndStreamlinedNavigation() {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+
+        // 1. Smart Keyless & Secondary Source Health Protection (KickoffSourceMonitor)
+        val sourceMonitor = com.example.data.repository.KickoffSourceMonitor(
+            context = context,
+            httpClient = IptvRepository.sharedOkHttpClient
+        )
+        sourceMonitor.resetToDefaultKey(com.example.data.repository.KickoffProviderId.SPORT_API_AI)
+        assertFalse(sourceMonitor.isUsingCustomKey(com.example.data.repository.KickoffProviderId.SPORT_API_AI))
+
+        // Simulate Cloudflare 403 on a keyless public feed
+        sourceMonitor.recordRuntimeResponse(
+            provider = com.example.data.repository.KickoffProviderId.SOFASCORE_LIVE,
+            httpCode = 403
+        )
+        val sofascoreSnapshot = sourceMonitor.sourceHealthFlow.value.first {
+            it.provider == com.example.data.repository.KickoffProviderId.SOFASCORE_LIVE
+        }
+        assertEquals(
+            com.example.data.repository.SourceHealthStatus.HEALTHY,
+            sofascoreSnapshot.status
+        )
+        assertNull(sourceMonitor.activeSourceAlertFlow.value)
+
+        // Simulate 401 on optional secondary SPORT_API_AI when no custom key is configured
+        sourceMonitor.recordRuntimeResponse(
+            provider = com.example.data.repository.KickoffProviderId.SPORT_API_AI,
+            httpCode = 401
+        )
+        val sportApiSnapshot = sourceMonitor.sourceHealthFlow.value.first {
+            it.provider == com.example.data.repository.KickoffProviderId.SPORT_API_AI
+        }
+        assertEquals(
+            com.example.data.repository.SourceHealthStatus.UNCONFIGURED,
+            sportApiSnapshot.status
+        )
+        assertNull(sourceMonitor.activeSourceAlertFlow.value)
+
+        // 2. Custom Competition Vector Emblem Registry (hasCustomCompetitionVectorEmblem)
+        assertTrue(com.example.ui.home.hasCustomCompetitionVectorEmblem("intl_official"))
+        assertTrue(com.example.ui.home.hasCustomCompetitionVectorEmblem("intl_friendly"))
+        assertTrue(com.example.ui.home.hasCustomCompetitionVectorEmblem("caf_cl"))
+        assertTrue(com.example.ui.home.hasCustomCompetitionVectorEmblem("caf_confed"))
+        assertFalse(com.example.ui.home.hasCustomCompetitionVectorEmblem("uefa_cl"))
+    }
 }
+
 
