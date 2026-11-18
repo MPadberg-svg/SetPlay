@@ -653,7 +653,9 @@ class FootballRepository(
     internal fun findOrBuildMergeKey(
         mergedMap: Map<String, FootballMatch>,
         homeName: String,
-        awayName: String
+        awayName: String,
+        tournamentId: String = "",
+        kickoffTimeFormatted: String = ""
     ): String {
         val h = normalizeTeamNameForMerge(homeName).ifBlank { homeName.lowercase(Locale.ROOT).trim() }
         val a = normalizeTeamNameForMerge(awayName).ifBlank { awayName.lowercase(Locale.ROOT).trim() }
@@ -665,6 +667,20 @@ class FootballRepository(
                 areSameClubNames(existingMatch.awayTeamName, awayName)
             ) {
                 return existingKey
+            }
+        }
+        if (tournamentId.isNotBlank() &&
+            kickoffTimeFormatted.isNotBlank() &&
+            !kickoffTimeFormatted.equals("TBD", ignoreCase = true)
+        ) {
+            for ((existingKey, existingMatch) in mergedMap) {
+                if (existingMatch.tournamentId == tournamentId &&
+                    existingMatch.kickoffTimeFormatted == kickoffTimeFormatted &&
+                    (areSameClubNames(existingMatch.homeTeamName, homeName) ||
+                        areSameClubNames(existingMatch.awayTeamName, awayName))
+                ) {
+                    return existingKey
+                }
             }
         }
         return exactKey
@@ -1077,7 +1093,7 @@ class FootballRepository(
 
         // Step 1: Seed with TheSportsDB v1 (`123`) fixtures (authoritative for `/tiny` badges & `idEvent`)
         for (tsdbMatch in parallelResults.sportsDbMatches) {
-            val key = findOrBuildMergeKey(mergedMap, tsdbMatch.homeTeamName, tsdbMatch.awayTeamName)
+            val key = findOrBuildMergeKey(mergedMap, tsdbMatch.homeTeamName, tsdbMatch.awayTeamName, tsdbMatch.tournamentId, tsdbMatch.kickoffTimeFormatted)
             val existing = mergedMap[key]
             if (existing == null) {
                 mergedMap[key] = tsdbMatch
@@ -1088,7 +1104,7 @@ class FootballRepository(
 
         // Step 2: Merge SportAPI.ai fixtures & real-time live scores (authoritative for live scores, minute clock & `1H`/`HT`/`2H`/`FT` status)
         for (sportApiMatch in parallelResults.sportApiMatches) {
-            val key = findOrBuildMergeKey(mergedMap, sportApiMatch.homeTeamName, sportApiMatch.awayTeamName)
+            val key = findOrBuildMergeKey(mergedMap, sportApiMatch.homeTeamName, sportApiMatch.awayTeamName, sportApiMatch.tournamentId, sportApiMatch.kickoffTimeFormatted)
             val existing = mergedMap[key]
             if (existing == null) {
                 mergedMap[key] = sportApiMatch
@@ -1101,7 +1117,7 @@ class FootballRepository(
 
         // Step 3: Supplement with API-Football, Football-Data.org, 365Scores & ESPN real-time scoreboard fixtures
         for (extraMatch in (parallelResults.apiFootballMatches + parallelResults.footballDataMatches + parallelResults.scores365Matches + parallelResults.espnMatches)) {
-            val key = findOrBuildMergeKey(mergedMap, extraMatch.homeTeamName, extraMatch.awayTeamName)
+            val key = findOrBuildMergeKey(mergedMap, extraMatch.homeTeamName, extraMatch.awayTeamName, extraMatch.tournamentId, extraMatch.kickoffTimeFormatted)
             val existing = mergedMap[key]
             if (existing == null) {
                 mergedMap[key] = extraMatch
@@ -1162,18 +1178,44 @@ class FootballRepository(
         primaryLive: FootballMatch,
         badgeAndTvSource: FootballMatch
     ): FootballMatch {
-        val bestHomeBadge = when {
+        val primaryHomeIsPng = primaryLive.homeTeamBadge.isNotBlank() && !isSvgBadgeUrl(primaryLive.homeTeamBadge)
+        val secondaryHomeIsPng = badgeAndTvSource.homeTeamBadge.isNotBlank() && !isSvgBadgeUrl(badgeAndTvSource.homeTeamBadge)
+        val primaryAwayIsPng = primaryLive.awayTeamBadge.isNotBlank() && !isSvgBadgeUrl(primaryLive.awayTeamBadge)
+        val secondaryAwayIsPng = badgeAndTvSource.awayTeamBadge.isNotBlank() && !isSvgBadgeUrl(badgeAndTvSource.awayTeamBadge)
+
+        val resolvedHomeName = canonicalizeDisplayTeamName(
+            if (!primaryHomeIsPng && secondaryHomeIsPng && badgeAndTvSource.homeTeamName.isNotBlank()) {
+                badgeAndTvSource.homeTeamName
+            } else {
+                primaryLive.homeTeamName
+            }
+        )
+        val resolvedAwayName = canonicalizeDisplayTeamName(
+            if (!primaryAwayIsPng && secondaryAwayIsPng && badgeAndTvSource.awayTeamName.isNotBlank()) {
+                badgeAndTvSource.awayTeamName
+            } else {
+                primaryLive.awayTeamName
+            }
+        )
+
+        val rawBestHomeBadge = when {
             badgeAndTvSource.homeTeamBadge.endsWith("/tiny") -> badgeAndTvSource.homeTeamBadge
             primaryLive.homeTeamBadge.endsWith("/tiny") -> primaryLive.homeTeamBadge
+            secondaryHomeIsPng -> toTinySportsDbBadgeUrl(badgeAndTvSource.homeTeamBadge)
+            primaryHomeIsPng -> toTinySportsDbBadgeUrl(primaryLive.homeTeamBadge)
             badgeAndTvSource.homeTeamBadge.isNotBlank() -> toTinySportsDbBadgeUrl(badgeAndTvSource.homeTeamBadge)
             else -> toTinySportsDbBadgeUrl(primaryLive.homeTeamBadge)
         }
-        val bestAwayBadge = when {
+        val rawBestAwayBadge = when {
             badgeAndTvSource.awayTeamBadge.endsWith("/tiny") -> badgeAndTvSource.awayTeamBadge
             primaryLive.awayTeamBadge.endsWith("/tiny") -> primaryLive.awayTeamBadge
+            secondaryAwayIsPng -> toTinySportsDbBadgeUrl(badgeAndTvSource.awayTeamBadge)
+            primaryAwayIsPng -> toTinySportsDbBadgeUrl(primaryLive.awayTeamBadge)
             badgeAndTvSource.awayTeamBadge.isNotBlank() -> toTinySportsDbBadgeUrl(badgeAndTvSource.awayTeamBadge)
             else -> toTinySportsDbBadgeUrl(primaryLive.awayTeamBadge)
         }
+        val bestHomeBadge = resolveFallbackClubCrestPngUrl(resolvedHomeName, rawBestHomeBadge)
+        val bestAwayBadge = resolveFallbackClubCrestPngUrl(resolvedAwayName, rawBestAwayBadge)
         val resolvedEventId = badgeAndTvSource.sportsDbEventId.ifBlank { primaryLive.sportsDbEventId }
         val resolvedEspnId = primaryLive.espnEventId.ifBlank { badgeAndTvSource.espnEventId }
         val resolvedApiFootballId = primaryLive.apiFootballFixtureId.ifBlank { badgeAndTvSource.apiFootballFixtureId }
@@ -1223,8 +1265,8 @@ class FootballRepository(
         }
 
         return primaryLive.copy(
-            homeTeamName = canonicalizeDisplayTeamName(primaryLive.homeTeamName),
-            awayTeamName = canonicalizeDisplayTeamName(primaryLive.awayTeamName),
+            homeTeamName = resolvedHomeName,
+            awayTeamName = resolvedAwayName,
             beinChannel = resolvedBeinChannel,
             liveMinuteOrBadge = resolvedLiveBadge,
             homeScore = resolvedHomeScore,
@@ -2195,7 +2237,7 @@ class FootballRepository(
 
         val mergedMap = LinkedHashMap<String, FootballMatch>()
         for (existing in existingMatches) {
-            val key = findOrBuildMergeKey(mergedMap, existing.homeTeamName, existing.awayTeamName)
+            val key = findOrBuildMergeKey(mergedMap, existing.homeTeamName, existing.awayTeamName, existing.tournamentId, existing.kickoffTimeFormatted)
             val prev = mergedMap[key]
             if (prev == null) {
                 mergedMap[key] = existing
@@ -2211,7 +2253,7 @@ class FootballRepository(
 
         // 1. Merge TheSportsDB updates (preserving existing live status if already live)
         for (tsdbMatch in sportsDbDayMatches) {
-            val key = findOrBuildMergeKey(mergedMap, tsdbMatch.homeTeamName, tsdbMatch.awayTeamName)
+            val key = findOrBuildMergeKey(mergedMap, tsdbMatch.homeTeamName, tsdbMatch.awayTeamName, tsdbMatch.tournamentId, tsdbMatch.kickoffTimeFormatted)
             val existing = mergedMap[key]
             if (existing == null) {
                 mergedMap[key] = tsdbMatch
@@ -2224,7 +2266,7 @@ class FootballRepository(
 
         // 2. Merge SportAPI.ai real-time live scores & match minutes (Primary live source of truth)
         for (sportApiMatch in sportApiLiveMatches) {
-            val key = findOrBuildMergeKey(mergedMap, sportApiMatch.homeTeamName, sportApiMatch.awayTeamName)
+            val key = findOrBuildMergeKey(mergedMap, sportApiMatch.homeTeamName, sportApiMatch.awayTeamName, sportApiMatch.tournamentId, sportApiMatch.kickoffTimeFormatted)
             val existing = mergedMap[key]
             if (existing == null) {
                 mergedMap[key] = sportApiMatch
@@ -2235,7 +2277,7 @@ class FootballRepository(
 
         // 3. Supplement with real-time scoreboard deltas (365Scores, Football-Data.org & ESPN)
         for (extraMatch in (extraScoreboardMatches + espnLiveMatches)) {
-            val key = findOrBuildMergeKey(mergedMap, extraMatch.homeTeamName, extraMatch.awayTeamName)
+            val key = findOrBuildMergeKey(mergedMap, extraMatch.homeTeamName, extraMatch.awayTeamName, extraMatch.tournamentId, extraMatch.kickoffTimeFormatted)
             val existing = mergedMap[key]
             if (existing == null) {
                 mergedMap[key] = extraMatch
@@ -2266,7 +2308,7 @@ class FootballRepository(
     internal fun deduplicateMatchesByCanonicalTeams(matches: List<FootballMatch>): List<FootballMatch> {
         val mergedMap = LinkedHashMap<String, FootballMatch>()
         for (match in matches) {
-            val key = findOrBuildMergeKey(mergedMap, match.homeTeamName, match.awayTeamName)
+            val key = findOrBuildMergeKey(mergedMap, match.homeTeamName, match.awayTeamName, match.tournamentId, match.kickoffTimeFormatted)
             val prev = mergedMap[key]
             if (prev == null) {
                 mergedMap[key] = match
@@ -2545,8 +2587,14 @@ class FootballRepository(
             if (!isValidFixtureForTournament(matchedTournament, homeName, awayName, countryName, combinedLeagueQuery, roundOrStage)) continue
             if (!passesInternationalQualificationFilter(matchedTournament, homeName, awayName)) continue
 
-            val homeBadge = homeObj?.optString("logo", homeObj.optString("badge", "")) ?: ""
-            val awayBadge = awayObj?.optString("logo", awayObj.optString("badge", "")) ?: ""
+            val homeBadge = resolveFallbackClubCrestPngUrl(
+                homeName,
+                homeObj?.optString("logo", homeObj.optString("badge", "")) ?: ""
+            )
+            val awayBadge = resolveFallbackClubCrestPngUrl(
+                awayName,
+                awayObj?.optString("logo", awayObj.optString("badge", "")) ?: ""
+            )
 
             val statusObj = item.optJSONObject("status")
             val rawStatusCode = (
@@ -2916,8 +2964,14 @@ class FootballRepository(
                 .takeIf { it.isNotBlank() && it != "null" } ?: matchedTournament.countryOrRegion
 
             // Append `/tiny` to strHomeTeamBadge and strAwayTeamBadge for fast mobile rendering
-            val homeBadge = toTinySportsDbBadgeUrl(ev.optString("strHomeTeamBadge", ev.optString("strBadge", "")))
-            val awayBadge = toTinySportsDbBadgeUrl(ev.optString("strAwayTeamBadge", ""))
+            val homeBadge = resolveFallbackClubCrestPngUrl(
+                homeName,
+                toTinySportsDbBadgeUrl(ev.optString("strHomeTeamBadge", ev.optString("strBadge", "")))
+            )
+            val awayBadge = resolveFallbackClubCrestPngUrl(
+                awayName,
+                toTinySportsDbBadgeUrl(ev.optString("strAwayTeamBadge", ""))
+            )
 
             val rawHomeScore = ev.optString("intHomeScore", "").takeIf { it != "null" }?.toIntOrNull()
             val rawAwayScore = ev.optString("intAwayScore", "").takeIf { it != "null" }?.toIntOrNull()
@@ -3279,8 +3333,8 @@ class FootballRepository(
                     if (!isValidFixtureForTournament(tournament, homeName, awayName, tournament.countryOrRegion, tournament.name, tournament.name)) continue
                     if (!passesInternationalQualificationFilter(tournament, homeName, awayName)) continue
 
-                    val homeLogo = homeTeamObj.optString("logo", "")
-                    val awayLogo = awayTeamObj.optString("logo", "")
+                    val homeLogo = resolveFallbackClubCrestPngUrl(homeName, homeTeamObj.optString("logo", ""))
+                    val awayLogo = resolveFallbackClubCrestPngUrl(awayName, awayTeamObj.optString("logo", ""))
 
                     val kickoffTime = formatIsoToMoroccoTime(dateIso)
                     val kickoffEpochMs = parseIsoToEpochMs(dateIso, dayTab, kickoffTime)
@@ -3589,10 +3643,12 @@ class FootballRepository(
             if (!isValidFixtureForTournament(matchedTournament, homeName, awayName, compCountryName, combinedCompLabel, stageName)) continue
             if (!passesInternationalQualificationFilter(matchedTournament, homeName, awayName)) continue
 
-            val homeBadge = homeComp.optString("imageUrl", "").takeIf { it.startsWith("http") }
+            val rawHomeBadge = homeComp.optString("imageUrl", "").takeIf { it.startsWith("http") }
                 ?: if (homeId > 0L) "https://imagecache.365scores.com/image/upload/f_png,w_80,h_80,c_limit,q_auto:eco/v1/Competitors/$homeId" else ""
-            val awayBadge = awayComp.optString("imageUrl", "").takeIf { it.startsWith("http") }
+            val rawAwayBadge = awayComp.optString("imageUrl", "").takeIf { it.startsWith("http") }
                 ?: if (awayId > 0L) "https://imagecache.365scores.com/image/upload/f_png,w_80,h_80,c_limit,q_auto:eco/v1/Competitors/$awayId" else ""
+            val homeBadge = resolveFallbackClubCrestPngUrl(homeName, rawHomeBadge)
+            val awayBadge = resolveFallbackClubCrestPngUrl(awayName, rawAwayBadge)
 
             val startIso = game.optString("startTime", "")
             if (!doesEventMatchExpectedIsoDate(startIso, expectedIsoDate)) continue
@@ -3825,15 +3881,23 @@ class FootballRepository(
                 val errorsObj = root.optJSONObject("errors")
                 if (errorsObj != null && errorsObj.length() > 0) {
                     val errText = errorsObj.keys().asSequence().firstOrNull()?.let { k -> errorsObj.optString(k, "") }.orEmpty()
+                    val isSuspendedDefaultNotice = (errText.contains("suspended", ignoreCase = true) ||
+                        errText.contains("dashboard.api-football.com", ignoreCase = true)) &&
+                        !sourceMonitor.isUsingCustomKey(KickoffProviderId.API_FOOTBALL)
                     val isPlanWindowNotice = errText.contains("Free plans", ignoreCase = true) ||
                         errText.contains("do not have access to this date", ignoreCase = true) ||
-                        errText.contains("plan", ignoreCase = true)
+                        errText.contains("plan", ignoreCase = true) ||
+                        isSuspendedDefaultNotice
                     if (isPlanWindowNotice) {
                         sourceMonitor.recordRuntimeResponse(
                             provider = KickoffProviderId.API_FOOTBALL,
                             httpCode = 200,
                             remainingQuota = remainingInt,
-                            errorNote = "Active • Free tier covers Today & Tomorrow"
+                            errorNote = if (isSuspendedDefaultNotice) {
+                                errText
+                            } else {
+                                "Active • Free tier covers Today & Tomorrow"
+                            }
                         )
                         return cached?.second ?: emptyList()
                     }
@@ -3935,11 +3999,11 @@ class FootballRepository(
                             liveMinuteOrBadge = badge,
                             homeTeamId = "apif_${homeObj.optInt("id", 0)}",
                             homeTeamName = homeName,
-                            homeTeamBadge = homeObj.optString("logo", ""),
+                            homeTeamBadge = resolveFallbackClubCrestPngUrl(homeName, homeObj.optString("logo", "")),
                             homeScore = homeGoalsVal,
                             awayTeamId = "apif_${awayObj.optInt("id", 0)}",
                             awayTeamName = awayName,
-                            awayTeamBadge = awayObj.optString("logo", ""),
+                            awayTeamBadge = resolveFallbackClubCrestPngUrl(awayName, awayObj.optString("logo", "")),
                             awayScore = awayGoalsVal,
                             stadiumName = stadiumName,
                             cityName = cityName,
@@ -4119,11 +4183,11 @@ class FootballRepository(
                     liveMinuteOrBadge = badge,
                     homeTeamId = "fdo_${homeObj.optLong("id", 0L)}",
                     homeTeamName = homeName,
-                    homeTeamBadge = homeObj.optString("crest", ""),
+                    homeTeamBadge = resolveFallbackClubCrestPngUrl(homeName, homeObj.optString("crest", "")),
                     homeScore = hGoals,
                     awayTeamId = "fdo_${awayObj.optLong("id", 0L)}",
                     awayTeamName = awayName,
-                    awayTeamBadge = awayObj.optString("crest", ""),
+                    awayTeamBadge = resolveFallbackClubCrestPngUrl(awayName, awayObj.optString("crest", "")),
                     awayScore = aGoals,
                     stadiumName = item.optString("venue", "").ifBlank { "Main Stadium" },
                     cityName = matchedTournament.countryOrRegion,
@@ -5036,7 +5100,8 @@ class FootballRepository(
             "fc", "ac", "ca", "club", "cf", "sc", "as", "rs", "de", "al", "el",
             "fk", "sk", "gnk", "bsc", "sv", "vfb", "vfl", "tsg", "ud", "cd", "rcd", "rc",
             "ogc", "losc", "osc", "sl", "cp", "bc", "acf", "ss", "ssc", "afc", "cfc", "sfc",
-            "kv", "krc", "rotterdam", "eindhoven", "amsterdam", "lisbon", "lissabon"
+            "kv", "krc", "rotterdam", "eindhoven", "amsterdam", "lisbon", "lissabon",
+            "1", "05", "04"
         )
 
         private val MENA_BROADCASTER_KEYWORDS = listOf(
@@ -5609,6 +5674,19 @@ class FootballRepository(
             "lime hall", "mokawloon", "egypt telecom", "al ahly", "zamalek", "pyramids"
         )
 
+        private val SECOND_TIER_SANDBOX_CLUB_KEYWORDS = listOf(
+            "hull city", "coventry", "sunderland", "leeds united", "middlesbrough", "burnley",
+            "sheffield wednesday", "west brom", "blackburn", "norwich", "watford", "plymouth",
+            "portsmouth", "derby county", "oxford united", "luton", "stoke city", "swansea",
+            "cardiff", "preston", "qpr", "millwall", "bristol city", "troyes", "racing santander",
+            "malaga", "deportivo la coruna", "real zaragoza", "sporting gijon", "levante", "elche",
+            "eibar", "almeria", "granada", "cadiz", "tenerife", "albirex"
+        )
+
+        private val FIRST_DIVISION_FILTERED_LEAGUES = setOf(
+            "premier_league", "laliga", "ligue_1", "serie_a", "bundesliga"
+        )
+
         fun isValidFixtureForTournament(
             tournament: TournamentCatalogItem,
             homeTeamName: String,
@@ -5621,7 +5699,16 @@ class FootballRepository(
                 return false
             }
             val countryLower = rawCountry.trim().lowercase(Locale.ROOT)
-            val combinedTeams = "${homeTeamName.lowercase(Locale.ROOT)} ${awayTeamName.lowercase(Locale.ROOT)}"
+            val combinedTeams = Normalizer.normalize(
+                "${homeTeamName.lowercase(Locale.ROOT)} ${awayTeamName.lowercase(Locale.ROOT)}",
+                Normalizer.Form.NFD
+            ).replace(Regex("\\p{InCombiningDiacriticalMarks}+"), "")
+
+            if (tournament.tournamentId in FIRST_DIVISION_FILTERED_LEAGUES &&
+                SECOND_TIER_SANDBOX_CLUB_KEYWORDS.any { combinedTeams.contains(it) }
+            ) {
+                return false
+            }
 
             return when (tournament.tournamentId) {
                 "botola_pro" -> {
@@ -6001,6 +6088,72 @@ class FootballRepository(
                     "celtic"
                 normalized.contains("rangers") && !normalized.contains("queens") ->
                     "rangers"
+                normalized.contains("koln") || normalized.contains("cologne") ->
+                    "fc koln"
+                normalized.contains("mainz") ->
+                    "mainz 05"
+                normalized.contains("stuttgart") ->
+                    "stuttgart"
+                normalized.contains("werder") || normalized == "bremen" ->
+                    "werder bremen"
+                normalized.contains("union berlin") ->
+                    "union berlin"
+                normalized.contains("st pauli") || normalized.contains("sankt pauli") ->
+                    "st pauli"
+                normalized.contains("heidenheim") ->
+                    "heidenheim"
+                normalized.contains("augsburg") ->
+                    "augsburg"
+                normalized.contains("wolfsburg") ->
+                    "wolfsburg"
+                normalized.contains("bochum") ->
+                    "bochum"
+                normalized.contains("hoffenheim") ->
+                    "hoffenheim"
+                normalized.contains("freiburg") ->
+                    "freiburg"
+                normalized.contains("alaves") ->
+                    "alaves"
+                normalized.contains("espanyol") ->
+                    "espanyol"
+                normalized.contains("mallorca") ->
+                    "mallorca"
+                normalized.contains("girona") ->
+                    "girona"
+                normalized.contains("osasuna") ->
+                    "osasuna"
+                normalized.contains("celta") ->
+                    "celta vigo"
+                normalized.contains("rayo") ->
+                    "rayo vallecano"
+                normalized.contains("leganes") ->
+                    "leganes"
+                normalized.contains("las palmas") ->
+                    "las palmas"
+                normalized.contains("valladolid") ->
+                    "real valladolid"
+                normalized.contains("saint etienne") || normalized.contains("st etienne") ->
+                    "saint etienne"
+                normalized.contains("le havre") || normalized == "havre" ->
+                    "le havre"
+                normalized.contains("strasbourg") ->
+                    "strasbourg"
+                normalized.contains("reims") ->
+                    "reims"
+                normalized.contains("lens") ->
+                    "lens"
+                normalized.contains("nice") ->
+                    "nice"
+                normalized.contains("nantes") ->
+                    "nantes"
+                normalized.contains("toulouse") ->
+                    "toulouse"
+                normalized.contains("auxerre") ->
+                    "auxerre"
+                normalized.contains("angers") ->
+                    "angers"
+                normalized.contains("montpellier") ->
+                    "montpellier"
                 normalized.contains("barcelona") || normalized == "barca" ->
                     "barcelona"
                 normalized.contains("real madrid") ->
@@ -6064,8 +6217,52 @@ class FootballRepository(
                 "cabo verde", "cape verde" -> "Cape Verde"
                 "congo dr", "rd congo", "dr congo", "democratic republic of congo" -> "DR Congo"
                 "the netherlands", "holland", "nederland" -> "Netherlands"
+                "fc cologne", "1. fc koln", "1. fc köln", "fc koln" -> "1. FC Köln"
+                "fc bayern munchen", "bayern munchen", "fc bayern münchen", "bayern münchen", "fc bayern munich" -> "Bayern Munich"
+                "deportivo alaves", "alaves", "alavés" -> "Alavés"
                 else -> trimmed
             }
+        }
+
+        private val FALLBACK_TIER1_CLUB_PNG_CRESTS = mapOf(
+            "Fulham" to "https://a.espncdn.com/i/teamlogos/soccer/500/370.png",
+            "Brighton" to "https://a.espncdn.com/i/teamlogos/soccer/500/331.png",
+            "Crystal Palace" to "https://a.espncdn.com/i/teamlogos/soccer/500/384.png",
+            "Ipswich" to "https://a.espncdn.com/i/teamlogos/soccer/500/373.png",
+            "1. FC Köln" to "https://a.espncdn.com/i/teamlogos/soccer/500/122.png",
+            "Athletic Bilbao" to "https://a.espncdn.com/i/teamlogos/soccer/500/93.png",
+            "Espanyol" to "https://a.espncdn.com/i/teamlogos/soccer/500/88.png",
+            "Alavés" to "https://a.espncdn.com/i/teamlogos/soccer/500/96.png",
+            "Osasuna" to "https://a.espncdn.com/i/teamlogos/soccer/500/97.png",
+            "Le Havre" to "https://a.espncdn.com/i/teamlogos/soccer/500/3236.png"
+        )
+
+        private fun isSvgBadgeUrl(url: String): Boolean {
+            val trimmed = url.trim()
+            return trimmed.endsWith(".svg", ignoreCase = true) ||
+                trimmed.contains(".svg?", ignoreCase = true)
+        }
+
+        fun resolveFallbackClubCrestPngUrl(teamName: String, currentBadgeUrl: String): String {
+            val cleanedCurrent = currentBadgeUrl.trim()
+            if (cleanedCurrent.isNotBlank() && !isSvgBadgeUrl(cleanedCurrent)) {
+                return cleanedCurrent
+            }
+            if (teamName.isBlank()) return cleanedCurrent
+
+            val indexedPng = GLOBAL_TEAM_INDEX.firstOrNull { team ->
+                team.badgeUrl.isNotBlank() &&
+                    !isSvgBadgeUrl(team.badgeUrl) &&
+                    areSameClubNames(team.name, teamName)
+            }?.badgeUrl
+            if (!indexedPng.isNullOrBlank()) return indexedPng
+
+            val builtinPng = FALLBACK_TIER1_CLUB_PNG_CRESTS.entries.firstOrNull { (clubName, _) ->
+                areSameClubNames(clubName, teamName)
+            }?.value
+            if (!builtinPng.isNullOrBlank()) return builtinPng
+
+            return cleanedCurrent
         }
 
         fun areSameClubNames(nameA: String, nameB: String): Boolean {

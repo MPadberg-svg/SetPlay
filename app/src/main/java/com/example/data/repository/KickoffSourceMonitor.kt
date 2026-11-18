@@ -150,6 +150,9 @@ class KickoffSourceMonitor(
             val isFalsePlanError = effectiveStatus == SourceHealthStatus.KEY_INVALID_OR_EXPIRED &&
                 (effectiveDetail.contains("Free plans", ignoreCase = true) ||
                     effectiveDetail.contains("do not have access to this date", ignoreCase = true))
+            val isSuspendedDefaultNotice = !state.isUsingCustomKey &&
+                (effectiveDetail.contains("suspended", ignoreCase = true) ||
+                    effectiveDetail.contains("dashboard.api-football.com", ignoreCase = true))
             val isKeylessFalseInvalid = !state.provider.requiresApiKey &&
                 effectiveStatus == SourceHealthStatus.KEY_INVALID_OR_EXPIRED
             val isDefaultSportApiFalseError = state.provider == KickoffProviderId.SPORT_API_AI &&
@@ -166,6 +169,17 @@ class KickoffSourceMonitor(
                     state.copy(
                         status = SourceHealthStatus.HEALTHY,
                         statusDetail = "Active & Healthy • Verified live response"
+                    )
+                }
+                isSuspendedDefaultNotice -> {
+                    anyHealed = true
+                    prefs.edit()
+                        .remove("persisted_status_${state.provider.id}")
+                        .remove("persisted_detail_${state.provider.id}")
+                        .apply()
+                    state.copy(
+                        status = SourceHealthStatus.UNCONFIGURED,
+                        statusDetail = "Built-in free key paused • 5-source automatic fallback active"
                     )
                 }
                 isKeylessFalseInvalid -> {
@@ -296,8 +310,19 @@ class KickoffSourceMonitor(
         val isPlanWindowNotice = errorNote != null &&
             (errorNote.contains("Free plans", ignoreCase = true) ||
                 errorNote.contains("do not have access to this date", ignoreCase = true))
+        val isSuspendedDefaultNotice = errorNote != null &&
+            !isUsingCustomKey(provider) &&
+            (errorNote.contains("suspended", ignoreCase = true) ||
+                errorNote.contains("dashboard.api-football.com", ignoreCase = true))
 
         val (newStatus, detail) = when {
+            isSuspendedDefaultNotice -> {
+                prefs.edit()
+                    .remove("persisted_status_${provider.id}")
+                    .remove("persisted_detail_${provider.id}")
+                    .apply()
+                SourceHealthStatus.UNCONFIGURED to "Built-in free key paused • 5-source automatic fallback active"
+            }
             isPlanWindowNotice -> {
                 SourceHealthStatus.HEALTHY to "Active & Healthy • Free tier 3-day window"
             }
@@ -485,6 +510,21 @@ class KickoffSourceMonitor(
             )
         }
         if (httpCode == 401 || httpCode == 403) {
+            if (!isUsingCustomKey(provider) &&
+                (responseBody.contains("suspended", ignoreCase = true) ||
+                    responseBody.contains("dashboard.api-football.com", ignoreCase = true))
+            ) {
+                prefs.edit()
+                    .remove("persisted_status_${provider.id}")
+                    .remove("persisted_detail_${provider.id}")
+                    .apply()
+                return ApiKeyValidationResult(
+                    provider = provider,
+                    isValid = false,
+                    status = SourceHealthStatus.UNCONFIGURED,
+                    message = "Built-in free key paused • 5-source automatic fallback active"
+                )
+            }
             return ApiKeyValidationResult(
                 provider = provider,
                 isValid = false,
@@ -518,7 +558,21 @@ class KickoffSourceMonitor(
                     errorsObj.optString(k, "")
                 }.orEmpty()
                 val lowerErr = firstError.lowercase(Locale.ROOT)
+                val isSuspendedDefault = !isUsingCustomKey(provider) &&
+                    (lowerErr.contains("suspended") || lowerErr.contains("dashboard.api-football.com"))
                 return when {
+                    isSuspendedDefault -> {
+                        prefs.edit()
+                            .remove("persisted_status_${provider.id}")
+                            .remove("persisted_detail_${provider.id}")
+                            .apply()
+                        ApiKeyValidationResult(
+                            provider = provider,
+                            isValid = false,
+                            status = SourceHealthStatus.UNCONFIGURED,
+                            message = "Built-in free key paused • 5-source automatic fallback active"
+                        )
+                    }
                     lowerErr.contains("free plans") || lowerErr.contains("do not have access to this date") -> {
                         ApiKeyValidationResult(
                             provider = provider,

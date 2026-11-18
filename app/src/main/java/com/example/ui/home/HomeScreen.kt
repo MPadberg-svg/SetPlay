@@ -301,18 +301,10 @@ fun HomeScreen(
         buildUnifiedTournamentSections(visibleMatches, enabledTournamentMap)
     }
 
-    val spotlightMatches = remember(sortedVisibleMatches, favoriteTeams) {
-        val liveOrHt = sortedVisibleMatches.filter {
+    val spotlightMatches = remember(sortedVisibleMatches, activeEdition) {
+        sortedVisibleMatches.filter {
             it.status == MatchStatus.LIVE || it.status == MatchStatus.HALFTIME
-        }
-        val favMatches = sortedVisibleMatches.filter {
-            isMatchForFavoriteTeams(it, favoriteTeams) && it !in liveOrHt
-        }
-        val topCompetitions = sortedVisibleMatches.filter {
-            it.tournamentId in setOf("uefa_cl", "premier_league", "laliga", "caf_cl", "botola_pro") &&
-                it !in liveOrHt && it !in favMatches
-        }
-        (liveOrHt + favMatches + topCompetitions).distinctBy { it.matchId }.take(6)
+        }.distinctBy { it.matchId }.take(6)
     }
 
     if (activeEdition == SetPlayEdition.TV) {
@@ -1665,31 +1657,6 @@ private fun InstantSevenDayDateStrip(
                     }
                 }
             }
-
-            Surface(
-                color = KickoffCanopyElevated,
-                shape = RoundedCornerShape(9.dp),
-                border = BorderStroke(0.85.dp, KickoffPitchEmerald),
-                modifier = Modifier
-                    .height(30.dp)
-                    .clip(RoundedCornerShape(9.dp))
-                    .tvFocusableControl(
-                        accentColor = KickoffFloodlightVolt,
-                        shape = RoundedCornerShape(9.dp),
-                        onClick = onOpenDateSelectorModal
-                    )
-                    .testTag("kickoff_date_selector_btn")
-            ) {
-                Box(
-                    contentAlignment = Alignment.Center,
-                    modifier = Modifier.padding(horizontal = 8.dp)
-                ) {
-                    KickoffCalendarSelectorIcon(
-                        modifier = Modifier.size(14.dp),
-                        tint = KickoffFloodlightVolt
-                    )
-                }
-            }
         }
     }
 }
@@ -2160,6 +2127,7 @@ private fun KickoffCompetitionsSelectorModal(
                         modifier = Modifier
                             .fillMaxSize()
                             .navigationBarsPadding()
+                            .padding(bottom = 8.dp)
                             .padding(
                                 horizontal = if (isTvLayout) 16.dp else 12.dp,
                                 vertical = if (isTvLayout) 16.dp else 12.dp
@@ -2350,12 +2318,12 @@ private fun KickoffCompetitionsSelectorModal(
                                         color = if (isSelected) KickoffStadiumForest else KickoffTurfSurface,
                                         shape = RoundedCornerShape(12.dp),
                                         border = BorderStroke(
-                                            if (isSelected) 1.4.dp else 0.9.dp,
-                                            if (isSelected) KickoffFloodlightVolt else compAccent.copy(alpha = 0.65f)
+                                            if (isSelected) 1.3.dp else 0.8.dp,
+                                            if (isSelected) KickoffFloodlightVolt else KickoffEmeraldBorder
                                         ),
                                         modifier = Modifier
                                             .fillMaxWidth()
-                                            .height(52.dp)
+                                            .height(54.dp)
                                             .clip(RoundedCornerShape(12.dp))
                                             .tvFocusableControl(
                                                 accentColor = KickoffFloodlightVolt,
@@ -2365,65 +2333,63 @@ private fun KickoffCompetitionsSelectorModal(
                                             .testTag("filter_chip_${tournament.tournamentId}")
                                     ) {
                                         Row(
-                                            modifier = Modifier.fillMaxSize(),
-                                            verticalAlignment = Alignment.CenterVertically
+                                            modifier = Modifier
+                                                .fillMaxSize()
+                                                .padding(horizontal = 8.dp, vertical = 4.dp),
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            horizontalArrangement = Arrangement.spacedBy(8.dp)
                                         ) {
-                                            // Left 3.5.dp vertical accent bar
                                             Box(
                                                 modifier = Modifier
-                                                    .width(3.5.dp)
-                                                    .fillMaxHeight()
-                                                    .background(compAccent)
+                                                    .width(3.dp)
+                                                    .height(28.dp)
+                                                    .clip(RoundedCornerShape(50))
+                                                    .background(if (isSelected) KickoffFloodlightVolt else compAccent)
                                             )
-                                            Row(
-                                                modifier = Modifier
-                                                    .fillMaxSize()
-                                                    .padding(horizontal = 8.dp, vertical = 4.dp),
-                                                verticalAlignment = Alignment.CenterVertically,
-                                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                            TournamentLogoMedallion(
+                                                tournamentId = tournament.tournamentId,
+                                                tournamentName = tournament.name,
+                                                isSelected = isSelected,
+                                                accentColor = compAccent,
+                                                sizeDp = 30
+                                            )
+                                            Column(
+                                                modifier = Modifier.weight(1f),
+                                                verticalArrangement = Arrangement.Center
                                             ) {
-                                                TournamentLogoMedallion(
-                                                    tournamentId = tournament.tournamentId,
-                                                    tournamentName = tournament.name,
-                                                    isSelected = isSelected,
-                                                    accentColor = compAccent,
-                                                    sizeDp = 32
+                                                Text(
+                                                    text = tournament.name,
+                                                    color = KickoffFloodlightWhite,
+                                                    fontSize = 12.sp,
+                                                    fontWeight = FontWeight.ExtraBold,
+                                                    maxLines = 1,
+                                                    overflow = TextOverflow.Ellipsis
                                                 )
-                                                Column(
-                                                    modifier = Modifier.weight(1f),
-                                                    verticalArrangement = Arrangement.Center
-                                                ) {
-                                                    Text(
-                                                        text = tournament.name,
-                                                        color = KickoffFloodlightWhite,
-                                                        fontSize = 12.sp,
-                                                        fontWeight = FontWeight.ExtraBold,
-                                                        maxLines = 1,
-                                                        overflow = TextOverflow.Ellipsis
-                                                    )
-                                                    Text(
-                                                        text = subtitleText,
-                                                        color = subtitleColor,
-                                                        fontSize = 9.5.sp,
-                                                        fontWeight = FontWeight.SemiBold,
-                                                        maxLines = 1,
-                                                        overflow = TextOverflow.Ellipsis
-                                                    )
-                                                }
-                                                Surface(
-                                                    color = compAccent.copy(alpha = 0.18f),
-                                                    shape = RoundedCornerShape(50),
-                                                    border = BorderStroke(0.8.dp, compAccent)
-                                                ) {
-                                                    Text(
-                                                        text = "$count",
-                                                        color = if (isSelected) KickoffFloodlightVolt else KickoffFloodlightWhite,
-                                                        fontSize = 10.sp,
-                                                        fontWeight = FontWeight.ExtraBold,
-                                                        style = TabularNumeralTextStyle,
-                                                        modifier = Modifier.padding(horizontal = 7.dp, vertical = 2.dp)
-                                                    )
-                                                }
+                                                Text(
+                                                    text = subtitleText,
+                                                    color = subtitleColor,
+                                                    fontSize = 9.5.sp,
+                                                    fontWeight = FontWeight.SemiBold,
+                                                    maxLines = 1,
+                                                    overflow = TextOverflow.Ellipsis
+                                                )
+                                            }
+                                            Surface(
+                                                color = if (isSelected) KickoffFloodlightVolt else KickoffCanopyElevated,
+                                                shape = RoundedCornerShape(50),
+                                                border = BorderStroke(
+                                                    0.8.dp,
+                                                    if (isSelected) KickoffFloodlightVolt else KickoffEmeraldBorder
+                                                )
+                                            ) {
+                                                Text(
+                                                    text = "$count",
+                                                    color = if (isSelected) KickoffPitchBlack else KickoffFloodlightWhite,
+                                                    fontSize = 10.sp,
+                                                    fontWeight = FontWeight.ExtraBold,
+                                                    style = TabularNumeralTextStyle,
+                                                    modifier = Modifier.padding(horizontal = 7.dp, vertical = 2.dp)
+                                                )
                                             }
                                         }
                                     }
@@ -3311,13 +3277,21 @@ private fun LiveAndMarqueeSpotlightCarousel(
                         val broadcasterIdentity = remember(match.beinChannel, match.menaProviderName) {
                             resolveBroadcasterVisualIdentity(match.beinChannel.ifBlank { match.menaProviderName })
                         }
+                        val footerMetaText = remember(match.stageOrRound, match.tournamentName, match.stadiumName) {
+                            val cleanStage = match.stageOrRound.trim()
+                            if (cleanStage.isBlank() || cleanStage.equals(match.tournamentName.trim(), ignoreCase = true)) {
+                                match.stadiumName.takeIf { it != "Main Stadium" }.orEmpty()
+                            } else {
+                                cleanStage
+                            }
+                        }
                         Row(
                             modifier = Modifier.fillMaxWidth(),
                             horizontalArrangement = Arrangement.SpaceBetween,
                             verticalAlignment = Alignment.CenterVertically
                         ) {
                             Text(
-                                text = match.stageOrRound.ifBlank { match.stadiumName },
+                                text = footerMetaText,
                                 color = KickoffSlateMuted,
                                 fontSize = 8.5.sp,
                                 maxLines = 1,
@@ -4330,14 +4304,14 @@ private fun FlashscoreMatchCard(
             )
             .testTag("match_card_${match.matchId}")
     ) {
-        val crestSizeDp = if (uiPreferences.compactCardDensity) 32 else 38
+        val crestSizeDp = if (uiPreferences.compactCardDensity) 28 else 32
 
         Column(modifier = Modifier.fillMaxWidth()) {
-            // UPPER ROW: Left Spine + Symmetrical Home Team (`38.dp` crest, `13.5.sp`) + Center Scorebug (`74.dp` x `42.dp`) + Symmetrical Away Team (`38.dp` crest, `13.5.sp`)
+            // UPPER ROW: Left Spine + 100% Symmetrical Home Team (`32.dp` crest, `13.sp`) + Slim Center Scorebug (`58.dp` x `36.dp`) + Symmetrical Away Team (`32.dp` crest, `13.sp`)
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .height(if (uiPreferences.compactCardDensity) 54.dp else 64.dp)
+                    .height(if (uiPreferences.compactCardDensity) 52.dp else 60.dp)
                     .testTag("open_match_center_${match.matchId}"),
                 verticalAlignment = Alignment.CenterVertically
             ) {
@@ -4349,11 +4323,11 @@ private fun FlashscoreMatchCard(
                         .background(leftSpineColor)
                 )
 
-                // 1. HOME TEAM ZONE (Symmetrical Right-Aligned toward Center Scorebug)
+                // 1. HOME TEAM ZONE (100% Symmetrical Right-Aligned toward Center Scorebug)
                 Row(
                     modifier = Modifier
                         .weight(1f)
-                        .padding(start = 10.dp, end = 8.dp),
+                        .padding(start = 10.dp, end = 6.dp),
                     horizontalArrangement = Arrangement.End,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
@@ -4380,14 +4354,15 @@ private fun FlashscoreMatchCard(
                             isHomeTeamFavorite -> KickoffFloodlightVolt
                             else -> KickoffFloodlightWhite
                         },
-                        fontSize = 13.5.sp,
+                        fontSize = 13.sp,
+                        letterSpacing = (-0.15).sp,
                         fontWeight = if (homeIsWinner || isLive || isHomeTeamFavorite) FontWeight.ExtraBold else FontWeight.Bold,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
                         textAlign = TextAlign.End,
                         modifier = Modifier.weight(1f, fill = false)
                     )
-                    Spacer(modifier = Modifier.width(7.dp))
+                    Spacer(modifier = Modifier.width(6.dp))
                     TeamCrestImage(
                         badgeUrl = match.homeTeamBadge,
                         teamName = match.homeTeamName,
@@ -4395,7 +4370,7 @@ private fun FlashscoreMatchCard(
                     )
                 }
 
-                // 2. DECLUTTERED SYMMETRICAL CENTER SCOREBUG (`74.dp` width, `42.dp` height)
+                // 2. SLIM SYMMETRICAL CENTER SCOREBUG (`58.dp` width, `36.dp` height)
                 Surface(
                     color = when {
                         isLive -> KickoffPitchBlack.copy(alpha = 0.92f)
@@ -4403,7 +4378,7 @@ private fun FlashscoreMatchCard(
                         isCancelled -> KickoffLiveCrimson.copy(alpha = 0.12f)
                         else -> KickoffGlassWell
                     },
-                    shape = RoundedCornerShape(9.dp),
+                    shape = RoundedCornerShape(8.dp),
                     border = BorderStroke(
                         width = 0.9.dp,
                         color = when {
@@ -4413,14 +4388,14 @@ private fun FlashscoreMatchCard(
                         }
                     ),
                     modifier = Modifier
-                        .width(74.dp)
-                        .height(42.dp)
+                        .width(58.dp)
+                        .height(36.dp)
                 ) {
                     Box(modifier = Modifier.fillMaxSize()) {
                         Column(
                             modifier = Modifier
                                 .fillMaxSize()
-                                .padding(horizontal = 4.dp, vertical = 2.dp),
+                                .padding(horizontal = 3.dp, vertical = 1.dp),
                             horizontalAlignment = Alignment.CenterHorizontally,
                             verticalArrangement = Arrangement.Center
                         ) {
@@ -4433,7 +4408,7 @@ private fun FlashscoreMatchCard(
                                             "${match.homeScore ?: 0} - ${match.awayScore ?: 0}"
                                         },
                                         color = if (uiPreferences.hideLiveAndFinalScores) KickoffLiveCrimson else KickoffFloodlightWhite,
-                                        fontSize = 15.sp,
+                                        fontSize = 13.5.sp,
                                         fontWeight = FontWeight.ExtraBold,
                                         style = TabularNumeralTextStyle,
                                         maxLines = 1
@@ -4444,15 +4419,15 @@ private fun FlashscoreMatchCard(
                                     ) {
                                         Box(
                                             modifier = Modifier
-                                                .size(4.5.dp)
+                                                .size(4.dp)
                                                 .clip(CircleShape)
                                                 .background(if (isHalftime) KickoffTrophyGold else KickoffLiveCrimson)
                                         )
-                                        Spacer(modifier = Modifier.width(3.dp))
+                                        Spacer(modifier = Modifier.width(2.5.dp))
                                         Text(
                                             text = if (isHalftime) "HT" else clockTelemetry.heroReadout,
                                             color = if (isHalftime) KickoffTrophyGold else KickoffLiveCrimson,
-                                            fontSize = 8.5.sp,
+                                            fontSize = 8.sp,
                                             fontWeight = FontWeight.ExtraBold,
                                             style = TabularNumeralTextStyle,
                                             maxLines = 1
@@ -4467,7 +4442,7 @@ private fun FlashscoreMatchCard(
                                             "${match.homeScore ?: 0} - ${match.awayScore ?: 0}"
                                         },
                                         color = KickoffFloodlightWhite,
-                                        fontSize = 15.sp,
+                                        fontSize = 13.5.sp,
                                         fontWeight = FontWeight.ExtraBold,
                                         style = TabularNumeralTextStyle,
                                         maxLines = 1
@@ -4475,7 +4450,7 @@ private fun FlashscoreMatchCard(
                                     Text(
                                         text = "HT",
                                         color = KickoffTrophyGold,
-                                        fontSize = 8.5.sp,
+                                        fontSize = 8.sp,
                                         fontWeight = FontWeight.ExtraBold,
                                         style = TabularNumeralTextStyle,
                                         maxLines = 1
@@ -4489,16 +4464,16 @@ private fun FlashscoreMatchCard(
                                             "${match.homeScore ?: 0} - ${match.awayScore ?: 0}"
                                         },
                                         color = KickoffFloodlightWhite.copy(alpha = 0.94f),
-                                        fontSize = 15.sp,
+                                        fontSize = 13.5.sp,
                                         fontWeight = FontWeight.ExtraBold,
                                         style = TabularNumeralTextStyle,
                                         maxLines = 1
                                     )
                                     val htLabel = match.halfTimeScore?.takeIf { it.isNotBlank() && !uiPreferences.hideLiveAndFinalScores }
                                     Text(
-                                        text = if (htLabel != null) "FT • HT $htLabel" else "FT",
+                                        text = if (htLabel != null) "HT ${htLabel.replace(" ", "")}" else "FT",
                                         color = KickoffMistSilver,
-                                        fontSize = 8.5.sp,
+                                        fontSize = 7.5.sp,
                                         fontWeight = FontWeight.ExtraBold,
                                         style = TabularNumeralTextStyle,
                                         maxLines = 1
@@ -4508,7 +4483,7 @@ private fun FlashscoreMatchCard(
                                     Text(
                                         text = dynamicKickoffTime,
                                         color = KickoffSlateMuted,
-                                        fontSize = 10.sp,
+                                        fontSize = 9.sp,
                                         fontWeight = FontWeight.Bold,
                                         textDecoration = TextDecoration.LineThrough,
                                         style = TabularNumeralTextStyle,
@@ -4517,7 +4492,7 @@ private fun FlashscoreMatchCard(
                                     Text(
                                         text = "PST",
                                         color = KickoffTrophyGold,
-                                        fontSize = 8.5.sp,
+                                        fontSize = 8.sp,
                                         fontWeight = FontWeight.ExtraBold,
                                         maxLines = 1
                                     )
@@ -4526,7 +4501,7 @@ private fun FlashscoreMatchCard(
                                     Text(
                                         text = dynamicKickoffTime,
                                         color = KickoffSlateMuted,
-                                        fontSize = 10.sp,
+                                        fontSize = 9.sp,
                                         fontWeight = FontWeight.Bold,
                                         textDecoration = TextDecoration.LineThrough,
                                         style = TabularNumeralTextStyle,
@@ -4535,7 +4510,7 @@ private fun FlashscoreMatchCard(
                                     Text(
                                         text = "CANC",
                                         color = KickoffLiveCrimson,
-                                        fontSize = 8.5.sp,
+                                        fontSize = 8.sp,
                                         fontWeight = FontWeight.ExtraBold,
                                         maxLines = 1
                                     )
@@ -4544,7 +4519,7 @@ private fun FlashscoreMatchCard(
                                     Text(
                                         text = dynamicKickoffTime,
                                         color = KickoffFloodlightWhite,
-                                        fontSize = 15.sp,
+                                        fontSize = 13.5.sp,
                                         fontWeight = FontWeight.ExtraBold,
                                         style = TabularNumeralTextStyle,
                                         maxLines = 1
@@ -4566,11 +4541,11 @@ private fun FlashscoreMatchCard(
                     }
                 }
 
-                // 3. AWAY TEAM ZONE (Symmetrical Left-Aligned from Center Scorebug)
+                // 3. AWAY TEAM ZONE (100% Symmetrical Left-Aligned from Center Scorebug)
                 Row(
                     modifier = Modifier
                         .weight(1f)
-                        .padding(start = 8.dp, end = 6.dp),
+                        .padding(start = 6.dp, end = 10.dp),
                     horizontalArrangement = Arrangement.Start,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
@@ -4579,7 +4554,7 @@ private fun FlashscoreMatchCard(
                         teamName = match.awayTeamName,
                         sizeDp = crestSizeDp
                     )
-                    Spacer(modifier = Modifier.width(7.dp))
+                    Spacer(modifier = Modifier.width(6.dp))
                     Text(
                         text = match.awayTeamName,
                         color = when {
@@ -4587,7 +4562,8 @@ private fun FlashscoreMatchCard(
                             isAwayTeamFavorite -> KickoffFloodlightVolt
                             else -> KickoffFloodlightWhite
                         },
-                        fontSize = 13.5.sp,
+                        fontSize = 13.sp,
+                        letterSpacing = (-0.15).sp,
                         fontWeight = if (awayIsWinner || isLive || isAwayTeamFavorite) FontWeight.ExtraBold else FontWeight.Bold,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
@@ -4610,28 +4586,6 @@ private fun FlashscoreMatchCard(
                         )
                     }
                 }
-
-                // 4. Far-Right Match Pin Star (`pin_match_btn_${match.matchId}`)
-                Box(
-                    contentAlignment = Alignment.Center,
-                    modifier = Modifier
-                        .padding(end = 8.dp)
-                        .size(26.dp)
-                        .clip(CircleShape)
-                        .clickable { onTogglePinMatch() }
-                        .testTag("pin_match_btn_${match.matchId}")
-                ) {
-                    Icon(
-                        imageVector = if (isMatchPinned || hasFavTeam) Icons.Default.Star else Icons.Default.StarBorder,
-                        contentDescription = "Pin Match",
-                        tint = when {
-                            isMatchPinned -> KickoffTrophyGold
-                            hasFavTeam -> KickoffPitchEmerald
-                            else -> KickoffSlateMuted.copy(alpha = 0.50f)
-                        },
-                        modifier = Modifier.size(14.dp)
-                    )
-                }
             }
 
             // SUBTLE DIVIDER BETWEEN SCOREBOARD ROW AND STREAMLINED BROADCAST STRIP
@@ -4640,11 +4594,11 @@ private fun FlashscoreMatchCard(
                 color = KickoffRowDivider.copy(alpha = 0.55f)
             )
 
-            // STREAMLINED LOWER BROADCAST & WATCH STRIP (`height = 24.dp`, `padding(horizontal = 12.dp, vertical = 2.dp)`)
+            // STREAMLINED LOWER BROADCAST & WATCH STRIP (`height = 26.dp`, `padding(horizontal = 12.dp, vertical = 2.dp)`)
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .height(24.dp)
+                    .height(26.dp)
                     .background(KickoffPitchBlack.copy(alpha = 0.28f))
                     .padding(horizontal = 12.dp, vertical = 2.dp),
                 horizontalArrangement = Arrangement.SpaceBetween,
@@ -4699,69 +4653,94 @@ private fun FlashscoreMatchCard(
 
                 Spacer(modifier = Modifier.width(8.dp))
 
-                // Right: Sleek 20.dp-Tall Watch Action Capsule (`watch_bein_btn_${match.matchId}`)
+                // Right: Subtle Pin Star + Watch Action Capsule (`watch_bein_btn_${match.matchId}`)
                 val useMatchCenterAction = isFinished || isPostponed || isCancelled
-                Surface(
-                    color = when {
-                        isLive -> KickoffPitchEmerald
-                        isUpcoming -> KickoffCanopyElevated
-                        else -> KickoffGlassWell
-                    },
-                    shape = RoundedCornerShape(50),
-                    border = BorderStroke(
-                        width = if (isLive || isUpcoming) 0.9.dp else 0.7.dp,
-                        color = when {
-                            isLive -> KickoffFloodlightVolt
-                            isUpcoming -> KickoffPitchEmerald
-                            else -> KickoffRowDivider
-                        }
-                    ),
-                    modifier = Modifier
-                        .height(20.dp)
-                        .clip(RoundedCornerShape(50))
-                        .clickable {
-                            if (useMatchCenterAction) {
-                                onOpenDossier()
-                            } else {
-                                onWatchBeinClicked(match.beinChannel)
-                            }
-                        }
-                        .testTag("watch_bein_btn_${match.matchId}")
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
                 ) {
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.Center,
-                        modifier = Modifier.padding(horizontal = 8.dp)
+                    Box(
+                        contentAlignment = Alignment.Center,
+                        modifier = Modifier
+                            .size(22.dp)
+                            .clip(CircleShape)
+                            .clickable { onTogglePinMatch() }
+                            .testTag("pin_match_btn_${match.matchId}")
                     ) {
-                        when {
-                            isLive -> {
-                                Text(
-                                    text = "● LIVE TV",
-                                    color = KickoffPitchBlack,
-                                    fontSize = 8.5.sp,
-                                    fontWeight = FontWeight.ExtraBold
-                                )
+                        Icon(
+                            imageVector = if (isMatchPinned || hasFavTeam) Icons.Default.Star else Icons.Default.StarBorder,
+                            contentDescription = "Pin Match",
+                            tint = when {
+                                isMatchPinned -> KickoffTrophyGold
+                                hasFavTeam -> KickoffPitchEmerald
+                                else -> KickoffMistSilver.copy(alpha = 0.55f)
+                            },
+                            modifier = Modifier.size(13.5.dp)
+                        )
+                    }
+
+                    Surface(
+                        color = when {
+                            isLive -> KickoffPitchEmerald
+                            isUpcoming -> KickoffCanopyElevated
+                            else -> KickoffGlassWell
+                        },
+                        shape = RoundedCornerShape(50),
+                        border = BorderStroke(
+                            width = if (isLive || isUpcoming) 0.9.dp else 0.7.dp,
+                            color = when {
+                                isLive -> KickoffFloodlightVolt
+                                isUpcoming -> KickoffPitchEmerald
+                                else -> KickoffRowDivider
                             }
-                            isUpcoming -> {
-                                KickoffTvBroadcastIcon(
-                                    modifier = Modifier.size(10.dp),
-                                    tint = KickoffPitchEmerald
-                                )
-                                Spacer(modifier = Modifier.width(4.dp))
-                                Text(
-                                    text = "▶ Watch",
-                                    color = KickoffFloodlightWhite,
-                                    fontSize = 8.5.sp,
-                                    fontWeight = FontWeight.ExtraBold
-                                )
+                        ),
+                        modifier = Modifier
+                            .height(20.dp)
+                            .clip(RoundedCornerShape(50))
+                            .clickable {
+                                if (useMatchCenterAction) {
+                                    onOpenDossier()
+                                } else {
+                                    onWatchBeinClicked(match.beinChannel)
+                                }
                             }
-                            else -> {
-                                Text(
-                                    text = "Stats ›",
-                                    color = KickoffMistSilver,
-                                    fontSize = 8.5.sp,
-                                    fontWeight = FontWeight.ExtraBold
-                                )
+                            .testTag("watch_bein_btn_${match.matchId}")
+                    ) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.Center,
+                            modifier = Modifier.padding(horizontal = 8.dp)
+                        ) {
+                            when {
+                                isLive -> {
+                                    Text(
+                                        text = "● LIVE TV",
+                                        color = KickoffPitchBlack,
+                                        fontSize = 8.5.sp,
+                                        fontWeight = FontWeight.ExtraBold
+                                    )
+                                }
+                                isUpcoming -> {
+                                    KickoffTvBroadcastIcon(
+                                        modifier = Modifier.size(10.dp),
+                                        tint = KickoffPitchEmerald
+                                    )
+                                    Spacer(modifier = Modifier.width(4.dp))
+                                    Text(
+                                        text = "▶ Watch",
+                                        color = KickoffFloodlightWhite,
+                                        fontSize = 8.5.sp,
+                                        fontWeight = FontWeight.ExtraBold
+                                    )
+                                }
+                                else -> {
+                                    Text(
+                                        text = "Stats ›",
+                                        color = KickoffMistSilver,
+                                        fontSize = 8.5.sp,
+                                        fontWeight = FontWeight.ExtraBold
+                                    )
+                                }
                             }
                         }
                     }
@@ -5680,14 +5659,63 @@ fun TeamCrestImage(
     teamName: String,
     sizeDp: Int = 24
 ) {
+    val resolvedUrl = remember(teamName, badgeUrl) {
+        FootballRepository.resolveFallbackClubCrestPngUrl(teamName, badgeUrl)
+    }
     val initials = remember(teamName) {
-        teamName.split(" ")
-            .filter { it.isNotBlank() }
-            .take(2)
-            .joinToString("") { it.take(1).uppercase() }
-            .ifBlank { "FC" }
+        val tokens = teamName.trim().split(Regex("\\s+")).filter { it.isNotBlank() }
+        when {
+            tokens.size >= 2 -> "${tokens[0].first().uppercaseChar()}${tokens[1].first().uppercaseChar()}"
+            tokens.size == 1 -> tokens[0].take(2).uppercase()
+            else -> "FC"
+        }
     }
 
+    if (resolvedUrl.isNotBlank()) {
+        Box(
+            contentAlignment = Alignment.Center,
+            modifier = Modifier
+                .size(sizeDp.dp)
+                .clip(CircleShape)
+                .background(
+                    Brush.radialGradient(
+                        colors = listOf(
+                            Color(0xFFF4F8F6),
+                            Color(0xFFDCE6E1)
+                        )
+                    )
+                )
+                .border(
+                    width = 1.dp,
+                    color = KickoffPitchEmerald.copy(alpha = 0.55f),
+                    shape = CircleShape
+                )
+        ) {
+            SubcomposeAsyncImage(
+                model = resolvedUrl,
+                contentDescription = teamName,
+                contentScale = ContentScale.Fit,
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding((sizeDp * 0.11f).coerceAtLeast(2.2f).dp),
+                loading = {
+                    TeamShieldMonogramFallback(initials = initials, sizeDp = sizeDp)
+                },
+                error = {
+                    TeamShieldMonogramFallback(initials = initials, sizeDp = sizeDp)
+                }
+            )
+        }
+    } else {
+        TeamShieldMonogramFallback(initials = initials, sizeDp = sizeDp)
+    }
+}
+
+@Composable
+private fun TeamShieldMonogramFallback(
+    initials: String,
+    sizeDp: Int
+) {
     Box(
         contentAlignment = Alignment.Center,
         modifier = Modifier
@@ -5703,24 +5731,27 @@ fun TeamCrestImage(
             )
             .border(
                 width = 1.dp,
-                color = KickoffPitchEmerald.copy(alpha = 0.45f),
+                color = KickoffPitchEmerald.copy(alpha = 0.50f),
                 shape = CircleShape
             )
     ) {
-        Text(
-            text = initials,
-            color = KickoffFloodlightVolt,
-            fontSize = (sizeDp * 0.35f).sp,
-            fontWeight = FontWeight.ExtraBold
-        )
-        if (badgeUrl.isNotBlank()) {
-            AsyncImage(
-                model = badgeUrl,
-                contentDescription = teamName,
-                contentScale = ContentScale.Fit,
-                modifier = Modifier
-                    .size((sizeDp - 3).dp)
-                    .clip(CircleShape)
+        Box(
+            contentAlignment = Alignment.Center,
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(2.dp)
+                .clip(CircleShape)
+                .border(
+                    width = 0.7.dp,
+                    color = KickoffMistSilver.copy(alpha = 0.35f),
+                    shape = CircleShape
+                )
+        ) {
+            Text(
+                text = initials,
+                color = KickoffFloodlightWhite,
+                fontSize = (sizeDp * 0.31f).sp,
+                fontWeight = FontWeight.ExtraBold
             )
         }
     }
@@ -5790,39 +5821,58 @@ private fun EmptyMatchesCard(
                 textAlign = TextAlign.Center
             )
             Spacer(modifier = Modifier.height(14.dp))
-            if (isQuietAllDayWithNextSlate && nextActiveDay != null) {
-                Button(
-                    onClick = { onSelectDay(nextActiveDay) },
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = KickoffFloodlightVolt,
-                        contentColor = KickoffPitchBlack
-                    ),
-                    modifier = Modifier.testTag("jump_next_active_day_btn")
-                ) {
-                    Text(
-                        text = "Jump to ${nextActiveDay.getShortDayCode(selectedCountryZone.timeZoneId)} ${nextActiveDay.getDynamicDateSubtitle(selectedCountryZone.timeZoneId)} (${matchesByDay[nextActiveDay].orEmpty().size} Matches) →",
-                        fontWeight = FontWeight.ExtraBold,
-                        fontSize = 12.sp
-                    )
-                }
-                Spacer(modifier = Modifier.height(10.dp))
-            }
-            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                Button(
-                    onClick = onResetFilter,
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = KickoffPitchEmerald,
-                        contentColor = KickoffPitchBlack
-                    ),
-                    modifier = Modifier.testTag("reset_tournament_filter_btn")
-                ) {
-                    Text("Show All Tournaments", fontWeight = FontWeight.ExtraBold, fontSize = 12.sp)
+            if (selectedFilter == "ALL") {
+                if (nextActiveDay != null) {
+                    Button(
+                        onClick = { onSelectDay(nextActiveDay) },
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = KickoffFloodlightVolt,
+                            contentColor = KickoffPitchBlack
+                        ),
+                        modifier = Modifier.testTag("jump_next_active_day_btn")
+                    ) {
+                        Text(
+                            text = "Jump to ${nextActiveDay.getShortDayCode(selectedCountryZone.timeZoneId)} ${nextActiveDay.getDynamicDateSubtitle(selectedCountryZone.timeZoneId)} (${matchesByDay[nextActiveDay].orEmpty().size} Matches) →",
+                            fontWeight = FontWeight.ExtraBold,
+                            fontSize = 12.sp
+                        )
+                    }
+                    Spacer(modifier = Modifier.height(10.dp))
                 }
                 OutlinedButton(
                     onClick = onOpenCustomize,
                     border = BorderStroke(1.dp, KickoffPitchEmerald)
                 ) {
-                    Text("Modify Teams", color = KickoffFloodlightWhite, fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                    Text(
+                        text = "Manage Leagues & Teams",
+                        color = KickoffFloodlightWhite,
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 12.sp
+                    )
+                }
+            } else {
+                Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Button(
+                        onClick = onResetFilter,
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = KickoffPitchEmerald,
+                            contentColor = KickoffPitchBlack
+                        ),
+                        modifier = Modifier.testTag("reset_tournament_filter_btn")
+                    ) {
+                        Text("Show All Tournaments", fontWeight = FontWeight.ExtraBold, fontSize = 12.sp)
+                    }
+                    OutlinedButton(
+                        onClick = onOpenCustomize,
+                        border = BorderStroke(1.dp, KickoffPitchEmerald)
+                    ) {
+                        Text(
+                            text = "Manage Leagues & Teams",
+                            color = KickoffFloodlightWhite,
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 12.sp
+                        )
+                    }
                 }
             }
         }

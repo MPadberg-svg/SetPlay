@@ -1583,32 +1583,34 @@ fun TopStreamingBar(
                 )
             }
 
-            Spacer(modifier = Modifier.width(10.dp))
+            if (currentScreen != AppScreen.HOME) {
+                Spacer(modifier = Modifier.width(10.dp))
 
-            Surface(
-                color = sectionPrimaryAccent.copy(alpha = 0.14f),
-                shape = RoundedCornerShape(50),
-                border = BorderStroke(0.8.dp, sectionPrimaryAccent.copy(alpha = 0.55f))
-            ) {
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp)
+                Surface(
+                    color = sectionPrimaryAccent.copy(alpha = 0.14f),
+                    shape = RoundedCornerShape(50),
+                    border = BorderStroke(0.8.dp, sectionPrimaryAccent.copy(alpha = 0.55f))
                 ) {
-                    Box(
-                        modifier = Modifier
-                            .size(5.5.dp)
-                            .clip(CircleShape)
-                            .background(sectionPrimaryAccent)
-                    )
-                    Spacer(modifier = Modifier.width(5.dp))
-                    Text(
-                        text = sectionBadgeTitle,
-                        color = Color.White,
-                        fontSize = 9.5.sp,
-                        fontWeight = FontWeight.ExtraBold,
-                        letterSpacing = 0.5.sp,
-                        maxLines = 1
-                    )
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp)
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .size(5.5.dp)
+                                .clip(CircleShape)
+                                .background(sectionPrimaryAccent)
+                        )
+                        Spacer(modifier = Modifier.width(5.dp))
+                        Text(
+                            text = sectionBadgeTitle,
+                            color = Color.White,
+                            fontSize = 9.5.sp,
+                            fontWeight = FontWeight.ExtraBold,
+                            letterSpacing = 0.5.sp,
+                            maxLines = 1
+                        )
+                    }
                 }
             }
 
@@ -1668,7 +1670,6 @@ fun TopStreamingBar(
 
             if (currentScreen == AppScreen.HOME) {
                 val settingsIconTint = if (hasKickoffSourceIssue) KickoffTrophyGold else KickoffFloodlightVolt
-                val settingsDotColor = if (hasKickoffSourceIssue) KickoffLiveCrimson else KickoffPitchEmerald
                 Box(
                     contentAlignment = Alignment.Center,
                     modifier = Modifier
@@ -1697,13 +1698,15 @@ fun TopStreamingBar(
                         modifier = Modifier.size(19.dp),
                         tint = settingsIconTint
                     )
-                    Box(
-                        modifier = Modifier
-                            .align(Alignment.TopEnd)
-                            .size(6.5.dp)
-                            .clip(CircleShape)
-                            .background(settingsDotColor)
-                    )
+                    if (hasKickoffSourceIssue) {
+                        Box(
+                            modifier = Modifier
+                                .align(Alignment.TopEnd)
+                                .size(6.5.dp)
+                                .clip(CircleShape)
+                                .background(KickoffLiveCrimson)
+                        )
+                    }
                 }
             } else {
                 GhostTopBarIconButton(
@@ -1964,7 +1967,7 @@ fun BottomStreamingNav(
         label = "chamber_accent"
     )
 
-    val crestHeightDp = 20.dp
+    val crestHeightDp = 8.dp
     val dockBodyHeightDp = 56.dp
     val totalHeightDp = crestHeightDp + dockBodyHeightDp
     val horizontalInsetDp = 12.dp
@@ -1986,7 +1989,7 @@ fun BottomStreamingNav(
         Canvas(
             modifier = Modifier.fillMaxSize()
         ) {
-            val barTopY = 20.dp.toPx()
+            val barTopY = 8.dp.toPx()
             val barBottomY = size.height
             val barBodyHeightPx = barBottomY - barTopY
 
@@ -1998,14 +2001,14 @@ fun BottomStreamingNav(
             val transitStretch = abs(fastSlot - slowSlot).coerceIn(0f, 1.2f)
             val effectiveSlot = fastSlot * 0.74f + slowSlot * 0.26f
 
-            // Concave U-shaped cutout cradle (~68.dp wide, ~24.dp deep into the bar body)
-            // so the 46.dp floating circular medallion sits nestled inside with a 4.dp air gap
+            // Concave U-shaped cutout cradle (~60.dp wide, ~12.dp deep into the bar body)
+            // so the 38.dp active medallion sits flush within the dock silhouette
             val crestCenterX = insetPx + (effectiveSlot + 0.5f) * slotWidthPx
-            val baseHalfWidth = 34.dp.toPx() // 68.dp total concave cutout width
+            val baseHalfWidth = 30.dp.toPx()
             val crestHalfWidth = baseHalfWidth * (1f + transitStretch * 0.14f)
 
             val notchDepthPx = if (hasActivePrimaryTab) {
-                24.dp.toPx() - (transitStretch * 3.dp.toPx()).coerceAtMost(4.dp.toPx())
+                12.dp.toPx() - (transitStretch * 2.dp.toPx()).coerceAtMost(3.dp.toPx())
             } else {
                 0f
             }
@@ -2384,10 +2387,10 @@ private fun LuxuryBottomNavSectionSlot(
     onSelect: () -> Unit,
     modifier: Modifier = Modifier
 ) {
-    // Active 46.dp medallion sits nestled inside the concave cutout cradle (4.dp air gap above notchBottomY);
+    // Active 38.dp medallion sits flush within the concave dock cradle;
     // inactive icon well sits cleanly inside the dock body above the baseline label.
     val medallionOffsetY by animateDpAsState(
-        targetValue = if (isSelected) (-13).dp else 0.dp,
+        targetValue = if (isSelected) (-3).dp else 0.dp,
         animationSpec = spring(
             dampingRatio = 0.66f,
             stiffness = Spring.StiffnessMediumLow
@@ -2396,7 +2399,7 @@ private fun LuxuryBottomNavSectionSlot(
     )
 
     val medallionSizeDp by animateDpAsState(
-        targetValue = if (isSelected) 46.dp else 34.dp,
+        targetValue = if (isSelected) 38.dp else 34.dp,
         animationSpec = spring(
             dampingRatio = Spring.DampingRatioMediumBouncy,
             stiffness = Spring.StiffnessMediumLow
@@ -2607,13 +2610,13 @@ private fun LuxuryBottomNavSectionSlot(
                         imageVector = item.filledIcon,
                         contentDescription = null,
                         tint = item.crestCoreHighlight.copy(alpha = 0.32f),
-                        modifier = Modifier.size(23.dp)
+                        modifier = Modifier.size(20.dp)
                     )
                     Icon(
                         imageVector = item.outlinedIcon,
                         contentDescription = item.label,
                         tint = Color.White,
-                        modifier = Modifier.size(22.dp)
+                        modifier = Modifier.size(19.dp)
                     )
                 } else {
                     Icon(

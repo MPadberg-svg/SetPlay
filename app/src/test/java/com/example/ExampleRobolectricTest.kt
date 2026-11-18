@@ -5634,6 +5634,142 @@ class TvSyncDeviceSeparationComposeTest {
         assertTrue(com.example.ui.home.hasCustomCompetitionVectorEmblem("caf_confed"))
         assertFalse(com.example.ui.home.hasCustomCompetitionVectorEmblem("uefa_cl"))
     }
+
+    @Test
+    fun testKickoffV9MultilingualDeduplicationCrestFallbackAndQuietDefaultAlerts() {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+
+        // 1. Multilingual Club Deduplication
+        assertTrue(
+            com.example.data.repository.FootballRepository.areSameClubNames(
+                "1. FC Köln",
+                "FC Cologne"
+            )
+        )
+        assertTrue(
+            com.example.data.repository.FootballRepository.areSameClubNames(
+                "FC Bayern München",
+                "Bayern Munich"
+            )
+        )
+
+        val db = Room.inMemoryDatabaseBuilder(context, StreamVaultDatabase::class.java)
+            .allowMainThreadQueries()
+            .build()
+        try {
+            val repo = com.example.data.repository.FootballRepository(
+                context = context,
+                favoriteTeamDao = db.favoriteTeamDao(),
+                tournamentPreferenceDao = db.tournamentPreferenceDao(),
+                streamDao = db.streamDao()
+            )
+            val matchA = com.example.data.repository.FootballMatch(
+                matchId = "v9_bundesliga_a",
+                tournamentId = "bundesliga",
+                tournamentName = "Bundesliga",
+                tournamentRegion = "Germany",
+                dayTab = com.example.data.repository.MatchDayTab.TODAY,
+                kickoffTimeFormatted = "18:30",
+                kickoffDateFormatted = "Today",
+                status = com.example.data.repository.MatchStatus.UPCOMING,
+                liveMinuteOrBadge = "18:30",
+                homeTeamId = "bayern",
+                homeTeamName = "Bayern Munich",
+                homeTeamBadge = "https://a.espncdn.com/i/teamlogos/soccer/500/132.png",
+                homeScore = null,
+                awayTeamId = "koln_1",
+                awayTeamName = "1. FC Köln",
+                awayTeamBadge = "https://a.espncdn.com/i/teamlogos/soccer/500/122.png",
+                awayScore = null,
+                stadiumName = "Allianz Arena",
+                cityName = "Munich",
+                beinChannel = "beIN Sports 5 HD",
+                beinChannelNumberHint = "beIN 5"
+            )
+            val matchB = com.example.data.repository.FootballMatch(
+                matchId = "v9_bundesliga_b",
+                tournamentId = "bundesliga",
+                tournamentName = "Bundesliga",
+                tournamentRegion = "Germany",
+                dayTab = com.example.data.repository.MatchDayTab.TODAY,
+                kickoffTimeFormatted = "18:30",
+                kickoffDateFormatted = "Today",
+                status = com.example.data.repository.MatchStatus.UPCOMING,
+                liveMinuteOrBadge = "18:30",
+                homeTeamId = "bayern_2",
+                homeTeamName = "Bayern Munich",
+                homeTeamBadge = "",
+                homeScore = null,
+                awayTeamId = "cologne_2",
+                awayTeamName = "FC Cologne",
+                awayTeamBadge = "",
+                awayScore = null,
+                stadiumName = "Allianz Arena",
+                cityName = "Munich",
+                beinChannel = "beIN Sports 5 HD",
+                beinChannelNumberHint = "beIN 5"
+            )
+            val deduped = repo.deduplicateMatchesByCanonicalTeams(listOf(matchA, matchB))
+            assertEquals(1, deduped.size)
+            assertEquals(
+                "https://a.espncdn.com/i/teamlogos/soccer/500/132.png",
+                deduped[0].homeTeamBadge
+            )
+            assertEquals(
+                "https://a.espncdn.com/i/teamlogos/soccer/500/122.png",
+                deduped[0].awayTeamBadge
+            )
+        } finally {
+            db.close()
+        }
+
+        // 2. Second-Tier Sandbox Fixture Rejection
+        val premierLeagueCatalogItem = com.example.data.repository.FootballRepository.ALL_TOURNAMENTS
+            .first { it.tournamentId == "premier_league" }
+        val ligue1CatalogItem = com.example.data.repository.FootballRepository.ALL_TOURNAMENTS
+            .first { it.tournamentId == "ligue_1" }
+
+        assertFalse(
+            com.example.data.repository.FootballRepository.isValidFixtureForTournament(
+                premierLeagueCatalogItem,
+                "Hull City",
+                "Brighton",
+                "England",
+                "English Premier League"
+            )
+        )
+        assertFalse(
+            com.example.data.repository.FootballRepository.isValidFixtureForTournament(
+                ligue1CatalogItem,
+                "Troyes",
+                "Le Havre",
+                "France",
+                "French Ligue 1"
+            )
+        )
+
+        // 3. SVG / Missing Crest Fallback Resolution
+        val resolvedTottenhamUrl = com.example.data.repository.FootballRepository.resolveFallbackClubCrestPngUrl(
+            "Tottenham Hotspur",
+            "https://crests.football-data.org/73.svg"
+        )
+        assertTrue(resolvedTottenhamUrl.endsWith(".png"))
+
+        // 4. Built-In Suspended API-Football Key Grace
+        val sourceMonitor = com.example.data.repository.KickoffSourceMonitor(
+            context = context,
+            httpClient = IptvRepository.sharedOkHttpClient
+        )
+        sourceMonitor.resetToDefaultKey(com.example.data.repository.KickoffProviderId.API_FOOTBALL)
+        assertFalse(sourceMonitor.isUsingCustomKey(com.example.data.repository.KickoffProviderId.API_FOOTBALL))
+        sourceMonitor.recordRuntimeResponse(
+            com.example.data.repository.KickoffProviderId.API_FOOTBALL,
+            200,
+            99,
+            "Your account is suspended, check on https://dashboard.api-football.com."
+        )
+        assertNull(sourceMonitor.activeSourceAlertFlow.value)
+    }
 }
 
 
