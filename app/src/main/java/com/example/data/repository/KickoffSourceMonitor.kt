@@ -158,8 +158,21 @@ class KickoffSourceMonitor(
             val isDefaultSportApiFalseError = state.provider == KickoffProviderId.SPORT_API_AI &&
                 !state.isUsingCustomKey &&
                 effectiveStatus != SourceHealthStatus.HEALTHY
+            val isStaleTransientRateLimit = state.provider == KickoffProviderId.FOOTBALL_DATA_ORG &&
+                effectiveStatus == SourceHealthStatus.QUOTA_WARNING
 
             when {
+                isStaleTransientRateLimit -> {
+                    anyHealed = true
+                    prefs.edit()
+                        .remove("persisted_status_${state.provider.id}")
+                        .remove("persisted_detail_${state.provider.id}")
+                        .apply()
+                    state.copy(
+                        status = SourceHealthStatus.HEALTHY,
+                        statusDetail = "Active & Healthy • 10 req/min sliding window ready"
+                    )
+                }
                 isFalsePlanError -> {
                     anyHealed = true
                     prefs.edit()
@@ -338,9 +351,13 @@ class KickoffSourceMonitor(
                         ?: "${provider.displayName} rejected the API key (HTTP $httpCode). Update or reset your key in Sources & Keys.")
             }
             httpCode == 429 || (remainingQuota != null && remainingQuota <= 0) -> {
+                val defaultCooldownNote = if (provider == KickoffProviderId.FOOTBALL_DATA_ORG) {
+                    "Cooling down (10 req/min limit) • Resumes in ~60s while fallback feeds stay active"
+                } else {
+                    "${provider.displayName} reached its rate or daily quota limit ($quotaLabel). Fallback sources are active."
+                }
                 SourceHealthStatus.QUOTA_WARNING to
-                    (errorNote?.takeIf { it.isNotBlank() }
-                        ?: "${provider.displayName} reached its rate or daily quota limit ($quotaLabel). Fallback sources are active.")
+                    (errorNote?.takeIf { it.isNotBlank() } ?: defaultCooldownNote)
             }
             httpCode in 200..299 -> {
                 if (remainingQuota != null && remainingQuota in 1..15 && provider == KickoffProviderId.API_FOOTBALL) {
@@ -867,13 +884,13 @@ class KickoffSourceMonitor(
         if (healthyCount < 2) {
             val degradedState = states.firstOrNull {
                 it.status == SourceHealthStatus.KEY_INVALID_OR_EXPIRED ||
-                    it.status == SourceHealthStatus.UNREACHABLE ||
-                    it.status == SourceHealthStatus.QUOTA_WARNING
+                    it.status == SourceHealthStatus.UNREACHABLE
             }
-            _activeSourceAlertFlow.value = degradedState?.let {
-                "${it.provider.displayName}: ${it.statusDetail}"
-            } ?: "Multiple Kickoff data sources are currently degraded."
-            return
+            if (degradedState != null) {
+                _activeSourceAlertFlow.value =
+                    "${degradedState.provider.displayName}: ${degradedState.statusDetail}"
+                return
+            }
         }
 
         _activeSourceAlertFlow.value = null
@@ -945,6 +962,40 @@ class KickoffSourceMonitor(
                 KickoffProviderId.SOFASCORE_LIVE -> "Browser-Header Protected Feed"
                 KickoffProviderId.THESPORTSDB -> "30 req/min shared limiter"
             }
+        }
+
+        /**
+         * Single source of truth for the count of ready schedule feeds (healthy active providers
+         * plus optional unconfigured providers backed by multi-source fallback).
+         */
+        fun countReadySources(states: List<KickoffSourceHealthState>): Int {
+            return states.count {
+                it.status == SourceHealthStatus.HEALTHY || it.status == SourceHealthStatus.UNCONFIGURED
+            }
+        }
+
+        /**
+         * Single source of truth for actionable red-dot alerts. Transient per-minute QUOTA_WARNING
+         * cooldowns never trigger red alerts while >= 2 healthy fallback feeds remain active.
+         */
+        fun countActionableAlerts(
+            states: List<KickoffSourceHealthState>,
+            activeAlertMessage: String? = null
+        ): Int {
+            if (states.isEmpty()) return if (!activeAlertMessage.isNullOrBlank()) 1 else 0
+            val brokenCustomKeys = states.count {
+                it.isUsingCustomKey && it.status == SourceHealthStatus.KEY_INVALID_OR_EXPIRED
+            }
+            if (brokenCustomKeys > 0) return brokenCustomKeys
+            val healthyCount = states.count { it.status == SourceHealthStatus.HEALTHY }
+            if (healthyCount < 2) {
+                val hardDegraded = states.count {
+                    it.status == SourceHealthStatus.KEY_INVALID_OR_EXPIRED ||
+                        it.status == SourceHealthStatus.UNREACHABLE
+                }
+                if (hardDegraded > 0) return hardDegraded
+            }
+            return if (!activeAlertMessage.isNullOrBlank()) 1 else 0
         }
     }
 }

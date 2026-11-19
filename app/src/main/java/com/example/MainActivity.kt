@@ -1797,18 +1797,11 @@ private data class LuxuryNavItemSpec(
 )
 
 /**
- * SetPlay "Chronograph Orbital & Wave-Crest" Luxury Bottom Navigation Dock:
- * 1. Hydrodynamic Wave-Crest Physics: Dual-spring (`fastSlot` + `slowSlot`) computes real-time
- *    in-flight velocity so the wave crest widens and dips slightly while gliding across tabs,
- *    then surges up to its full sculpted apex upon arrival.
- * 2. 5 Bespoke Luxury Section Chambers:
- *    - Active Section elevates into a 3D Sapphire & Rotating Sweep-Bezel Jewel Medallion with
- *      section-specific kinetic icon choreography (Soccer 360° orbit, Broadcast pulse, Cinema
- *      clapper snap, Series cascade pop, Favorites celestial star burst) and an illuminated
- *      micro-status stage pill underneath ("X LIVE", "ON AIR", "4K CINEMA", "EPISODES", "SAVED").
- *    - Inactive Sections rest inside recessed smoked-glass wells with top specular rims,
- *      automotive instrument divider ticks, and live contextual telemetry micro-badges
- *      (live match counter on KickOff, animated 3-bar equalizer on Live TV, saved counter on Favorites).
+ * SetPlay Flush Floating Stadium Pill Dock (`BottomStreamingNav`):
+ * Strictly `60.dp` tall with zero upward protrusion or glowing halo bleed so bottom match cards
+ * and side drawers remain 100% unobstructed. The active tab is framed inside an illuminated
+ * internal capsule pill with a bottom accent bar; inactive tabs show clean outlined icons,
+ * muted labels, and contextual live/favorites badge counters.
  */
 @Composable
 fun BottomStreamingNav(
@@ -1831,7 +1824,7 @@ fun BottomStreamingNav(
 
     val navContainerColor by animateColorAsState(
         targetValue = targetDockSurface,
-        animationSpec = tween(durationMillis = 340),
+        animationSpec = tween(durationMillis = 280),
         label = "bottom_dock_surface"
     )
 
@@ -1843,9 +1836,9 @@ fun BottomStreamingNav(
                 defaultMicroTag = "MATCHES",
                 filledIcon = Icons.Filled.SportsSoccer,
                 outlinedIcon = Icons.Outlined.SportsSoccer,
-                crestNeonColor = KickoffPitchEmerald,     // #10B981 Pitch Emerald Brand Identity
-                crestCoreHighlight = KickoffFloodlightVolt, // #D4FF33 Floodlight Volt Kinetic Highlight
-                chamberTint = KickoffStadiumForest,       // #0B3B2D Deep Stadium Turf Forest
+                crestNeonColor = KickoffPitchEmerald,
+                crestCoreHighlight = KickoffFloodlightVolt,
+                chamberTint = KickoffStadiumForest,
                 activeLabelColor = KickoffFloodlightWhite,
                 kineticStyle = NavKineticStyle.SOCCER_ORBIT
             ),
@@ -1855,8 +1848,8 @@ fun BottomStreamingNav(
                 defaultMicroTag = "CHANNELS",
                 filledIcon = Icons.Filled.LiveTv,
                 outlinedIcon = Icons.Outlined.LiveTv,
-                crestNeonColor = Color(0xFFFF4D5E),       // Vibrant Broadcast Crimson-Scarlet
-                crestCoreHighlight = AmberGold,           // SetPlay Royal Gold Highlight
+                crestNeonColor = Color(0xFFFF4D5E),
+                crestCoreHighlight = AmberGold,
                 chamberTint = TvBroadcastScarlet,
                 activeLabelColor = Color.White,
                 kineticStyle = NavKineticStyle.BROADCAST_PULSE
@@ -1867,7 +1860,7 @@ fun BottomStreamingNav(
                 defaultMicroTag = "4K CINEMA",
                 filledIcon = Icons.Filled.Movie,
                 outlinedIcon = Icons.Outlined.Movie,
-                crestNeonColor = Color(0xFF38E4AE),       // Luminous Cinema Mint-Cyan
+                crestNeonColor = Color(0xFF38E4AE),
                 crestCoreHighlight = MoviesMintSpring,
                 chamberTint = MoviesCyanTeal,
                 activeLabelColor = Color.White,
@@ -1879,7 +1872,7 @@ fun BottomStreamingNav(
                 defaultMicroTag = "EPISODES",
                 filledIcon = Icons.Filled.VideoLibrary,
                 outlinedIcon = Icons.Outlined.VideoLibrary,
-                crestNeonColor = SeriesIceAqua,           // Series Ice-Aqua Neon
+                crestNeonColor = SeriesIceAqua,
                 crestCoreHighlight = PaleGold,
                 chamberTint = SeriesSeaJade,
                 activeLabelColor = Color.White,
@@ -1891,7 +1884,7 @@ fun BottomStreamingNav(
                 defaultMicroTag = "COLLECTION",
                 filledIcon = Icons.Filled.Star,
                 outlinedIcon = Icons.Outlined.StarOutline,
-                crestNeonColor = FavoritesSagePrimary,    // Botanical Emerald-Sage Neon
+                crestNeonColor = FavoritesSagePrimary,
                 crestCoreHighlight = AmberGold,
                 chamberTint = FavoritesBotanicalBorder,
                 activeLabelColor = FavoritesPaleMint,
@@ -1900,465 +1893,51 @@ fun BottomStreamingNav(
         )
     }
 
-    val rawSelectedIndex = remember(currentScreen, navItems) {
-        navItems.indexOfFirst { it.screen == currentScreen }
+    val selectedIndex = remember(currentScreen, navItems) {
+        navItems.indexOfFirst { it.screen == currentScreen }.coerceAtLeast(0)
     }
-    val hasActivePrimaryTab = rawSelectedIndex >= 0
-    val selectedIndex = rawSelectedIndex.coerceAtLeast(0)
     val activeItemSpec = navItems[selectedIndex]
-
-    // Dual-spring hydrodynamic wave physics:
-    // - `fastSlot` leads the wave crest movement
-    // - `slowSlot` trails slightly, allowing us to measure in-flight velocity (`transitStretch`)
-    //   so the wave stretches horizontally and dips slightly in transit before surging up on arrival
-    val fastSlot by animateFloatAsState(
-        targetValue = selectedIndex.toFloat(),
-        animationSpec = spring(
-            dampingRatio = 0.72f,
-            stiffness = Spring.StiffnessMediumLow
-        ),
-        label = "wave_crest_fast_slot"
-    )
-    val slowSlot by animateFloatAsState(
-        targetValue = selectedIndex.toFloat(),
-        animationSpec = spring(
-            dampingRatio = 0.84f,
-            stiffness = Spring.StiffnessLow
-        ),
-        label = "wave_crest_slow_slot"
+    val animatedBorderColor by animateColorAsState(
+        targetValue = activeItemSpec.crestNeonColor.copy(alpha = 0.38f),
+        animationSpec = tween(durationMillis = 260),
+        label = "bottom_dock_border"
     )
 
-    // Continuous luxury chronograph animations:
-    // 1. `auroraPulse` breathes the spotlight chamber and ambient halo
-    // 2. `orbitalAngle` rotates the 3D sapphire-gold sweep bezel around the active section orb
-    val infiniteTransition = rememberInfiniteTransition(label = "luxury_nav_chronograph")
-    val auroraPulse by infiniteTransition.animateFloat(
-        initialValue = 0.84f,
-        targetValue = 1.0f,
-        animationSpec = infiniteRepeatable(
-            animation = tween(durationMillis = 2100),
-            repeatMode = RepeatMode.Reverse
-        ),
-        label = "aurora_pulse_factor"
-    )
-    val orbitalAngle by infiniteTransition.animateFloat(
-        initialValue = 0f,
-        targetValue = 360f,
-        animationSpec = infiniteRepeatable(
-            animation = tween(durationMillis = 6800, easing = LinearEasing),
-            repeatMode = RepeatMode.Restart
-        ),
-        label = "orbital_bezel_angle"
-    )
-
-    val neonPrimary by animateColorAsState(
-        targetValue = activeItemSpec.crestNeonColor,
-        animationSpec = tween(280),
-        label = "crest_neon_primary"
-    )
-    val neonCore by animateColorAsState(
-        targetValue = activeItemSpec.crestCoreHighlight,
-        animationSpec = tween(280),
-        label = "crest_neon_core"
-    )
-    val chamberAccent by animateColorAsState(
-        targetValue = activeItemSpec.chamberTint,
-        animationSpec = tween(280),
-        label = "chamber_accent"
-    )
-
-    val crestHeightDp = 8.dp
-    val dockBodyHeightDp = 56.dp
-    val totalHeightDp = crestHeightDp + dockBodyHeightDp
-    val horizontalInsetDp = 12.dp
-    val density = LocalDensity.current
-
-    BoxWithConstraints(
+    Surface(
+        color = navContainerColor.copy(alpha = 0.96f),
+        shape = RoundedCornerShape(22.dp),
+        border = BorderStroke(1.dp, animatedBorderColor),
+        shadowElevation = 10.dp,
         modifier = Modifier
             .fillMaxWidth()
             .windowInsetsPadding(WindowInsets.navigationBars)
-            .padding(horizontal = 10.dp, vertical = 4.dp)
-            .height(totalHeightDp)
+            .padding(horizontal = 12.dp, vertical = 6.dp)
+            .height(60.dp)
             .testTag("bottom_nav")
     ) {
-        val slotCount = navItems.size
-        val dockWidthPx = with(density) { maxWidth.toPx() }
-        val insetPxForGesture = with(density) { horizontalInsetDp.toPx() }
-
-        // 1. Sculpted Concave-Notch Dock Vessel, Precision Instrument Chambers & Multi-Layer Neon-Gold Rim
-        Canvas(
-            modifier = Modifier.fillMaxSize()
-        ) {
-            val barTopY = 8.dp.toPx()
-            val barBottomY = size.height
-            val barBodyHeightPx = barBottomY - barTopY
-
-            val insetPx = horizontalInsetDp.toPx()
-            val usableWidthPx = (size.width - insetPx * 2f).coerceAtLeast(1f)
-            val slotWidthPx = if (slotCount > 0) usableWidthPx / slotCount else usableWidthPx
-
-            // Dual-spring horizontal glide state
-            val transitStretch = abs(fastSlot - slowSlot).coerceIn(0f, 1.2f)
-            val effectiveSlot = fastSlot * 0.74f + slowSlot * 0.26f
-
-            // Concave U-shaped cutout cradle (~60.dp wide, ~12.dp deep into the bar body)
-            // so the 38.dp active medallion sits flush within the dock silhouette
-            val crestCenterX = insetPx + (effectiveSlot + 0.5f) * slotWidthPx
-            val baseHalfWidth = 30.dp.toPx()
-            val crestHalfWidth = baseHalfWidth * (1f + transitStretch * 0.14f)
-
-            val notchDepthPx = if (hasActivePrimaryTab) {
-                12.dp.toPx() - (transitStretch * 2.dp.toPx()).coerceAtMost(3.dp.toPx())
-            } else {
-                0f
-            }
-            val notchBottomY = barTopY + notchDepthPx
-
-            val crestStartX = crestCenterX - crestHalfWidth
-            val crestEndX = crestCenterX + crestHalfWidth
-
-            // Adaptive 26.dp stadium corner radii
-            val cornerRadiusPx = 26.dp.toPx()
-            val bottomCornerR = minOf(cornerRadiusPx, barBodyHeightPx * 0.48f)
-            val leftTopCornerR = minOf(cornerRadiusPx, (crestStartX - 1.dp.toPx()).coerceAtLeast(10.dp.toPx()))
-            val rightTopCornerR = minOf(cornerRadiusPx, (size.width - crestEndX - 1.dp.toPx()).coerceAtLeast(10.dp.toPx()))
-
-            val safeCrestStartX = crestStartX.coerceAtLeast(leftTopCornerR)
-            val safeCrestEndX = crestEndX.coerceAtMost(size.width - rightTopCornerR)
-
-            val dockPath = Path().apply {
-                moveTo(leftTopCornerR, barTopY)
-
-                if (safeCrestStartX > leftTopCornerR) {
-                    lineTo(safeCrestStartX, barTopY)
-                }
-
-                // Left descending cubic-bezier curve carving smoothly down into the concave U-notch cradle
-                cubicTo(
-                    x1 = safeCrestStartX + (crestCenterX - safeCrestStartX) * 0.42f,
-                    y1 = barTopY,
-                    x2 = crestCenterX - (crestCenterX - safeCrestStartX) * 0.44f,
-                    y2 = notchBottomY,
-                    x3 = crestCenterX,
-                    y3 = notchBottomY
-                )
-
-                // Right ascending cubic-bezier curve rising smoothly back to barTopY
-                cubicTo(
-                    x1 = crestCenterX + (safeCrestEndX - crestCenterX) * 0.44f,
-                    y1 = notchBottomY,
-                    x2 = safeCrestEndX - (safeCrestEndX - crestCenterX) * 0.42f,
-                    y2 = barTopY,
-                    x3 = safeCrestEndX,
-                    y3 = barTopY
-                )
-
-                if (safeCrestEndX < size.width - rightTopCornerR) {
-                    lineTo(size.width - rightTopCornerR, barTopY)
-                }
-
-                arcTo(
-                    rect = Rect(
-                        left = size.width - 2f * rightTopCornerR,
-                        top = barTopY,
-                        right = size.width,
-                        bottom = barTopY + 2f * rightTopCornerR
-                    ),
-                    startAngleDegrees = -90f,
-                    sweepAngleDegrees = 90f,
-                    forceMoveTo = false
-                )
-
-                lineTo(size.width, barBottomY - bottomCornerR)
-
-                arcTo(
-                    rect = Rect(
-                        left = size.width - 2f * bottomCornerR,
-                        top = barBottomY - 2f * bottomCornerR,
-                        right = size.width,
-                        bottom = barBottomY
-                    ),
-                    startAngleDegrees = 0f,
-                    sweepAngleDegrees = 90f,
-                    forceMoveTo = false
-                )
-
-                lineTo(bottomCornerR, barBottomY)
-
-                arcTo(
-                    rect = Rect(
-                        left = 0f,
-                        top = barBottomY - 2f * bottomCornerR,
-                        right = 2f * bottomCornerR,
-                        bottom = barBottomY
-                    ),
-                    startAngleDegrees = 90f,
-                    sweepAngleDegrees = 90f,
-                    forceMoveTo = false
-                )
-
-                lineTo(0f, barTopY + leftTopCornerR)
-
-                arcTo(
-                    rect = Rect(
-                        left = 0f,
-                        top = barTopY,
-                        right = 2f * leftTopCornerR,
-                        bottom = barTopY + 2f * leftTopCornerR
-                    ),
-                    startAngleDegrees = 180f,
-                    sweepAngleDegrees = 90f,
-                    forceMoveTo = false
-                )
-
-                close()
-            }
-
-            // A. Breathing Ambient Halo behind the concave cutout cradle
-            drawCircle(
-                brush = Brush.radialGradient(
-                    colors = listOf(
-                        neonPrimary.copy(alpha = 0.34f * auroraPulse),
-                        neonCore.copy(alpha = 0.14f * auroraPulse),
-                        Color.Transparent
-                    ),
-                    center = Offset(crestCenterX, barTopY + 2.dp.toPx()),
-                    radius = crestHalfWidth * 1.25f
-                ),
-                radius = crestHalfWidth * 1.25f,
-                center = Offset(crestCenterX, barTopY + 2.dp.toPx())
-            )
-
-            // B. Deep Obsidian-Glass Base Fill with subtle vertical depth gradient
-            drawPath(
-                path = dockPath,
-                brush = Brush.verticalGradient(
-                    colors = listOf(
-                        navContainerColor.copy(alpha = 0.97f),
-                        Color(0xFF060C14).copy(alpha = 0.99f),
-                        Color(0xFF03060A)
-                    ),
-                    startY = barTopY,
-                    endY = barBottomY
-                )
-            )
-
-            // C. Clipped Interior Lighting: Instrument Dividers, Spotlight Chamber & Laser Horizon
-            clipPath(dockPath) {
-                val chamberHalfWidth = slotWidthPx * 0.49f
-                val chamberLeft = crestCenterX - chamberHalfWidth
-                val chamberRight = crestCenterX + chamberHalfWidth
-
-                // 1. Subtle Top Specular Glass Reflection across inactive bar shoulders
-                drawRect(
-                    brush = Brush.verticalGradient(
-                        colors = listOf(
-                            Color.White.copy(alpha = 0.065f),
-                            Color.Transparent
-                        ),
-                        startY = barTopY,
-                        endY = barTopY + 18.dp.toPx()
-                    ),
-                    topLeft = Offset(0f, barTopY),
-                    size = androidx.compose.ui.geometry.Size(size.width, 18.dp.toPx())
-                )
-
-                // 2. Luxury Instrument Cluster Divider Hairlines between inactive slots
-                for (dividerIndex in 1 until slotCount) {
-                    val dividerX = insetPx + dividerIndex * slotWidthPx
-                    val distFromCrest = abs(dividerX - crestCenterX) / slotWidthPx
-                    val dividerAlpha = ((distFromCrest - 0.55f) / 0.65f).coerceIn(0f, 1f) * 0.085f
-                    if (dividerAlpha > 0.005f) {
-                        drawLine(
-                            brush = Brush.verticalGradient(
-                                colors = listOf(
-                                    Color.Transparent,
-                                    Color.White.copy(alpha = dividerAlpha),
-                                    Champagne.copy(alpha = dividerAlpha * 0.6f),
-                                    Color.Transparent
-                                ),
-                                startY = barTopY + 8.dp.toPx(),
-                                endY = barBottomY - 8.dp.toPx()
-                            ),
-                            start = Offset(dividerX, barTopY + 8.dp.toPx()),
-                            end = Offset(dividerX, barBottomY - 8.dp.toPx()),
-                            strokeWidth = 0.8.dp.toPx()
-                        )
-                    }
-                }
-
-                // 3. Sculpted Spotlight Chamber Column below the concave cradle
-                drawRoundRect(
-                    brush = Brush.verticalGradient(
-                        colors = listOf(
-                            neonPrimary.copy(alpha = 0.28f * auroraPulse),
-                            chamberAccent.copy(alpha = 0.18f * auroraPulse),
-                            chamberAccent.copy(alpha = 0.05f)
-                        ),
-                        startY = barTopY,
-                        endY = barBottomY
-                    ),
-                    topLeft = Offset(chamberLeft, barTopY),
-                    size = androidx.compose.ui.geometry.Size(chamberHalfWidth * 2f, barBottomY - barTopY),
-                    cornerRadius = androidx.compose.ui.geometry.CornerRadius(18.dp.toPx(), 18.dp.toPx())
-                )
-
-                // 4. Concentrated Radial Spotlight Bloom hugging the concave cradle rim
-                drawCircle(
-                    brush = Brush.radialGradient(
-                        colors = listOf(
-                            neonCore.copy(alpha = 0.36f * auroraPulse),
-                            neonPrimary.copy(alpha = 0.24f * auroraPulse),
-                            Color.Transparent
-                        ),
-                        center = Offset(crestCenterX, notchBottomY),
-                        radius = crestHalfWidth * 0.95f
-                    ),
-                    radius = crestHalfWidth * 0.95f,
-                    center = Offset(crestCenterX, notchBottomY)
-                )
-
-                // 5. SetPlay Signature Gold-to-Neon Laser Pedestal Bar at the base of the active section
-                val floorBarWidth = 26.dp.toPx()
-                val floorBarHeight = 2.2.dp.toPx()
-                val floorBarLeft = crestCenterX - floorBarWidth / 2f
-                drawRoundRect(
-                    brush = Brush.horizontalGradient(
-                        colors = listOf(
-                            Color.Transparent,
-                            AmberGold.copy(alpha = 0.92f),
-                            neonCore,
-                            neonPrimary,
-                            AmberGold.copy(alpha = 0.92f),
-                            Color.Transparent
-                        ),
-                        startX = floorBarLeft - 4.dp.toPx(),
-                        endX = floorBarLeft + floorBarWidth + 4.dp.toPx()
-                    ),
-                    topLeft = Offset(floorBarLeft, barBottomY - 2.6.dp.toPx()),
-                    size = androidx.compose.ui.geometry.Size(floorBarWidth, floorBarHeight),
-                    cornerRadius = androidx.compose.ui.geometry.CornerRadius(floorBarHeight, floorBarHeight)
-                )
-            }
-
-            // D. Multi-Layered Neon Rim Stroke along the Concave-Cutout & Stadium Contour
-            drawPath(
-                path = dockPath,
-                brush = Brush.radialGradient(
-                    colors = listOf(
-                        neonPrimary.copy(alpha = 0.38f * auroraPulse),
-                        neonPrimary.copy(alpha = 0.14f * auroraPulse),
-                        neonPrimary.copy(alpha = 0.04f)
-                    ),
-                    center = Offset(crestCenterX, notchBottomY),
-                    radius = size.width * 0.56f
-                ),
-                style = Stroke(
-                    width = 4.5.dp.toPx(),
-                    cap = StrokeCap.Round,
-                    join = StrokeJoin.Round
-                )
-            )
-
-            drawPath(
-                path = dockPath,
-                brush = Brush.radialGradient(
-                    colors = listOf(
-                        neonCore,
-                        neonPrimary,
-                        neonPrimary.copy(alpha = 0.75f),
-                        neonPrimary.copy(alpha = 0.35f)
-                    ),
-                    center = Offset(crestCenterX, notchBottomY),
-                    radius = size.width * 0.86f
-                ),
-                style = Stroke(
-                    width = 1.6.dp.toPx(),
-                    cap = StrokeCap.Round,
-                    join = StrokeJoin.Round
-                )
-            )
-
-            // Inner 3D Specular Crystal Cradle Arc along the concave notch contour
-            val cradleArcPath = Path().apply {
-                moveTo(safeCrestStartX + 3.dp.toPx(), barTopY + 1.2.dp.toPx())
-                cubicTo(
-                    x1 = safeCrestStartX + (crestCenterX - safeCrestStartX) * 0.42f,
-                    y1 = barTopY + 1.2.dp.toPx(),
-                    x2 = crestCenterX - (crestCenterX - safeCrestStartX) * 0.44f,
-                    y2 = notchBottomY + 1.2.dp.toPx(),
-                    x3 = crestCenterX,
-                    y3 = notchBottomY + 1.2.dp.toPx()
-                )
-                cubicTo(
-                    x1 = crestCenterX + (safeCrestEndX - crestCenterX) * 0.44f,
-                    y1 = notchBottomY + 1.2.dp.toPx(),
-                    x2 = safeCrestEndX - (safeCrestEndX - crestCenterX) * 0.42f,
-                    y2 = barTopY + 1.2.dp.toPx(),
-                    x3 = safeCrestEndX - 3.dp.toPx(),
-                    y3 = barTopY + 1.2.dp.toPx()
-                )
-            }
-            drawPath(
-                path = cradleArcPath,
-                brush = Brush.horizontalGradient(
-                    colors = listOf(
-                        Color.Transparent,
-                        neonCore.copy(alpha = 0.80f),
-                        Color.White.copy(alpha = 0.95f),
-                        neonCore.copy(alpha = 0.80f),
-                        Color.Transparent
-                    ),
-                    startX = safeCrestStartX,
-                    endX = safeCrestEndX
-                ),
-                style = Stroke(
-                    width = 1.1.dp.toPx(),
-                    cap = StrokeCap.Round
-                )
-            )
-        }
-
-        // 2. Interactive 5-Section Concierge Row: Supports Both Tap & Horizontal Scrubbing Gesture
         Row(
             modifier = Modifier
                 .fillMaxSize()
-                .padding(horizontal = horizontalInsetDp)
-                .pointerInput(navItems, currentScreen, dockWidthPx) {
-                    detectHorizontalDragGestures { change, _ ->
-                        change.consume()
-                        val usableW = (dockWidthPx - insetPxForGesture * 2f).coerceAtLeast(1f)
-                        val relX = change.position.x.coerceIn(0f, usableW - 1f)
-                        val targetIdx = ((relX / usableW) * navItems.size).toInt().coerceIn(0, navItems.lastIndex)
-                        val targetScreen = navItems[targetIdx].screen
-                        if (targetScreen != currentScreen) {
-                            haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
-                            onScreenSelected(targetScreen)
-                        }
-                    }
-                },
-            horizontalArrangement = Arrangement.SpaceEvenly,
-            verticalAlignment = Alignment.Bottom
+                .padding(horizontal = 6.dp, vertical = 5.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(2.dp)
         ) {
             navItems.forEach { item ->
                 val isSelected = currentScreen == item.screen
-
-                // Dynamic live badge text for inactive smoked-glass wells
-                val inactiveBadgeCountText = when (item.screen) {
-                    AppScreen.HOME -> if (liveMatchesCount > 0) liveMatchesCount.coerceAtMost(99).toString() else null
+                val badgeCountText = when (item.screen) {
+                    AppScreen.HOME -> if (!isSelected && liveMatchesCount > 0) liveMatchesCount.coerceAtMost(99).toString() else null
                     AppScreen.FAVORITES -> if (favoritesCount > 0) favoritesCount.coerceAtMost(99).toString() else null
                     else -> null
                 }
+                val isLiveMatchBadge = item.screen == AppScreen.HOME && !isSelected && liveMatchesCount > 0
+                val showLiveTvDot = item.screen == AppScreen.LIVE_TV && !isSelected && isStreamPlaying
 
-                LuxuryBottomNavSectionSlot(
+                FlushStadiumDockTabSlot(
                     item = item,
                     isSelected = isSelected,
-                    inactiveBadgeText = inactiveBadgeCountText,
-                    showLiveEqualizer = item.screen == AppScreen.LIVE_TV && isStreamPlaying,
-                    hasLivePulseDot = (item.screen == AppScreen.HOME && liveMatchesCount > 0) ||
-                        (item.screen == AppScreen.LIVE_TV && isStreamPlaying),
-                    orbitalAngle = orbitalAngle,
-                    auroraPulse = auroraPulse,
+                    badgeCountText = badgeCountText,
+                    isLiveMatchBadge = isLiveMatchBadge,
+                    showLiveTvDot = showLiveTvDot,
                     onSelect = {
                         if (currentScreen != item.screen) {
                             haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
@@ -2367,7 +1946,7 @@ fun BottomStreamingNav(
                     },
                     modifier = Modifier
                         .weight(1f)
-                        .height(totalHeightDp)
+                        .fillMaxHeight()
                         .testTag("nav_item_${item.screen.name.lowercase()}")
                 )
             }
@@ -2376,355 +1955,134 @@ fun BottomStreamingNav(
 }
 
 @Composable
-private fun LuxuryBottomNavSectionSlot(
+private fun FlushStadiumDockTabSlot(
     item: LuxuryNavItemSpec,
     isSelected: Boolean,
-    inactiveBadgeText: String?,
-    showLiveEqualizer: Boolean,
-    hasLivePulseDot: Boolean,
-    orbitalAngle: Float,
-    auroraPulse: Float,
+    badgeCountText: String?,
+    isLiveMatchBadge: Boolean,
+    showLiveTvDot: Boolean,
     onSelect: () -> Unit,
     modifier: Modifier = Modifier
 ) {
-    // Active 38.dp medallion sits flush within the concave dock cradle;
-    // inactive icon well sits cleanly inside the dock body above the baseline label.
-    val medallionOffsetY by animateDpAsState(
-        targetValue = if (isSelected) (-3).dp else 0.dp,
-        animationSpec = spring(
-            dampingRatio = 0.66f,
-            stiffness = Spring.StiffnessMediumLow
-        ),
-        label = "medallion_offset_${item.label}"
-    )
-
-    val medallionSizeDp by animateDpAsState(
-        targetValue = if (isSelected) 38.dp else 34.dp,
-        animationSpec = spring(
-            dampingRatio = Spring.DampingRatioMediumBouncy,
-            stiffness = Spring.StiffnessMediumLow
-        ),
-        label = "medallion_size_${item.label}"
-    )
-
-    val activeProgress by animateFloatAsState(
-        targetValue = if (isSelected) 1f else 0f,
-        animationSpec = tween(durationMillis = 240),
-        label = "active_progress_${item.label}"
-    )
-
-    // Section-specific kinetic choreography when selected
-    val targetKineticRotation = remember(isSelected, item.kineticStyle) {
-        if (!isSelected) {
-            0f
-        } else {
-            when (item.kineticStyle) {
-                NavKineticStyle.SOCCER_ORBIT -> 360f
-                NavKineticStyle.STAR_CROWN -> 72f
-                NavKineticStyle.CLAPPER_SNAP -> -12f
-                NavKineticStyle.BROADCAST_PULSE -> 0f
-                NavKineticStyle.CASCADE_LIFT -> 0f
-            }
-        }
-    }
-
-    val kineticRotationZ by animateFloatAsState(
-        targetValue = targetKineticRotation,
-        animationSpec = spring(
-            dampingRatio = 0.62f,
-            stiffness = Spring.StiffnessLow
-        ),
-        label = "kinetic_rot_${item.label}"
-    )
-
-    val iconDisplayRotation = when (item.kineticStyle) {
-        NavKineticStyle.CLAPPER_SNAP -> kineticRotationZ * (1f - activeProgress * 0.65f)
-        else -> kineticRotationZ
-    }
-
     var isTvFocused by remember { mutableStateOf(false) }
 
+    val capsuleColor by animateColorAsState(
+        targetValue = if (isSelected) item.crestNeonColor.copy(alpha = 0.18f) else Color.Transparent,
+        animationSpec = tween(durationMillis = 220),
+        label = "dock_capsule_bg_${item.label}"
+    )
+    val capsuleBorderColor by animateColorAsState(
+        targetValue = when {
+            isTvFocused -> AmberGold
+            isSelected -> item.crestNeonColor.copy(alpha = 0.65f)
+            else -> Color.Transparent
+        },
+        animationSpec = tween(durationMillis = 220),
+        label = "dock_capsule_border_${item.label}"
+    )
     val labelColor by animateColorAsState(
         targetValue = when {
             isTvFocused -> AmberGold
             isSelected -> item.activeLabelColor
-            else -> Champagne.copy(alpha = 0.68f)
+            else -> Color.White.copy(alpha = 0.62f)
         },
-        animationSpec = tween(220),
-        label = "label_color_${item.label}"
+        animationSpec = tween(durationMillis = 200),
+        label = "dock_label_${item.label}"
     )
 
     Box(
-        contentAlignment = Alignment.BottomCenter,
+        contentAlignment = Alignment.Center,
         modifier = modifier
-            .onFocusChanged { focusState ->
-                isTvFocused = focusState.isFocused
-            }
+            .clip(RoundedCornerShape(16.dp))
+            .background(capsuleColor, RoundedCornerShape(16.dp))
             .then(
-                if (isTvFocused) {
+                if (isSelected || isTvFocused) {
                     Modifier.border(
-                        width = 2.dp,
-                        brush = Brush.linearGradient(
-                            colors = listOf(item.crestNeonColor, AmberGold, item.crestNeonColor)
-                        ),
+                        width = if (isTvFocused) 1.5.dp else 1.dp,
+                        color = capsuleBorderColor,
                         shape = RoundedCornerShape(16.dp)
                     )
                 } else {
                     Modifier
                 }
             )
-            .clickable(
-                interactionSource = remember { MutableInteractionSource() },
-                indication = null,
-                onClick = onSelect
-            )
-            .padding(bottom = 5.dp)
+            .onFocusChanged { isTvFocused = it.isFocused }
+            .clickable(onClick = onSelect)
+            .padding(horizontal = 4.dp, vertical = 3.dp)
     ) {
-        // 1. Floating Circular Active Medallion (46.dp in Concave Cutout) or Inactive Smoked-Glass Well
-        Box(
-            contentAlignment = Alignment.Center,
-            modifier = Modifier
-                .align(Alignment.BottomCenter)
-                .padding(bottom = 16.dp)
-                .offset(y = medallionOffsetY)
-                .size(medallionSizeDp)
+        Column(
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.Center,
+            modifier = Modifier.fillMaxSize()
         ) {
-            Canvas(modifier = Modifier.fillMaxSize()) {
-                val center = Offset(size.width / 2f, size.height / 2f)
-                val maxRadius = size.minDimension / 2f
+            Box(contentAlignment = Alignment.Center) {
+                Icon(
+                    imageVector = if (isSelected) item.filledIcon else item.outlinedIcon,
+                    contentDescription = item.label,
+                    tint = if (isSelected) item.crestCoreHighlight else Color.White.copy(alpha = 0.58f),
+                    modifier = Modifier.size(if (isSelected) 21.dp else 20.dp)
+                )
 
-                if (activeProgress > 0.01f) {
-                    // A. Outer Ambient Jewel Bloom inside the 4.dp concave air gap
-                    drawCircle(
-                        brush = Brush.radialGradient(
-                            colors = listOf(
-                                item.crestNeonColor.copy(alpha = 0.50f * activeProgress * auroraPulse),
-                                item.crestCoreHighlight.copy(alpha = 0.20f * activeProgress),
-                                Color.Transparent
-                            ),
-                            center = center,
-                            radius = maxRadius * 1.12f
-                        ),
-                        radius = maxRadius * 1.12f,
-                        center = center
-                    )
-
-                    // B. Deep Sapphire-Obsidian Jewel Core Sphere (46.dp diameter)
-                    val orbRadius = maxRadius * 0.96f
-                    drawCircle(
-                        brush = Brush.radialGradient(
-                            colors = listOf(
-                                item.chamberTint.copy(alpha = 0.95f * activeProgress),
-                                Color(0xFF07131E).copy(alpha = 0.98f * activeProgress),
-                                Color(0xFF040910).copy(alpha = activeProgress)
-                            ),
-                            center = Offset(center.x - orbRadius * 0.25f, center.y - orbRadius * 0.28f),
-                            radius = orbRadius * 1.35f
-                        ),
-                        radius = orbRadius,
-                        center = center
-                    )
-
-                    // C. Rotating Chronograph Sweep-Gradient Bezel Ring
-                    rotate(degrees = orbitalAngle, pivot = center) {
-                        drawCircle(
-                            brush = Brush.sweepGradient(
-                                colors = listOf(
-                                    item.crestNeonColor.copy(alpha = 0.95f * activeProgress),
-                                    item.crestCoreHighlight.copy(alpha = 0.98f * activeProgress),
-                                    Color.White.copy(alpha = 0.92f * activeProgress),
-                                    item.crestNeonColor.copy(alpha = 0.30f * activeProgress),
-                                    AmberGold.copy(alpha = 0.88f * activeProgress),
-                                    item.crestNeonColor.copy(alpha = 0.95f * activeProgress)
-                                ),
-                                center = center
-                            ),
-                            radius = orbRadius,
-                            center = center,
-                            style = Stroke(width = 1.6.dp.toPx())
+                if (badgeCountText != null) {
+                    Box(
+                        contentAlignment = Alignment.Center,
+                        modifier = Modifier
+                            .align(Alignment.TopEnd)
+                            .offset(x = 9.dp, y = (-3).dp)
+                            .background(
+                                color = if (isLiveMatchBadge) KickoffLiveCrimson else KickoffTurfSurface.copy(alpha = 0.96f),
+                                shape = RoundedCornerShape(50)
+                            )
+                            .border(
+                                width = 0.75.dp,
+                                color = if (isLiveMatchBadge) KickoffFloodlightWhite.copy(alpha = 0.85f) else item.crestNeonColor.copy(alpha = 0.72f),
+                                shape = RoundedCornerShape(50)
+                            )
+                            .padding(horizontal = 4.dp, vertical = 0.5.dp)
+                    ) {
+                        Text(
+                            text = badgeCountText,
+                            color = if (isLiveMatchBadge) KickoffFloodlightWhite else item.crestCoreHighlight,
+                            fontSize = 7.sp,
+                            lineHeight = 8.sp,
+                            fontWeight = FontWeight.ExtraBold,
+                            maxLines = 1
                         )
                     }
-
-                    // D. Top-Left Sapphire Crystal Specular Crescent Highlight
-                    drawArc(
-                        brush = Brush.linearGradient(
-                            colors = listOf(
-                                Color.White.copy(alpha = 0.58f * activeProgress),
-                                item.crestCoreHighlight.copy(alpha = 0.22f * activeProgress),
-                                Color.Transparent
-                            ),
-                            start = Offset(center.x - orbRadius, center.y - orbRadius),
-                            end = Offset(center.x + orbRadius * 0.3f, center.y + orbRadius * 0.3f)
-                        ),
-                        startAngle = 195f,
-                        sweepAngle = 120f,
-                        useCenter = false,
-                        topLeft = Offset(center.x - orbRadius * 0.78f, center.y - orbRadius * 0.78f),
-                        size = androidx.compose.ui.geometry.Size(orbRadius * 1.56f, orbRadius * 1.56f),
-                        style = Stroke(width = 1.1.dp.toPx(), cap = StrokeCap.Round)
-                    )
-                }
-
-                if (activeProgress < 0.99f) {
-                    // Recessed Smoked-Glass Capsule Well for Inactive Sections
-                    val inactiveAlpha = 1f - activeProgress
-                    val wellRadius = maxRadius * 0.88f
-                    drawCircle(
-                        brush = Brush.verticalGradient(
-                            colors = listOf(
-                                Color.White.copy(alpha = 0.045f * inactiveAlpha),
-                                Color(0xFF050B12).copy(alpha = 0.55f * inactiveAlpha)
-                            ),
-                            startY = center.y - wellRadius,
-                            endY = center.y + wellRadius
-                        ),
-                        radius = wellRadius,
-                        center = center
-                    )
-                    drawCircle(
-                        brush = Brush.verticalGradient(
-                            colors = listOf(
-                                Color.White.copy(alpha = 0.14f * inactiveAlpha),
-                                item.crestNeonColor.copy(alpha = 0.08f * inactiveAlpha),
-                                Color.Transparent
-                            ),
-                            startY = center.y - wellRadius,
-                            endY = center.y + wellRadius
-                        ),
-                        radius = wellRadius,
-                        center = center,
-                        style = Stroke(width = 0.85.dp.toPx())
+                } else if (showLiveTvDot) {
+                    Box(
+                        modifier = Modifier
+                            .align(Alignment.TopEnd)
+                            .offset(x = 4.dp, y = (-2).dp)
+                            .size(6.dp)
+                            .clip(CircleShape)
+                            .background(LiveRed)
                     )
                 }
             }
 
-            // Dual-Layer Holographic Icon with Kinetic Choreography
-            Box(
-                contentAlignment = Alignment.Center,
-                modifier = Modifier.graphicsLayer {
-                    rotationZ = iconDisplayRotation
-                }
-            ) {
-                if (isSelected) {
-                    Icon(
-                        imageVector = item.filledIcon,
-                        contentDescription = null,
-                        tint = item.crestCoreHighlight.copy(alpha = 0.32f),
-                        modifier = Modifier.size(20.dp)
-                    )
-                    Icon(
-                        imageVector = item.outlinedIcon,
-                        contentDescription = item.label,
-                        tint = Color.White,
-                        modifier = Modifier.size(19.dp)
-                    )
-                } else {
-                    Icon(
-                        imageVector = item.outlinedIcon,
-                        contentDescription = item.label,
-                        tint = Champagne.copy(alpha = 0.68f),
-                        modifier = Modifier.size(19.dp)
-                    )
-                }
-            }
+            Spacer(modifier = Modifier.height(2.dp))
 
-            // Live Contextual Telemetry Badges on Medallion / Smoked-Glass Wells
-            if (showLiveEqualizer) {
-                Box(
-                    modifier = Modifier
-                        .align(Alignment.TopEnd)
-                        .offset(x = 3.dp, y = (-1).dp)
-                ) {
-                    LiveEqualizerMiniBadge(
-                        accentColor = LiveRed,
-                        auroraPulse = auroraPulse
-                    )
-                }
-            } else if (inactiveBadgeText != null) {
-                val isLiveMatchBadge = item.screen == AppScreen.HOME && hasLivePulseDot
-                Box(
-                    contentAlignment = Alignment.Center,
-                    modifier = Modifier
-                        .align(Alignment.TopEnd)
-                        .offset(x = 5.dp, y = (-1).dp)
-                        .background(
-                            color = if (isLiveMatchBadge) KickoffLiveCrimson else KickoffTurfSurface.copy(alpha = 0.96f),
-                            shape = RoundedCornerShape(50)
-                        )
-                        .border(
-                            width = 0.85.dp,
-                            color = if (isLiveMatchBadge) KickoffFloodlightWhite.copy(alpha = 0.85f) else item.crestNeonColor.copy(alpha = 0.78f),
-                            shape = RoundedCornerShape(50)
-                        )
-                        .padding(horizontal = 4.5.dp, vertical = 1.dp)
-                ) {
-                    Text(
-                        text = inactiveBadgeText,
-                        color = if (isLiveMatchBadge) KickoffFloodlightWhite else item.crestCoreHighlight,
-                        fontSize = 7.5.sp,
-                        lineHeight = 8.sp,
-                        fontWeight = FontWeight.ExtraBold,
-                        letterSpacing = 0.15.sp,
-                        maxLines = 1
-                    )
-                }
-            }
-        }
-
-        // 2. Crisp Single-Line Section Label aligned cleanly along the bottom baseline
-        Text(
-            text = item.label,
-            color = labelColor,
-            fontSize = if (isSelected) 11.sp else 9.8.sp,
-            lineHeight = 12.sp,
-            fontWeight = if (isSelected) FontWeight.ExtraBold else FontWeight.SemiBold,
-            letterSpacing = if (isSelected) 0.35.sp else 0.15.sp,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
-            modifier = Modifier
-                .align(Alignment.BottomCenter)
-                .padding(bottom = 2.dp)
-        )
-    }
-}
-
-/**
- * Miniature 3-bar animated broadcast equalizer badge shown on the Live TV section
- * when a stream is actively playing while browsing another section.
- */
-@Composable
-private fun LiveEqualizerMiniBadge(
-    accentColor: Color,
-    auroraPulse: Float
-) {
-    Row(
-        verticalAlignment = Alignment.Bottom,
-        horizontalArrangement = Arrangement.spacedBy(1.2.dp),
-        modifier = Modifier
-            .background(
-                color = Color(0xFF0A1018).copy(alpha = 0.94f),
-                shape = RoundedCornerShape(5.dp)
+            Text(
+                text = item.label,
+                color = labelColor,
+                fontSize = if (isSelected) 10.sp else 9.5.sp,
+                lineHeight = 11.sp,
+                fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
+                letterSpacing = if (isSelected) 0.25.sp else 0.1.sp,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
             )
-            .border(
-                width = 0.7.dp,
-                color = accentColor.copy(alpha = 0.75f),
-                shape = RoundedCornerShape(5.dp)
-            )
-            .padding(horizontal = 3.dp, vertical = 2.dp)
-            .height(8.dp)
-    ) {
-        val bar1Fraction = (0.45f + (auroraPulse - 0.84f) * 3.2f).coerceIn(0.35f, 1f)
-        val bar2Fraction = (1f - (auroraPulse - 0.84f) * 2.8f).coerceIn(0.40f, 1f)
-        val bar3Fraction = (0.60f + (auroraPulse - 0.84f) * 2.4f).coerceIn(0.35f, 1f)
 
-        listOf(bar1Fraction, bar2Fraction, bar3Fraction).forEach { fraction ->
+            Spacer(modifier = Modifier.height(2.dp))
+
             Box(
                 modifier = Modifier
-                    .width(1.6.dp)
-                    .height((7.dp * fraction).coerceAtLeast(2.5.dp))
+                    .width(18.dp)
+                    .height(2.5.dp)
+                    .clip(RoundedCornerShape(50))
                     .background(
-                        color = accentColor,
-                        shape = RoundedCornerShape(1.dp)
+                        if (isSelected) item.crestNeonColor else Color.Transparent
                     )
             )
         }

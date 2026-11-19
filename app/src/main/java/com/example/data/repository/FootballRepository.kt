@@ -5679,7 +5679,8 @@ class FootballRepository(
             "sheffield wednesday", "west brom", "blackburn", "norwich", "watford", "plymouth",
             "portsmouth", "derby county", "oxford united", "luton", "stoke city", "swansea",
             "cardiff", "preston", "qpr", "millwall", "bristol city", "troyes", "racing santander",
-            "malaga", "deportivo la coruna", "real zaragoza", "sporting gijon", "levante", "elche",
+            "malaga", "deportivo la coruna", "deportivo a coruna", "deportivo a coruña",
+            "deportivo coruna", "real zaragoza", "sporting gijon", "levante", "elche",
             "eibar", "almeria", "granada", "cadiz", "tenerife", "albirex"
         )
 
@@ -6220,6 +6221,10 @@ class FootballRepository(
                 "fc cologne", "1. fc koln", "1. fc köln", "fc koln" -> "1. FC Köln"
                 "fc bayern munchen", "bayern munchen", "fc bayern münchen", "bayern münchen", "fc bayern munich" -> "Bayern Munich"
                 "deportivo alaves", "alaves", "alavés" -> "Alavés"
+                "al nassr fc riyadh", "al-nassr fc riyadh", "al nassr riyadh" -> "Al Nassr"
+                "al ahli jeddah", "al-ahli jeddah", "al ahli saudi fc" -> "Al Ahli"
+                "al hilal riyadh", "al hilal sfc" -> "Al Hilal"
+                "al ittihad jeddah", "al ittihad club" -> "Al Ittihad"
                 else -> trimmed
             }
         }

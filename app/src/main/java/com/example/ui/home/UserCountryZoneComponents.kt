@@ -775,16 +775,13 @@ private fun ActiveCountryZoneTelemetryBanner(
     onSelectSeasonTimeMode: (SeasonTimeMode) -> Unit,
     onAutoDetect: () -> Unit,
     spotlightPinnedFeedback: Boolean,
-    onPrioritizeCountryLeague: () -> Unit
+    onPrioritizeCountryLeague: (() -> Unit)? = null
 ) {
     val localClock = remember(zone.countryCode, seasonTimeMode) {
         zone.formatCurrentLocalClock(mode = seasonTimeMode)
     }
     val utcBadge = remember(zone.countryCode, seasonTimeMode) {
         zone.getUtcOffsetBadge(mode = seasonTimeMode)
-    }
-    val providerStyle = remember(zone.primaryTvProviderName) {
-        resolveBroadcastProviderBadgeStyle(zone.primaryTvProviderName)
     }
 
     Surface(
@@ -934,9 +931,8 @@ private fun ActiveCountryZoneTelemetryBanner(
                 }
 
                 Surface(
-                    color = providerStyle.surfaceColor,
+                    color = KickoffGlassWell.copy(alpha = 0.65f),
                     shape = RoundedCornerShape(8.dp),
-                    border = BorderStroke(0.7.dp, providerStyle.borderColor),
                     modifier = Modifier.weight(1f)
                 ) {
                     Row(
@@ -946,51 +942,53 @@ private fun ActiveCountryZoneTelemetryBanner(
                         Icon(
                             imageVector = Icons.Default.LiveTv,
                             contentDescription = null,
-                            tint = providerStyle.borderColor,
+                            tint = KickoffMistSilver,
                             modifier = Modifier.size(12.dp)
                         )
                         Spacer(modifier = Modifier.width(5.dp))
                         Text(
                             text = zone.primaryTvProviderName,
-                            color = providerStyle.textColor,
+                            color = KickoffFloodlightWhite.copy(alpha = 0.88f),
                             fontSize = 10.sp,
-                            fontWeight = FontWeight.Bold,
+                            fontWeight = FontWeight.SemiBold,
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis
                         )
                     }
                 }
 
-                // 1-Tap Pin Country's Domestic Spotlight Competition
-                Surface(
-                    color = if (spotlightPinnedFeedback) KickoffTrophyGold else KickoffGlassWell,
-                    shape = RoundedCornerShape(8.dp),
-                    border = BorderStroke(
-                        0.7.dp,
-                        if (spotlightPinnedFeedback) KickoffFloodlightWhite else KickoffTrophyGold.copy(alpha = 0.65f)
-                    ),
-                    modifier = Modifier
-                        .clip(RoundedCornerShape(8.dp))
-                        .clickable { onPrioritizeCountryLeague() }
-                        .testTag("pin_country_spotlight_league_btn")
-                ) {
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        modifier = Modifier.padding(horizontal = 7.dp, vertical = 4.dp)
+                // 1-Tap Pin Country's Domestic Spotlight Competition (rendered only when wired)
+                if (onPrioritizeCountryLeague != null) {
+                    Surface(
+                        color = if (spotlightPinnedFeedback) KickoffTrophyGold else KickoffGlassWell,
+                        shape = RoundedCornerShape(8.dp),
+                        border = BorderStroke(
+                            0.7.dp,
+                            if (spotlightPinnedFeedback) KickoffFloodlightWhite else KickoffTrophyGold.copy(alpha = 0.65f)
+                        ),
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(8.dp))
+                            .clickable { onPrioritizeCountryLeague() }
+                            .testTag("pin_country_spotlight_league_btn")
                     ) {
-                        Icon(
-                            imageVector = if (spotlightPinnedFeedback) Icons.Default.Check else Icons.Default.EmojiEvents,
-                            contentDescription = null,
-                            tint = if (spotlightPinnedFeedback) KickoffPitchBlack else KickoffTrophyGold,
-                            modifier = Modifier.size(11.dp)
-                        )
-                        Spacer(modifier = Modifier.width(3.dp))
-                        Text(
-                            text = if (spotlightPinnedFeedback) "Pinned #1" else "Pin League",
-                            color = if (spotlightPinnedFeedback) KickoffPitchBlack else KickoffFloodlightWhite,
-                            fontSize = 9.5.sp,
-                            fontWeight = FontWeight.ExtraBold
-                        )
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier.padding(horizontal = 7.dp, vertical = 4.dp)
+                        ) {
+                            Icon(
+                                imageVector = if (spotlightPinnedFeedback) Icons.Default.Check else Icons.Default.EmojiEvents,
+                                contentDescription = null,
+                                tint = if (spotlightPinnedFeedback) KickoffPitchBlack else KickoffTrophyGold,
+                                modifier = Modifier.size(11.dp)
+                            )
+                            Spacer(modifier = Modifier.width(3.dp))
+                            Text(
+                                text = if (spotlightPinnedFeedback) "Pinned #1" else "Pin Local League",
+                                color = if (spotlightPinnedFeedback) KickoffPitchBlack else KickoffFloodlightWhite,
+                                fontSize = 9.5.sp,
+                                fontWeight = FontWeight.ExtraBold
+                            )
+                        }
                     }
                 }
             }
@@ -1115,32 +1113,34 @@ private fun CountryZoneOptionCard(
 
                     Spacer(modifier = Modifier.height(3.dp))
 
-                    Row(
-                        horizontalArrangement = Arrangement.spacedBy(4.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        zone.iptvCategoryPrefixes.take(3).forEach { prefix ->
-                            Surface(
-                                color = providerStyle.surfaceColor,
-                                shape = RoundedCornerShape(4.dp),
-                                border = BorderStroke(0.5.dp, providerStyle.borderColor)
-                            ) {
-                                Text(
-                                    text = prefix,
-                                    color = providerStyle.textColor,
-                                    fontSize = 8.sp,
-                                    fontWeight = FontWeight.ExtraBold,
-                                    modifier = Modifier.padding(horizontal = 4.5.dp, vertical = 1.dp)
-                                )
+                    val cleanPrefixes = remember(zone.countryCode) {
+                        zone.iptvCategoryPrefixes
+                            .map { it.replace("|", "").replace(":", "").trim() }
+                            .filter { it.isNotBlank() }
+                            .distinct()
+                            .take(3)
+                    }
+                    if (cleanPrefixes.isNotEmpty()) {
+                        Row(
+                            horizontalArrangement = Arrangement.spacedBy(4.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            cleanPrefixes.forEach { cleanPrefix ->
+                                Surface(
+                                    color = providerStyle.surfaceColor,
+                                    shape = RoundedCornerShape(4.dp),
+                                    border = BorderStroke(0.5.dp, providerStyle.borderColor)
+                                ) {
+                                    Text(
+                                        text = cleanPrefix,
+                                        color = providerStyle.textColor,
+                                        fontSize = 8.sp,
+                                        fontWeight = FontWeight.ExtraBold,
+                                        modifier = Modifier.padding(horizontal = 4.5.dp, vertical = 1.dp)
+                                    )
+                                }
                             }
                         }
-                        Text(
-                            text = "• ${zone.satelliteOrPlatformSummary}",
-                            color = KickoffMistSilver,
-                            fontSize = 9.5.sp,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis
-                        )
                     }
                 }
             }
@@ -1824,20 +1824,21 @@ fun CustomizeTeamsAndTournamentsSheet(
         }
     }
 
-    val unhealthySourcesCount = remember(effectiveSourceStates, sourceAlertMessage) {
-        val count = effectiveSourceStates.count {
-            it.status == SourceHealthStatus.KEY_INVALID_OR_EXPIRED ||
-                it.status == SourceHealthStatus.QUOTA_WARNING ||
-                it.status == SourceHealthStatus.UNREACHABLE
-        }
-        if (count == 0 && !sourceAlertMessage.isNullOrBlank()) 1 else count
+    val readySourcesCount = remember(effectiveSourceStates) {
+        KickoffSourceMonitor.countReadySources(effectiveSourceStates)
+    }
+
+    val actionableAlertCount = remember(effectiveSourceStates, sourceAlertMessage) {
+        KickoffSourceMonitor.countActionableAlerts(effectiveSourceStates, sourceAlertMessage)
     }
 
     val domainDescriptors = remember(
         favoriteTeams.size,
         tournamentPreferences,
         selectedCountryZone.shortIso3,
-        unhealthySourcesCount
+        readySourcesCount,
+        effectiveSourceStates.size,
+        actionableAlertCount
     ) {
         val enabledLeaguesCount = tournamentPreferences.count { it.isEnabled }
         listOf(
@@ -1846,8 +1847,8 @@ fun CustomizeTeamsAndTournamentsSheet(
             Triple("Viewing & UX", "Spoilers • Density • Fallback", false),
             Triple(
                 "Sources & Keys",
-                if (unhealthySourcesCount > 0) "$unhealthySourcesCount Alert(s) Active" else "6 Feeds Healthy",
-                unhealthySourcesCount > 0
+                if (actionableAlertCount > 0) "$actionableAlertCount Alert(s) Active" else "$readySourcesCount / ${effectiveSourceStates.size} Feeds Ready",
+                actionableAlertCount > 0
             )
         )
     }
@@ -1873,8 +1874,9 @@ fun CustomizeTeamsAndTournamentsSheet(
                         subTabs.forEachIndexed { idx, label ->
                             val selected = domainZeroSubFilter == idx
                             Surface(
-                                color = if (selected) KickoffPitchEmerald else Color.Transparent,
+                                color = if (selected) KickoffCanopyElevated else Color.Transparent,
                                 shape = RoundedCornerShape(7.dp),
+                                border = if (selected) BorderStroke(1.dp, KickoffPitchEmerald) else null,
                                 modifier = Modifier
                                     .weight(1f)
                                     .clip(RoundedCornerShape(7.dp))
@@ -1887,7 +1889,7 @@ fun CustomizeTeamsAndTournamentsSheet(
                             ) {
                                 Text(
                                     text = label,
-                                    color = if (selected) KickoffPitchBlack else KickoffFloodlightWhite,
+                                    color = if (selected) KickoffFloodlightVolt else KickoffMistSilver,
                                     fontSize = 11.sp,
                                     fontWeight = FontWeight.ExtraBold,
                                     textAlign = TextAlign.Center,
@@ -1951,8 +1953,10 @@ fun CustomizeTeamsAndTournamentsSheet(
                                 color = KickoffMistSilver,
                                 fontSize = 11.5.sp
                             )
-                            TextButton(onClick = onEnableAllTournaments) {
-                                Text("Enable All", color = KickoffPitchEmerald, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                            if (tournamentPreferences.any { !it.isEnabled }) {
+                                TextButton(onClick = onEnableAllTournaments) {
+                                    Text("Enable All", color = KickoffPitchEmerald, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                                }
                             }
                         }
                     }
@@ -2088,7 +2092,7 @@ fun CustomizeTeamsAndTournamentsSheet(
                                         shape = RoundedCornerShape(10.dp),
                                         border = BorderStroke(
                                             width = 0.8.dp,
-                                            color = if (pref.isPinned) KickoffTrophyGold.copy(alpha = 0.65f) else KickoffEmeraldBorder
+                                            color = KickoffEmeraldBorder
                                         ),
                                         modifier = Modifier.fillMaxWidth()
                                     ) {
@@ -2147,7 +2151,8 @@ fun CustomizeTeamsAndTournamentsSheet(
                                                     checkedThumbColor = KickoffPitchBlack,
                                                     checkedTrackColor = KickoffPitchEmerald,
                                                     uncheckedThumbColor = KickoffMistSilver,
-                                                    uncheckedTrackColor = KickoffGlassWell
+                                                    uncheckedTrackColor = KickoffGlassWell,
+                                                    uncheckedBorderColor = KickoffEmeraldBorder
                                                 ),
                                                 modifier = Modifier.testTag("toggle_tournament_${pref.tournamentId}")
                                             )
@@ -2167,7 +2172,7 @@ fun CustomizeTeamsAndTournamentsSheet(
                         onSelectSeasonTimeMode = onSelectSeasonTimeMode,
                         onAutoDetect = onAutoDetectCountryZone,
                         spotlightPinnedFeedback = false,
-                        onPrioritizeCountryLeague = {}
+                        onPrioritizeCountryLeague = null
                     )
 
                     if (!selectedCountryZone.hasSeasonalTimeChange) {
@@ -2257,11 +2262,6 @@ fun CustomizeTeamsAndTournamentsSheet(
 
                 2 -> {
                     // Domain 2: Display & Data (4 Consumer Preferences + Collapsible Advanced Data Sources)
-                    val readySourcesCount = remember(effectiveSourceStates) {
-                        effectiveSourceStates.count {
-                            it.status == SourceHealthStatus.HEALTHY || it.status == SourceHealthStatus.UNCONFIGURED
-                        }
-                    }
                     Column(
                         modifier = Modifier
                             .fillMaxWidth()
@@ -2386,8 +2386,7 @@ fun CustomizeTeamsAndTournamentsSheet(
                                 isCheckingSourcesHealth = isCheckingSourcesHealth,
                                 onCheckAllSourcesHealth = onCheckAllSourcesHealth,
                                 onValidateAndUpdateApiKey = onValidateAndUpdateApiKey,
-                                onResetApiKey = onResetApiKey,
-                                inlineInsideScroll = true
+                                onResetApiKey = onResetApiKey
                             )
                         }
                     }
@@ -2395,24 +2394,30 @@ fun CustomizeTeamsAndTournamentsSheet(
 
                 3 -> {
                     // Domain 3: Data Sources & API Key Management Hub (TV 4-Domain Rail)
-                    if (!sourceAlertMessage.isNullOrBlank()) {
-                        KickoffSourceStatusAlertBanner(
-                            alertMessage = sourceAlertMessage,
-                            onManageSourcesClick = { activeTab = 3 },
-                            onDismiss = onDismissSourceAlert,
-                            modifier = Modifier.padding(horizontal = 0.dp),
-                            showManageButton = false
-                        )
-                        Spacer(modifier = Modifier.height(8.dp))
-                    }
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .verticalScroll(rememberScrollState()),
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        if (!sourceAlertMessage.isNullOrBlank()) {
+                            KickoffSourceStatusAlertBanner(
+                                alertMessage = sourceAlertMessage,
+                                onManageSourcesClick = { activeTab = 3 },
+                                onDismiss = onDismissSourceAlert,
+                                modifier = Modifier.padding(horizontal = 0.dp),
+                                showManageButton = false
+                            )
+                        }
 
-                    KickoffSourcesAndKeysTabContent(
-                        sourceStates = effectiveSourceStates,
-                        isCheckingSourcesHealth = isCheckingSourcesHealth,
-                        onCheckAllSourcesHealth = onCheckAllSourcesHealth,
-                        onValidateAndUpdateApiKey = onValidateAndUpdateApiKey,
-                        onResetApiKey = onResetApiKey
-                    )
+                        KickoffSourcesAndKeysTabContent(
+                            sourceStates = effectiveSourceStates,
+                            isCheckingSourcesHealth = isCheckingSourcesHealth,
+                            onCheckAllSourcesHealth = onCheckAllSourcesHealth,
+                            onValidateAndUpdateApiKey = onValidateAndUpdateApiKey,
+                            onResetApiKey = onResetApiKey
+                        )
+                    }
                 }
             }
         }
@@ -2642,7 +2647,7 @@ fun CustomizeTeamsAndTournamentsSheet(
                 ) {
                     mobileTabLabels.forEachIndexed { idx, label ->
                         val isSelected = activeTab == idx || (idx == 2 && activeTab == 3)
-                        val showDot = idx == 2 && unhealthySourcesCount > 0
+                        val showDot = idx == 2 && actionableAlertCount > 0
                         Surface(
                             color = if (isSelected) KickoffPitchEmerald else Color.Transparent,
                             shape = RoundedCornerShape(8.dp),
@@ -2737,7 +2742,8 @@ private fun KickoffPreferenceToggleCard(
                     checkedThumbColor = KickoffPitchBlack,
                     checkedTrackColor = KickoffPitchEmerald,
                     uncheckedThumbColor = KickoffMistSilver,
-                    uncheckedTrackColor = KickoffGlassWell
+                    uncheckedTrackColor = KickoffGlassWell,
+                    uncheckedBorderColor = KickoffEmeraldBorder
                 ),
                 modifier = Modifier.testTag(testTag)
             )
@@ -2751,18 +2757,16 @@ private fun KickoffSourcesAndKeysTabContent(
     isCheckingSourcesHealth: Boolean,
     onCheckAllSourcesHealth: () -> Unit,
     onValidateAndUpdateApiKey: (KickoffProviderId, String, (ApiKeyValidationResult) -> Unit) -> Unit,
-    onResetApiKey: (KickoffProviderId) -> Unit,
-    inlineInsideScroll: Boolean = false
+    onResetApiKey: (KickoffProviderId) -> Unit
 ) {
-    val healthyCount = remember(sourceStates) {
-        sourceStates.count { it.status == SourceHealthStatus.HEALTHY }
+    val readySourcesCount = remember(sourceStates) {
+        KickoffSourceMonitor.countReadySources(sourceStates)
     }
-    val warningOrInvalidCount = remember(sourceStates) {
-        sourceStates.count {
-            it.status == SourceHealthStatus.KEY_INVALID_OR_EXPIRED ||
-                it.status == SourceHealthStatus.QUOTA_WARNING ||
-                it.status == SourceHealthStatus.UNREACHABLE
-        }
+    val actionableAlertCount = remember(sourceStates) {
+        KickoffSourceMonitor.countActionableAlerts(sourceStates)
+    }
+    val rateLimitedCount = remember(sourceStates) {
+        sourceStates.count { it.status == SourceHealthStatus.QUOTA_WARNING }
     }
 
     Column(
@@ -2787,16 +2791,19 @@ private fun KickoffSourcesAndKeysTabContent(
             ) {
                 Column(modifier = Modifier.weight(1f)) {
                     Text(
-                        text = "$healthyCount / ${sourceStates.size} DATA SOURCES ACTIVE",
+                        text = "$readySourcesCount / ${sourceStates.size} DATA SOURCES READY",
                         color = KickoffFloodlightWhite,
                         fontSize = 12.sp,
                         fontWeight = FontWeight.ExtraBold
                     )
                     Text(
-                        text = if (warningOrInvalidCount == 0) {
-                            "All configured feeds & multi-provider fallbacks are healthy"
-                        } else {
-                            "$warningOrInvalidCount source(s) need attention • Automatic fallback is active"
+                        text = when {
+                            actionableAlertCount > 0 ->
+                                "$actionableAlertCount source(s) need attention • Automatic fallback is active"
+                            rateLimitedCount > 0 ->
+                                "Automatic fallback active • $rateLimitedCount feed cooling down briefly"
+                            else ->
+                                "All configured feeds & multi-provider fallbacks are ready"
                         },
                         color = KickoffMistSilver,
                         fontSize = 10.5.sp
@@ -2837,34 +2844,17 @@ private fun KickoffSourcesAndKeysTabContent(
             }
         }
 
-        // 6 Provider Cards List
-        if (inlineInsideScroll) {
-            Column(
-                modifier = Modifier.fillMaxWidth(),
-                verticalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                sourceStates.forEach { state ->
-                    KickoffProviderHealthCard(
-                        state = state,
-                        onValidateAndUpdateApiKey = onValidateAndUpdateApiKey,
-                        onResetApiKey = onResetApiKey
-                    )
-                }
-            }
-        } else {
-            LazyColumn(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .heightIn(max = 370.dp),
-                verticalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                items(sourceStates, key = { it.provider.id }) { state ->
-                    KickoffProviderHealthCard(
-                        state = state,
-                        onValidateAndUpdateApiKey = onValidateAndUpdateApiKey,
-                        onResetApiKey = onResetApiKey
-                    )
-                }
+        // 6 Provider Cards List (plain Column to avoid nested LazyColumn scroll traps)
+        Column(
+            modifier = Modifier.fillMaxWidth(),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            sourceStates.forEach { state ->
+                KickoffProviderHealthCard(
+                    state = state,
+                    onValidateAndUpdateApiKey = onValidateAndUpdateApiKey,
+                    onResetApiKey = onResetApiKey
+                )
             }
         }
     }
@@ -2880,10 +2870,7 @@ private fun KickoffProviderHealthCard(
     var isValidatingKey by remember(state.provider.id) { mutableStateOf(false) }
     var validationFeedback by remember(state.provider.id) { mutableStateOf<String?>(null) }
     var isEditorExpanded by remember(state.provider.id) {
-        mutableStateOf(
-            state.status == SourceHealthStatus.KEY_INVALID_OR_EXPIRED ||
-                state.status == SourceHealthStatus.QUOTA_WARNING
-        )
+        mutableStateOf(state.status == SourceHealthStatus.KEY_INVALID_OR_EXPIRED)
     }
 
     val badgeColor = when (state.status) {

@@ -5770,6 +5770,59 @@ class TvSyncDeviceSeparationComposeTest {
         )
         assertNull(sourceMonitor.activeSourceAlertFlow.value)
     }
+
+    @Test
+    fun testKickoffV10DataHygieneCleanDisplayNamesAndSourceReadiness() {
+        val context = androidx.test.core.app.ApplicationProvider.getApplicationContext<android.content.Context>()
+
+        // 1. LaLiga second-tier club filtering (Deportivo A Coruña must be rejected from LaLiga EA Sports)
+        val laligaCatalogItem = com.example.data.repository.FootballRepository.ALL_TOURNAMENTS
+            .first { it.tournamentId == "laliga" }
+        assertFalse(
+            com.example.data.repository.FootballRepository.isValidFixtureForTournament(
+                laligaCatalogItem,
+                "Alavés",
+                "Deportivo A Coruña",
+                "Spain",
+                "LaLiga EA Sports"
+            )
+        )
+
+        // 2. Clean consumer-friendly Saudi Pro League display name canonicalization
+        assertEquals(
+            "Al Nassr",
+            com.example.data.repository.FootballRepository.canonicalizeDisplayTeamName("Al Nassr FC Riyadh")
+        )
+        assertEquals(
+            "Al Ahli",
+            com.example.data.repository.FootballRepository.canonicalizeDisplayTeamName("Al Ahli Jeddah")
+        )
+
+        // 3. Transient Football-Data.org HTTP 429 (QUOTA_WARNING) must NOT emit a top-level alert banner
+        // while keyless providers (ESPN, TheSportsDB, Sofascore) remain HEALTHY
+        val sourceMonitor = com.example.data.repository.KickoffSourceMonitor(
+            context = context,
+            httpClient = IptvRepository.sharedOkHttpClient
+        )
+        sourceMonitor.recordRuntimeResponse(com.example.data.repository.KickoffProviderId.ESPN_SOCCER, 200)
+        sourceMonitor.recordRuntimeResponse(com.example.data.repository.KickoffProviderId.THESPORTSDB, 200)
+        sourceMonitor.recordRuntimeResponse(com.example.data.repository.KickoffProviderId.SOFASCORE_LIVE, 200)
+        sourceMonitor.recordRuntimeResponse(com.example.data.repository.KickoffProviderId.FOOTBALL_DATA_ORG, 429)
+
+        val fdState = sourceMonitor.sourceHealthFlow.value.first {
+            it.provider == com.example.data.repository.KickoffProviderId.FOOTBALL_DATA_ORG
+        }
+        assertEquals(com.example.data.repository.SourceHealthStatus.QUOTA_WARNING, fdState.status)
+        assertNull(sourceMonitor.activeSourceAlertFlow.value)
+        assertEquals(
+            0,
+            com.example.data.repository.KickoffSourceMonitor.countActionableAlerts(
+                sourceMonitor.sourceHealthFlow.value,
+                sourceMonitor.activeSourceAlertFlow.value
+            )
+        )
+    }
 }
+
 
 
