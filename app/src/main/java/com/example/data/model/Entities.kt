@@ -6,6 +6,7 @@ import androidx.room.Index
 import androidx.room.PrimaryKey
 import java.text.Normalizer
 import java.util.Locale
+import kotlin.math.ln
 
 @Entity(
     tableName = "playlists"
@@ -97,6 +98,38 @@ data class StreamEntity(
 data class GroupedVodStream(
     @Embedded val stream: StreamEntity,
     val versionCount: Int = 1
+)
+
+@Entity(
+    tableName = "vod_catalog_groups",
+    indices = [
+        Index(value = ["playlistId", "streamType", "groupKey"], unique = true),
+        Index(value = ["playlistId", "streamType", "popularityScore"]),
+        Index(value = ["playlistId", "streamType", "addedEpoch"]),
+        Index(value = ["playlistId", "streamType", "primaryCategoryId"]),
+        Index(value = ["playlistId", "streamType", "cleanTitle"])
+    ]
+)
+data class VodCatalogGroupEntity(
+    @PrimaryKey(autoGenerate = true) val id: Long = 0,
+    val playlistId: Long,
+    val streamType: String, // "movie" or "series"
+    val groupKey: String,
+    val representativeStreamDbId: Long,
+    val representativeStreamId: Long,
+    val cleanTitle: String,
+    val posterUrl: String = "",
+    val rating: String = "",
+    val ratingNumeric: Double = 0.0,
+    val releaseYear: Int = 0,
+    val addedEpoch: Long = 0L,
+    val genres: String = "",
+    val primaryCategoryId: String = "",
+    val categoryIdsCsv: String = "",
+    val versionCount: Int = 1,
+    val defaultVersionTag: String = "",
+    val containerExtension: String = "mp4",
+    val popularityScore: Double = 0.0
 )
 
 object VodGroupingNormalizer {
@@ -281,12 +314,230 @@ object VodGroupingNormalizer {
         return 0
     }
 
+    private val TMDB_POSTER_PATH_REGEX = Regex("(?i)image\\.tmdb\\.org/t/p/[^/]+/([^/?#]+)")
+    private val ONLY_FOUR_DIGITS_REGEX = Regex("^\\d{4}$")
+    private val MULTI_WHITESPACE_REGEX = Regex("\\s+")
+    private val TRAILING_SUB_BRACKET_REGEX = Regex(
+        "(?i)\\s*[\\[\\(]\\s*(?:VOSTFR|SUB(?:\\s+[A-Za-z]{2,12})?|DUB(?:\\s+[A-Za-z]{2,12})?|MULTI[\\s-]?SUB|MULTI|4K|UHD|FHD|HD|HEVC|HDR10?|1080P|720P|2160P|CAM|TS)\\s*[\\]\\)]\\s*$"
+    )
+    private val TRAILING_SEP_YEAR_REGEX = Regex("\\s*[-|│┃:]\\s*(?:19[2-9]\\d|20[0-3]\\d)\\s*$")
+    private val TRAILING_BRACKET_YEAR_REGEX = Regex("\\s*[\\(\\[]\\s*(?:19[2-9]\\d|20[0-3]\\d)\\s*[\\)\\]]\\s*$")
+
+    private val CATEGORY_LANG_RULES: List<Pair<Regex, String>> = listOf(
+        Regex("(?i)(?<![A-Za-z])(EN|ENG|ENGLISH)(?![A-Za-z])") to "English",
+        Regex("(?i)(?<![A-Za-z])(AR|ARB|ARA|ARABIC)(?![A-Za-z])") to "Arabic (Sub)",
+        Regex("(?i)(?<![A-Za-z])(VOSTFR|FR|FRE|FRENCH)(?![A-Za-z])") to "French (VOSTFR)",
+        Regex("(?i)(?<![A-Za-z])(ES|ESP|SPA|SPANISH|LAT|LATINO)(?![A-Za-z])") to "Spanish",
+        Regex("(?i)(?<![A-Za-z])(PT|POR|PORTUGUESE|BR|BRAZIL)(?![A-Za-z])") to "Portuguese",
+        Regex("(?i)(?<![A-Za-z])(DE|GER|GERMAN|DEUTSCH)(?![A-Za-z])") to "German",
+        Regex("(?i)(?<![A-Za-z])(IT|ITA|ITALIAN)(?![A-Za-z])") to "Italian",
+        Regex("(?i)(?<![A-Za-z])(TR|TUR|TURKISH)(?![A-Za-z])") to "Turkish",
+        Regex("(?i)(?<![A-Za-z])(IR|IRANIAN|IRAN|PERSIAN|FARSI|FA)(?![A-Za-z])") to "Persian (Sub)",
+        Regex("(?i)(?<![A-Za-z])(BG|BULGARIAN)(?![A-Za-z])") to "Bulgarian (Sub)",
+        Regex("(?i)(?<![A-Za-z])(ALB|ALBANIAN|FILMET)(?![A-Za-z])") to "Albanian (Sub)",
+        Regex("(?i)(?<![A-Za-z])(KU|KURDISH)(?![A-Za-z])") to "Kurdish (Sub)",
+        Regex("(?i)(?<![A-Za-z])(IN|IND|HI|HINDI|BOLLYWOOD)(?![A-Za-z])") to "Hindi",
+        Regex("(?i)(?<![A-Za-z])(EX[-\\s]?YU)(?![A-Za-z])") to "Ex-YU",
+        Regex("(?i)(?<![A-Za-z])(MULTI[-\\s]?SUB|MULTISUB|MULTI)(?![A-Za-z])") to "Multi-Sub"
+    )
+
+    fun extractTmdbPosterHash(posterUrl: String): String {
+        if (posterUrl.isBlank()) return ""
+        val match = TMDB_POSTER_PATH_REGEX.find(posterUrl.trim()) ?: return ""
+        val filename = match.groupValues.getOrNull(1)?.trim().orEmpty()
+        if (filename.isEmpty()) return ""
+        val dotIndex = filename.lastIndexOf('.')
+        val stem = if (dotIndex > 0) filename.substring(0, dotIndex) else filename
+        if (stem.length < 12) return ""
+        return stem
+    }
+
+    fun extractCleanDisplayTitle(rawName: String): String {
+        val originalTrimmed = rawName.trim()
+        if (originalTrimmed.isEmpty()) return ""
+
+        var cleaned = originalTrimmed
+            .replace("*", "")
+            .trim()
+
+        // 1. Peel leading IPTV prefix tags ([AR], EN |, FR -, 4K |, etc.)
+        var prefixGuard = 0
+        while (prefixGuard++ < 4) {
+            val bracketMatch = LEADING_BRACKET_PREFIX_REGEX.find(cleaned)
+            if (bracketMatch != null) {
+                val inner = bracketMatch.groupValues[1].trim()
+                if (!ONLY_FOUR_DIGITS_REGEX.matches(inner)) {
+                    cleaned = cleaned.substring(bracketMatch.range.last + 1).trim()
+                    continue
+                }
+            }
+            val pipeMatch = LEADING_PIPE_PREFIX_REGEX.find(cleaned)
+            if (pipeMatch != null) {
+                cleaned = cleaned.substring(pipeMatch.range.last + 1).trim()
+                continue
+            }
+            val dashMatch = LEADING_DASH_COLON_PREFIX_REGEX.find(cleaned)
+            if (dashMatch != null) {
+                cleaned = cleaned.substring(dashMatch.range.last + 1).trim()
+                continue
+            }
+            break
+        }
+
+        // 2. Strip trailing subtitle/quality tags & trailing duplicate year suffixes
+        var suffixGuard = 0
+        while (suffixGuard++ < 6) {
+            var next = cleaned
+            next = next.replace(TRAILING_SUB_BRACKET_REGEX, "").trim()
+            next = next.replace(TRAILING_TECH_SUFFIX_REGEX, "").trim()
+            next = next.replace(TRAILING_BRACKET_YEAR_REGEX, "").trim()
+            next = next.replace(TRAILING_SEP_YEAR_REGEX, "").trim()
+            next = next.replace(TRAILING_EMPTY_DELIMITERS_REGEX, "").trim()
+            if (next == cleaned) break
+            cleaned = next
+        }
+
+        cleaned = cleaned.replace(MULTI_WHITESPACE_REGEX, " ").trim()
+
+        // Guard: if stripping leaves blank or only a 4-digit year (e.g., "2026"), keep the original name safely
+        if (cleaned.isBlank() || ONLY_FOUR_DIGITS_REGEX.matches(cleaned)) {
+            val safeFallback = originalTrimmed.replace("*", "").replace(MULTI_WHITESPACE_REGEX, " ").trim()
+            return if (safeFallback.isNotBlank()) safeFallback else originalTrimmed
+        }
+        return cleaned
+    }
+
+    fun extractVersionTagWithCategory(rawName: String, categoryName: String = ""): String {
+        val detectedLanguages = LinkedHashSet<String>()
+        val detectedQualities = LinkedHashSet<String>()
+
+        fun scanLanguageText(source: String) {
+            if (source.isBlank()) return
+            for (rule in CATEGORY_LANG_RULES) {
+                if (rule.first.containsMatchIn(source)) {
+                    detectedLanguages.add(rule.second)
+                }
+            }
+        }
+
+        fun scanQualityText(source: String) {
+            if (source.isBlank()) return
+            for (match in STANDALONE_QUALITY_REGEX.findAll(source)) {
+                val mapped = QUALITY_CANONICAL_MAP[match.groupValues[1].uppercase(Locale.US)]
+                if (mapped != null && mapped in setOf("4K", "UHD", "HDR", "HEVC")) {
+                    detectedQualities.add(mapped)
+                }
+            }
+        }
+
+        // 1. Inspect explicit prefix/bracket tags in rawName first
+        val baseTag = extractVersionTag(rawName)
+        if (baseTag.isNotBlank()) {
+            val baseParts = baseTag.split("•")
+            for (part in baseParts) {
+                val token = part.trim().uppercase(Locale.US)
+                if (token.isEmpty()) continue
+                when (token) {
+                    "EN", "UK", "US" -> detectedLanguages.add("English")
+                    "AR" -> detectedLanguages.add("Arabic (Sub)")
+                    "FR", "VOSTFR" -> detectedLanguages.add("French (VOSTFR)")
+                    "ES", "LAT" -> detectedLanguages.add("Spanish")
+                    "PT", "BR" -> detectedLanguages.add("Portuguese")
+                    "DE" -> detectedLanguages.add("German")
+                    "IT" -> detectedLanguages.add("Italian")
+                    "TR" -> detectedLanguages.add("Turkish")
+                    "IN", "HI" -> detectedLanguages.add("Hindi")
+                    "MULTI" -> detectedLanguages.add("Multi-Sub")
+                    "4K", "UHD", "HDR", "HEVC" -> detectedQualities.add(token)
+                }
+            }
+        }
+
+        // Scan rawName for extended languages (e.g., IR, BG, ALB, FILMET, KU, EXYU)
+        scanLanguageText(rawName)
+        scanQualityText(rawName)
+
+        // 2. Enrich from categoryName if language wasn't explicitly found in rawName (or add category quality)
+        if (detectedLanguages.isEmpty() && categoryName.isNotBlank()) {
+            scanLanguageText(categoryName)
+        }
+        if (categoryName.isNotBlank()) {
+            scanQualityText(categoryName)
+        }
+
+        val combined = LinkedHashSet<String>()
+        val primaryLang = detectedLanguages.firstOrNull()
+        if (primaryLang != null) {
+            combined.add(primaryLang)
+        }
+        for (q in detectedQualities) {
+            if (combined.size < 3) {
+                combined.add(q)
+            }
+        }
+        return combined.joinToString(" • ")
+    }
+
+    fun computePopularityQualityScore(
+        ratingNumeric: Double,
+        versionCount: Int,
+        releaseYear: Int,
+        hasPoster: Boolean,
+        isPreferredLang: Boolean
+    ): Double {
+        val effectiveRating = when {
+            ratingNumeric >= 9.8 && versionCount <= 1 -> 5.8
+            ratingNumeric <= 0.0 -> 5.2
+            else -> ratingNumeric.coerceIn(1.0, 9.6)
+        }
+        val multiRegionBoost = ln(versionCount.coerceAtLeast(1).toDouble() + 1.0) * 1.9
+        val recencyBonus = when {
+            releaseYear >= 2024 -> 0.85
+            releaseYear >= 2021 -> 0.45
+            else -> 0.0
+        }
+        val posterBonus = if (hasPoster) 0.5 else -2.0
+        val langBonus = if (isPreferredLang) 0.65 else 0.0
+        return effectiveRating + multiRegionBoost + recencyBonus + posterBonus + langBonus
+    }
+
+    fun scoreVersionPreference(
+        versionTag: String,
+        hasPoster: Boolean,
+        containerExt: String,
+        ratingNumeric: Double
+    ): Int {
+        val upper = versionTag.uppercase(Locale.US)
+        var score = when {
+            upper.contains("ENGLISH") || Regex("(?<![A-Z])(EN|UK|US)(?![A-Z])").containsMatchIn(upper) -> 100
+            upper.contains("ARABIC") || Regex("(?<![A-Z])AR(?![A-Z])").containsMatchIn(upper) -> 95
+            upper.contains("FRENCH") || upper.contains("VOSTFR") || Regex("(?<![A-Z])FR(?![A-Z])").containsMatchIn(upper) -> 85
+            upper.contains("MULTI") -> 70
+            else -> 20
+        }
+        if (upper.contains("4K") || upper.contains("UHD")) {
+            score += 15
+        }
+        if (hasPoster) {
+            score += 25
+        }
+        val extLower = containerExt.trim().lowercase(Locale.US)
+        if (extLower == "mp4" || extLower == "mkv") {
+            score += 5
+        }
+        if (ratingNumeric > 0.0) {
+            score += ratingNumeric.coerceIn(0.0, 10.0).toInt()
+        }
+        return score
+    }
+
     fun computeCanonicalGroupKey(
         streamType: String,
         rawName: String,
         tmdbId: String,
         releaseYear: Int,
-        streamId: Long
+        streamId: Long,
+        posterUrl: String = ""
     ): String {
         val cleanType = streamType.trim().lowercase(Locale.US).ifBlank { "vod" }
 
@@ -296,14 +547,20 @@ object VodGroupingNormalizer {
             return "tmdb_${cleanType}_$cleanTmdb"
         }
 
-        // Tier 2 (Strict Title + Year)
-        var cleaned = rawName.trim()
+        // Tier 2 (Cross-Language Split Guard): TMDb Poster Hash + Release Year
+        val posterHash = extractTmdbPosterHash(posterUrl)
+        if (posterHash.isNotBlank() && releaseYear > 0) {
+            return "poster_${cleanType}_${posterHash}_${releaseYear}"
+        }
+
+        // Tier 3 (Strict Normalized Clean Title + Year)
+        var cleaned = rawName.trim().replace("*", "").trim()
         var prefixGuard = 0
         while (prefixGuard++ < 4) {
             val bracketMatch = LEADING_BRACKET_PREFIX_REGEX.find(cleaned)
             if (bracketMatch != null) {
                 val inner = bracketMatch.groupValues[1].trim()
-                if (!inner.matches(Regex("^\\d{4}$"))) {
+                if (!ONLY_FOUR_DIGITS_REGEX.matches(inner)) {
                     cleaned = cleaned.substring(bracketMatch.range.last + 1)
                     continue
                 }
@@ -336,11 +593,12 @@ object VodGroupingNormalizer {
         // Strip trailing technical/quality suffixes and trailing release year
         var suffixGuard = 0
         while (suffixGuard++ < 5) {
-            var next = cleaned.replace(TRAILING_TECH_SUFFIX_REGEX, "").trim()
+            var next = cleaned.replace(TRAILING_SUB_BRACKET_REGEX, "").trim()
+            next = next.replace(TRAILING_TECH_SUFFIX_REGEX, "").trim()
             if (releaseYear in 1920..2030) {
                 next = next.replace(Regex("(?:\\s*[-|│┃:]\\s*|\\s+)$releaseYear\\s*$"), "").trim()
             } else {
-                next = next.replace(Regex("\\s*[-|│┃:]\\s*(?:19[2-9]\\d|20[0-3]\\d)\\s*$"), "").trim()
+                next = next.replace(TRAILING_SEP_YEAR_REGEX, "").trim()
             }
             next = next.replace(TRAILING_EMPTY_DELIMITERS_REGEX, "").trim()
             if (next == cleaned) break

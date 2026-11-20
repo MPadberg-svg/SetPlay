@@ -94,6 +94,7 @@ import com.example.data.model.CategoryEntity
 import com.example.data.model.GroupedVodStream
 import com.example.data.model.PlaylistEntity
 import com.example.data.model.StreamEntity
+import com.example.data.model.VodGroupingNormalizer
 import com.example.data.remote.SeriesDetails
 import com.example.data.remote.SeriesEpisode
 import com.example.data.remote.VodMovieDetails
@@ -179,6 +180,10 @@ fun VodScreen(
         return
     }
 
+    LaunchedEffect(activePlaylist.id, sectionTab) {
+        viewModel.ensureSectionLoaded(sectionTab, activePlaylist)
+    }
+
     val context = LocalContext.current
     val activeEdition = remember(context) { EditionResolver.resolveEdition(context) }
     val isTvEdition = activeEdition == SetPlayEdition.TV
@@ -198,6 +203,7 @@ fun VodScreen(
     val fallbackRecentlyWatched by viewModel.recentlyWatched.collectAsStateWithLifecycle()
     val currentLimit by viewModel.currentLimit.collectAsStateWithLifecycle()
     val categories by (if (isMovies) viewModel.movieCategories else viewModel.seriesCategories).collectAsStateWithLifecycle()
+    val organizedCategories by (if (isMovies) viewModel.organizedMovieCategories else viewModel.organizedSeriesCategories).collectAsStateWithLifecycle()
     val categoryNameById = remember(categories) {
         categories.associate { it.categoryId to it.categoryName }
     }
@@ -338,12 +344,13 @@ fun VodScreen(
         )
     }
 
-    // Semi-Transparent Searchable Category Side Panel (Mobile)
+    // Semi-Transparent Searchable 4-Bucket Category Side Panel (Mobile)
     if (!isTvEdition && showCategoryDrawer) {
         VodCategoriesSidePanel(
             isMovies = isMovies,
             categories = categories,
             categoryCounts = categoryCounts,
+            organizedCategories = organizedCategories,
             selectedCategoryId = selectedCatId,
             sectionBaseBg = sectionBaseBg,
             sectionSurface = sectionSurface,
@@ -385,9 +392,15 @@ fun VodScreen(
                 )
                 .testTag(if (isMovies) "movies_screen" else "series_screen")
         ) {
-            val activeCategoryLabel = categories.find { it.categoryId == selectedCatId }?.categoryName?.let {
-                StreamMetadataParser.cleanDisplayTitle(it).ifBlank { it }
-            } ?: if (isMovies) "All Movies" else "All Series"
+            val activeCategoryLabel = remember(categories, selectedCatId, isMovies) {
+                val selectedCat = categories.find { it.categoryId == selectedCatId }
+                if (selectedCat != null) {
+                    val (langTag, cleanName) = VodViewModel.parseCategoryLanguageAndName(selectedCat.categoryName)
+                    if (langTag.isNotBlank()) "$langTag • $cleanName" else cleanName
+                } else {
+                    if (isMovies) "All Movies" else "All Series"
+                }
+            }
 
             if (!isTvEdition) {
                 // --- MOBILE EDITION: Single 44.dp Top Command Bar + Sync Pill + PullToRefreshBox ---
@@ -588,6 +601,7 @@ fun VodScreen(
                     syncBannerState = syncBannerState,
                     categories = categories,
                     categoryCounts = categoryCounts,
+                    organizedCategories = organizedCategories,
                     discoveryShelves = discoveryShelves,
                     groupedItems = groupedItems,
                     fallbackItems = items,
@@ -650,6 +664,7 @@ private fun TvVodCinemaScreen(
     syncBannerState: VodSyncBannerState,
     categories: List<CategoryEntity>,
     categoryCounts: Map<String, Int>,
+    organizedCategories: Map<VodCategoryBucket, List<CategorizedVodItem>>,
     discoveryShelves: List<VodDiscoveryShelf>,
     groupedItems: List<GroupedVodStream>,
     fallbackItems: List<StreamEntity>,
@@ -705,6 +720,7 @@ private fun TvVodCinemaScreen(
             isMovies = isMovies,
             categories = categories,
             categoryCounts = categoryCounts,
+            organizedCategories = organizedCategories,
             selectedCategoryId = selectedCategoryId,
             sectionBaseBg = sectionBaseBg,
             sectionSurface = sectionSurface,
@@ -1025,7 +1041,7 @@ private fun ContinueWatchingVodRail(
         ) {
             items(items, key = { "cw_${it.id}_${it.streamId}" }) { item ->
                 val cleanTitle = remember(item.name) {
-                    StreamMetadataParser.cleanDisplayTitle(item.name)
+                    VodGroupingNormalizer.extractCleanDisplayTitle(item.name)
                 }
                 val progressFraction = remember(item.lastPositionMs) {
                     if (item.lastPositionMs > 0L) {
@@ -1193,7 +1209,7 @@ fun MovieCinemaPosterCard(
     versionCount: Int = 1
 ) {
     val cleanTitle = remember(item.name) {
-        StreamMetadataParser.cleanDisplayTitle(item.name)
+        VodGroupingNormalizer.extractCleanDisplayTitle(item.name)
     }
     val languageBadge = remember(item.name) {
         StreamMetadataParser.extractLanguageBadge(item.name)
@@ -1480,7 +1496,7 @@ fun ImaxMovieDossierModalSheet(
 ) {
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
     val rawTitle = movieDetails?.title?.takeIf { it.isNotBlank() } ?: movieStream.name
-    val cleanTitle = remember(rawTitle) { StreamMetadataParser.cleanDisplayTitle(rawTitle) }
+    val cleanTitle = remember(rawTitle) { VodGroupingNormalizer.extractCleanDisplayTitle(rawTitle) }
     val qualityBadge = remember(movieStream.name) { StreamMetadataParser.extractQualityBadge(movieStream.name) ?: "CINEMA" }
     val languageBadge = remember(movieStream.name) { StreamMetadataParser.extractLanguageBadge(movieStream.name) }
     val containerBadge = (movieDetails?.containerExtension?.takeIf { it.isNotBlank() } ?: movieStream.containerExtension)
@@ -1935,7 +1951,7 @@ fun SeriesVaultCard(
     versionCount: Int = 1
 ) {
     val cleanTitle = remember(item.name) {
-        StreamMetadataParser.cleanDisplayTitle(item.name)
+        VodGroupingNormalizer.extractCleanDisplayTitle(item.name)
     }
     val regionBadge = remember(item.name) {
         StreamMetadataParser.extractRegionOrLangBadge(item.name)
@@ -2356,7 +2372,7 @@ fun SeriesDetailHierarchyScreen(
                         .padding(top = 62.dp, start = 16.dp, end = 16.dp, bottom = 14.dp)
                 ) {
                     Text(
-                        text = StreamMetadataParser.cleanDisplayTitle(
+                        text = VodGroupingNormalizer.extractCleanDisplayTitle(
                             seriesDetails?.title?.ifBlank { seriesStream.name } ?: seriesStream.name
                         ),
                         color = PaleGold,

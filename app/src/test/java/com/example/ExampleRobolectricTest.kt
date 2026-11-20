@@ -6035,6 +6035,173 @@ class TvSyncDeviceSeparationComposeTest {
             db.close()
         }
     }
+
+    @Test
+    fun testVodV13EnterpriseIndexingRankingSubtitleGroupingAndSeriesParity() = runBlocking {
+        // 1. 1-Vote 10.0 Guard vs Multi-Version Blockbuster
+        val blockbusterScore = com.example.data.model.VodGroupingNormalizer.computePopularityQualityScore(
+            ratingNumeric = 7.2,
+            versionCount = 13,
+            releaseYear = 2024,
+            hasPoster = true,
+            isPreferredLang = true
+        )
+        val obscureOneVoteScore = com.example.data.model.VodGroupingNormalizer.computePopularityQualityScore(
+            ratingNumeric = 10.0,
+            versionCount = 1,
+            releaseYear = 2026,
+            hasPoster = true,
+            isPreferredLang = true
+        )
+        assertTrue(
+            "Expected multi-version blockbuster ($blockbusterScore) to outrank 1-vote 10.0 entry ($obscureOneVoteScore)",
+            blockbusterScore > obscureOneVoteScore
+        )
+
+        // 2. Cross-Language Poster-Hash Deduplication
+        val enKey = com.example.data.model.VodGroupingNormalizer.computeCanonicalGroupKey(
+            streamType = "movie",
+            rawName = "Collision Course - 2026",
+            tmdbId = "",
+            releaseYear = 2026,
+            streamId = 1L,
+            posterUrl = "https://image.tmdb.org/t/p/w500/abc123def456xyz.jpg"
+        )
+        val deKey = com.example.data.model.VodGroupingNormalizer.computeCanonicalGroupKey(
+            streamType = "movie",
+            rawName = "Auf Kollisionskurs",
+            tmdbId = "",
+            releaseYear = 2026,
+            streamId = 2L,
+            posterUrl = "https://image.tmdb.org/t/p/w500/abc123def456xyz.jpg"
+        )
+        assertEquals(enKey, deKey)
+        assertTrue("Expected poster-hash key, got $enKey", enKey.startsWith("poster_movie_"))
+
+        // 3. Category-Aware Subtitle Language Extraction & Clean Title Guards
+        val iranianTag = com.example.data.model.VodGroupingNormalizer.extractVersionTagWithCategory(
+            rawName = "Ballistic",
+            categoryName = "[IR] IRANIAN MOVIES"
+        )
+        assertTrue("Expected Persian tag in '$iranianTag'", iranianTag.contains("Persian"))
+
+        assertEquals(
+            "Karaganda: Red Mafia",
+            com.example.data.model.VodGroupingNormalizer.extractCleanDisplayTitle("*Karaganda*: Red Mafia - 2026")
+        )
+        assertEquals(
+            "2026",
+            com.example.data.model.VodGroupingNormalizer.extractCleanDisplayTitle("2026")
+        )
+
+        // 4. Materialized vod_catalog_groups Read Parity for BOTH Movies & Series
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val db = Room.inMemoryDatabaseBuilder(
+            context,
+            StreamVaultDatabase::class.java
+        ).allowMainThreadQueries().build()
+
+        try {
+            val playlistId = 77L
+            val movieGroups = listOf(
+                com.example.data.model.VodCatalogGroupEntity(
+                    playlistId = playlistId,
+                    streamType = "movie",
+                    groupKey = "tmdb_movie_1001",
+                    representativeStreamDbId = 101L,
+                    representativeStreamId = 1001L,
+                    cleanTitle = "Obscure Film",
+                    posterUrl = "https://image.tmdb.org/t/p/w500/obscure123456.jpg",
+                    rating = "10.0",
+                    ratingNumeric = 10.0,
+                    releaseYear = 2026,
+                    addedEpoch = 1710000100L,
+                    genres = "Drama",
+                    primaryCategoryId = "cat_m1",
+                    categoryIdsCsv = ",cat_m1,",
+                    versionCount = 1,
+                    defaultVersionTag = "English",
+                    containerExtension = "mp4",
+                    popularityScore = obscureOneVoteScore
+                ),
+                com.example.data.model.VodCatalogGroupEntity(
+                    playlistId = playlistId,
+                    streamType = "movie",
+                    groupKey = "tmdb_movie_1002",
+                    representativeStreamDbId = 102L,
+                    representativeStreamId = 1002L,
+                    cleanTitle = "Dune: Part Two",
+                    posterUrl = "https://image.tmdb.org/t/p/w500/dune2poster12345.jpg",
+                    rating = "8.3",
+                    ratingNumeric = 8.3,
+                    releaseYear = 2024,
+                    addedEpoch = 1710000200L,
+                    genres = "Sci-Fi, Action",
+                    primaryCategoryId = "cat_m2",
+                    categoryIdsCsv = ",cat_m2,",
+                    versionCount = 13,
+                    defaultVersionTag = "English • 4K",
+                    containerExtension = "mkv",
+                    popularityScore = blockbusterScore
+                )
+            )
+            val seriesGroups = listOf(
+                com.example.data.model.VodCatalogGroupEntity(
+                    playlistId = playlistId,
+                    streamType = "series",
+                    groupKey = "tmdb_series_2001",
+                    representativeStreamDbId = 201L,
+                    representativeStreamId = 2001L,
+                    cleanTitle = "Minor Show",
+                    posterUrl = "https://image.tmdb.org/t/p/w500/minor12345678.jpg",
+                    rating = "6.1",
+                    ratingNumeric = 6.1,
+                    releaseYear = 2022,
+                    addedEpoch = 1710000100L,
+                    genres = "Comedy",
+                    primaryCategoryId = "cat_s1",
+                    categoryIdsCsv = ",cat_s1,",
+                    versionCount = 1,
+                    defaultVersionTag = "English",
+                    containerExtension = "mp4",
+                    popularityScore = 7.4
+                ),
+                com.example.data.model.VodCatalogGroupEntity(
+                    playlistId = playlistId,
+                    streamType = "series",
+                    groupKey = "tmdb_series_2002",
+                    representativeStreamDbId = 202L,
+                    representativeStreamId = 2002L,
+                    cleanTitle = "Breaking Bad",
+                    posterUrl = "https://image.tmdb.org/t/p/w500/bbposter123456.jpg",
+                    rating = "9.5",
+                    ratingNumeric = 9.5,
+                    releaseYear = 2008,
+                    addedEpoch = 1710000300L,
+                    genres = "Crime, Drama",
+                    primaryCategoryId = "cat_s2",
+                    categoryIdsCsv = ",cat_s2,",
+                    versionCount = 9,
+                    defaultVersionTag = "English • 4K",
+                    containerExtension = "mp4",
+                    popularityScore = 15.8
+                )
+            )
+            db.vodGroupDao().insertGroupsBatch(movieGroups + seriesGroups)
+
+            val topMovies = db.vodGroupDao().getTopPopularGroups(playlistId, "movie", limit = 10).first()
+            assertEquals(2, topMovies.size)
+            assertEquals("Dune: Part Two", topMovies.first().cleanTitle)
+            assertEquals(13, topMovies.first().versionCount)
+
+            val topSeries = db.vodGroupDao().getTopPopularGroups(playlistId, "series", limit = 10).first()
+            assertEquals(2, topSeries.size)
+            assertEquals("Breaking Bad", topSeries.first().cleanTitle)
+            assertEquals(9, topSeries.first().versionCount)
+        } finally {
+            db.close()
+        }
+    }
 }
 
 

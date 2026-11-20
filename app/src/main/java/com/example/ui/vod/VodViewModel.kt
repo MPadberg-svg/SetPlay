@@ -12,6 +12,7 @@ import com.example.data.remote.VodMovieDetails
 import com.example.data.repository.EpisodeResumeInfo
 import com.example.data.repository.IptvRepository
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.FlowPreview
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
@@ -20,16 +21,36 @@ import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.debounce
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.emptyFlow
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
+import java.util.Locale
+import java.util.concurrent.ConcurrentHashMap
 
 enum class VodTab {
     MOVIES,
     SERIES
 }
+
+enum class VodCategoryBucket(val title: String) {
+    YOUR_LANGUAGES("Your Languages"),
+    STREAMING_PLATFORMS("Streaming Platforms"),
+    GENRES_COLLECTIONS("Genres & Collections"),
+    OTHER_REGIONS("Other Regions")
+}
+
+data class CategorizedVodItem(
+    val category: CategoryEntity,
+    val languageTag: String, // e.g. "EN", "AR", "FR", "ES", or ""
+    val cleanName: String,   // e.g. "Netflix", "Amazon Prime", "Action"
+    val itemCount: Int,
+    val bucket: VodCategoryBucket
+)
 
 data class VodDiscoveryShelf(
     val id: String,
@@ -45,9 +66,12 @@ data class VodSyncBannerState(
     val isCompleted: Boolean = false
 )
 
-@OptIn(ExperimentalCoroutinesApi::class)
+@OptIn(ExperimentalCoroutinesApi::class, FlowPreview::class)
 class VodViewModel(application: Application) : AndroidViewModel(application) {
     val repository = IptvRepository.getInstance(application)
+
+    private val indexedTriggerGuard = ConcurrentHashMap.newKeySet<String>()
+    private val autoSectionRecoveryGuard = ConcurrentHashMap.newKeySet<String>()
 
     // Progressive paging limit (starts at 180, resets on category/query change, increments by +180 on scroll)
     val pageSize: Int = PAGE_SIZE
@@ -60,7 +84,7 @@ class VodViewModel(application: Application) : AndroidViewModel(application) {
         .flatMapLatest { playlist ->
             if (playlist == null) flowOf(emptyList()) else repository.getRecentlyWatched(playlist.id)
         }
-        .stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000L), emptyList())
 
     // Reactive per-episode resume map keyed by "${playlistId}_ep_${episodeId}"
     val episodeResumeMap: StateFlow<Map<String, EpisodeResumeInfo>> = repository.episodeResumeMap
@@ -76,13 +100,20 @@ class VodViewModel(application: Application) : AndroidViewModel(application) {
         .flatMapLatest { playlist ->
             if (playlist == null) flowOf(emptyList()) else repository.getCategories(playlist.id, "MOVIE")
         }
-        .stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000L), emptyList())
 
     val movieCategoryCounts: StateFlow<Map<String, Int>> = repository.activePlaylist
         .flatMapLatest { playlist ->
             if (playlist == null) flowOf(emptyMap()) else repository.getCategoryStreamCounts(playlist.id, "movie")
         }
-        .stateIn(viewModelScope, SharingStarted.Eagerly, emptyMap())
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000L), emptyMap())
+
+    val organizedMovieCategories: StateFlow<Map<VodCategoryBucket, List<CategorizedVodItem>>> = combine(
+        movieCategories,
+        movieCategoryCounts
+    ) { categories, counts ->
+        organizeVodCategories(categories, counts)
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000L), emptyMap())
 
     val movieItems: StateFlow<List<StreamEntity>> = combine(
         repository.activePlaylist,
@@ -103,7 +134,7 @@ class VodViewModel(application: Application) : AndroidViewModel(application) {
                 limit = params.limit
             )
         }
-    }.stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000L), emptyList())
 
     val groupedMovieItems: StateFlow<List<GroupedVodStream>> = combine(
         repository.activePlaylist,
@@ -116,6 +147,7 @@ class VodViewModel(application: Application) : AndroidViewModel(application) {
         if (params.playlistId == null) {
             flowOf(emptyList())
         } else {
+            triggerLazyIndexIfNeeded(params.playlistId, "movie")
             repository.queryDeduplicatedVodStreams(
                 playlistId = params.playlistId,
                 streamType = "movie",
@@ -124,9 +156,9 @@ class VodViewModel(application: Application) : AndroidViewModel(application) {
                 limit = params.limit
             )
         }
-    }.stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000L), emptyList())
 
-    // Independent Series State
+    // Independent Series State (100% architecture parity with Movies)
     private val _selectedSeriesCategoryId = MutableStateFlow<String?>(null)
     val selectedSeriesCategoryId: StateFlow<String?> = _selectedSeriesCategoryId.asStateFlow()
 
@@ -137,13 +169,20 @@ class VodViewModel(application: Application) : AndroidViewModel(application) {
         .flatMapLatest { playlist ->
             if (playlist == null) flowOf(emptyList()) else repository.getCategories(playlist.id, "SERIES")
         }
-        .stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000L), emptyList())
 
     val seriesCategoryCounts: StateFlow<Map<String, Int>> = repository.activePlaylist
         .flatMapLatest { playlist ->
             if (playlist == null) flowOf(emptyMap()) else repository.getCategoryStreamCounts(playlist.id, "series")
         }
-        .stateIn(viewModelScope, SharingStarted.Eagerly, emptyMap())
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000L), emptyMap())
+
+    val organizedSeriesCategories: StateFlow<Map<VodCategoryBucket, List<CategorizedVodItem>>> = combine(
+        seriesCategories,
+        seriesCategoryCounts
+    ) { categories, counts ->
+        organizeVodCategories(categories, counts)
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000L), emptyMap())
 
     val seriesItems: StateFlow<List<StreamEntity>> = combine(
         repository.activePlaylist,
@@ -164,7 +203,7 @@ class VodViewModel(application: Application) : AndroidViewModel(application) {
                 limit = params.limit
             )
         }
-    }.stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000L), emptyList())
 
     val groupedSeriesItems: StateFlow<List<GroupedVodStream>> = combine(
         repository.activePlaylist,
@@ -177,6 +216,7 @@ class VodViewModel(application: Application) : AndroidViewModel(application) {
         if (params.playlistId == null) {
             flowOf(emptyList())
         } else {
+            triggerLazyIndexIfNeeded(params.playlistId, "series")
             repository.queryDeduplicatedVodStreams(
                 playlistId = params.playlistId,
                 streamType = "series",
@@ -185,9 +225,9 @@ class VodViewModel(application: Application) : AndroidViewModel(application) {
                 limit = params.limit
             )
         }
-    }.stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000L), emptyList())
 
-    // Bounded SQL Discovery Shelves (LIMIT 20 per shelf; never loads catalog into RAM)
+    // Materialized <5ms Discovery Shelves (LIMIT 20 per shelf; paused during active sync to prevent stutter)
     val movieDiscoveryShelves: StateFlow<List<VodDiscoveryShelf>> =
         buildDiscoveryShelvesFlow(streamType = "movie")
             .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000L), emptyList())
@@ -296,68 +336,140 @@ class VodViewModel(application: Application) : AndroidViewModel(application) {
         _vodSyncBannerState.value = VodSyncBannerState()
     }
 
+    private fun triggerLazyIndexIfNeeded(playlistId: Long, streamType: String) {
+        val key = "${playlistId}_$streamType"
+        if (indexedTriggerGuard.add(key)) {
+            viewModelScope.launch {
+                repository.ensureVodCatalogIndexed(playlistId, streamType)
+            }
+        }
+    }
+
+    /**
+     * Ensures the active Movies or Series section is populated:
+     * 1. Triggers automatic background materialization (`ensureVodCatalogIndexed`) if raw rows
+     *    exist from an upgraded database without `vod_catalog_groups` entries yet.
+     * 2. If zero raw streams exist in Room for the section while a playlist is configured and no
+     *    sync is running, triggers a one-time cooldown-bypassing section refresh so Series (or
+     *    Movies) recovers automatically instead of staying stuck on an empty screen.
+     */
+    fun ensureSectionLoaded(sectionTab: VodTab, playlist: PlaylistEntity?) {
+        val targetPlaylist = playlist ?: return
+        val isMovies = sectionTab == VodTab.MOVIES
+        val streamType = if (isMovies) "movie" else "series"
+        val currentlyEmpty = if (isMovies) {
+            groupedMovieItems.value.isEmpty() && movieDiscoveryShelves.value.isEmpty()
+        } else {
+            groupedSeriesItems.value.isEmpty() && seriesDiscoveryShelves.value.isEmpty()
+        }
+        if (!currentlyEmpty) return
+        if (repository.syncProgress.value.isSyncing) return
+        if (isMovies && _isRefreshingMovies.value) return
+        if (!isMovies && _isRefreshingSeries.value) return
+
+        val recoveryKey = "${targetPlaylist.id}_$streamType"
+        if (!autoSectionRecoveryGuard.add(recoveryKey)) return
+
+        viewModelScope.launch {
+            try {
+                repository.ensureVodCatalogIndexed(targetPlaylist.id, streamType)
+                val rawCount = repository.countStreamsByType(targetPlaylist.id, streamType)
+                if (rawCount == 0 && !repository.syncProgress.value.isSyncing) {
+                    if (isMovies) {
+                        refreshMovies(targetPlaylist, force = true)
+                    } else {
+                        refreshSeries(targetPlaylist, force = true)
+                    }
+                }
+            } catch (_: Exception) {
+                autoSectionRecoveryGuard.remove(recoveryKey)
+            }
+        }
+    }
+
+    /**
+     * Organizes raw IPTV VOD/Series categories into 4 clean, scannable buckets while preserving
+     * distinct language tags (so `[EN] NETFLIX`, `[AR] NETFLIX`, and `[FR] NETFLIX` remain
+     * distinguishable with `EN`, `AR`, `FR` badges instead of collapsing into identical labels).
+     */
+    fun organizeVodCategories(
+        categories: List<CategoryEntity>,
+        counts: Map<String, Int>
+    ): Map<VodCategoryBucket, List<CategorizedVodItem>> {
+        return organizeVodCategoriesStatic(categories, counts)
+    }
+
     private fun buildDiscoveryShelvesFlow(streamType: String): Flow<List<VodDiscoveryShelf>> {
         val isMovie = streamType == "movie"
-        return repository.activePlaylist.flatMapLatest { playlist ->
-            if (playlist == null) {
-                flowOf(emptyList())
-            } else {
-                val recentFlow = repository.getRecentlyAddedVod(playlist.id, streamType, limit = DISCOVERY_SHELF_LIMIT)
-                val topRatedFlow = repository.getTopRatedVod(playlist.id, streamType, limit = DISCOVERY_SHELF_LIMIT)
-                val recommendedFlow = repository.getRecommendedVodForUser(playlist.id, streamType, limit = DISCOVERY_SHELF_LIMIT)
-                val genreFlows: List<Flow<Pair<String, List<GroupedVodStream>>>> = CURATED_GENRE_KEYWORDS.map { keyword ->
-                    repository.getGenreShelfVod(playlist.id, streamType, keyword, limit = DISCOVERY_SHELF_LIMIT)
-                        .map { items -> keyword to items }
-                }
-                val combinedGenresFlow: Flow<List<Pair<String, List<GroupedVodStream>>>> = combine(genreFlows) { array ->
-                    array.toList()
-                }
+        val isSyncingFlow = repository.syncProgress
+            .map { it.isSyncing }
+            .distinctUntilChanged()
 
-                combine(recentFlow, topRatedFlow, recommendedFlow, combinedGenresFlow) { recent, topRated, recommended, genrePairs ->
-                    buildList {
-                        if (recent.isNotEmpty()) {
-                            add(
-                                VodDiscoveryShelf(
-                                    id = "${streamType}_recently_added",
-                                    title = "Recently Added",
-                                    subtitle = if (isMovie) "Newest arrivals in your library" else "Latest series additions",
-                                    items = recent
-                                )
-                            )
-                        }
-                        if (topRated.isNotEmpty()) {
-                            add(
-                                VodDiscoveryShelf(
-                                    id = "${streamType}_top_rated",
-                                    title = if (isMovie) "Top Rated Cinema" else "Acclaimed Series",
-                                    subtitle = "Rated 6.5+ out of 10",
-                                    items = topRated
-                                )
-                            )
-                        }
-                        if (recommended.isNotEmpty()) {
-                            add(
-                                VodDiscoveryShelf(
-                                    id = "${streamType}_recommended",
-                                    title = "Recommended for You",
-                                    subtitle = "Based on your favorites & watch history",
-                                    items = recommended
-                                )
-                            )
-                        }
-                        for ((keyword, items) in genrePairs) {
-                            if (items.size >= MIN_GENRE_SHELF_ITEMS) {
+        return combine(repository.activePlaylist, isSyncingFlow) { playlist, isSyncing ->
+            playlist to isSyncing
+        }.flatMapLatest { (playlist, isSyncing) ->
+            when {
+                playlist == null -> flowOf(emptyList())
+                isSyncing -> emptyFlow()
+                else -> {
+                    triggerLazyIndexIfNeeded(playlist.id, streamType)
+                    val recentFlow = repository.getRecentlyAddedVod(playlist.id, streamType, limit = DISCOVERY_SHELF_LIMIT)
+                    val topRatedFlow = repository.getTopRatedVod(playlist.id, streamType, limit = DISCOVERY_SHELF_LIMIT)
+                    val recommendedFlow = repository.getRecommendedVodForUser(playlist.id, streamType, limit = DISCOVERY_SHELF_LIMIT)
+                    val genreFlows: List<Flow<Pair<String, List<GroupedVodStream>>>> = CURATED_GENRE_KEYWORDS.map { keyword ->
+                        repository.getGenreShelfVod(playlist.id, streamType, keyword, limit = DISCOVERY_SHELF_LIMIT)
+                            .map { items -> keyword to items }
+                    }
+                    val combinedGenresFlow: Flow<List<Pair<String, List<GroupedVodStream>>>> = combine(genreFlows) { array ->
+                        array.toList()
+                    }
+
+                    combine(recentFlow, topRatedFlow, recommendedFlow, combinedGenresFlow) { recent, topRated, recommended, genrePairs ->
+                        buildList {
+                            if (recent.isNotEmpty()) {
                                 add(
                                     VodDiscoveryShelf(
-                                        id = "${streamType}_genre_${keyword.lowercase()}",
-                                        title = keyword,
-                                        subtitle = if (isMovie) "$keyword Cinema" else "$keyword Series",
-                                        items = items
+                                        id = "${streamType}_recently_added",
+                                        title = "Recently Added",
+                                        subtitle = if (isMovie) "Newest arrivals in your library" else "Latest series additions",
+                                        items = recent
                                     )
                                 )
                             }
+                            if (topRated.isNotEmpty()) {
+                                add(
+                                    VodDiscoveryShelf(
+                                        id = "${streamType}_top_rated",
+                                        title = if (isMovie) "Top Rated Cinema" else "Acclaimed Series",
+                                        subtitle = "Most popular & highest rated",
+                                        items = topRated
+                                    )
+                                )
+                            }
+                            if (recommended.isNotEmpty()) {
+                                add(
+                                    VodDiscoveryShelf(
+                                        id = "${streamType}_recommended",
+                                        title = "Recommended for You",
+                                        subtitle = "Based on your favorites & watch history",
+                                        items = recommended
+                                    )
+                                )
+                            }
+                            for ((keyword, items) in genrePairs) {
+                                if (items.size >= MIN_GENRE_SHELF_ITEMS) {
+                                    add(
+                                        VodDiscoveryShelf(
+                                            id = "${streamType}_genre_${keyword.lowercase()}",
+                                            title = keyword,
+                                            subtitle = if (isMovie) "$keyword Cinema" else "$keyword Series",
+                                            items = items
+                                        )
+                                    )
+                                }
+                            }
                         }
-                    }
+                    }.debounce(150L)
                 }
             }
         }
@@ -391,7 +503,11 @@ class VodViewModel(application: Application) : AndroidViewModel(application) {
         loadMore()
     }
 
-    fun openMovieDetails(movieStream: StreamEntity, playlist: PlaylistEntity?) {
+    fun openMovieDetails(
+        movieStream: StreamEntity,
+        playlist: PlaylistEntity?,
+        autoSelectPreferred: Boolean = true
+    ) {
         val isSameGroup = _selectedMovieStream.value?.canonicalGroupKey?.isNotBlank() == true &&
             _selectedMovieStream.value?.canonicalGroupKey == movieStream.canonicalGroupKey
         _selectedMovieStream.value = movieStream
@@ -415,7 +531,7 @@ class VodViewModel(application: Application) : AndroidViewModel(application) {
         _movieDetails.value = instantFallback
         _isLoadingMovieDetails.value = true
 
-        // 1. Load sibling versions from Room
+        // 1. Load sibling versions from Room (sorted by preferred language & quality)
         viewModelScope.launch {
             val versions = repository.getVodVersionsForGroup(
                 playlistId = movieStream.playlistId,
@@ -425,6 +541,11 @@ class VodViewModel(application: Application) : AndroidViewModel(application) {
             )
             if (_selectedMovieStream.value?.id == movieStream.id) {
                 _availableMovieVersions.value = versions
+                val topPreferred = versions.firstOrNull()
+                if (autoSelectPreferred && !isSameGroup && topPreferred != null && topPreferred.id != movieStream.id) {
+                    openMovieDetails(topPreferred, playlist, autoSelectPreferred = false)
+                    return@launch
+                }
             }
         }
 
@@ -473,7 +594,7 @@ class VodViewModel(application: Application) : AndroidViewModel(application) {
 
     fun switchMovieVersion(versionStream: StreamEntity, playlist: PlaylistEntity?) {
         if (_selectedMovieStream.value?.id == versionStream.id) return
-        openMovieDetails(versionStream, playlist)
+        openMovieDetails(versionStream, playlist, autoSelectPreferred = false)
     }
 
     fun closeMovieDetails() {
@@ -484,7 +605,11 @@ class VodViewModel(application: Application) : AndroidViewModel(application) {
         _similarMovies.value = emptyList()
     }
 
-    fun openSeriesDetails(seriesStream: StreamEntity, playlist: PlaylistEntity) {
+    fun openSeriesDetails(
+        seriesStream: StreamEntity,
+        playlist: PlaylistEntity,
+        autoSelectPreferred: Boolean = true
+    ) {
         val isSameGroup = _selectedSeriesStream.value?.canonicalGroupKey?.isNotBlank() == true &&
             _selectedSeriesStream.value?.canonicalGroupKey == seriesStream.canonicalGroupKey
         _selectedSeriesStream.value = seriesStream
@@ -495,7 +620,7 @@ class VodViewModel(application: Application) : AndroidViewModel(application) {
             _similarSeries.value = emptyList()
         }
 
-        // 1. Load sibling versions from Room
+        // 1. Load sibling versions from Room (sorted by preferred language & quality)
         viewModelScope.launch {
             val versions = repository.getVodVersionsForGroup(
                 playlistId = seriesStream.playlistId,
@@ -505,6 +630,11 @@ class VodViewModel(application: Application) : AndroidViewModel(application) {
             )
             if (_selectedSeriesStream.value?.id == seriesStream.id) {
                 _availableSeriesVersions.value = versions
+                val topPreferred = versions.firstOrNull()
+                if (autoSelectPreferred && !isSameGroup && topPreferred != null && topPreferred.id != seriesStream.id) {
+                    openSeriesDetails(topPreferred, playlist, autoSelectPreferred = false)
+                    return@launch
+                }
             }
         }
 
@@ -554,7 +684,7 @@ class VodViewModel(application: Application) : AndroidViewModel(application) {
 
     fun switchSeriesVersion(versionStream: StreamEntity, playlist: PlaylistEntity) {
         if (_selectedSeriesStream.value?.id == versionStream.id) return
-        openSeriesDetails(versionStream, playlist)
+        openSeriesDetails(versionStream, playlist, autoSelectPreferred = false)
     }
 
     fun selectSeason(seasonNumber: Int) {
@@ -658,5 +788,183 @@ class VodViewModel(application: Application) : AndroidViewModel(application) {
             "Sci-Fi",
             "Documentary"
         )
+
+        private val LEADING_DECORATION_REGEX = Regex("^[\\s✦●★☆◆◇►▶•*\\-_|│┃:]+")
+        private val LEADING_SECTION_PREFIX_REGEX = Regex("(?i)^\\s*(?:VOD|SRS|MOV|MOVIE|MOVIES|SERIES|FILM|FILMS)\\s*[|│┃:\\-]\\s*")
+        private val LEADING_BRACKET_LANG_REGEX = Regex("^\\s*[\\[\\(]([A-Za-z]{2,8})(?:\\s*[/&-]\\s*[A-Za-z0-9]{1,8})?[\\]\\)]\\s*[|│┃:\\-]?\\s*")
+        private val LEADING_DELIM_LANG_REGEX = Regex("^\\s*([A-Za-z]{2,8})\\s*[|│┃:\\-]\\s+")
+        private val MULTI_SPACE_REGEX = Regex("\\s+")
+
+        private val CATEGORY_LANGUAGE_CANONICAL_MAP = mapOf(
+            "EN" to "EN", "ENG" to "EN", "ENGLISH" to "EN",
+            "AR" to "AR", "ARB" to "AR", "ARA" to "AR", "ARABIC" to "AR",
+            "FR" to "FR", "FRE" to "FR", "FRENCH" to "FR", "VOSTFR" to "FR",
+            "US" to "US", "USA" to "US",
+            "UK" to "UK",
+            "MULTI" to "MULTI", "MULTISUB" to "MULTI",
+            "ES" to "ES", "ESP" to "ES", "SPA" to "ES", "SPANISH" to "ES", "LAT" to "ES", "LATINO" to "ES",
+            "TR" to "TR", "TUR" to "TR", "TURKISH" to "TR",
+            "DE" to "DE", "GER" to "DE", "GERMAN" to "DE",
+            "IT" to "IT", "ITA" to "IT", "ITALIAN" to "IT",
+            "PT" to "PT", "POR" to "PT", "BR" to "PT",
+            "ALB" to "ALB", "AL" to "ALB", "ALBANIAN" to "ALB",
+            "IR" to "IR", "FA" to "IR", "IRAN" to "IR", "PERSIAN" to "IR", "FARSI" to "IR",
+            "BG" to "BG", "BULGARIAN" to "BG",
+            "NL" to "NL", "DUTCH" to "NL",
+            "RU" to "RU", "RUS" to "RU",
+            "PL" to "PL", "GR" to "GR", "RO" to "RO",
+            "IN" to "IN", "IND" to "IN", "HI" to "IN", "HINDI" to "IN",
+            "KU" to "KU", "KR" to "KR", "JP" to "JP",
+            "SE" to "SE", "NO" to "NO", "DK" to "DK", "FI" to "FI",
+            "CA" to "CA", "AU" to "AU", "MX" to "MX", "EU" to "EU", "EXYU" to "EXYU"
+        )
+
+        private val YOUR_LANGUAGE_TAGS = setOf("EN", "AR", "FR", "US", "UK", "MULTI")
+
+        private val YOUR_LANGUAGE_PRIORITY = mapOf(
+            "EN" to 0,
+            "US" to 1,
+            "UK" to 2,
+            "AR" to 3,
+            "FR" to 4,
+            "MULTI" to 5
+        )
+
+        private val STREAMING_PLATFORM_REGEX = Regex(
+            "(?i)(?:netflix|amazon|prime|apple|disney|hbo|\\bmax\\b|shahid|hulu|paramount|osn|starz)"
+        )
+
+        private val GENRE_COLLECTION_REGEX = Regex(
+            "(?i)(?:action|comedy|drama|crime|thriller|horror|sci[\\s\\-]?fi|documentary|animation|kids|4k|uhd|\\btop\\b|latest|2025|2026)"
+        )
+
+        private val UPPERCASE_ACRONYMS = setOf(
+            "HBO", "OSN", "VIP", "4K", "UHD", "FHD", "HD", "SD", "TV", "BBC", "USA", "UK",
+            "UFC", "WWE", "VOD", "VOSTFR", "HDR", "HEVC", "II", "III", "IV", "MCU", "DC"
+        )
+
+        fun organizeVodCategoriesStatic(
+            categories: List<CategoryEntity>,
+            counts: Map<String, Int>
+        ): Map<VodCategoryBucket, List<CategorizedVodItem>> {
+            if (categories.isEmpty()) return emptyMap()
+
+            val buckets = linkedMapOf<VodCategoryBucket, MutableList<CategorizedVodItem>>(
+                VodCategoryBucket.YOUR_LANGUAGES to mutableListOf(),
+                VodCategoryBucket.STREAMING_PLATFORMS to mutableListOf(),
+                VodCategoryBucket.GENRES_COLLECTIONS to mutableListOf(),
+                VodCategoryBucket.OTHER_REGIONS to mutableListOf()
+            )
+
+            for (cat in categories) {
+                val (languageTag, cleanName) = parseCategoryLanguageAndName(cat.categoryName)
+                val bucket = when {
+                    languageTag in YOUR_LANGUAGE_TAGS -> VodCategoryBucket.YOUR_LANGUAGES
+                    STREAMING_PLATFORM_REGEX.containsMatchIn(cleanName) -> VodCategoryBucket.STREAMING_PLATFORMS
+                    GENRE_COLLECTION_REGEX.containsMatchIn(cleanName) -> VodCategoryBucket.GENRES_COLLECTIONS
+                    else -> VodCategoryBucket.OTHER_REGIONS
+                }
+                buckets[bucket]?.add(
+                    CategorizedVodItem(
+                        category = cat,
+                        languageTag = languageTag,
+                        cleanName = cleanName,
+                        itemCount = counts[cat.categoryId] ?: 0,
+                        bucket = bucket
+                    )
+                )
+            }
+
+            val result = LinkedHashMap<VodCategoryBucket, List<CategorizedVodItem>>()
+            for ((bucket, items) in buckets) {
+                if (items.isEmpty()) continue
+                val sorted = when (bucket) {
+                    VodCategoryBucket.YOUR_LANGUAGES -> items.sortedWith(
+                        compareBy<CategorizedVodItem>(
+                            { YOUR_LANGUAGE_PRIORITY[it.languageTag] ?: 99 },
+                            { it.cleanName.lowercase(Locale.US) },
+                            { it.category.categoryId }
+                        )
+                    )
+                    else -> items.sortedWith(
+                        compareBy<CategorizedVodItem>(
+                            { it.cleanName.lowercase(Locale.US) },
+                            { it.languageTag },
+                            { it.category.categoryId }
+                        )
+                    )
+                }
+                result[bucket] = sorted
+            }
+            return result
+        }
+
+        internal fun parseCategoryLanguageAndName(rawCategoryName: String): Pair<String, String> {
+            val trimmedOriginal = rawCategoryName.trim()
+            if (trimmedOriginal.isEmpty()) return "" to ""
+
+            var working = trimmedOriginal.replace(LEADING_DECORATION_REGEX, "").trim()
+            var detectedLang = ""
+
+            var guard = 0
+            while (guard++ < 3) {
+                val sectionMatch = LEADING_SECTION_PREFIX_REGEX.find(working)
+                if (sectionMatch != null) {
+                    working = working.substring(sectionMatch.range.last + 1).trim()
+                    continue
+                }
+                val bracketMatch = LEADING_BRACKET_LANG_REGEX.find(working)
+                if (bracketMatch != null) {
+                    val token = bracketMatch.groupValues[1].trim().uppercase(Locale.US)
+                    val mapped = CATEGORY_LANGUAGE_CANONICAL_MAP[token]
+                    if (mapped != null) {
+                        if (detectedLang.isEmpty()) detectedLang = mapped
+                        working = working.substring(bracketMatch.range.last + 1).trim()
+                        continue
+                    }
+                }
+                val delimMatch = LEADING_DELIM_LANG_REGEX.find(working)
+                if (delimMatch != null) {
+                    val token = delimMatch.groupValues[1].trim().uppercase(Locale.US)
+                    val mapped = CATEGORY_LANGUAGE_CANONICAL_MAP[token]
+                    if (mapped != null) {
+                        if (detectedLang.isEmpty()) detectedLang = mapped
+                        working = working.substring(delimMatch.range.last + 1).trim()
+                        continue
+                    }
+                }
+                break
+            }
+
+            working = working
+                .replace(LEADING_DECORATION_REGEX, "")
+                .replace(MULTI_SPACE_REGEX, " ")
+                .trim()
+
+            val baseDisplay = working.ifBlank { trimmedOriginal }
+            return detectedLang to formatCleanCategoryName(baseDisplay)
+        }
+
+        private fun formatCleanCategoryName(text: String): String {
+            val hasLower = text.any { it.isLowerCase() }
+            val hasUpper = text.any { it.isUpperCase() }
+            if (hasLower || !hasUpper) return text
+
+            return text.split(" ").joinToString(" ") { word ->
+                if (word.isEmpty()) {
+                    word
+                } else {
+                    val stripped = word.trim('(', ')', '[', ']', '+', '&', '-', '/', ':')
+                    val upperStripped = stripped.uppercase(Locale.US)
+                    when {
+                        upperStripped in UPPERCASE_ACRONYMS -> word.uppercase(Locale.US)
+                        upperStripped == "SCI-FI" -> "Sci-Fi"
+                        else -> word.lowercase(Locale.US).replaceFirstChar { ch ->
+                            if (ch.isLowerCase()) ch.titlecase(Locale.US) else ch.toString()
+                        }
+                    }
+                }
+            }
+        }
     }
 }

@@ -16,6 +16,7 @@ import com.example.data.model.ParentalSettingsEntity
 import com.example.data.model.PlaylistEntity
 import com.example.data.model.StreamEntity
 import com.example.data.model.TournamentPreferenceEntity
+import com.example.data.model.VodCatalogGroupEntity
 import kotlinx.coroutines.flow.Flow
 
 @Dao
@@ -508,6 +509,220 @@ interface StreamDao {
         genreKeyword: String,
         limit: Int = 20
     ): Flow<List<GroupedVodStream>>
+
+    // Chunked streaming helpers for low-RAM background materialization into vod_catalog_groups
+    @Query("SELECT * FROM streams WHERE playlistId = :playlistId AND streamType = :streamType ORDER BY id ASC LIMIT :limit OFFSET :offset")
+    suspend fun getStreamsChunkByType(
+        playlistId: Long,
+        streamType: String,
+        limit: Int,
+        offset: Int
+    ): List<StreamEntity>
+
+    @Query("SELECT * FROM streams WHERE id = :id LIMIT 1")
+    suspend fun getStreamByDbId(id: Long): StreamEntity?
+}
+
+@Dao
+interface VodCatalogGroupDao {
+    @Query("DELETE FROM vod_catalog_groups WHERE playlistId = :playlistId AND streamType = :streamType")
+    suspend fun deleteGroupsByType(playlistId: Long, streamType: String)
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insertGroupsBatch(groups: List<VodCatalogGroupEntity>)
+
+    @Query("SELECT COUNT(*) FROM vod_catalog_groups WHERE playlistId = :playlistId AND streamType = :streamType")
+    suspend fun countGroupsByType(playlistId: Long, streamType: String): Int
+
+    @Query("""
+        SELECT *
+        FROM vod_catalog_groups
+        WHERE playlistId = :playlistId
+          AND streamType = :streamType
+        ORDER BY popularityScore DESC, addedEpoch DESC
+        LIMIT :limit
+    """)
+    fun getTopPopularGroups(
+        playlistId: Long,
+        streamType: String,
+        limit: Int = 20
+    ): Flow<List<VodCatalogGroupEntity>>
+
+    @Query("""
+        SELECT *
+        FROM vod_catalog_groups
+        WHERE playlistId = :playlistId
+          AND streamType = :streamType
+        ORDER BY addedEpoch DESC, popularityScore DESC
+        LIMIT :limit
+    """)
+    fun getRecentlyAddedGroups(
+        playlistId: Long,
+        streamType: String,
+        limit: Int = 20
+    ): Flow<List<VodCatalogGroupEntity>>
+
+    @Query("""
+        SELECT *
+        FROM vod_catalog_groups
+        WHERE playlistId = :playlistId
+          AND streamType = :streamType
+          AND (
+              genres LIKE '%' || :genreKeyword || '%'
+              OR primaryCategoryId IN (
+                  SELECT categoryId FROM categories
+                  WHERE playlistId = :playlistId
+                    AND categoryName LIKE '%' || :genreKeyword || '%'
+              )
+          )
+        ORDER BY popularityScore DESC, addedEpoch DESC
+        LIMIT :limit
+    """)
+    fun getGenreShelfGroups(
+        playlistId: Long,
+        streamType: String,
+        genreKeyword: String,
+        limit: Int = 20
+    ): Flow<List<VodCatalogGroupEntity>>
+
+    @Query("""
+        SELECT *
+        FROM vod_catalog_groups
+        WHERE playlistId = :playlistId
+          AND streamType = :streamType
+          AND (
+              primaryCategoryId = :categoryId
+              OR categoryIdsCsv LIKE '%,' || :categoryId || ',%'
+          )
+        ORDER BY popularityScore DESC, addedEpoch DESC
+        LIMIT :limit
+    """)
+    fun getGroupsByCategory(
+        playlistId: Long,
+        streamType: String,
+        categoryId: String,
+        limit: Int = 180
+    ): Flow<List<VodCatalogGroupEntity>>
+
+    @Query("""
+        SELECT *
+        FROM vod_catalog_groups
+        WHERE playlistId = :playlistId
+          AND streamType = :streamType
+        ORDER BY popularityScore DESC, addedEpoch DESC
+        LIMIT :limit
+    """)
+    fun getAllGroupsPaged(
+        playlistId: Long,
+        streamType: String,
+        limit: Int = 180
+    ): Flow<List<VodCatalogGroupEntity>>
+
+    @Query("""
+        SELECT *
+        FROM vod_catalog_groups
+        WHERE playlistId = :playlistId
+          AND streamType = :streamType
+          AND (
+              :categoryId IS NULL
+              OR :categoryId = ''
+              OR primaryCategoryId = :categoryId
+              OR categoryIdsCsv LIKE '%,' || :categoryId || ',%'
+          )
+          AND cleanTitle LIKE '%' || :query || '%'
+        ORDER BY popularityScore DESC, addedEpoch DESC
+        LIMIT :limit
+    """)
+    fun searchGroups(
+        playlistId: Long,
+        streamType: String,
+        categoryId: String?,
+        query: String,
+        limit: Int = 180
+    ): Flow<List<VodCatalogGroupEntity>>
+
+    @Query("""
+        SELECT *
+        FROM vod_catalog_groups
+        WHERE playlistId = :playlistId
+          AND streamType = :streamType
+          AND (:excludeGroupKey = '' OR groupKey != :excludeGroupKey)
+          AND (
+              genres LIKE '%' || :genreKeyword || '%'
+              OR primaryCategoryId IN (
+                  SELECT categoryId FROM categories
+                  WHERE playlistId = :playlistId
+                    AND categoryName LIKE '%' || :genreKeyword || '%'
+              )
+          )
+        ORDER BY popularityScore DESC, addedEpoch DESC
+        LIMIT :limit
+    """)
+    suspend fun getSimilarGroupsByGenre(
+        playlistId: Long,
+        streamType: String,
+        genreKeyword: String,
+        excludeGroupKey: String,
+        limit: Int = 15
+    ): List<VodCatalogGroupEntity>
+
+    @Query("""
+        SELECT *
+        FROM vod_catalog_groups
+        WHERE playlistId = :playlistId
+          AND streamType = :streamType
+          AND representativeStreamId NOT IN (:excludeStreamIds)
+          AND (
+              genres LIKE '%' || :genreKeyword || '%'
+              OR primaryCategoryId IN (
+                  SELECT categoryId FROM categories
+                  WHERE playlistId = :playlistId
+                    AND categoryName LIKE '%' || :genreKeyword || '%'
+              )
+          )
+        ORDER BY popularityScore DESC, addedEpoch DESC
+        LIMIT :limit
+    """)
+    suspend fun getRecommendedGroupsBySingleGenre(
+        playlistId: Long,
+        streamType: String,
+        genreKeyword: String,
+        excludeStreamIds: List<Long>,
+        limit: Int = 20
+    ): List<VodCatalogGroupEntity>
+
+    suspend fun getRecommendedGroupsByGenre(
+        playlistId: Long,
+        streamType: String,
+        genreKeywords: List<String>,
+        excludeStreamIds: List<Long>,
+        limit: Int = 20
+    ): List<VodCatalogGroupEntity> {
+        val safeExclude = excludeStreamIds.ifEmpty { listOf(-1L) }
+        val cleanKeywords = genreKeywords.map { it.trim() }.filter { it.isNotEmpty() }.distinct().take(4)
+        if (cleanKeywords.isEmpty()) return emptyList()
+        val merged = LinkedHashMap<String, VodCatalogGroupEntity>()
+        for (keyword in cleanKeywords) {
+            val rows = getRecommendedGroupsBySingleGenre(
+                playlistId = playlistId,
+                streamType = streamType,
+                genreKeyword = keyword,
+                excludeStreamIds = safeExclude,
+                limit = limit
+            )
+            for (row in rows) {
+                if (!merged.containsKey(row.groupKey)) {
+                    merged[row.groupKey] = row
+                }
+            }
+        }
+        return merged.values
+            .sortedWith(
+                compareByDescending<VodCatalogGroupEntity> { it.popularityScore }
+                    .thenByDescending { it.addedEpoch }
+            )
+            .take(limit)
+    }
 }
 
 @Dao

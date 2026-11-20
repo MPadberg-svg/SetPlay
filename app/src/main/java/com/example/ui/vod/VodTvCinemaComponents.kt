@@ -28,6 +28,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.GridItemSpan
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.lazy.items
@@ -81,6 +82,7 @@ import coil.compose.AsyncImage
 import com.example.data.model.CategoryEntity
 import com.example.data.model.GroupedVodStream
 import com.example.data.model.StreamEntity
+import com.example.data.model.VodGroupingNormalizer
 import com.example.ui.theme.AmberGold
 import com.example.ui.theme.Champagne
 import com.example.ui.theme.LiveRed
@@ -92,47 +94,14 @@ import com.example.ui.theme.SeriesPineBase
 import com.example.ui.theme.luxuryFocusableCard
 import com.example.ui.theme.tvFocusableControl
 import com.example.ui.theme.tvFocusablePill
-import com.example.util.StreamMetadataParser
 import java.util.Locale
 
-private enum class TvCategoryQuickGroup(val label: String) {
-    ALL("All"),
-    POPULAR("Popular / 4K"),
-    LANGUAGES("Languages"),
-    A_TO_F("A–F"),
-    G_TO_M("G–M"),
-    N_TO_S("N–S"),
-    T_TO_Z("T–Z")
-}
-
-private val TV_POPULAR_KEYWORDS = listOf(
-    "4K", "UHD", "NEW", "LATEST", "RECENT", "TOP", "POPULAR",
-    "NETFLIX", "APPLE", "HBO", "DISNEY", "PRIME", "IMAX", "2024", "2025", "2026"
-)
-
-private val TV_LANGUAGE_KEYWORDS = listOf(
-    "ENGLISH", "EN ", "EN|", "ARABIC", "AR ", "AR|", "FRENCH", "FR ", "FR|",
-    "SPANISH", "ES ", "ES|", "LATINO", "GERMAN", "DE ", "DE|", "ITALIAN", "IT ",
-    "TURKISH", "TR ", "PORTUGUESE", "PT ", "HINDI", "BOLLYWOOD", "KOREAN", "ANIME",
-    "RUSSIAN", "DUTCH", "POLISH", "SWEDISH", "KURDISH", "MULTI", "SUB"
-)
-
-private fun matchesTvQuickGroup(categoryName: String, group: TvCategoryQuickGroup): Boolean {
-    if (group == TvCategoryQuickGroup.ALL) return true
-    val upper = categoryName.uppercase(Locale.US)
-    val cleanFirstChar = StreamMetadataParser.cleanDisplayTitle(categoryName)
-        .trim()
-        .firstOrNull { it.isLetter() }
-        ?.uppercaseChar()
-    return when (group) {
-        TvCategoryQuickGroup.ALL -> true
-        TvCategoryQuickGroup.POPULAR -> TV_POPULAR_KEYWORDS.any { upper.contains(it) }
-        TvCategoryQuickGroup.LANGUAGES -> TV_LANGUAGE_KEYWORDS.any { upper.contains(it) }
-        TvCategoryQuickGroup.A_TO_F -> cleanFirstChar != null && cleanFirstChar in 'A'..'F'
-        TvCategoryQuickGroup.G_TO_M -> cleanFirstChar != null && cleanFirstChar in 'G'..'M'
-        TvCategoryQuickGroup.N_TO_S -> cleanFirstChar != null && cleanFirstChar in 'N'..'S'
-        TvCategoryQuickGroup.T_TO_Z -> cleanFirstChar == null || cleanFirstChar in 'T'..'Z'
-    }
+private enum class TvCategoryBucketFilter(val label: String, val bucket: VodCategoryBucket?) {
+    ALL("All", null),
+    YOUR_LANGUAGES("Your Languages", VodCategoryBucket.YOUR_LANGUAGES),
+    STREAMING_PLATFORMS("Streaming Platforms", VodCategoryBucket.STREAMING_PLATFORMS),
+    GENRES_COLLECTIONS("Genres & Collections", VodCategoryBucket.GENRES_COLLECTIONS),
+    OTHER_REGIONS("Other Regions", VodCategoryBucket.OTHER_REGIONS)
 }
 
 /**
@@ -484,8 +453,8 @@ internal fun TvVodTopControlStrip(
 }
 
 /**
- * Widescreen 2-Column Android TV Category Overlay Dialog with D-Pad focus rings,
- * item counts, and quick letter/language grouping for effortless remote browsing across 179+ categories.
+ * Widescreen 2-Column Android TV 4-Bucket Category Overlay Dialog with D-Pad focus rings,
+ * language badges, item counts, search filter, and quick bucket tabs across 179+ categories.
  */
 @Composable
 internal fun TvVodCategoryOverlayDialog(
@@ -499,19 +468,48 @@ internal fun TvVodCategoryOverlayDialog(
     sectionHighlight: Color,
     onSelectDiscoverHome: () -> Unit,
     onSelectCategory: (CategoryEntity) -> Unit,
-    onDismiss: () -> Unit
+    onDismiss: () -> Unit,
+    organizedCategories: Map<VodCategoryBucket, List<CategorizedVodItem>> = emptyMap()
 ) {
-    var activeGroup by remember { mutableStateOf(TvCategoryQuickGroup.ALL) }
+    var activeFilter by remember { mutableStateOf(TvCategoryBucketFilter.ALL) }
+    var filterQuery by remember { mutableStateOf("") }
 
-    val filteredCategories = remember(categories, selectedCategoryId, activeGroup) {
-        categories
-            .filter { matchesTvQuickGroup(it.categoryName, activeGroup) }
-            .sortedWith(
-                compareBy<CategoryEntity>(
-                    { if (it.categoryId == selectedCategoryId) 0 else 1 },
-                    { StreamMetadataParser.cleanDisplayTitle(it.categoryName).lowercase(Locale.US) }
-                )
-            )
+    val baseOrganized = remember(organizedCategories, categories, categoryCounts) {
+        if (organizedCategories.isNotEmpty()) {
+            organizedCategories
+        } else {
+            VodViewModel.organizeVodCategoriesStatic(categories, categoryCounts)
+        }
+    }
+
+    val filteredBuckets = remember(baseOrganized, activeFilter, filterQuery) {
+        val trimmed = filterQuery.trim()
+        val result = LinkedHashMap<VodCategoryBucket, List<CategorizedVodItem>>()
+        val targetBuckets = if (activeFilter.bucket != null) {
+            listOf(activeFilter.bucket!!)
+        } else {
+            VodCategoryBucket.entries
+        }
+        for (bucket in targetBuckets) {
+            val items = baseOrganized[bucket].orEmpty()
+            val matched = if (trimmed.isEmpty()) {
+                items
+            } else {
+                items.filter { item ->
+                    item.cleanName.contains(trimmed, ignoreCase = true) ||
+                        item.languageTag.contains(trimmed, ignoreCase = true) ||
+                        item.category.categoryName.contains(trimmed, ignoreCase = true)
+                }
+            }
+            if (matched.isNotEmpty()) {
+                result[bucket] = matched
+            }
+        }
+        result
+    }
+
+    val filteredCount = remember(filteredBuckets) {
+        filteredBuckets.values.sumOf { it.size }
     }
 
     val panelShape = RoundedCornerShape(22.dp)
@@ -580,7 +578,7 @@ internal fun TvVodCategoryOverlayDialog(
                             fontWeight = FontWeight.ExtraBold
                         )
                         Text(
-                            text = "${filteredCategories.size} of ${categories.size} categories • Use D-Pad to browse",
+                            text = "$filteredCount of ${categories.size} categories • Use D-Pad to browse",
                             color = sectionHighlight.copy(alpha = 0.85f),
                             fontSize = 12.5.sp,
                             fontWeight = FontWeight.SemiBold
@@ -619,15 +617,65 @@ internal fun TvVodCategoryOverlayDialog(
                     }
                 }
 
-                Spacer(modifier = Modifier.height(14.dp))
+                Spacer(modifier = Modifier.height(12.dp))
 
-                // Quick Letter / Language Group Filter Strip for Fast Remote Navigation
+                // Instant Search Filter Input (`vod_category_search_input`)
+                OutlinedTextField(
+                    value = filterQuery,
+                    onValueChange = { filterQuery = it },
+                    placeholder = {
+                        Text(
+                            text = "Filter categories or languages (EN, AR, FR, Netflix…)",
+                            color = sectionHighlight.copy(alpha = 0.65f),
+                            fontSize = 13.sp,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    },
+                    leadingIcon = {
+                        Icon(
+                            imageVector = Icons.Default.Search,
+                            contentDescription = "Filter Categories",
+                            tint = sectionHighlight,
+                            modifier = Modifier.size(18.dp)
+                        )
+                    },
+                    trailingIcon = {
+                        if (filterQuery.isNotEmpty()) {
+                            IconButton(onClick = { filterQuery = "" }) {
+                                Icon(
+                                    imageVector = Icons.Default.Clear,
+                                    contentDescription = "Clear Filter",
+                                    tint = sectionHighlight,
+                                    modifier = Modifier.size(16.dp)
+                                )
+                            }
+                        }
+                    },
+                    singleLine = true,
+                    shape = RoundedCornerShape(14.dp),
+                    colors = OutlinedTextFieldDefaults.colors(
+                        focusedBorderColor = sectionHighlight,
+                        unfocusedBorderColor = Color.White.copy(alpha = 0.16f),
+                        focusedContainerColor = sectionBaseBg.copy(alpha = 0.78f),
+                        unfocusedContainerColor = sectionBaseBg.copy(alpha = 0.56f),
+                        focusedTextColor = Color.White,
+                        unfocusedTextColor = Color.White
+                    ),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .testTag("vod_category_search_input")
+                )
+
+                Spacer(modifier = Modifier.height(10.dp))
+
+                // Quick 4-Bucket Filter Strip for Fast Remote Navigation
                 LazyRow(
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
                     modifier = Modifier.fillMaxWidth()
                 ) {
-                    items(TvCategoryQuickGroup.entries) { group ->
-                        val isActive = activeGroup == group
+                    items(TvCategoryBucketFilter.entries) { filter ->
+                        val isActive = activeFilter == filter
                         Surface(
                             color = if (isActive) {
                                 sectionPrimaryAccent.copy(alpha = 0.42f)
@@ -643,14 +691,14 @@ internal fun TvVodCategoryOverlayDialog(
                                 .tvFocusablePill(
                                     accentColor = sectionHighlight,
                                     focusedScale = 1.05f,
-                                    onClick = { activeGroup = group }
+                                    onClick = { activeFilter = filter }
                                 )
-                                .testTag("tv_cat_group_${group.name.lowercase(Locale.US)}")
+                                .testTag("tv_cat_group_${filter.name.lowercase(Locale.US)}")
                         ) {
                             Text(
-                                text = group.label,
+                                text = filter.label,
                                 color = if (isActive) Color.White else Champagne,
-                                fontSize = 12.5.sp,
+                                fontSize = 12.sp,
                                 fontWeight = if (isActive) FontWeight.ExtraBold else FontWeight.SemiBold,
                                 modifier = Modifier.padding(horizontal = 14.dp, vertical = 7.dp)
                             )
@@ -710,9 +758,9 @@ internal fun TvVodCategoryOverlayDialog(
 
                 Spacer(modifier = Modifier.height(10.dp))
                 HorizontalDivider(color = Color.White.copy(alpha = 0.10f), thickness = 0.8.dp)
-                Spacer(modifier = Modifier.height(10.dp))
+                Spacer(modifier = Modifier.height(8.dp))
 
-                // Widescreen 2-Column D-Pad Category Grid
+                // Widescreen 2-Column 4-Bucket D-Pad Category Grid with Language Pills
                 LazyVerticalGrid(
                     columns = GridCells.Fixed(2),
                     modifier = Modifier.weight(1f),
@@ -720,85 +768,130 @@ internal fun TvVodCategoryOverlayDialog(
                     verticalArrangement = Arrangement.spacedBy(10.dp),
                     contentPadding = PaddingValues(bottom = 8.dp)
                 ) {
-                    items(filteredCategories, key = { it.categoryId }) { cat ->
-                        val isSelected = selectedCategoryId == cat.categoryId
-                        val displayName = remember(cat.categoryName) {
-                            StreamMetadataParser.cleanDisplayTitle(cat.categoryName)
-                                .ifBlank { cat.categoryName }
-                        }
-                        val itemCount = categoryCounts[cat.categoryId] ?: 0
-
-                        Surface(
-                            color = if (isSelected) {
-                                sectionPrimaryAccent.copy(alpha = 0.34f)
-                            } else {
-                                sectionSurface.copy(alpha = 0.56f)
-                            },
-                            shape = RoundedCornerShape(13.dp),
-                            border = BorderStroke(
-                                width = if (isSelected) 1.2.dp else 0.7.dp,
-                                color = if (isSelected) sectionHighlight else Color.White.copy(alpha = 0.10f)
-                            ),
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .tvFocusableControl(
-                                    accentColor = sectionHighlight,
-                                    shape = RoundedCornerShape(13.dp),
-                                    focusedScale = 1.03f,
-                                    onClick = {
-                                        onSelectCategory(cat)
-                                        onDismiss()
-                                    }
-                                )
-                                .testTag("vod_category_row_${cat.categoryId}")
+                    filteredBuckets.forEach { (bucket, bucketItems) ->
+                        item(
+                            key = "tv_bucket_header_${bucket.name}",
+                            span = { GridItemSpan(maxLineSpan) }
                         ) {
                             Row(
                                 modifier = Modifier
                                     .fillMaxWidth()
-                                    .padding(horizontal = 14.dp, vertical = 12.dp),
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.SpaceBetween
+                                    .padding(top = 8.dp, bottom = 2.dp, start = 4.dp, end = 4.dp),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text(
+                                    text = bucket.title.uppercase(Locale.US),
+                                    color = sectionHighlight,
+                                    fontSize = 10.sp,
+                                    fontWeight = FontWeight.ExtraBold,
+                                    letterSpacing = 0.9.sp
+                                )
+                                Text(
+                                    text = "${bucketItems.size} categories",
+                                    color = sectionHighlight.copy(alpha = 0.65f),
+                                    fontSize = 10.sp,
+                                    fontWeight = FontWeight.SemiBold
+                                )
+                            }
+                        }
+
+                        items(bucketItems, key = { it.category.categoryId }) { item ->
+                            val cat = item.category
+                            val isSelected = selectedCategoryId == cat.categoryId
+                            val itemCount = item.itemCount
+
+                            Surface(
+                                color = if (isSelected) {
+                                    sectionPrimaryAccent.copy(alpha = 0.34f)
+                                } else {
+                                    sectionSurface.copy(alpha = 0.56f)
+                                },
+                                shape = RoundedCornerShape(13.dp),
+                                border = BorderStroke(
+                                    width = if (isSelected) 1.2.dp else 0.7.dp,
+                                    color = if (isSelected) sectionHighlight else Color.White.copy(alpha = 0.10f)
+                                ),
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .tvFocusableControl(
+                                        accentColor = sectionHighlight,
+                                        shape = RoundedCornerShape(13.dp),
+                                        focusedScale = 1.03f,
+                                        onClick = {
+                                            onSelectCategory(cat)
+                                            onDismiss()
+                                        }
+                                    )
+                                    .testTag("vod_category_row_${cat.categoryId}")
                             ) {
                                 Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(horizontal = 14.dp, vertical = 12.dp),
                                     verticalAlignment = Alignment.CenterVertically,
-                                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                                    modifier = Modifier.weight(1f)
+                                    horizontalArrangement = Arrangement.SpaceBetween
                                 ) {
-                                    if (cat.isLocked) {
-                                        Icon(
-                                            imageVector = Icons.Default.Lock,
-                                            contentDescription = "Locked Category",
-                                            tint = LiveRed,
-                                            modifier = Modifier.size(15.dp)
+                                    Row(
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                        modifier = Modifier.weight(1f)
+                                    ) {
+                                        if (cat.isLocked) {
+                                            Icon(
+                                                imageVector = Icons.Default.Lock,
+                                                contentDescription = "Locked Category",
+                                                tint = LiveRed,
+                                                modifier = Modifier.size(15.dp)
+                                            )
+                                        }
+                                        if (item.languageTag.isNotBlank()) {
+                                            Surface(
+                                                color = sectionPrimaryAccent.copy(alpha = 0.2f),
+                                                shape = RoundedCornerShape(6.dp),
+                                                border = BorderStroke(
+                                                    0.6.dp,
+                                                    sectionHighlight.copy(alpha = 0.50f)
+                                                )
+                                            ) {
+                                                Text(
+                                                    text = item.languageTag,
+                                                    color = sectionHighlight,
+                                                    fontSize = 9.5.sp,
+                                                    fontWeight = FontWeight.ExtraBold,
+                                                    letterSpacing = 0.4.sp,
+                                                    modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                                                )
+                                            }
+                                        }
+                                        Text(
+                                            text = item.cleanName,
+                                            color = if (isSelected) Color.White else Champagne,
+                                            fontSize = 13.5.sp,
+                                            fontWeight = if (isSelected) FontWeight.ExtraBold else FontWeight.SemiBold,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis
                                         )
                                     }
-                                    Text(
-                                        text = displayName,
-                                        color = if (isSelected) Color.White else Champagne,
-                                        fontSize = 13.5.sp,
-                                        fontWeight = if (isSelected) FontWeight.ExtraBold else FontWeight.SemiBold,
-                                        maxLines = 1,
-                                        overflow = TextOverflow.Ellipsis
-                                    )
-                                }
 
-                                if (itemCount > 0) {
-                                    Spacer(modifier = Modifier.width(8.dp))
-                                    Surface(
-                                        color = sectionBaseBg.copy(alpha = 0.72f),
-                                        shape = RoundedCornerShape(50),
-                                        border = BorderStroke(
-                                            0.6.dp,
-                                            if (isSelected) sectionHighlight else Color.White.copy(alpha = 0.16f)
-                                        )
-                                    ) {
-                                        Text(
-                                            text = "%,d".format(itemCount),
-                                            color = if (isSelected) Color.White else sectionHighlight,
-                                            fontSize = 11.sp,
-                                            fontWeight = FontWeight.Bold,
-                                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
-                                        )
+                                    if (itemCount > 0) {
+                                        Spacer(modifier = Modifier.width(8.dp))
+                                        Surface(
+                                            color = sectionBaseBg.copy(alpha = 0.72f),
+                                            shape = RoundedCornerShape(50),
+                                            border = BorderStroke(
+                                                0.6.dp,
+                                                if (isSelected) sectionHighlight else Color.White.copy(alpha = 0.16f)
+                                            )
+                                        ) {
+                                            Text(
+                                                text = "%,d".format(itemCount),
+                                                color = if (isSelected) Color.White else sectionHighlight,
+                                                fontSize = 11.sp,
+                                                fontWeight = FontWeight.Bold,
+                                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
+                                            )
+                                        }
                                     }
                                 }
                             }
@@ -837,7 +930,7 @@ internal fun TvLiveBackdropBanner(
             .testTag("tv_live_backdrop_stage")
     ) { active ->
         val stream = active.stream
-        val cleanTitle = remember(stream.name) { StreamMetadataParser.cleanDisplayTitle(stream.name) }
+        val cleanTitle = remember(stream.name) { VodGroupingNormalizer.extractCleanDisplayTitle(stream.name) }
         val ratingLabel = remember(stream.ratingNumeric) { formatNormalizedRating(stream) }
         val yearLabel = stream.releaseYear.takeIf { it > 0 }?.toString()
         val genreSummary = remember(stream.genres, stream.versionTag) {
@@ -1085,7 +1178,7 @@ internal fun TvContinueWatchingShelfRow(
             horizontalArrangement = Arrangement.spacedBy(14.dp)
         ) {
             items(items, key = { "tv_cw_${it.id}_${it.streamId}" }) { item ->
-                val cleanTitle = remember(item.name) { StreamMetadataParser.cleanDisplayTitle(item.name) }
+                val cleanTitle = remember(item.name) { VodGroupingNormalizer.extractCleanDisplayTitle(item.name) }
                 val progressFraction = remember(item.lastPositionMs) {
                     if (item.lastPositionMs > 0L) {
                         val refDurationMs = if (isMovies) 105 * 60_000f else 45 * 60_000f
@@ -1263,7 +1356,7 @@ internal fun TvDiscoveryShelfRow(
         ) {
             items(shelf.items, key = { "tv_${shelf.id}_${it.stream.id}" }) { grouped ->
                 val stream = grouped.stream
-                val cleanTitle = remember(stream.name) { StreamMetadataParser.cleanDisplayTitle(stream.name) }
+                val cleanTitle = remember(stream.name) { VodGroupingNormalizer.extractCleanDisplayTitle(stream.name) }
                 val ratingLabel = remember(stream.ratingNumeric) { formatNormalizedRating(stream) }
 
                 Column(

@@ -3,12 +3,14 @@ package com.example.data.repository
 import android.content.Context
 import android.content.SharedPreferences
 import android.util.Log
+import androidx.room.withTransaction
 import com.example.data.local.CategoryDao
 import com.example.data.local.EpgDao
 import com.example.data.local.ParentalSettingsDao
 import com.example.data.local.PlaylistDao
 import com.example.data.local.StreamDao
 import com.example.data.local.StreamVaultDatabase
+import com.example.data.local.VodCatalogGroupDao
 import com.example.data.model.CategoryEntity
 import com.example.data.model.CategoryWithCount
 import com.example.data.model.EpgProgramEntity
@@ -16,11 +18,15 @@ import com.example.data.model.GroupedVodStream
 import com.example.data.model.ParentalSettingsEntity
 import com.example.data.model.PlaylistEntity
 import com.example.data.model.StreamEntity
+import com.example.data.model.VodCatalogGroupEntity
+import com.example.data.model.VodGroupingNormalizer
 import com.example.data.remote.XtreamAuthResponse
 import com.example.data.remote.XtreamClient
 import com.example.util.SecurityManager
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -31,10 +37,12 @@ import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.onStart
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import okhttp3.ConnectionPool
 import okhttp3.OkHttpClient
 import org.json.JSONArray
+import java.util.Locale
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
@@ -58,12 +66,25 @@ class IptvRepository(
     private val streamDao: StreamDao,
     private val epgDao: EpgDao,
     private val parentalDao: ParentalSettingsDao,
-    private val xtreamClient: XtreamClient = XtreamClient(sharedOkHttpClient)
+    private val xtreamClient: XtreamClient = XtreamClient(sharedOkHttpClient),
+    private val vodGroupDao: VodCatalogGroupDao? = null,
+    private val database: StreamVaultDatabase? = null
 ) {
     private val _syncProgress = MutableStateFlow(SyncProgress())
     val syncProgress = _syncProgress.asStateFlow()
 
     private val isSyncInProgress = AtomicBoolean(false)
+    private val indexingScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+    private val activeIndexJobs = ConcurrentHashMap<String, AtomicBoolean>()
+
+    private suspend fun runInDbTransaction(block: suspend () -> Unit) {
+        val db = database
+        if (db != null) {
+            db.withTransaction { block() }
+        } else {
+            block()
+        }
+    }
 
     private fun PlaylistEntity.decrypted(): PlaylistEntity {
         return copy(password = SecurityManager.decryptCredential(password))
@@ -126,6 +147,8 @@ class IptvRepository(
     }
 
     suspend fun deletePlaylist(id: Long) {
+        vodGroupDao?.deleteGroupsByType(id, "movie")
+        vodGroupDao?.deleteGroupsByType(id, "series")
         streamDao.clearStreamsForPlaylist(id)
         categoryDao.clearCategoriesForPlaylist(id)
         epgDao.clearEpgForPlaylist(id)
@@ -191,7 +214,316 @@ class IptvRepository(
         }
     }
 
-    // --- SQL-Deduplicated Movies & Series Catalog, Versions & Discovery Shelves ---
+    // --- Materialized <5ms Movies & Series Catalog, Versions, Discovery Shelves & Stage 2 Indexer ---
+
+    private class GroupAccumulator(
+        var representativeStreamDbId: Long,
+        var representativeStreamId: Long,
+        var representativeRawName: String,
+        var representativeScore: Int,
+        var posterUrl: String,
+        var rating: String,
+        var ratingNumeric: Double,
+        var releaseYear: Int,
+        var maxAddedEpoch: Long,
+        var genres: String,
+        var primaryCategoryId: String,
+        var defaultVersionTag: String,
+        var containerExtension: String,
+        var versionCount: Int,
+        val categoryIds: LinkedHashSet<String>
+    )
+
+    private fun VodCatalogGroupEntity.toGroupedVodStream(): GroupedVodStream {
+        return GroupedVodStream(
+            stream = StreamEntity(
+                id = representativeStreamDbId,
+                playlistId = playlistId,
+                streamId = representativeStreamId,
+                categoryId = primaryCategoryId,
+                name = cleanTitle,
+                streamType = streamType,
+                streamIcon = posterUrl,
+                rating = rating,
+                containerExtension = containerExtension.ifBlank { "mp4" },
+                canonicalGroupKey = groupKey,
+                versionTag = defaultVersionTag,
+                addedEpoch = addedEpoch,
+                ratingNumeric = ratingNumeric,
+                releaseYear = releaseYear,
+                genres = genres
+            ),
+            versionCount = versionCount.coerceAtLeast(1)
+        )
+    }
+
+    @OptIn(ExperimentalCoroutinesApi::class)
+    private fun queryGroupsWithFallback(
+        playlistId: Long,
+        streamType: String,
+        primary: (VodCatalogGroupDao) -> Flow<List<VodCatalogGroupEntity>>,
+        fallback: () -> Flow<List<GroupedVodStream>>
+    ): Flow<List<GroupedVodStream>> {
+        val dao = vodGroupDao ?: return fallback()
+        return primary(dao).flatMapLatest { groups ->
+            if (groups.isNotEmpty()) {
+                flowOf(groups.map { it.toGroupedVodStream() })
+            } else {
+                val hasIndexedCatalog = withContext(Dispatchers.IO) {
+                    dao.countGroupsByType(playlistId, streamType) > 0
+                }
+                if (hasIndexedCatalog) {
+                    flowOf(emptyList())
+                } else {
+                    fallback()
+                }
+            }
+        }
+    }
+
+    /**
+     * Stage 2 Asynchronous Background Indexer:
+     * Streams raw rows for [streamType] (`"movie"` or `"series"`) in bounded 5,000-row chunks on
+     * [Dispatchers.Default], computes 3-tier `canonicalGroupKey` & category-aware `versionTag`,
+     * selects the highest-preference representative copy per group, calculates Bayesian
+     * `popularityScore`, and atomically writes materialized rows into `vod_catalog_groups`.
+     */
+    suspend fun rebuildVodCatalogGroups(
+        playlistId: Long,
+        streamType: String,
+        emitSyncStatus: Boolean = false
+    ) {
+        val dao = vodGroupDao ?: return
+        val normalizedType = streamType.trim().lowercase(Locale.US)
+        if (normalizedType != "movie" && normalizedType != "series") return
+
+        val lockKey = "${playlistId}_$normalizedType"
+        val lock = activeIndexJobs.computeIfAbsent(lockKey) { AtomicBoolean(false) }
+        if (!lock.compareAndSet(false, true)) return
+
+        withContext(Dispatchers.Default) {
+            var statusEmitted = false
+            try {
+                if (emitSyncStatus && !isSyncInProgress.get()) {
+                    _syncProgress.value = SyncProgress(
+                        isSyncing = true,
+                        phase = "Organizing library…"
+                    )
+                    statusEmitted = true
+                }
+
+                val catType = if (normalizedType == "movie") "MOVIE" else "SERIES"
+                val categoryNameMap = categoryDao.getCategoriesOnce(playlistId, catType)
+                    .associate { it.categoryId to it.categoryName }
+
+                val groupsMap = HashMap<String, GroupAccumulator>(4096)
+                val changedStreams = ArrayList<StreamEntity>(2_000)
+                val chunkSize = 5_000
+                var offset = 0
+
+                while (true) {
+                    val chunk = streamDao.getStreamsChunkByType(
+                        playlistId = playlistId,
+                        streamType = normalizedType,
+                        limit = chunkSize,
+                        offset = offset
+                    )
+                    if (chunk.isEmpty()) break
+
+                    for (s in chunk) {
+                        val effectiveYear = if (s.releaseYear > 0) {
+                            s.releaseYear
+                        } else {
+                            VodGroupingNormalizer.extractReleaseYear(s.name, "")
+                        }
+                        val groupKey = VodGroupingNormalizer.computeCanonicalGroupKey(
+                            streamType = normalizedType,
+                            rawName = s.name,
+                            tmdbId = s.tmdbId,
+                            releaseYear = effectiveYear,
+                            streamId = s.streamId,
+                            posterUrl = s.streamIcon
+                        )
+                        val catName = categoryNameMap[s.categoryId].orEmpty()
+                        val versionTag = VodGroupingNormalizer.extractVersionTagWithCategory(
+                            rawName = s.name,
+                            categoryName = catName
+                        )
+
+                        if (s.canonicalGroupKey != groupKey ||
+                            s.versionTag != versionTag ||
+                            s.releaseYear != effectiveYear
+                        ) {
+                            changedStreams.add(
+                                s.copy(
+                                    canonicalGroupKey = groupKey,
+                                    versionTag = versionTag,
+                                    releaseYear = effectiveYear
+                                )
+                            )
+                            if (changedStreams.size >= 2_000) {
+                                val batchToPersist = ArrayList(changedStreams)
+                                changedStreams.clear()
+                                runInDbTransaction {
+                                    streamDao.insertStreamsBatch(batchToPersist)
+                                }
+                            }
+                        }
+
+                        val hasPoster = s.streamIcon.isNotBlank()
+                        val prefScore = VodGroupingNormalizer.scoreVersionPreference(
+                            versionTag = versionTag,
+                            hasPoster = hasPoster,
+                            containerExt = s.containerExtension,
+                            ratingNumeric = s.ratingNumeric
+                        )
+
+                        val existing = groupsMap[groupKey]
+                        if (existing == null) {
+                            val catSet = LinkedHashSet<String>(4)
+                            if (s.categoryId.isNotBlank()) catSet.add(s.categoryId)
+                            groupsMap[groupKey] = GroupAccumulator(
+                                representativeStreamDbId = s.id,
+                                representativeStreamId = s.streamId,
+                                representativeRawName = s.name,
+                                representativeScore = prefScore,
+                                posterUrl = s.streamIcon,
+                                rating = s.rating,
+                                ratingNumeric = s.ratingNumeric,
+                                releaseYear = effectiveYear,
+                                maxAddedEpoch = s.addedEpoch,
+                                genres = s.genres,
+                                primaryCategoryId = s.categoryId,
+                                defaultVersionTag = versionTag,
+                                containerExtension = s.containerExtension,
+                                versionCount = 1,
+                                categoryIds = catSet
+                            )
+                        } else {
+                            existing.versionCount += 1
+                            if (s.categoryId.isNotBlank()) {
+                                existing.categoryIds.add(s.categoryId)
+                            }
+                            if (s.addedEpoch > existing.maxAddedEpoch) {
+                                existing.maxAddedEpoch = s.addedEpoch
+                            }
+                            if (s.ratingNumeric > existing.ratingNumeric) {
+                                existing.ratingNumeric = s.ratingNumeric
+                                if (s.rating.isNotBlank()) existing.rating = s.rating
+                            }
+                            if (existing.releaseYear == 0 && effectiveYear > 0) {
+                                existing.releaseYear = effectiveYear
+                            }
+                            if (existing.genres.isBlank() && s.genres.isNotBlank()) {
+                                existing.genres = s.genres
+                            }
+                            if (existing.posterUrl.isBlank() && hasPoster) {
+                                existing.posterUrl = s.streamIcon
+                            }
+                            if (prefScore > existing.representativeScore) {
+                                existing.representativeScore = prefScore
+                                existing.representativeStreamDbId = s.id
+                                existing.representativeStreamId = s.streamId
+                                existing.representativeRawName = s.name
+                                if (hasPoster) existing.posterUrl = s.streamIcon
+                                if (s.categoryId.isNotBlank()) existing.primaryCategoryId = s.categoryId
+                                existing.defaultVersionTag = versionTag
+                                existing.containerExtension = s.containerExtension
+                            }
+                        }
+                    }
+
+                    offset += chunk.size
+                    if (chunk.size < chunkSize) break
+                }
+
+                if (changedStreams.isNotEmpty()) {
+                    val finalBatch = ArrayList(changedStreams)
+                    changedStreams.clear()
+                    runInDbTransaction {
+                        streamDao.insertStreamsBatch(finalBatch)
+                    }
+                }
+
+                val materialized = ArrayList<VodCatalogGroupEntity>(groupsMap.size)
+                for ((groupKey, acc) in groupsMap) {
+                    val cleanTitle = VodGroupingNormalizer.extractCleanDisplayTitle(acc.representativeRawName)
+                    val upperTag = acc.defaultVersionTag.uppercase(Locale.US)
+                    val isPreferredLang = upperTag.contains("ENGLISH") ||
+                        upperTag.contains("ARABIC") ||
+                        upperTag.contains("FRENCH") ||
+                        upperTag.contains("VOSTFR") ||
+                        upperTag.contains("MULTI")
+                    val popularityScore = VodGroupingNormalizer.computePopularityQualityScore(
+                        ratingNumeric = acc.ratingNumeric,
+                        versionCount = acc.versionCount,
+                        releaseYear = acc.releaseYear,
+                        hasPoster = acc.posterUrl.isNotBlank(),
+                        isPreferredLang = isPreferredLang
+                    )
+                    val categoryIdsCsv = if (acc.categoryIds.isEmpty()) {
+                        ""
+                    } else {
+                        ",${acc.categoryIds.joinToString(",")},"
+                    }
+
+                    materialized.add(
+                        VodCatalogGroupEntity(
+                            playlistId = playlistId,
+                            streamType = normalizedType,
+                            groupKey = groupKey,
+                            representativeStreamDbId = acc.representativeStreamDbId,
+                            representativeStreamId = acc.representativeStreamId,
+                            cleanTitle = cleanTitle,
+                            posterUrl = acc.posterUrl,
+                            rating = acc.rating,
+                            ratingNumeric = acc.ratingNumeric,
+                            releaseYear = acc.releaseYear,
+                            addedEpoch = acc.maxAddedEpoch,
+                            genres = acc.genres,
+                            primaryCategoryId = acc.primaryCategoryId,
+                            categoryIdsCsv = categoryIdsCsv,
+                            versionCount = acc.versionCount,
+                            defaultVersionTag = acc.defaultVersionTag,
+                            containerExtension = acc.containerExtension.ifBlank { "mp4" },
+                            popularityScore = popularityScore
+                        )
+                    )
+                }
+
+                runInDbTransaction {
+                    dao.deleteGroupsByType(playlistId, normalizedType)
+                    for (batch in materialized.chunked(2_000)) {
+                        dao.insertGroupsBatch(batch)
+                    }
+                }
+            } catch (e: Exception) {
+                Log.e("IptvRepository", "Stage 2 VOD indexing failed for $normalizedType: ${e.message}")
+            } finally {
+                if (statusEmitted && !isSyncInProgress.get()) {
+                    _syncProgress.value = SyncProgress(isSyncing = false, phase = "")
+                }
+                lock.set(false)
+            }
+        }
+    }
+
+    /**
+     * Automatically builds `vod_catalog_groups` in the background for upgraded databases where
+     * raw [StreamEntity] rows exist but materialized group rows have not yet been populated.
+     */
+    suspend fun ensureVodCatalogIndexed(playlistId: Long, streamType: String) {
+        val dao = vodGroupDao ?: return
+        val normalizedType = streamType.trim().lowercase(Locale.US)
+        if (normalizedType != "movie" && normalizedType != "series") return
+
+        val (groupCount, rawCount) = withContext(Dispatchers.IO) {
+            dao.countGroupsByType(playlistId, normalizedType) to streamDao.countStreams(playlistId, normalizedType)
+        }
+        if (groupCount == 0 && rawCount > 0) {
+            rebuildVodCatalogGroups(playlistId, normalizedType, emitSyncStatus = false)
+        }
+    }
 
     fun queryDeduplicatedVodStreams(
         playlistId: Long,
@@ -205,26 +537,58 @@ class IptvRepository(
         val hasQuery = cleanQuery.isNotEmpty()
         val safeLimit = limit.coerceAtLeast(1)
 
-        return when {
-            hasQuery -> streamDao.searchDeduplicatedStreams(
-                playlistId = playlistId,
-                streamType = streamType,
-                categoryId = categoryId?.takeIf { it.isNotBlank() },
-                query = cleanQuery,
-                limit = safeLimit
-            )
-            hasCategory -> streamDao.getDeduplicatedStreamsByCategory(
-                playlistId = playlistId,
-                streamType = streamType,
-                categoryId = categoryId!!,
-                limit = safeLimit
-            )
-            else -> streamDao.getDeduplicatedStreams(
-                playlistId = playlistId,
-                streamType = streamType,
-                limit = safeLimit
-            )
-        }
+        return queryGroupsWithFallback(
+            playlistId = playlistId,
+            streamType = streamType,
+            primary = { dao ->
+                when {
+                    hasQuery -> dao.searchGroups(
+                        playlistId = playlistId,
+                        streamType = streamType,
+                        categoryId = categoryId?.takeIf { it.isNotBlank() },
+                        query = cleanQuery,
+                        limit = safeLimit
+                    )
+                    hasCategory -> dao.getGroupsByCategory(
+                        playlistId = playlistId,
+                        streamType = streamType,
+                        categoryId = categoryId!!,
+                        limit = safeLimit
+                    )
+                    else -> dao.getAllGroupsPaged(
+                        playlistId = playlistId,
+                        streamType = streamType,
+                        limit = safeLimit
+                    )
+                }
+            },
+            fallback = {
+                when {
+                    hasQuery -> streamDao.searchDeduplicatedStreams(
+                        playlistId = playlistId,
+                        streamType = streamType,
+                        categoryId = categoryId?.takeIf { it.isNotBlank() },
+                        query = cleanQuery,
+                        limit = safeLimit
+                    )
+                    hasCategory -> streamDao.getDeduplicatedStreamsByCategory(
+                        playlistId = playlistId,
+                        streamType = streamType,
+                        categoryId = categoryId!!,
+                        limit = safeLimit
+                    )
+                    else -> streamDao.getDeduplicatedStreams(
+                        playlistId = playlistId,
+                        streamType = streamType,
+                        limit = safeLimit
+                    )
+                }
+            }
+        )
+    }
+
+    suspend fun getStreamByDbId(id: Long): StreamEntity? {
+        return streamDao.getStreamByDbId(id)
     }
 
     suspend fun getVodVersionsForGroup(
@@ -233,33 +597,36 @@ class IptvRepository(
         canonicalGroupKey: String,
         fallbackStream: StreamEntity
     ): List<StreamEntity> = withContext(Dispatchers.IO) {
+        val catType = if (streamType.equals("movie", ignoreCase = true)) "MOVIE" else "SERIES"
+        val categoryNameMap = categoryDao.getCategoriesOnce(playlistId, catType)
+            .associate { it.categoryId to it.categoryName }
+
+        fun enrichVersionTag(entity: StreamEntity): StreamEntity {
+            val catName = categoryNameMap[entity.categoryId].orEmpty()
+            val computed = VodGroupingNormalizer.extractVersionTagWithCategory(entity.name, catName)
+            val resolvedTag = computed.ifBlank { entity.versionTag }
+            return if (resolvedTag != entity.versionTag) entity.copy(versionTag = resolvedTag) else entity
+        }
+
         if (canonicalGroupKey.isBlank()) {
-            return@withContext listOf(fallbackStream)
+            return@withContext listOf(enrichVersionTag(fallbackStream))
         }
         val versions = streamDao.getVersionsByGroupKey(playlistId, streamType, canonicalGroupKey)
         if (versions.isEmpty()) {
-            return@withContext listOf(fallbackStream)
+            return@withContext listOf(enrichVersionTag(fallbackStream))
         }
-        versions.sortedWith(
-            compareBy<StreamEntity>(
-                { preferredLanguageRank(it.versionTag) },
-                { if (it.streamIcon.isNotBlank()) 0 else 1 },
-                { if (it.versionTag.contains("4K") || it.versionTag.contains("UHD")) 0 else 1 },
-                { -it.ratingNumeric },
-                { it.id }
+        versions
+            .map { enrichVersionTag(it) }
+            .sortedWith(
+                compareByDescending<StreamEntity> {
+                    VodGroupingNormalizer.scoreVersionPreference(
+                        versionTag = it.versionTag,
+                        hasPoster = it.streamIcon.isNotBlank(),
+                        containerExt = it.containerExtension,
+                        ratingNumeric = it.ratingNumeric
+                    )
+                }.thenBy { it.id }
             )
-        )
-    }
-
-    private fun preferredLanguageRank(versionTag: String): Int {
-        if (versionTag.isBlank()) return 3
-        val tokens = versionTag.split("•", " ", "/", "|", "-").map { it.trim().uppercase() }
-        return when {
-            "EN" in tokens -> 0
-            "AR" in tokens -> 1
-            "FR" in tokens -> 2
-            else -> 3
-        }
     }
 
     fun getRecentlyAddedVod(
@@ -267,10 +634,24 @@ class IptvRepository(
         streamType: String,
         limit: Int = 20
     ): Flow<List<GroupedVodStream>> {
-        return streamDao.getRecentlyAddedDeduplicated(
+        val safeLimit = limit.coerceAtLeast(1)
+        return queryGroupsWithFallback(
             playlistId = playlistId,
             streamType = streamType,
-            limit = limit.coerceAtLeast(1)
+            primary = { dao ->
+                dao.getRecentlyAddedGroups(
+                    playlistId = playlistId,
+                    streamType = streamType,
+                    limit = safeLimit
+                )
+            },
+            fallback = {
+                streamDao.getRecentlyAddedDeduplicated(
+                    playlistId = playlistId,
+                    streamType = streamType,
+                    limit = safeLimit
+                )
+            }
         )
     }
 
@@ -279,10 +660,24 @@ class IptvRepository(
         streamType: String,
         limit: Int = 20
     ): Flow<List<GroupedVodStream>> {
-        return streamDao.getTopRatedDeduplicated(
+        val safeLimit = limit.coerceAtLeast(1)
+        return queryGroupsWithFallback(
             playlistId = playlistId,
             streamType = streamType,
-            limit = limit.coerceAtLeast(1)
+            primary = { dao ->
+                dao.getTopPopularGroups(
+                    playlistId = playlistId,
+                    streamType = streamType,
+                    limit = safeLimit
+                )
+            },
+            fallback = {
+                streamDao.getTopRatedDeduplicated(
+                    playlistId = playlistId,
+                    streamType = streamType,
+                    limit = safeLimit
+                )
+            }
         )
     }
 
@@ -294,11 +689,26 @@ class IptvRepository(
     ): Flow<List<GroupedVodStream>> {
         val cleanGenre = genreKeyword.trim()
         if (cleanGenre.isEmpty()) return flowOf(emptyList())
-        return streamDao.getGenreShelfDeduplicated(
+        val safeLimit = limit.coerceAtLeast(1)
+        return queryGroupsWithFallback(
             playlistId = playlistId,
             streamType = streamType,
-            genreKeyword = cleanGenre,
-            limit = limit.coerceAtLeast(1)
+            primary = { dao ->
+                dao.getGenreShelfGroups(
+                    playlistId = playlistId,
+                    streamType = streamType,
+                    genreKeyword = cleanGenre,
+                    limit = safeLimit
+                )
+            },
+            fallback = {
+                streamDao.getGenreShelfDeduplicated(
+                    playlistId = playlistId,
+                    streamType = streamType,
+                    genreKeyword = cleanGenre,
+                    limit = safeLimit
+                )
+            }
         )
     }
 
@@ -311,12 +721,23 @@ class IptvRepository(
     ): List<GroupedVodStream> = withContext(Dispatchers.IO) {
         val cleanGenre = genreKeyword.trim()
         if (cleanGenre.isEmpty()) return@withContext emptyList()
+        val safeLimit = limit.coerceAtLeast(1)
+        val dao = vodGroupDao
+        if (dao != null && dao.countGroupsByType(playlistId, streamType) > 0) {
+            return@withContext dao.getSimilarGroupsByGenre(
+                playlistId = playlistId,
+                streamType = streamType,
+                genreKeyword = cleanGenre,
+                excludeGroupKey = excludeGroupKey,
+                limit = safeLimit
+            ).map { it.toGroupedVodStream() }
+        }
         streamDao.getSimilarTitlesDeduplicated(
             playlistId = playlistId,
             streamType = streamType,
             genreKeyword = cleanGenre,
             excludeGroupKey = excludeGroupKey,
-            limit = limit.coerceAtLeast(1)
+            limit = safeLimit
         ).first()
     }
 
@@ -326,9 +747,39 @@ class IptvRepository(
         }
     }
 
+    suspend fun countStreamsByType(playlistId: Long, streamType: String): Int = withContext(Dispatchers.IO) {
+        streamDao.countStreams(playlistId, streamType)
+    }
+
     /**
-     * Generates personalized VOD/Series recommendations strictly from real user watch history
-     * and favorites of the same [streamType]. Never fabricates items when no user signals exist.
+     * Extracts canonical recommendation genres (`Action`, `Crime`, `Drama`, `Thriller`,
+     * `Sci-Fi`, `Comedy`, `Documentary`) from a stream's raw genre metadata string.
+     */
+    private fun extractNormalizedRecommendationGenres(rawGenres: String): List<String> {
+        if (rawGenres.isBlank()) return emptyList()
+        val found = LinkedHashSet<String>()
+        val tokens = rawGenres.split(Regex("[,/|•&;]+"))
+        for (token in tokens) {
+            val lower = token.trim().lowercase(Locale.US)
+            if (lower.isEmpty()) continue
+            if (lower.contains("action")) found.add("Action")
+            if (lower.contains("crime")) found.add("Crime")
+            if (lower.contains("drama")) found.add("Drama")
+            if (lower.contains("thriller")) found.add("Thriller")
+            if (lower.contains("sci-fi") || lower.contains("scifi") || lower.contains("sci fi") || lower.contains("science fiction")) {
+                found.add("Sci-Fi")
+            }
+            if (lower.contains("comedy") || lower.contains("comed")) found.add("Comedy")
+            if (lower.contains("documentary") || lower.contains("docu")) found.add("Documentary")
+        }
+        return found.toList()
+    }
+
+    /**
+     * Generates personalized VOD/Series recommendations strictly from the normalized genres
+     * (`Action`, `Crime`, `Drama`, `Thriller`, `Sci-Fi`, `Comedy`, `Documentary`) of the user's
+     * real watch history and favorites of the same [streamType]. Never matches raw broad
+     * `categoryId`s and never fabricates items when no genre signals exist.
      */
     @OptIn(ExperimentalCoroutinesApi::class)
     fun getRecommendedVodForUser(
@@ -336,6 +787,7 @@ class IptvRepository(
         streamType: String,
         limit: Int = 20
     ): Flow<List<GroupedVodStream>> {
+        val safeLimit = limit.coerceAtLeast(1)
         val watchedFlow = streamDao.getRecentlyWatched(playlistId)
             .map { list -> list.filter { it.streamType == streamType } }
         val favoritesFlow = streamDao.getFavoriteStreamsByType(playlistId, streamType)
@@ -346,37 +798,56 @@ class IptvRepository(
             if (signals.isEmpty()) {
                 flowOf(emptyList())
             } else {
-                val topCategories = signals
-                    .mapNotNull { it.categoryId.trim().takeIf(String::isNotEmpty) }
+                val normalizedGenres = signals
+                    .flatMap { stream -> extractNormalizedRecommendationGenres(stream.genres) }
                     .groupingBy { it }
                     .eachCount()
                     .entries
                     .sortedByDescending { it.value }
-                    .take(5)
+                    .take(4)
                     .map { it.key }
 
-                val topGenre = signals
-                    .flatMap { stream ->
-                        stream.genres.split(Regex("[,/|•]+"))
-                            .map { it.trim() }
-                            .filter { it.length >= 3 }
-                    }
-                    .groupingBy { it }
-                    .eachCount()
-                    .maxByOrNull { it.value }
-                    ?.key
-                    .orEmpty()
-
-                if (topCategories.isEmpty() && topGenre.isBlank()) {
+                if (normalizedGenres.isEmpty()) {
                     flowOf(emptyList())
                 } else {
-                    streamDao.getRecommendedByCategoriesOrGenres(
-                        playlistId = playlistId,
-                        streamType = streamType,
-                        categoryIds = topCategories.ifEmpty { listOf("__NO_CATEGORY_SIGNAL__") },
-                        genreKeyword = topGenre,
-                        limit = limit.coerceAtLeast(1)
-                    )
+                    val dao = vodGroupDao
+                    val useIndexed = dao != null && withContext(Dispatchers.IO) {
+                        dao.countGroupsByType(playlistId, streamType) > 0
+                    }
+                    if (useIndexed) {
+                        val indexedDao = dao!!
+                        val excludeIds = signals.map { it.streamId }.distinct()
+                        val excludeIdSet = excludeIds.toHashSet()
+                        val excludeGroupKeys = signals
+                            .mapNotNull { it.canonicalGroupKey.takeIf(String::isNotBlank) }
+                            .toHashSet()
+
+                        val byGenre = withContext(Dispatchers.IO) {
+                            indexedDao.getRecommendedGroupsByGenre(
+                                playlistId = playlistId,
+                                streamType = streamType,
+                                genreKeywords = normalizedGenres,
+                                excludeStreamIds = excludeIds,
+                                limit = safeLimit
+                            )
+                        }
+                        val filtered = byGenre
+                            .filter { g ->
+                                g.groupKey !in excludeGroupKeys &&
+                                    g.representativeStreamId !in excludeIdSet
+                            }
+                            .take(safeLimit)
+                            .map { it.toGroupedVodStream() }
+                        flowOf(filtered)
+                    } else {
+                        streamDao.getRecommendedByCategoriesOrGenres(
+                            playlistId = playlistId,
+                            streamType = streamType,
+                            categoryIds = listOf("__NO_CATEGORY_SIGNAL__"),
+                            genreKeyword = normalizedGenres.first(),
+                            limit = safeLimit
+                        )
+                    }
                 }
             }
         }
@@ -667,8 +1138,10 @@ class IptvRepository(
      * Invoked automatically on app startup and after every catalog synchronization.
      */
     suspend fun purgeAllAdultContent() = withContext(Dispatchers.IO) {
-        categoryDao.purgeAdultCategories()
-        streamDao.purgeStreamsInDeletedCategories()
+        val purgedAdultCats = categoryDao.purgeAdultCategories()
+        if (purgedAdultCats > 0) {
+            streamDao.purgeStreamsInDeletedCategories()
+        }
         streamDao.purgeAdultStreamsByName()
     }
 
@@ -728,41 +1201,33 @@ class IptvRepository(
             )
             playlistDao.updatePlaylist(updatedPlaylist)
 
-            // 2. Fetch categories (Live, VOD, Series) — adult categories are already dropped by XtreamClient
+            // 2. Fetch categories (Live, VOD, Series) while tracking explicit adult category IDs
             _syncProgress.value = SyncProgress(isSyncing = true, phase = "Syncing categories…")
-            val liveCats = xtreamClient.fetchCategories(
+            val (liveCatsRaw, adultLiveCatIds) = xtreamClient.fetchCategoriesWithAdultIds(
                 resolvedServerUrl, playlist.username, plainPassword,
                 action = "get_live_categories", categoryType = "LIVE", playlistId = playlist.id
-            ).filterNot { SecurityManager.isAdultContent(it.categoryName) }
-            val vodCats = xtreamClient.fetchCategories(
+            )
+            val liveCats = liveCatsRaw.filterNot { SecurityManager.isAdultContent(it.categoryName) }
+
+            val (vodCatsRaw, adultVodCatIds) = xtreamClient.fetchCategoriesWithAdultIds(
                 resolvedServerUrl, playlist.username, plainPassword,
                 action = "get_vod_categories", categoryType = "MOVIE", playlistId = playlist.id
-            ).filterNot { SecurityManager.isAdultContent(it.categoryName) }
-            val seriesCats = xtreamClient.fetchCategories(
+            )
+            val vodCats = vodCatsRaw.filterNot { SecurityManager.isAdultContent(it.categoryName) }
+
+            val (seriesCatsRaw, adultSeriesCatIds) = xtreamClient.fetchCategoriesWithAdultIds(
                 resolvedServerUrl, playlist.username, plainPassword,
                 action = "get_series_categories", categoryType = "SERIES", playlistId = playlist.id
-            ).filterNot { SecurityManager.isAdultContent(it.categoryName) }
-
-            val allowedLiveCatIds = liveCats.map { it.categoryId }.toSet()
-            val allowedVodCatIds = vodCats.map { it.categoryId }.toSet()
-            val allowedSeriesCatIds = seriesCats.map { it.categoryId }.toSet()
+            )
+            val seriesCats = seriesCatsRaw.filterNot { SecurityManager.isAdultContent(it.categoryName) }
 
             val allCats = liveCats + vodCats + seriesCats
             if (allCats.isNotEmpty()) {
-                categoryDao.clearCategoriesForPlaylist(playlist.id)
-                categoryDao.insertCategories(allCats)
-                val lockedCategoriesJson = getParentalSettingsOnce().lockedCategoriesJson
-                val lockedCategoryIds = try {
-                    val arr = JSONArray(lockedCategoriesJson)
-                    buildList {
-                        for (i in 0 until arr.length()) add(arr.getString(i))
-                    }
-                } catch (_: Exception) {
-                    emptyList()
+                runInDbTransaction {
+                    categoryDao.clearCategoriesForPlaylist(playlist.id)
+                    categoryDao.insertCategories(allCats)
                 }
-                lockedCategoryIds.forEach { catId ->
-                    categoryDao.setCategoryLocked(playlist.id, catId, true)
-                }
+                restoreLockedCategories(playlist.id)
             }
 
             // Snapshot existing favorite streamIds and playback positions before replace so user state survives re-sync
@@ -774,7 +1239,7 @@ class IptvRepository(
             val vodPositions = streamDao.getSavedStreamPositions(playlist.id, "movie")
             val seriesPositions = streamDao.getSavedStreamPositions(playlist.id, "series")
 
-            // 3. Stream Live channels in bounded batches
+            // 3. Stage 1: Stream Live channels in bounded 2,000-row transactional batches
             _syncProgress.value = SyncProgress(isSyncing = true, phase = "Syncing Live TV channels…")
             var liveFirstBatchCleared = false
             var liveInsertedCount = 0
@@ -785,18 +1250,20 @@ class IptvRepository(
                 action = "get_live_streams",
                 streamType = "live",
                 playlistId = playlist.id,
-                batchSize = 500
+                batchSize = 2000
             ) { batch, _ ->
-                if (!liveFirstBatchCleared) {
-                    streamDao.deleteStreamsByType(playlist.id, "live")
-                    liveFirstBatchCleared = true
-                }
                 val safeBatch = batch.filter { item ->
                     !SecurityManager.isAdultContent(item.name) &&
-                        (allowedLiveCatIds.isEmpty() || item.categoryId.isBlank() || item.categoryId in allowedLiveCatIds)
+                        (item.categoryId.isBlank() || item.categoryId !in adultLiveCatIds)
                 }
                 if (safeBatch.isNotEmpty()) {
-                    streamDao.insertStreamsBatch(safeBatch)
+                    runInDbTransaction {
+                        if (!liveFirstBatchCleared) {
+                            streamDao.deleteStreamsByType(playlist.id, "live")
+                            liveFirstBatchCleared = true
+                        }
+                        streamDao.insertStreamsBatch(safeBatch)
+                    }
                     liveInsertedCount += safeBatch.size
                 }
                 _syncProgress.value = SyncProgress(
@@ -805,16 +1272,18 @@ class IptvRepository(
                     itemsProcessed = liveInsertedCount
                 )
             }
-            if (liveFavIds.isNotEmpty()) {
-                liveFavIds.chunked(400).forEach { chunk ->
-                    streamDao.restoreFavorites(playlist.id, "live", chunk)
+            if (liveFavIds.isNotEmpty() || livePositions.isNotEmpty()) {
+                runInDbTransaction {
+                    liveFavIds.chunked(400).forEach { chunk ->
+                        streamDao.restoreFavorites(playlist.id, "live", chunk)
+                    }
+                    livePositions.forEach { snap ->
+                        streamDao.restoreStreamPosition(playlist.id, "live", snap.streamId, snap.lastPositionMs, snap.watchHistoryTimestamp)
+                    }
                 }
             }
-            livePositions.forEach { snap ->
-                streamDao.restoreStreamPosition(playlist.id, "live", snap.streamId, snap.lastPositionMs, snap.watchHistoryTimestamp)
-            }
 
-            // 4. Stream VOD movies in bounded batches
+            // 4. Stage 1: Stream VOD movies in bounded 2,000-row transactional batches
             _syncProgress.value = SyncProgress(isSyncing = true, phase = "Syncing Movies catalog…")
             var vodFirstBatchCleared = false
             var vodInsertedCount = 0
@@ -825,18 +1294,20 @@ class IptvRepository(
                 action = "get_vod_streams",
                 streamType = "movie",
                 playlistId = playlist.id,
-                batchSize = 500
+                batchSize = 2000
             ) { batch, _ ->
-                if (!vodFirstBatchCleared) {
-                    streamDao.deleteStreamsByType(playlist.id, "movie")
-                    vodFirstBatchCleared = true
-                }
                 val safeBatch = batch.filter { item ->
                     !SecurityManager.isAdultContent(item.name) &&
-                        (allowedVodCatIds.isEmpty() || item.categoryId.isBlank() || item.categoryId in allowedVodCatIds)
+                        (item.categoryId.isBlank() || item.categoryId !in adultVodCatIds)
                 }
                 if (safeBatch.isNotEmpty()) {
-                    streamDao.insertStreamsBatch(safeBatch)
+                    runInDbTransaction {
+                        if (!vodFirstBatchCleared) {
+                            streamDao.deleteStreamsByType(playlist.id, "movie")
+                            vodFirstBatchCleared = true
+                        }
+                        streamDao.insertStreamsBatch(safeBatch)
+                    }
                     vodInsertedCount += safeBatch.size
                 }
                 _syncProgress.value = SyncProgress(
@@ -845,16 +1316,18 @@ class IptvRepository(
                     itemsProcessed = vodInsertedCount
                 )
             }
-            if (vodFavIds.isNotEmpty()) {
-                vodFavIds.chunked(400).forEach { chunk ->
-                    streamDao.restoreFavorites(playlist.id, "movie", chunk)
+            if (vodFavIds.isNotEmpty() || vodPositions.isNotEmpty()) {
+                runInDbTransaction {
+                    vodFavIds.chunked(400).forEach { chunk ->
+                        streamDao.restoreFavorites(playlist.id, "movie", chunk)
+                    }
+                    vodPositions.forEach { snap ->
+                        streamDao.restoreStreamPosition(playlist.id, "movie", snap.streamId, snap.lastPositionMs, snap.watchHistoryTimestamp)
+                    }
                 }
             }
-            vodPositions.forEach { snap ->
-                streamDao.restoreStreamPosition(playlist.id, "movie", snap.streamId, snap.lastPositionMs, snap.watchHistoryTimestamp)
-            }
 
-            // 5. Stream Series in bounded batches
+            // 5. Stage 1: Stream Series in bounded 2,000-row transactional batches (100% parity with Movies)
             _syncProgress.value = SyncProgress(isSyncing = true, phase = "Syncing Series catalog…")
             var seriesFirstBatchCleared = false
             var seriesInsertedCount = 0
@@ -865,18 +1338,20 @@ class IptvRepository(
                 action = "get_series",
                 streamType = "series",
                 playlistId = playlist.id,
-                batchSize = 500
+                batchSize = 2000
             ) { batch, _ ->
-                if (!seriesFirstBatchCleared) {
-                    streamDao.deleteStreamsByType(playlist.id, "series")
-                    seriesFirstBatchCleared = true
-                }
                 val safeBatch = batch.filter { item ->
                     !SecurityManager.isAdultContent(item.name) &&
-                        (allowedSeriesCatIds.isEmpty() || item.categoryId.isBlank() || item.categoryId in allowedSeriesCatIds)
+                        (item.categoryId.isBlank() || item.categoryId !in adultSeriesCatIds)
                 }
                 if (safeBatch.isNotEmpty()) {
-                    streamDao.insertStreamsBatch(safeBatch)
+                    runInDbTransaction {
+                        if (!seriesFirstBatchCleared) {
+                            streamDao.deleteStreamsByType(playlist.id, "series")
+                            seriesFirstBatchCleared = true
+                        }
+                        streamDao.insertStreamsBatch(safeBatch)
+                    }
                     seriesInsertedCount += safeBatch.size
                 }
                 _syncProgress.value = SyncProgress(
@@ -885,13 +1360,15 @@ class IptvRepository(
                     itemsProcessed = seriesInsertedCount
                 )
             }
-            if (seriesFavIds.isNotEmpty()) {
-                seriesFavIds.chunked(400).forEach { chunk ->
-                    streamDao.restoreFavorites(playlist.id, "series", chunk)
+            if (seriesFavIds.isNotEmpty() || seriesPositions.isNotEmpty()) {
+                runInDbTransaction {
+                    seriesFavIds.chunked(400).forEach { chunk ->
+                        streamDao.restoreFavorites(playlist.id, "series", chunk)
+                    }
+                    seriesPositions.forEach { snap ->
+                        streamDao.restoreStreamPosition(playlist.id, "series", snap.streamId, snap.lastPositionMs, snap.watchHistoryTimestamp)
+                    }
                 }
-            }
-            seriesPositions.forEach { snap ->
-                streamDao.restoreStreamPosition(playlist.id, "series", snap.streamId, snap.lastPositionMs, snap.watchHistoryTimestamp)
             }
 
             // Final multi-layer SQLite sweep to guarantee zero adult categories or streams remain
@@ -914,6 +1391,19 @@ class IptvRepository(
                 phase = "Complete! Synced $liveCount Live, $vodCount Movies, $seriesCount Series.",
                 itemsProcessed = liveCount + vodCount + seriesCount
             )
+
+            // Stage 2: Decoupled background deduplication & vod_catalog_groups materialization
+            if (vodCount > 0 || seriesCount > 0) {
+                indexingScope.launch {
+                    if (vodCount > 0) {
+                        rebuildVodCatalogGroups(playlist.id, "movie", emitSyncStatus = true)
+                    }
+                    if (seriesCount > 0) {
+                        rebuildVodCatalogGroups(playlist.id, "series", emitSyncStatus = true)
+                    }
+                }
+            }
+
             Result.success(Unit)
         } catch (e: Exception) {
             val safeErr = SecurityManager.redactSensitiveText(e.message, playlist.username, plainPassword)
@@ -962,16 +1452,18 @@ class IptvRepository(
             val authData = authResult.getOrNull()
             val resolvedServerUrl = authData?.resolvedServerUrl?.takeIf { it.isNotBlank() } ?: playlist.serverUrl.trim()
 
-            // 1. Fetch & replace ONLY this section's categories
-            val sectionCats = xtreamClient.fetchCategories(
+            // 1. Fetch & replace ONLY this section's categories while tracking explicit adult category IDs
+            val (sectionCatsRaw, adultCatIds) = xtreamClient.fetchCategoriesWithAdultIds(
                 resolvedServerUrl, playlist.username, plainPassword,
                 action = catAction, categoryType = catType, playlistId = playlist.id
-            ).filterNot { SecurityManager.isAdultContent(it.categoryName) }
-            val allowedCatIds = sectionCats.map { it.categoryId }.toSet()
+            )
+            val sectionCats = sectionCatsRaw.filterNot { SecurityManager.isAdultContent(it.categoryName) }
 
             if (sectionCats.isNotEmpty()) {
-                categoryDao.clearCategoriesByType(playlist.id, catType)
-                categoryDao.insertCategories(sectionCats)
+                runInDbTransaction {
+                    categoryDao.clearCategoriesByType(playlist.id, catType)
+                    categoryDao.insertCategories(sectionCats)
+                }
                 restoreLockedCategories(playlist.id)
             }
 
@@ -979,7 +1471,7 @@ class IptvRepository(
             val favIds = streamDao.getFavoriteProviderIds(playlist.id, streamType)
             val savedPositions = streamDao.getSavedStreamPositions(playlist.id, streamType)
 
-            // 3. Stream & replace ONLY this section's catalog entries
+            // 3. Stage 1: Stream & replace ONLY this section's catalog entries in 2,000-row transactional batches
             var firstBatchCleared = false
             var insertedCount = 0
             xtreamClient.streamCatalogEntries(
@@ -989,18 +1481,20 @@ class IptvRepository(
                 action = streamAction,
                 streamType = streamType,
                 playlistId = playlist.id,
-                batchSize = 500
+                batchSize = 2000
             ) { batch, _ ->
-                if (!firstBatchCleared) {
-                    streamDao.deleteStreamsByType(playlist.id, streamType)
-                    firstBatchCleared = true
-                }
                 val safeBatch = batch.filter { item ->
                     !SecurityManager.isAdultContent(item.name) &&
-                        (allowedCatIds.isEmpty() || item.categoryId.isBlank() || item.categoryId in allowedCatIds)
+                        (item.categoryId.isBlank() || item.categoryId !in adultCatIds)
                 }
                 if (safeBatch.isNotEmpty()) {
-                    streamDao.insertStreamsBatch(safeBatch)
+                    runInDbTransaction {
+                        if (!firstBatchCleared) {
+                            streamDao.deleteStreamsByType(playlist.id, streamType)
+                            firstBatchCleared = true
+                        }
+                        streamDao.insertStreamsBatch(safeBatch)
+                    }
                     insertedCount += safeBatch.size
                 }
                 _syncProgress.value = SyncProgress(
@@ -1010,13 +1504,15 @@ class IptvRepository(
                 )
             }
 
-            if (favIds.isNotEmpty()) {
-                favIds.chunked(400).forEach { chunk ->
-                    streamDao.restoreFavorites(playlist.id, streamType, chunk)
+            if (favIds.isNotEmpty() || savedPositions.isNotEmpty()) {
+                runInDbTransaction {
+                    favIds.chunked(400).forEach { chunk ->
+                        streamDao.restoreFavorites(playlist.id, streamType, chunk)
+                    }
+                    savedPositions.forEach { snap ->
+                        streamDao.restoreStreamPosition(playlist.id, streamType, snap.streamId, snap.lastPositionMs, snap.watchHistoryTimestamp)
+                    }
                 }
-            }
-            savedPositions.forEach { snap ->
-                streamDao.restoreStreamPosition(playlist.id, streamType, snap.streamId, snap.lastPositionMs, snap.watchHistoryTimestamp)
             }
 
             purgeAllAdultContent()
@@ -1034,6 +1530,14 @@ class IptvRepository(
                 phase = "Complete! Refreshed $insertedCount $sectionLabel items.",
                 itemsProcessed = insertedCount
             )
+
+            // Stage 2: Decoupled background deduplication & vod_catalog_groups materialization
+            if ((streamType == "movie" || streamType == "series") && insertedCount > 0) {
+                indexingScope.launch {
+                    rebuildVodCatalogGroups(playlist.id, streamType, emitSyncStatus = true)
+                }
+            }
+
             Result.success(Unit)
         } catch (e: Exception) {
             val safeErr = SecurityManager.redactSensitiveText(e.message, playlist.username, plainPassword)
@@ -1065,7 +1569,7 @@ class IptvRepository(
             OkHttpClient.Builder()
                 .connectionPool(ConnectionPool(10, 5, TimeUnit.MINUTES))
                 .connectTimeout(20, TimeUnit.SECONDS)
-                .readTimeout(60, TimeUnit.SECONDS)
+                .readTimeout(150, TimeUnit.SECONDS)
                 .writeTimeout(30, TimeUnit.SECONDS)
                 .followRedirects(true)
                 .followSslRedirects(true)
@@ -1087,7 +1591,9 @@ class IptvRepository(
                         streamDao = db.streamDao(),
                         epgDao = db.epgDao(),
                         parentalDao = db.parentalSettingsDao(),
-                        xtreamClient = XtreamClient(sharedOkHttpClient)
+                        xtreamClient = XtreamClient(sharedOkHttpClient),
+                        vodGroupDao = db.vodGroupDao(),
+                        database = db
                     ).also { INSTANCE = it }
                 }
             }

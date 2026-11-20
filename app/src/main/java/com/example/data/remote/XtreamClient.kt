@@ -27,7 +27,7 @@ import java.util.concurrent.TimeUnit
 class XtreamClient(
     private val okHttpClient: OkHttpClient = OkHttpClient.Builder()
         .connectTimeout(20, TimeUnit.SECONDS)
-        .readTimeout(60, TimeUnit.SECONDS)
+        .readTimeout(150, TimeUnit.SECONDS)
         .writeTimeout(30, TimeUnit.SECONDS)
         .followRedirects(true)
         .build()
@@ -106,16 +106,38 @@ class XtreamClient(
         action: String, // get_live_categories, get_vod_categories, get_series_categories
         categoryType: String, // "LIVE", "MOVIE", "SERIES"
         playlistId: Long
-    ): List<CategoryEntity> = withContext(Dispatchers.IO) {
+    ): List<CategoryEntity> = fetchCategoriesWithAdultIds(
+        serverUrl = serverUrl,
+        username = username,
+        password = password,
+        action = action,
+        categoryType = categoryType,
+        playlistId = playlistId
+    ).first
+
+    /**
+     * Fetches categories while also returning any adult/+18 category IDs discovered in the
+     * provider payload so downstream stream ingestion can safely exclude adult categories
+     * without dropping valid items assigned to unlisted secondary category IDs.
+     */
+    suspend fun fetchCategoriesWithAdultIds(
+        serverUrl: String,
+        username: String,
+        password: String,
+        action: String, // get_live_categories, get_vod_categories, get_series_categories
+        categoryType: String, // "LIVE", "MOVIE", "SERIES"
+        playlistId: Long
+    ): Pair<List<CategoryEntity>, Set<String>> = withContext(Dispatchers.IO) {
         val plainPassword = SecurityManager.decryptCredential(password)
         val targetUrl = buildPlayerApiUrl(
             serverUrl = serverUrl,
             username = username,
             password = plainPassword,
             queryParams = mapOf("action" to action)
-        ) ?: return@withContext emptyList()
+        ) ?: return@withContext Pair(emptyList(), emptySet())
 
         val categories = mutableListOf<CategoryEntity>()
+        val adultCategoryIds = HashSet<String>()
         try {
             val request = Request.Builder()
                 .url(targetUrl)
@@ -123,7 +145,7 @@ class XtreamClient(
                 .build()
 
             okHttpClient.newCall(request).execute().use { response ->
-                if (!response.isSuccessful || response.body == null) return@withContext emptyList()
+                if (!response.isSuccessful || response.body == null) return@withContext Pair(emptyList(), emptySet())
                 val reader = JsonReader.of(response.body!!.source())
                 if (reader.peek() == JsonReader.Token.BEGIN_ARRAY) {
                     reader.beginArray()
@@ -135,21 +157,25 @@ class XtreamClient(
                                 reader.beginObject()
                                 while (reader.hasNext()) {
                                     when (reader.nextName()) {
-                                        "category_id" -> catId = readSafeString(reader)
-                                        "category_name" -> catName = readSafeString(reader)
+                                        "category_id" -> catId = readSafeString(reader).trim()
+                                        "category_name" -> catName = readSafeString(reader).trim()
                                         else -> reader.skipValue()
                                     }
                                 }
                                 reader.endObject()
-                                if (catId.isNotEmpty() && catName.isNotEmpty() && !SecurityManager.isAdultContent(catName)) {
-                                    categories.add(
-                                        CategoryEntity(
-                                            playlistId = playlistId,
-                                            categoryId = catId,
-                                            categoryName = catName,
-                                            type = categoryType
+                                if (catId.isNotEmpty() && catName.isNotEmpty()) {
+                                    if (SecurityManager.isAdultContent(catName)) {
+                                        adultCategoryIds.add(catId)
+                                    } else {
+                                        categories.add(
+                                            CategoryEntity(
+                                                playlistId = playlistId,
+                                                categoryId = catId,
+                                                categoryName = catName,
+                                                type = categoryType
+                                            )
                                         )
-                                    )
+                                    }
                                 }
                             } catch (_: Exception) {
                                 skipRestOfObject(reader)
@@ -165,12 +191,13 @@ class XtreamClient(
             val safeMsg = SecurityManager.redactSensitiveText(e.message, username, plainPassword)
             Log.e("XtreamClient", "Failed to fetch categories ($action): $safeMsg")
         }
-        categories
+        Pair(categories, adultCategoryIds)
     }
 
     /**
-     * Streams catalog items directly in bounded batches, calling onBatchReady(batch) so items
-     * are persisted to Room immediately without accumulating huge lists in RAM.
+     * Stage 1 streaming ingestion: parses catalog items directly in bounded batches with ONLY
+     * fast primitive extraction on the network thread, delegating heavy deduplication, version-tag
+     * enrichment, and materialized grouping to Stage 2 background indexing in [IptvRepository].
      */
     suspend fun streamCatalogEntries(
         serverUrl: String,
@@ -179,7 +206,7 @@ class XtreamClient(
         action: String, // get_live_streams, get_vod_streams, get_series
         streamType: String, // "live", "movie", "series"
         playlistId: Long,
-        batchSize: Int = 500,
+        batchSize: Int = 2000,
         onBatchReady: suspend (List<StreamEntity>, Int) -> Unit
     ): Int = withContext(Dispatchers.IO) {
         val plainPassword = SecurityManager.decryptCredential(password)
@@ -188,10 +215,11 @@ class XtreamClient(
             username = username,
             password = plainPassword,
             queryParams = mapOf("action" to action)
-        ) ?: return@withContext 0
+        ) ?: throw IOException("Invalid server URL for $action")
 
         var totalProcessed = 0
-        val currentBatch = ArrayList<StreamEntity>(batchSize)
+        val effectiveBatchSize = batchSize.coerceAtLeast(100)
+        val currentBatch = ArrayList<StreamEntity>(effectiveBatchSize)
         val defaultExt = if (streamType == "live") "ts" else "mp4"
 
         try {
@@ -201,7 +229,9 @@ class XtreamClient(
                 .build()
 
             okHttpClient.newCall(request).execute().use { response ->
-                if (!response.isSuccessful || response.body == null) return@withContext 0
+                if (!response.isSuccessful || response.body == null) {
+                    throw IOException("Failed to fetch $action (HTTP ${response.code})")
+                }
                 val reader = JsonReader.of(response.body!!.source())
                 if (reader.peek() == JsonReader.Token.BEGIN_ARRAY) {
                     reader.beginArray()
@@ -228,7 +258,29 @@ class XtreamClient(
                                 while (reader.hasNext()) {
                                     when (reader.nextName()) {
                                         "stream_id", "series_id" -> streamId = readSafeLong(reader)
-                                        "category_id" -> categoryId = readSafeString(reader)
+                                        "category_id" -> {
+                                            val parsedCat = readSafeString(reader).trim()
+                                            if (parsedCat.isNotEmpty() && !parsedCat.equals("null", ignoreCase = true)) {
+                                                categoryId = parsedCat
+                                            }
+                                        }
+                                        "category_ids" -> {
+                                            if (reader.peek() == JsonReader.Token.BEGIN_ARRAY) {
+                                                reader.beginArray()
+                                                while (reader.hasNext()) {
+                                                    val cid = readSafeString(reader).trim()
+                                                    if (categoryId.isBlank() && cid.isNotEmpty() && !cid.equals("null", ignoreCase = true)) {
+                                                        categoryId = cid
+                                                    }
+                                                }
+                                                reader.endArray()
+                                            } else {
+                                                val cid = readSafeString(reader).trim()
+                                                if (categoryId.isBlank() && cid.isNotEmpty() && !cid.equals("null", ignoreCase = true)) {
+                                                    categoryId = cid
+                                                }
+                                            }
+                                        }
                                         "name", "title" -> name = readSafeString(reader).trim()
                                         "stream_icon", "cover" -> streamIcon = readSafeString(reader)
                                         "epg_channel_id" -> epgChannelId = readSafeString(reader)
@@ -266,23 +318,12 @@ class XtreamClient(
                                     val yearInt = if (streamType == "live") {
                                         0
                                     } else {
-                                        VodGroupingNormalizer.extractReleaseYear(name, rawYear)
+                                        extractFastReleaseYear(name, rawYear)
                                     }
-                                    val versionTag = if (streamType == "live") {
-                                        ""
-                                    } else {
-                                        VodGroupingNormalizer.extractVersionTag(name)
-                                    }
-                                    val groupKey = if (streamType == "live") {
+                                    val initialGroupKey = if (streamType == "live") {
                                         "live_$streamId"
                                     } else {
-                                        VodGroupingNormalizer.computeCanonicalGroupKey(
-                                            streamType = streamType,
-                                            rawName = name,
-                                            tmdbId = cleanTmdbId,
-                                            releaseYear = yearInt,
-                                            streamId = streamId
-                                        )
+                                        ""
                                     }
 
                                     currentBatch.add(
@@ -299,8 +340,8 @@ class XtreamClient(
                                             tvArchiveDuration = tvArchiveDuration,
                                             containerExtension = containerExt,
                                             tmdbId = cleanTmdbId,
-                                            canonicalGroupKey = groupKey,
-                                            versionTag = versionTag,
+                                            canonicalGroupKey = initialGroupKey,
+                                            versionTag = "",
                                             addedEpoch = addedEpoch,
                                             ratingNumeric = ratingNum,
                                             releaseYear = yearInt,
@@ -309,7 +350,7 @@ class XtreamClient(
                                     )
                                     totalProcessed++
 
-                                    if (currentBatch.size >= batchSize) {
+                                    if (currentBatch.size >= effectiveBatchSize) {
                                         onBatchReady(ArrayList(currentBatch), totalProcessed)
                                         currentBatch.clear()
                                     }
@@ -332,8 +373,51 @@ class XtreamClient(
         } catch (e: Exception) {
             val safeMsg = SecurityManager.redactSensitiveText(e.message, username, plainPassword)
             Log.e("XtreamClient", "Error streaming catalog ($action): $safeMsg")
+            if (currentBatch.isNotEmpty()) {
+                runCatching { onBatchReady(ArrayList(currentBatch), totalProcessed) }
+                currentBatch.clear()
+            }
+            if (totalProcessed == 0) {
+                val errMessage = if (safeMsg.contains(action)) safeMsg else "Failed to fetch $action: $safeMsg"
+                throw IOException(errMessage, e)
+            }
         }
         totalProcessed
+    }
+
+    /**
+     * Zero-regex fast primitive release-year extractor for Stage 1 HTTP streaming.
+     * Scans explicit [rawYearField] first, then falls back to bracketed/trailing 4-digit years in [rawName].
+     */
+    private fun extractFastReleaseYear(rawName: String, rawYearField: String): Int {
+        fun findFourDigitYear(text: String, scanBackward: Boolean): Int {
+            val len = text.length
+            if (len < 4) return 0
+            val range = if (scanBackward) (len - 4 downTo 0) else (0..len - 4)
+            for (i in range) {
+                val c0 = text[i]
+                if (c0 != '1' && c0 != '2') continue
+                val c1 = text[i + 1]
+                val c2 = text[i + 2]
+                val c3 = text[i + 3]
+                if (c1 !in '0'..'9' || c2 !in '0'..'9' || c3 !in '0'..'9') continue
+                val prevIsDigit = i > 0 && text[i - 1] in '0'..'9'
+                val nextIsDigit = (i + 4) < len && text[i + 4] in '0'..'9'
+                if (prevIsDigit || nextIsDigit) continue
+                val year = (c0 - '0') * 1000 + (c1 - '0') * 100 + (c2 - '0') * 10 + (c3 - '0')
+                if (year in 1920..2030) return year
+            }
+            return 0
+        }
+
+        if (rawYearField.isNotBlank()) {
+            val explicit = findFourDigitYear(rawYearField, scanBackward = false)
+            if (explicit > 0) return explicit
+        }
+        if (rawName.isNotBlank()) {
+            return findFourDigitYear(rawName, scanBackward = true)
+        }
+        return 0
     }
 
     /**

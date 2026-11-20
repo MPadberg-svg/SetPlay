@@ -104,19 +104,7 @@ import com.example.ui.theme.SeriesPineBase
 import com.example.ui.theme.SeriesSeaJade
 import com.example.ui.theme.luxuryFocusableCard
 import com.example.ui.theme.tvFocusableControl
-import com.example.util.StreamMetadataParser
 import java.util.Locale
-
-private val PREFERRED_CATEGORY_KEYWORDS = listOf(
-    "4K", "UHD", "NEW", "LATEST", "RECENT", "TOP", "POPULAR",
-    "NETFLIX", "APPLE", "HBO", "DISNEY", "PRIME",
-    "ENGLISH", "ARABIC", "FRENCH", "ACTION", "CRIME", "DRAMA", "COMEDY"
-)
-
-private fun isPreferredVodCategory(categoryName: String): Boolean {
-    val upper = categoryName.uppercase(Locale.US)
-    return PREFERRED_CATEGORY_KEYWORDS.any { keyword -> upper.contains(keyword) }
-}
 
 internal fun formatNormalizedRating(stream: StreamEntity): String? {
     if (stream.ratingNumeric <= 0.0) return null
@@ -512,25 +500,38 @@ internal fun VodCategoriesSidePanel(
     sectionHighlight: Color,
     onSelectDiscoverHome: () -> Unit,
     onSelectCategory: (CategoryEntity) -> Unit,
-    onDismiss: () -> Unit
+    onDismiss: () -> Unit,
+    organizedCategories: Map<VodCategoryBucket, List<CategorizedVodItem>> = emptyMap()
 ) {
     var filterQuery by remember { mutableStateOf("") }
 
-    val sortedFilteredCategories = remember(categories, selectedCategoryId, filterQuery) {
-        val trimmed = filterQuery.trim()
-        val filtered = if (trimmed.isEmpty()) {
-            categories
+    val baseOrganized = remember(organizedCategories, categories, categoryCounts) {
+        if (organizedCategories.isNotEmpty()) {
+            organizedCategories
         } else {
-            categories.filter { cat ->
-                cat.categoryName.contains(trimmed, ignoreCase = true)
+            VodViewModel.organizeVodCategoriesStatic(categories, categoryCounts)
+        }
+    }
+
+    val filteredBuckets = remember(baseOrganized, filterQuery) {
+        val trimmed = filterQuery.trim()
+        val result = LinkedHashMap<VodCategoryBucket, List<CategorizedVodItem>>()
+        for (bucket in VodCategoryBucket.entries) {
+            val items = baseOrganized[bucket].orEmpty()
+            val matched = if (trimmed.isEmpty()) {
+                items
+            } else {
+                items.filter { item ->
+                    item.cleanName.contains(trimmed, ignoreCase = true) ||
+                        item.languageTag.contains(trimmed, ignoreCase = true) ||
+                        item.category.categoryName.contains(trimmed, ignoreCase = true)
+                }
+            }
+            if (matched.isNotEmpty()) {
+                result[bucket] = matched
             }
         }
-        filtered.sortedWith(
-            compareBy<CategoryEntity>(
-                { if (it.categoryId == selectedCategoryId) 0 else if (isPreferredVodCategory(it.categoryName)) 1 else 2 },
-                { StreamMetadataParser.cleanDisplayTitle(it.categoryName).lowercase(Locale.US) }
-            )
-        )
+        result
     }
 
     val panelShape = RoundedCornerShape(topEnd = 20.dp, bottomEnd = 20.dp)
@@ -730,91 +731,135 @@ internal fun VodCategoriesSidePanel(
                 HorizontalDivider(color = Color.White.copy(alpha = 0.10f), thickness = 0.8.dp)
                 Spacer(modifier = Modifier.height(6.dp))
 
-                // Scrollable Category List with Exact Item Count Pills
+                // Scrollable 4-Bucket Category List with Language Pills & Exact Item Count Pills
                 LazyColumn(
                     modifier = Modifier.weight(1f),
                     verticalArrangement = Arrangement.spacedBy(5.dp),
                     contentPadding = PaddingValues(bottom = 12.dp)
                 ) {
-                    items(sortedFilteredCategories, key = { it.categoryId }) { cat ->
-                        val isSelected = selectedCategoryId == cat.categoryId
-                        val displayName = remember(cat.categoryName) {
-                            StreamMetadataParser.cleanDisplayTitle(cat.categoryName)
-                                .ifBlank { cat.categoryName }
-                        }
-                        val itemCount = categoryCounts[cat.categoryId] ?: 0
-
-                        Surface(
-                            color = if (isSelected) {
-                                sectionPrimaryAccent.copy(alpha = 0.28f)
-                            } else {
-                                Color.White.copy(alpha = 0.04f)
-                            },
-                            shape = RoundedCornerShape(11.dp),
-                            border = BorderStroke(
-                                width = if (isSelected) 1.dp else 0.5.dp,
-                                color = if (isSelected) sectionHighlight else Color.White.copy(alpha = 0.07f)
-                            ),
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .clip(RoundedCornerShape(11.dp))
-                                .clickable {
-                                    onSelectCategory(cat)
-                                    onDismiss()
-                                }
-                                .testTag("vod_category_row_${cat.categoryId}")
-                        ) {
+                    filteredBuckets.forEach { (bucket, bucketItems) ->
+                        item(key = "vod_bucket_header_${bucket.name}") {
                             Row(
                                 modifier = Modifier
                                     .fillMaxWidth()
-                                    .padding(horizontal = 10.dp, vertical = 10.dp),
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.SpaceBetween
+                                    .padding(top = 8.dp, bottom = 3.dp, start = 4.dp, end = 4.dp),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text(
+                                    text = bucket.title.uppercase(Locale.US),
+                                    color = sectionHighlight,
+                                    fontSize = 10.sp,
+                                    fontWeight = FontWeight.ExtraBold,
+                                    letterSpacing = 0.8.sp,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                                Text(
+                                    text = "${bucketItems.size}",
+                                    color = sectionHighlight.copy(alpha = 0.65f),
+                                    fontSize = 9.5.sp,
+                                    fontWeight = FontWeight.Bold
+                                )
+                            }
+                        }
+
+                        items(bucketItems, key = { it.category.categoryId }) { item ->
+                            val cat = item.category
+                            val isSelected = selectedCategoryId == cat.categoryId
+                            val itemCount = item.itemCount
+
+                            Surface(
+                                color = if (isSelected) {
+                                    sectionPrimaryAccent.copy(alpha = 0.28f)
+                                } else {
+                                    Color.White.copy(alpha = 0.04f)
+                                },
+                                shape = RoundedCornerShape(11.dp),
+                                border = BorderStroke(
+                                    width = if (isSelected) 1.dp else 0.5.dp,
+                                    color = if (isSelected) sectionHighlight else Color.White.copy(alpha = 0.07f)
+                                ),
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clip(RoundedCornerShape(11.dp))
+                                    .clickable {
+                                        onSelectCategory(cat)
+                                        onDismiss()
+                                    }
+                                    .testTag("vod_category_row_${cat.categoryId}")
                             ) {
                                 Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(horizontal = 10.dp, vertical = 9.dp),
                                     verticalAlignment = Alignment.CenterVertically,
-                                    horizontalArrangement = Arrangement.spacedBy(6.dp),
-                                    modifier = Modifier.weight(1f)
+                                    horizontalArrangement = Arrangement.SpaceBetween
                                 ) {
-                                    if (cat.isLocked) {
-                                        Icon(
-                                            imageVector = Icons.Default.Lock,
-                                            contentDescription = "Locked Category",
-                                            tint = LiveRed,
-                                            modifier = Modifier.size(13.dp)
+                                    Row(
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                        modifier = Modifier.weight(1f)
+                                    ) {
+                                        if (cat.isLocked) {
+                                            Icon(
+                                                imageVector = Icons.Default.Lock,
+                                                contentDescription = "Locked Category",
+                                                tint = LiveRed,
+                                                modifier = Modifier.size(13.dp)
+                                            )
+                                        }
+                                        if (item.languageTag.isNotBlank()) {
+                                            Surface(
+                                                color = sectionPrimaryAccent.copy(alpha = 0.2f),
+                                                shape = RoundedCornerShape(5.dp),
+                                                border = BorderStroke(
+                                                    0.5.dp,
+                                                    sectionHighlight.copy(alpha = 0.45f)
+                                                )
+                                            ) {
+                                                Text(
+                                                    text = item.languageTag,
+                                                    color = sectionHighlight,
+                                                    fontSize = 8.5.sp,
+                                                    fontWeight = FontWeight.ExtraBold,
+                                                    letterSpacing = 0.3.sp,
+                                                    modifier = Modifier.padding(horizontal = 5.dp, vertical = 1.5.dp)
+                                                )
+                                            }
+                                        }
+                                        Text(
+                                            text = item.cleanName,
+                                            color = if (isSelected) Color.White else Champagne,
+                                            fontSize = 12.sp,
+                                            fontWeight = if (isSelected) FontWeight.ExtraBold else FontWeight.Medium,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis
                                         )
                                     }
-                                    Text(
-                                        text = displayName,
-                                        color = if (isSelected) Color.White else Champagne,
-                                        fontSize = 12.sp,
-                                        fontWeight = if (isSelected) FontWeight.ExtraBold else FontWeight.Medium,
-                                        maxLines = 1,
-                                        overflow = TextOverflow.Ellipsis
-                                    )
-                                }
 
-                                if (itemCount > 0) {
-                                    Spacer(modifier = Modifier.width(6.dp))
-                                    Surface(
-                                        color = if (isSelected) {
-                                            sectionHighlight.copy(alpha = 0.24f)
-                                        } else {
-                                            sectionBaseBg.copy(alpha = 0.65f)
-                                        },
-                                        shape = RoundedCornerShape(50),
-                                        border = BorderStroke(
-                                            0.5.dp,
-                                            if (isSelected) sectionHighlight.copy(alpha = 0.7f) else Color.White.copy(alpha = 0.12f)
-                                        )
-                                    ) {
-                                        Text(
-                                            text = "%,d".format(itemCount),
-                                            color = if (isSelected) Color.White else sectionHighlight.copy(alpha = 0.90f),
-                                            fontSize = 10.sp,
-                                            fontWeight = FontWeight.Bold,
-                                            modifier = Modifier.padding(horizontal = 7.dp, vertical = 2.dp)
-                                        )
+                                    if (itemCount > 0) {
+                                        Spacer(modifier = Modifier.width(6.dp))
+                                        Surface(
+                                            color = if (isSelected) {
+                                                sectionHighlight.copy(alpha = 0.24f)
+                                            } else {
+                                                sectionBaseBg.copy(alpha = 0.65f)
+                                            },
+                                            shape = RoundedCornerShape(50),
+                                            border = BorderStroke(
+                                                0.5.dp,
+                                                if (isSelected) sectionHighlight.copy(alpha = 0.7f) else Color.White.copy(alpha = 0.12f)
+                                            )
+                                        ) {
+                                            Text(
+                                                text = "%,d".format(itemCount),
+                                                color = if (isSelected) Color.White else sectionHighlight.copy(alpha = 0.90f),
+                                                fontSize = 10.sp,
+                                                fontWeight = FontWeight.Bold,
+                                                modifier = Modifier.padding(horizontal = 7.dp, vertical = 2.dp)
+                                            )
+                                        }
                                     }
                                 }
                             }
@@ -991,7 +1036,7 @@ private fun VodFeaturedHeroSpotlightCard(
     modifier: Modifier = Modifier
 ) {
     val stream = grouped.stream
-    val cleanTitle = remember(stream.name) { StreamMetadataParser.cleanDisplayTitle(stream.name) }
+    val cleanTitle = remember(stream.name) { VodGroupingNormalizer.extractCleanDisplayTitle(stream.name) }
     val ratingLabel = remember(stream.rating, stream.ratingNumeric) { formatNormalizedRating(stream) }
     val yearLabel = stream.releaseYear.takeIf { it > 0 }?.toString()
     val metaSubtitle = remember(stream.genres, stream.versionTag, yearLabel) {
@@ -1279,7 +1324,7 @@ private fun MobileContinueWatchingRail(
             horizontalArrangement = Arrangement.spacedBy(10.dp)
         ) {
             items(items, key = { "mobile_cw_${it.id}_${it.streamId}" }) { item ->
-                val cleanTitle = remember(item.name) { StreamMetadataParser.cleanDisplayTitle(item.name) }
+                val cleanTitle = remember(item.name) { VodGroupingNormalizer.extractCleanDisplayTitle(item.name) }
                 val progressFraction = remember(item.lastPositionMs) {
                     if (item.lastPositionMs > 0L) {
                         val refDurationMs = if (isMovies) 105 * 60_000f else 45 * 60_000f
@@ -1471,7 +1516,7 @@ private fun DiscoveryShelfPosterCard(
     onClick: () -> Unit
 ) {
     val stream = grouped.stream
-    val cleanTitle = remember(stream.name) { StreamMetadataParser.cleanDisplayTitle(stream.name) }
+    val cleanTitle = remember(stream.name) { VodGroupingNormalizer.extractCleanDisplayTitle(stream.name) }
     val ratingLabel = remember(stream.rating, stream.ratingNumeric) { formatNormalizedRating(stream) }
 
     Column(
@@ -1656,22 +1701,23 @@ internal fun buildBaseVersionLabel(
     categoryNameById: Map<String, String>,
     includeContainer: Boolean
 ): String {
-    val rawTag = version.versionTag.ifBlank { VodGroupingNormalizer.extractVersionTag(version.name) }
-    val mappedTokens = rawTag
-        .split("•", "|", "/", ",")
-        .map { it.trim() }
-        .filter { it.isNotEmpty() }
-        .map { token -> VERSION_TOKEN_LABELS[token.uppercase(Locale.US)] ?: token }
-        .distinct()
+    val categoryName = categoryNameById[version.categoryId].orEmpty()
+    val categoryAwareTag = VodGroupingNormalizer.extractVersionTagWithCategory(
+        rawName = version.name,
+        categoryName = categoryName
+    )
 
-    val labelCore = when {
-        mappedTokens.isNotEmpty() -> mappedTokens.joinToString(" • ")
-        else -> {
-            val catHint = categoryNameById[version.categoryId]
-                ?.let { StreamMetadataParser.cleanDisplayTitle(it) }
-                ?.takeIf { it.isNotBlank() && it.length <= 22 }
-            catHint ?: "Standard"
-        }
+    val labelCore = if (categoryAwareTag.isNotBlank()) {
+        categoryAwareTag
+    } else {
+        val rawTag = version.versionTag.ifBlank { VodGroupingNormalizer.extractVersionTag(version.name) }
+        val mappedTokens = rawTag
+            .split("•", "|", "/", ",")
+            .map { it.trim() }
+            .filter { it.isNotEmpty() }
+            .map { token -> VERSION_TOKEN_LABELS[token.uppercase(Locale.US)] ?: token }
+            .distinct()
+        if (mappedTokens.isNotEmpty()) mappedTokens.joinToString(" • ") else "Standard"
     }
 
     val ext = version.containerExtension.trim().uppercase(Locale.US)
@@ -1689,22 +1735,34 @@ internal fun formatVersionChipLabels(
 ): Map<Long, String> {
     val baseLabels = versions.associate { it.id to buildBaseVersionLabel(it, categoryNameById, includeContainer) }
     val counts = baseLabels.values.groupingBy { it }.eachCount()
+    val assignedLabels = mutableSetOf<String>()
     val usedIndices = mutableMapOf<String, Int>()
     return versions.associate { version ->
         val base = baseLabels[version.id] ?: "Standard"
         if ((counts[base] ?: 0) <= 1) {
+            assignedLabels.add(base)
             version.id to base
         } else {
-            val catHint = categoryNameById[version.categoryId]
-                ?.let { StreamMetadataParser.cleanDisplayTitle(it) }
-                ?.takeIf { it.isNotBlank() }
-            val candidate = if (catHint != null && !base.contains(catHint, ignoreCase = true)) {
-                val shortCat = if (catHint.length > 16) catHint.take(15) + "…" else catHint
-                "$base ($shortCat)"
+            val rawCat = categoryNameById[version.categoryId].orEmpty()
+            val cleanCat = if (rawCat.isNotBlank()) {
+                VodViewModel.parseCategoryLanguageAndName(rawCat).second
+                    .takeIf { it.isNotBlank() && it.length <= 18 }
+            } else {
+                null
+            }
+            val withCat = if (cleanCat != null && !base.contains(cleanCat, ignoreCase = true)) {
+                "$base ($cleanCat)"
+            } else {
+                null
+            }
+            val candidate = if (withCat != null && assignedLabels.add(withCat)) {
+                withCat
             } else {
                 val idx = (usedIndices[base] ?: 0) + 1
                 usedIndices[base] = idx
-                "$base #$idx"
+                val numbered = "$base #$idx"
+                assignedLabels.add(numbered)
+                numbered
             }
             version.id to candidate
         }
@@ -1875,7 +1933,7 @@ internal fun VodSimilarTitlesRow(
         ) {
             items(items, key = { "similar_${it.stream.id}_${it.stream.streamId}" }) { grouped ->
                 val stream = grouped.stream
-                val cleanTitle = remember(stream.name) { StreamMetadataParser.cleanDisplayTitle(stream.name) }
+                val cleanTitle = remember(stream.name) { VodGroupingNormalizer.extractCleanDisplayTitle(stream.name) }
                 val ratingLabel = remember(stream.ratingNumeric) { formatNormalizedRating(stream) }
 
                 Column(
