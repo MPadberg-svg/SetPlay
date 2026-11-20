@@ -11,6 +11,7 @@ import com.example.data.model.CategoryEntity
 import com.example.data.model.CategoryWithCount
 import com.example.data.model.EpgProgramEntity
 import com.example.data.model.FavoriteTeamEntity
+import com.example.data.model.GroupedVodStream
 import com.example.data.model.ParentalSettingsEntity
 import com.example.data.model.PlaylistEntity
 import com.example.data.model.StreamEntity
@@ -336,6 +337,177 @@ interface StreamDao {
 
     @Query("DELETE FROM streams WHERE playlistId NOT IN (SELECT id FROM playlists)")
     suspend fun purgeOrphanStreams(): Int
+
+    // --- Movies & Series SQL-Level Deduplication & Discovery Queries ---
+
+    @Query("""
+        SELECT *, COUNT(*) AS versionCount
+        FROM streams
+        WHERE playlistId = :playlistId
+          AND streamType = :streamType
+        GROUP BY CASE WHEN canonicalGroupKey != '' THEN canonicalGroupKey ELSE CAST(id AS TEXT) END
+        ORDER BY MAX(addedEpoch) DESC, MAX(ratingNumeric) DESC, id ASC
+        LIMIT :limit
+    """)
+    fun getDeduplicatedStreams(
+        playlistId: Long,
+        streamType: String,
+        limit: Int = 180
+    ): Flow<List<GroupedVodStream>>
+
+    @Query("""
+        SELECT *, COUNT(*) AS versionCount
+        FROM streams
+        WHERE playlistId = :playlistId
+          AND streamType = :streamType
+          AND categoryId = :categoryId
+        GROUP BY CASE WHEN canonicalGroupKey != '' THEN canonicalGroupKey ELSE CAST(id AS TEXT) END
+        ORDER BY MAX(addedEpoch) DESC, MAX(ratingNumeric) DESC, id ASC
+        LIMIT :limit
+    """)
+    fun getDeduplicatedStreamsByCategory(
+        playlistId: Long,
+        streamType: String,
+        categoryId: String,
+        limit: Int = 180
+    ): Flow<List<GroupedVodStream>>
+
+    @Query("""
+        SELECT *, COUNT(*) AS versionCount
+        FROM streams
+        WHERE playlistId = :playlistId
+          AND streamType = :streamType
+          AND (:categoryId IS NULL OR :categoryId = '' OR categoryId = :categoryId)
+          AND name LIKE '%' || :query || '%'
+        GROUP BY CASE WHEN canonicalGroupKey != '' THEN canonicalGroupKey ELSE CAST(id AS TEXT) END
+        ORDER BY MAX(ratingNumeric) DESC, MAX(addedEpoch) DESC, id ASC
+        LIMIT :limit
+    """)
+    fun searchDeduplicatedStreams(
+        playlistId: Long,
+        streamType: String,
+        categoryId: String?,
+        query: String,
+        limit: Int = 180
+    ): Flow<List<GroupedVodStream>>
+
+    @Query("""
+        SELECT *
+        FROM streams
+        WHERE playlistId = :playlistId
+          AND streamType = :streamType
+          AND canonicalGroupKey = :canonicalGroupKey
+        ORDER BY ratingNumeric DESC, id ASC
+    """)
+    suspend fun getVersionsByGroupKey(
+        playlistId: Long,
+        streamType: String,
+        canonicalGroupKey: String
+    ): List<StreamEntity>
+
+    @Query("""
+        SELECT *, COUNT(*) AS versionCount
+        FROM streams
+        WHERE playlistId = :playlistId
+          AND streamType = :streamType
+        GROUP BY CASE WHEN canonicalGroupKey != '' THEN canonicalGroupKey ELSE CAST(id AS TEXT) END
+        ORDER BY MAX(addedEpoch) DESC, MAX(ratingNumeric) DESC, id ASC
+        LIMIT :limit
+    """)
+    fun getRecentlyAddedDeduplicated(
+        playlistId: Long,
+        streamType: String,
+        limit: Int = 20
+    ): Flow<List<GroupedVodStream>>
+
+    @Query("""
+        SELECT *, COUNT(*) AS versionCount
+        FROM streams
+        WHERE playlistId = :playlistId
+          AND streamType = :streamType
+          AND ratingNumeric >= 6.5
+          AND streamIcon != ''
+        GROUP BY CASE WHEN canonicalGroupKey != '' THEN canonicalGroupKey ELSE CAST(id AS TEXT) END
+        ORDER BY MAX(ratingNumeric) DESC, MAX(addedEpoch) DESC, id ASC
+        LIMIT :limit
+    """)
+    fun getTopRatedDeduplicated(
+        playlistId: Long,
+        streamType: String,
+        limit: Int = 20
+    ): Flow<List<GroupedVodStream>>
+
+    @Query("""
+        SELECT *, COUNT(*) AS versionCount
+        FROM streams
+        WHERE playlistId = :playlistId
+          AND streamType = :streamType
+          AND (
+              genres LIKE '%' || :genreKeyword || '%'
+              OR categoryId IN (
+                  SELECT categoryId FROM categories
+                  WHERE playlistId = :playlistId
+                    AND categoryName LIKE '%' || :genreKeyword || '%'
+              )
+          )
+        GROUP BY CASE WHEN canonicalGroupKey != '' THEN canonicalGroupKey ELSE CAST(id AS TEXT) END
+        ORDER BY MAX(ratingNumeric) DESC, MAX(addedEpoch) DESC, id ASC
+        LIMIT :limit
+    """)
+    fun getGenreShelfDeduplicated(
+        playlistId: Long,
+        streamType: String,
+        genreKeyword: String,
+        limit: Int = 20
+    ): Flow<List<GroupedVodStream>>
+
+    @Query("""
+        SELECT *, COUNT(*) AS versionCount
+        FROM streams
+        WHERE playlistId = :playlistId
+          AND streamType = :streamType
+          AND (:excludeGroupKey = '' OR canonicalGroupKey != :excludeGroupKey)
+          AND (
+              genres LIKE '%' || :genreKeyword || '%'
+              OR categoryId IN (
+                  SELECT categoryId FROM categories
+                  WHERE playlistId = :playlistId
+                    AND categoryName LIKE '%' || :genreKeyword || '%'
+              )
+          )
+        GROUP BY CASE WHEN canonicalGroupKey != '' THEN canonicalGroupKey ELSE CAST(id AS TEXT) END
+        ORDER BY MAX(ratingNumeric) DESC, MAX(addedEpoch) DESC, id ASC
+        LIMIT :limit
+    """)
+    fun getSimilarTitlesDeduplicated(
+        playlistId: Long,
+        streamType: String,
+        genreKeyword: String,
+        excludeGroupKey: String,
+        limit: Int = 15
+    ): Flow<List<GroupedVodStream>>
+
+    @Query("""
+        SELECT *, COUNT(*) AS versionCount
+        FROM streams
+        WHERE playlistId = :playlistId
+          AND streamType = :streamType
+          AND (
+              categoryId IN (:categoryIds)
+              OR (:genreKeyword != '' AND genres LIKE '%' || :genreKeyword || '%')
+          )
+        GROUP BY CASE WHEN canonicalGroupKey != '' THEN canonicalGroupKey ELSE CAST(id AS TEXT) END
+        HAVING MAX(watchHistoryTimestamp) <= 0
+        ORDER BY MAX(ratingNumeric) DESC, MAX(addedEpoch) DESC, id ASC
+        LIMIT :limit
+    """)
+    fun getRecommendedByCategoriesOrGenres(
+        playlistId: Long,
+        streamType: String,
+        categoryIds: List<String>,
+        genreKeyword: String,
+        limit: Int = 20
+    ): Flow<List<GroupedVodStream>>
 }
 
 @Dao

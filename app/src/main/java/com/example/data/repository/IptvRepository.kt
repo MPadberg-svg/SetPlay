@@ -12,6 +12,7 @@ import com.example.data.local.StreamVaultDatabase
 import com.example.data.model.CategoryEntity
 import com.example.data.model.CategoryWithCount
 import com.example.data.model.EpgProgramEntity
+import com.example.data.model.GroupedVodStream
 import com.example.data.model.ParentalSettingsEntity
 import com.example.data.model.PlaylistEntity
 import com.example.data.model.StreamEntity
@@ -19,11 +20,15 @@ import com.example.data.remote.XtreamAuthResponse
 import com.example.data.remote.XtreamClient
 import com.example.util.SecurityManager
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.flatMapLatest
+import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.onStart
 import kotlinx.coroutines.withContext
@@ -183,6 +188,197 @@ class IptvRepository(
             hasCategory && !hasQuery -> streamDao.getStreamsByCategoryFast(playlistId, streamType, categoryId!!, limit = safeLimit)
             !hasCategory && hasQuery -> streamDao.searchStreamsByTypeFast(playlistId, streamType, cleanQuery, limit = safeLimit)
             else -> streamDao.searchStreamsInCategoryFast(playlistId, streamType, categoryId!!, cleanQuery, limit = safeLimit)
+        }
+    }
+
+    // --- SQL-Deduplicated Movies & Series Catalog, Versions & Discovery Shelves ---
+
+    fun queryDeduplicatedVodStreams(
+        playlistId: Long,
+        streamType: String,
+        categoryId: String?,
+        query: String,
+        limit: Int = DEFAULT_PAGE_SIZE
+    ): Flow<List<GroupedVodStream>> {
+        val cleanQuery = query.trim()
+        val hasCategory = !categoryId.isNullOrBlank()
+        val hasQuery = cleanQuery.isNotEmpty()
+        val safeLimit = limit.coerceAtLeast(1)
+
+        return when {
+            hasQuery -> streamDao.searchDeduplicatedStreams(
+                playlistId = playlistId,
+                streamType = streamType,
+                categoryId = categoryId?.takeIf { it.isNotBlank() },
+                query = cleanQuery,
+                limit = safeLimit
+            )
+            hasCategory -> streamDao.getDeduplicatedStreamsByCategory(
+                playlistId = playlistId,
+                streamType = streamType,
+                categoryId = categoryId!!,
+                limit = safeLimit
+            )
+            else -> streamDao.getDeduplicatedStreams(
+                playlistId = playlistId,
+                streamType = streamType,
+                limit = safeLimit
+            )
+        }
+    }
+
+    suspend fun getVodVersionsForGroup(
+        playlistId: Long,
+        streamType: String,
+        canonicalGroupKey: String,
+        fallbackStream: StreamEntity
+    ): List<StreamEntity> = withContext(Dispatchers.IO) {
+        if (canonicalGroupKey.isBlank()) {
+            return@withContext listOf(fallbackStream)
+        }
+        val versions = streamDao.getVersionsByGroupKey(playlistId, streamType, canonicalGroupKey)
+        if (versions.isEmpty()) {
+            return@withContext listOf(fallbackStream)
+        }
+        versions.sortedWith(
+            compareBy<StreamEntity>(
+                { preferredLanguageRank(it.versionTag) },
+                { if (it.streamIcon.isNotBlank()) 0 else 1 },
+                { if (it.versionTag.contains("4K") || it.versionTag.contains("UHD")) 0 else 1 },
+                { -it.ratingNumeric },
+                { it.id }
+            )
+        )
+    }
+
+    private fun preferredLanguageRank(versionTag: String): Int {
+        if (versionTag.isBlank()) return 3
+        val tokens = versionTag.split("•", " ", "/", "|", "-").map { it.trim().uppercase() }
+        return when {
+            "EN" in tokens -> 0
+            "AR" in tokens -> 1
+            "FR" in tokens -> 2
+            else -> 3
+        }
+    }
+
+    fun getRecentlyAddedVod(
+        playlistId: Long,
+        streamType: String,
+        limit: Int = 20
+    ): Flow<List<GroupedVodStream>> {
+        return streamDao.getRecentlyAddedDeduplicated(
+            playlistId = playlistId,
+            streamType = streamType,
+            limit = limit.coerceAtLeast(1)
+        )
+    }
+
+    fun getTopRatedVod(
+        playlistId: Long,
+        streamType: String,
+        limit: Int = 20
+    ): Flow<List<GroupedVodStream>> {
+        return streamDao.getTopRatedDeduplicated(
+            playlistId = playlistId,
+            streamType = streamType,
+            limit = limit.coerceAtLeast(1)
+        )
+    }
+
+    fun getGenreShelfVod(
+        playlistId: Long,
+        streamType: String,
+        genreKeyword: String,
+        limit: Int = 20
+    ): Flow<List<GroupedVodStream>> {
+        val cleanGenre = genreKeyword.trim()
+        if (cleanGenre.isEmpty()) return flowOf(emptyList())
+        return streamDao.getGenreShelfDeduplicated(
+            playlistId = playlistId,
+            streamType = streamType,
+            genreKeyword = cleanGenre,
+            limit = limit.coerceAtLeast(1)
+        )
+    }
+
+    suspend fun getSimilarVodTitles(
+        playlistId: Long,
+        streamType: String,
+        genreKeyword: String,
+        excludeGroupKey: String,
+        limit: Int = 15
+    ): List<GroupedVodStream> = withContext(Dispatchers.IO) {
+        val cleanGenre = genreKeyword.trim()
+        if (cleanGenre.isEmpty()) return@withContext emptyList()
+        streamDao.getSimilarTitlesDeduplicated(
+            playlistId = playlistId,
+            streamType = streamType,
+            genreKeyword = cleanGenre,
+            excludeGroupKey = excludeGroupKey,
+            limit = limit.coerceAtLeast(1)
+        ).first()
+    }
+
+    fun getCategoryStreamCounts(playlistId: Long, streamType: String): Flow<Map<String, Int>> {
+        return streamDao.getCategoryStreamCounts(playlistId, streamType).map { tuples ->
+            tuples.associate { it.categoryId to it.streamCount }
+        }
+    }
+
+    /**
+     * Generates personalized VOD/Series recommendations strictly from real user watch history
+     * and favorites of the same [streamType]. Never fabricates items when no user signals exist.
+     */
+    @OptIn(ExperimentalCoroutinesApi::class)
+    fun getRecommendedVodForUser(
+        playlistId: Long,
+        streamType: String,
+        limit: Int = 20
+    ): Flow<List<GroupedVodStream>> {
+        val watchedFlow = streamDao.getRecentlyWatched(playlistId)
+            .map { list -> list.filter { it.streamType == streamType } }
+        val favoritesFlow = streamDao.getFavoriteStreamsByType(playlistId, streamType)
+
+        return combine(watchedFlow, favoritesFlow) { watched, favorites ->
+            watched + favorites
+        }.flatMapLatest { signals ->
+            if (signals.isEmpty()) {
+                flowOf(emptyList())
+            } else {
+                val topCategories = signals
+                    .mapNotNull { it.categoryId.trim().takeIf(String::isNotEmpty) }
+                    .groupingBy { it }
+                    .eachCount()
+                    .entries
+                    .sortedByDescending { it.value }
+                    .take(5)
+                    .map { it.key }
+
+                val topGenre = signals
+                    .flatMap { stream ->
+                        stream.genres.split(Regex("[,/|•]+"))
+                            .map { it.trim() }
+                            .filter { it.length >= 3 }
+                    }
+                    .groupingBy { it }
+                    .eachCount()
+                    .maxByOrNull { it.value }
+                    ?.key
+                    .orEmpty()
+
+                if (topCategories.isEmpty() && topGenre.isBlank()) {
+                    flowOf(emptyList())
+                } else {
+                    streamDao.getRecommendedByCategoriesOrGenres(
+                        playlistId = playlistId,
+                        streamType = streamType,
+                        categoryIds = topCategories.ifEmpty { listOf("__NO_CATEGORY_SIGNAL__") },
+                        genreKeyword = topGenre,
+                        limit = limit.coerceAtLeast(1)
+                    )
+                }
+            }
         }
     }
 

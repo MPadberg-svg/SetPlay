@@ -6,6 +6,7 @@ import com.example.BuildConfig
 import com.example.data.model.CategoryEntity
 import com.example.data.model.EpgProgramEntity
 import com.example.data.model.StreamEntity
+import com.example.data.model.VodGroupingNormalizer
 import com.example.util.SecurityManager
 import com.squareup.moshi.JsonReader
 import com.squareup.moshi.Moshi
@@ -211,11 +212,16 @@ class XtreamClient(
                             var name = ""
                             var streamIcon = ""
                             var epgChannelId = ""
-                            var rating = ""
+                            var rating10Raw = ""
+                            var rating5Raw = ""
                             var tvArchive = 0
                             var tvArchiveDuration = 0
                             var containerExt = defaultExt
                             var isAdult = "0"
+                            var tmdbId = ""
+                            var addedEpoch = 0L
+                            var genres = ""
+                            var rawYear = ""
 
                             try {
                                 reader.beginObject()
@@ -226,10 +232,15 @@ class XtreamClient(
                                         "name", "title" -> name = readSafeString(reader).trim()
                                         "stream_icon", "cover" -> streamIcon = readSafeString(reader)
                                         "epg_channel_id" -> epgChannelId = readSafeString(reader)
-                                        "rating", "rating_5based" -> rating = readSafeString(reader)
+                                        "rating" -> rating10Raw = readSafeString(reader)
+                                        "rating_5based" -> rating5Raw = readSafeString(reader)
                                         "tv_archive" -> tvArchive = readSafeInt(reader)
                                         "tv_archive_duration" -> tvArchiveDuration = readSafeInt(reader)
                                         "is_adult" -> isAdult = readSafeString(reader)
+                                        "tmdb", "tmdb_id" -> tmdbId = readSafeString(reader).trim()
+                                        "added", "last_modified" -> addedEpoch = readSafeLong(reader)
+                                        "genre" -> genres = readSafeString(reader).trim()
+                                        "year", "releaseDate", "release_date" -> rawYear = readSafeString(reader).trim()
                                         "container_extension" -> {
                                             val ext = readSafeString(reader)
                                             if (ext.isNotEmpty()) {
@@ -245,6 +256,35 @@ class XtreamClient(
                                     name.isNotEmpty() &&
                                     !SecurityManager.isAdultContent(name, categoryName = null, isAdultFlag = isAdult)
                                 ) {
+                                    val cleanTmdbId = tmdbId
+                                        .takeIf { it.isNotEmpty() && !it.equals("null", ignoreCase = true) && it != "0" }
+                                        .orEmpty()
+                                    val (normalizedRatingStr, ratingNum) = VodGroupingNormalizer.normalizeRatingToTenScale(
+                                        rawRating10 = rating10Raw,
+                                        rawRating5 = rating5Raw
+                                    )
+                                    val yearInt = if (streamType == "live") {
+                                        0
+                                    } else {
+                                        VodGroupingNormalizer.extractReleaseYear(name, rawYear)
+                                    }
+                                    val versionTag = if (streamType == "live") {
+                                        ""
+                                    } else {
+                                        VodGroupingNormalizer.extractVersionTag(name)
+                                    }
+                                    val groupKey = if (streamType == "live") {
+                                        "live_$streamId"
+                                    } else {
+                                        VodGroupingNormalizer.computeCanonicalGroupKey(
+                                            streamType = streamType,
+                                            rawName = name,
+                                            tmdbId = cleanTmdbId,
+                                            releaseYear = yearInt,
+                                            streamId = streamId
+                                        )
+                                    }
+
                                     currentBatch.add(
                                         StreamEntity(
                                             playlistId = playlistId,
@@ -254,10 +294,17 @@ class XtreamClient(
                                             streamType = streamType,
                                             streamIcon = streamIcon,
                                             epgChannelId = epgChannelId,
-                                            rating = rating,
+                                            rating = normalizedRatingStr,
                                             tvArchive = tvArchive,
                                             tvArchiveDuration = tvArchiveDuration,
-                                            containerExtension = containerExt
+                                            containerExtension = containerExt,
+                                            tmdbId = cleanTmdbId,
+                                            canonicalGroupKey = groupKey,
+                                            versionTag = versionTag,
+                                            addedEpoch = addedEpoch,
+                                            ratingNumeric = ratingNum,
+                                            releaseYear = yearInt,
+                                            genres = genres
                                         )
                                     )
                                     totalProcessed++

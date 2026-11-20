@@ -30,11 +30,14 @@ import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Clear
+import androidx.compose.material.icons.filled.GridView
 import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.Layers
 import androidx.compose.material.icons.filled.LocalMovies
@@ -64,18 +67,22 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -83,6 +90,8 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import coil.compose.AsyncImage
+import com.example.data.model.CategoryEntity
+import com.example.data.model.GroupedVodStream
 import com.example.data.model.PlaylistEntity
 import com.example.data.model.StreamEntity
 import com.example.data.remote.SeriesDetails
@@ -109,8 +118,11 @@ import com.example.ui.theme.SeriesSeaJade
 import com.example.ui.theme.calculateVodPosterMinCellDp
 import com.example.ui.theme.luxuryFocusableCard
 import com.example.ui.theme.tvFocusablePill
+import com.example.util.EditionResolver
+import com.example.util.SetPlayEdition
 import com.example.util.StreamMetadataParser
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun VodScreen(
     sectionTab: VodTab,
@@ -167,16 +179,28 @@ fun VodScreen(
         return
     }
 
+    val context = LocalContext.current
+    val activeEdition = remember(context) { EditionResolver.resolveEdition(context) }
+    val isTvEdition = activeEdition == SetPlayEdition.TV
+
     val selectedSeriesStream by viewModel.selectedSeriesStream.collectAsStateWithLifecycle()
     val seriesDetails by viewModel.seriesDetails.collectAsStateWithLifecycle()
     val isLoadingSeriesDetails by viewModel.isLoadingSeriesDetails.collectAsStateWithLifecycle()
     val selectedSeasonNumber by viewModel.selectedSeasonNumber.collectAsStateWithLifecycle()
+    val availableSeriesVersions by viewModel.availableSeriesVersions.collectAsStateWithLifecycle()
+    val similarSeries by viewModel.similarSeries.collectAsStateWithLifecycle()
     val selectedMovieStream by viewModel.selectedMovieStream.collectAsStateWithLifecycle()
     val movieDetails by viewModel.movieDetails.collectAsStateWithLifecycle()
     val isLoadingMovieDetails by viewModel.isLoadingMovieDetails.collectAsStateWithLifecycle()
+    val availableMovieVersions by viewModel.availableMovieVersions.collectAsStateWithLifecycle()
+    val similarMovies by viewModel.similarMovies.collectAsStateWithLifecycle()
     val episodeResumeMap by viewModel.episodeResumeMap.collectAsStateWithLifecycle()
     val fallbackRecentlyWatched by viewModel.recentlyWatched.collectAsStateWithLifecycle()
     val currentLimit by viewModel.currentLimit.collectAsStateWithLifecycle()
+    val categories by (if (isMovies) viewModel.movieCategories else viewModel.seriesCategories).collectAsStateWithLifecycle()
+    val categoryNameById = remember(categories) {
+        categories.associate { it.categoryId to it.categoryName }
+    }
 
     // If in Series tab and a Series item is selected, display the Series Detail hierarchy view
     if (!isMovies && selectedSeriesStream != null) {
@@ -189,6 +213,16 @@ fun VodScreen(
             isLoading = isLoadingSeriesDetails,
             selectedSeasonNumber = selectedSeasonNumber,
             episodeResumeMap = episodeResumeMap,
+            availableVersions = availableSeriesVersions,
+            similarSeries = similarSeries,
+            categoryNameById = categoryNameById,
+            onSwitchVersion = { versionStream ->
+                viewModel.switchSeriesVersion(versionStream, activePlaylist)
+            },
+            onSelectSimilarSeries = { similarStream ->
+                viewModel.openSeriesDetails(similarStream, activePlaylist)
+            },
+            isTvEdition = isTvEdition,
             onSelectSeason = { viewModel.selectSeason(it) },
             onBack = { viewModel.closeSeriesDetails() },
             onToggleFavorite = {
@@ -241,11 +275,18 @@ fun VodScreen(
         return
     }
 
-    val categories by (if (isMovies) viewModel.movieCategories else viewModel.seriesCategories).collectAsStateWithLifecycle()
+    val categoryCounts by (if (isMovies) viewModel.movieCategoryCounts else viewModel.seriesCategoryCounts).collectAsStateWithLifecycle()
     val items by (if (isMovies) viewModel.movieItems else viewModel.seriesItems).collectAsStateWithLifecycle()
+    val groupedItems by (if (isMovies) viewModel.groupedMovieItems else viewModel.groupedSeriesItems).collectAsStateWithLifecycle()
+    val discoveryShelves by (if (isMovies) viewModel.movieDiscoveryShelves else viewModel.seriesDiscoveryShelves).collectAsStateWithLifecycle()
     val selectedCatId by (if (isMovies) viewModel.selectedMovieCategoryId else viewModel.selectedSeriesCategoryId).collectAsStateWithLifecycle()
     val searchQuery by (if (isMovies) viewModel.movieSearchQuery else viewModel.seriesSearchQuery).collectAsStateWithLifecycle()
     val isRefreshing by (if (isMovies) viewModel.isRefreshingMovies else viewModel.isRefreshingSeries).collectAsStateWithLifecycle()
+    val syncBannerState by viewModel.vodSyncBannerState.collectAsStateWithLifecycle()
+
+    var showCategoryDrawer by remember(sectionTab) { mutableStateOf(false) }
+    var isSearchExpanded by remember(sectionTab) { mutableStateOf(false) }
+    var forceGridMode by remember(sectionTab) { mutableStateOf(false) }
 
     val resolvedRecentlyWatched = recentlyWatched ?: fallbackRecentlyWatched
     val targetStreamType = if (isMovies) "movie" else "series"
@@ -268,6 +309,16 @@ fun VodScreen(
             movieStream = selectedMovieStream!!,
             movieDetails = movieDetails,
             isLoading = isLoadingMovieDetails,
+            availableVersions = availableMovieVersions,
+            similarMovies = similarMovies,
+            categoryNameById = categoryNameById,
+            onSwitchVersion = { versionStream ->
+                viewModel.switchMovieVersion(versionStream, activePlaylist)
+            },
+            onSelectSimilarMovie = { similarStream ->
+                viewModel.openMovieDetails(similarStream, activePlaylist)
+            },
+            isTvEdition = isTvEdition,
             onDismiss = { viewModel.closeMovieDetails() },
             onWatchMovie = {
                 val streamToPlay = selectedMovieStream!!
@@ -287,339 +338,432 @@ fun VodScreen(
         )
     }
 
-    Column(
+    // Semi-Transparent Searchable Category Side Panel (Mobile)
+    if (!isTvEdition && showCategoryDrawer) {
+        VodCategoriesSidePanel(
+            isMovies = isMovies,
+            categories = categories,
+            categoryCounts = categoryCounts,
+            selectedCategoryId = selectedCatId,
+            sectionBaseBg = sectionBaseBg,
+            sectionSurface = sectionSurface,
+            sectionPrimaryAccent = sectionPrimaryAccent,
+            sectionHighlight = sectionHighlight,
+            onSelectDiscoverHome = {
+                forceGridMode = false
+                onSelectCategory(null)
+            },
+            onSelectCategory = { cat ->
+                if (cat.isLocked && !isParentalUnlocked) {
+                    onRequestUnlockCategory?.invoke(cat.categoryId) {
+                        onSelectCategory(cat.categoryId)
+                    }
+                } else {
+                    onSelectCategory(cat.categoryId)
+                }
+            },
+            onDismiss = { showCategoryDrawer = false }
+        )
+    }
+
+    Box(
         modifier = modifier
             .fillMaxSize()
-            .background(
-                Brush.verticalGradient(
-                    if (isMovies) {
-                        listOf(MoviesSapphireNavy, MoviesAtlanticTeal.copy(alpha = 0.65f), MoviesSapphireNavy)
+            .testTag("vod_screen")
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(
+                    Brush.verticalGradient(
+                        if (isMovies) {
+                            listOf(MoviesSapphireNavy, MoviesAtlanticTeal.copy(alpha = 0.65f), MoviesSapphireNavy)
+                        } else {
+                            listOf(SeriesPineBase, SeriesForestSurface, SeriesPineBase)
+                        }
+                    )
+                )
+                .testTag(if (isMovies) "movies_screen" else "series_screen")
+        ) {
+            val activeCategoryLabel = categories.find { it.categoryId == selectedCatId }?.categoryName?.let {
+                StreamMetadataParser.cleanDisplayTitle(it).ifBlank { it }
+            } ?: if (isMovies) "All Movies" else "All Series"
+
+            if (!isTvEdition) {
+                // --- MOBILE EDITION: Single 44.dp Top Command Bar + Sync Pill + PullToRefreshBox ---
+                VodMobileTopCommandBar(
+                    isMovies = isMovies,
+                    activeCategoryLabel = activeCategoryLabel,
+                    selectedCategoryId = selectedCatId,
+                    searchQuery = searchQuery,
+                    isSearchExpanded = isSearchExpanded,
+                    forceGridMode = forceGridMode,
+                    totalCount = totalCount,
+                    sectionBaseBg = sectionBaseBg,
+                    sectionSurface = sectionSurface,
+                    sectionPrimaryAccent = sectionPrimaryAccent,
+                    sectionHighlight = sectionHighlight,
+                    onOpenCategories = { showCategoryDrawer = true },
+                    onToggleSearch = {
+                        if (isSearchExpanded || searchQuery.isNotBlank()) {
+                            isSearchExpanded = false
+                            if (searchQuery.isNotBlank()) onSearchChange("")
+                        } else {
+                            isSearchExpanded = true
+                        }
+                    },
+                    onSearchQueryChange = onSearchChange,
+                    onToggleViewMode = { forceGridMode = !forceGridMode }
+                )
+
+                VodSyncStatusPill(
+                    bannerState = syncBannerState,
+                    sectionSurface = sectionSurface,
+                    sectionHighlight = sectionHighlight,
+                    onRetry = {
+                        if (isMovies) {
+                            viewModel.refreshMovies(activePlaylist, force = true)
+                        } else {
+                            viewModel.refreshSeries(activePlaylist, force = true)
+                        }
+                    },
+                    onDismiss = { viewModel.dismissSyncBanner() }
+                )
+
+                val isDiscoveryHomeMode = selectedCatId == null && searchQuery.isBlank() && !forceGridMode
+                val hasCatalogContent = groupedItems.isNotEmpty() || discoveryShelves.isNotEmpty() || continueWatchingItems.isNotEmpty()
+
+                PullToRefreshBox(
+                    isRefreshing = isRefreshing,
+                    onRefresh = {
+                        if (isMovies) {
+                            viewModel.refreshMovies(activePlaylist)
+                        } else {
+                            viewModel.refreshSeries(activePlaylist)
+                        }
+                    },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .weight(1f)
+                ) {
+                    if (!hasCatalogContent) {
+                        Box(
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .padding(32.dp),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                Icon(
+                                    imageVector = if (isMovies) Icons.Default.Movie else Icons.Default.VideoLibrary,
+                                    contentDescription = null,
+                                    tint = sectionHighlight,
+                                    modifier = Modifier.size(64.dp)
+                                )
+                                Spacer(modifier = Modifier.height(16.dp))
+                                Text(
+                                    text = if (totalCount == 0) {
+                                        if (isMovies) "No movies synced yet." else "No series synced yet."
+                                    } else {
+                                        "No matching titles found."
+                                    },
+                                    color = PaleGold,
+                                    fontSize = 16.sp,
+                                    fontWeight = FontWeight.SemiBold
+                                )
+                                Spacer(modifier = Modifier.height(6.dp))
+                                Text(
+                                    text = if (totalCount == 0) {
+                                        "Pull down to refresh or sync from the Accounts page."
+                                    } else {
+                                        "Try clearing the search filter or selecting another category."
+                                    },
+                                    color = sectionHighlight.copy(alpha = 0.8f),
+                                    fontSize = 13.sp
+                                )
+                            }
+                        }
+                    } else if (isDiscoveryHomeMode) {
+                        VodMobileDiscoveryHome(
+                            isMovies = isMovies,
+                            discoveryShelves = discoveryShelves,
+                            fallbackGroupedItems = groupedItems,
+                            continueWatchingItems = continueWatchingItems,
+                            sectionBaseBg = sectionBaseBg,
+                            sectionSurface = sectionSurface,
+                            sectionPrimaryAccent = sectionPrimaryAccent,
+                            sectionHighlight = sectionHighlight,
+                            onWatchNow = { stream ->
+                                if (isMovies) {
+                                    onItemClick(stream)
+                                } else {
+                                    viewModel.openSeriesDetails(stream, activePlaylist)
+                                }
+                            },
+                            onOpenDetails = { stream ->
+                                if (isMovies) {
+                                    viewModel.openMovieDetails(stream, activePlaylist)
+                                } else {
+                                    viewModel.openSeriesDetails(stream, activePlaylist)
+                                }
+                            },
+                            onContinueWatchingClick = { item ->
+                                if (isMovies) {
+                                    onItemClick(item)
+                                } else {
+                                    viewModel.openSeriesDetails(item, activePlaylist)
+                                }
+                            },
+                            onBrowseAllGrid = { forceGridMode = true }
+                        )
                     } else {
-                        listOf(SeriesPineBase, SeriesForestSurface, SeriesPineBase)
+                        // 3-Column Deduplicated Poster Grid (Category, Search, or All Grid)
+                        val gridState = rememberLazyGridState()
+                        val shouldLoadMore by remember(groupedItems.size, currentLimit) {
+                            derivedStateOf {
+                                val lastVisible = gridState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: 0
+                                groupedItems.size >= currentLimit && lastVisible >= (groupedItems.size - 24).coerceAtLeast(0)
+                            }
+                        }
+                        LaunchedEffect(shouldLoadMore) {
+                            if (shouldLoadMore) {
+                                viewModel.loadMore()
+                            }
+                        }
+
+                        BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
+                            val columns = if (maxWidth < 600.dp) {
+                                GridCells.Fixed(3)
+                            } else {
+                                GridCells.Adaptive(minSize = calculateVodPosterMinCellDp(maxWidth.value.toInt()).dp)
+                            }
+                            LazyVerticalGrid(
+                                state = gridState,
+                                columns = columns,
+                                modifier = Modifier
+                                    .fillMaxSize()
+                                    .testTag("vod_grid"),
+                                contentPadding = PaddingValues(
+                                    start = 12.dp,
+                                    end = 12.dp,
+                                    top = 8.dp,
+                                    bottom = 104.dp
+                                ),
+                                horizontalArrangement = Arrangement.spacedBy(10.dp),
+                                verticalArrangement = Arrangement.spacedBy(12.dp)
+                            ) {
+                                items(groupedItems, key = { it.stream.id }) { grouped ->
+                                    val item = grouped.stream
+                                    if (isMovies) {
+                                        MoviePosterCard(
+                                            item = item,
+                                            versionCount = grouped.versionCount,
+                                            onClick = { viewModel.openMovieDetails(item, activePlaylist) },
+                                            onPlayImmediately = { onItemClick(item) },
+                                            onToggleFavorite = { viewModel.toggleFavorite(item.id, item.isFavorite) }
+                                        )
+                                    } else {
+                                        SeriesVaultCard(
+                                            item = item,
+                                            versionCount = grouped.versionCount,
+                                            onClick = { viewModel.openSeriesDetails(item, activePlaylist) },
+                                            onToggleFavorite = { viewModel.toggleFavorite(item.id, item.isFavorite) }
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            } else {
+                // --- TV EDITION: Dedicated 10-Foot Cinema & Series Discovery Experience ---
+                TvVodCinemaScreen(
+                    isMovies = isMovies,
+                    activeCategoryLabel = activeCategoryLabel,
+                    selectedCategoryId = selectedCatId,
+                    searchQuery = searchQuery,
+                    totalCount = totalCount,
+                    currentLimit = currentLimit,
+                    isRefreshing = isRefreshing,
+                    syncBannerState = syncBannerState,
+                    categories = categories,
+                    categoryCounts = categoryCounts,
+                    discoveryShelves = discoveryShelves,
+                    groupedItems = groupedItems,
+                    fallbackItems = items,
+                    continueWatchingItems = continueWatchingItems,
+                    isParentalUnlocked = isParentalUnlocked,
+                    sectionBaseBg = sectionBaseBg,
+                    sectionSurface = sectionSurface,
+                    sectionPrimaryAccent = sectionPrimaryAccent,
+                    sectionHighlight = sectionHighlight,
+                    onSelectCategory = onSelectCategory,
+                    onRequestUnlockCategory = onRequestUnlockCategory,
+                    onSearchQueryChange = onSearchChange,
+                    onSyncCatalog = {
+                        if (isMovies) {
+                            viewModel.refreshMovies(activePlaylist, force = true)
+                        } else {
+                            viewModel.refreshSeries(activePlaylist, force = true)
+                        }
+                    },
+                    onLoadMore = { viewModel.loadMore() },
+                    onOpenDetails = { stream ->
+                        if (isMovies) {
+                            viewModel.openMovieDetails(stream, activePlaylist)
+                        } else {
+                            viewModel.openSeriesDetails(stream, activePlaylist)
+                        }
+                    },
+                    onPlayImmediately = { stream ->
+                        if (isMovies) {
+                            onItemClick(stream)
+                        } else {
+                            viewModel.openSeriesDetails(stream, activePlaylist)
+                        }
+                    },
+                    onToggleFavorite = { stream ->
+                        viewModel.toggleFavorite(stream.id, stream.isFavorite)
                     }
                 )
-            )
-            .testTag(if (isMovies) "movies_screen" else "series_screen")
+            }
+        }
+    }
+}
+
+/**
+ * Purpose-built 10-Foot Android TV (`SetPlayEdition.TV`) Cinema & Series Discovery Experience:
+ * - 48.dp Top 10-Foot Control Strip with D-Pad `[ ☰ Categories • Active ]`, inline sync pill, Search, and explicit Sync Catalog
+ * - Widescreen 2-Column Category Overlay Dialog with quick letter/language filters
+ * - Dynamic 38%/62% Live Backdrop Stage + D-Pad Horizontal Discovery Shelves (Discovery Home Mode)
+ * - Crisp 5- or 6-Column Deduplicated Grid with infinite scroll (Category / Search / Grid Mode)
+ */
+@Composable
+private fun TvVodCinemaScreen(
+    isMovies: Boolean,
+    activeCategoryLabel: String,
+    selectedCategoryId: String?,
+    searchQuery: String,
+    totalCount: Int,
+    currentLimit: Int,
+    isRefreshing: Boolean,
+    syncBannerState: VodSyncBannerState,
+    categories: List<CategoryEntity>,
+    categoryCounts: Map<String, Int>,
+    discoveryShelves: List<VodDiscoveryShelf>,
+    groupedItems: List<GroupedVodStream>,
+    fallbackItems: List<StreamEntity>,
+    continueWatchingItems: List<StreamEntity>,
+    isParentalUnlocked: Boolean,
+    sectionBaseBg: Color,
+    sectionSurface: Color,
+    sectionPrimaryAccent: Color,
+    sectionHighlight: Color,
+    onSelectCategory: (String?) -> Unit,
+    onRequestUnlockCategory: ((String, () -> Unit) -> Unit)?,
+    onSearchQueryChange: (String) -> Unit,
+    onSyncCatalog: () -> Unit,
+    onLoadMore: () -> Unit,
+    onOpenDetails: (StreamEntity) -> Unit,
+    onPlayImmediately: (StreamEntity) -> Unit,
+    onToggleFavorite: (StreamEntity) -> Unit
+) {
+    var showTvCategoriesDialog by remember(isMovies) { mutableStateOf(false) }
+    var isSearchExpanded by remember(isMovies) { mutableStateOf(false) }
+    var forceGridMode by remember(isMovies) { mutableStateOf(false) }
+    var focusedTvItem by remember(isMovies) { mutableStateOf<GroupedVodStream?>(null) }
+
+    val tvDisplayItems = remember(groupedItems, fallbackItems) {
+        if (groupedItems.isNotEmpty()) {
+            groupedItems
+        } else {
+            fallbackItems.map { GroupedVodStream(stream = it, versionCount = 1) }
+        }
+    }
+
+    val defaultSpotlightItem = remember(discoveryShelves, tvDisplayItems) {
+        val ranked = discoveryShelves
+            .sortedBy { shelf ->
+                when {
+                    shelf.id.endsWith("top_rated") -> 0
+                    shelf.id.endsWith("recently_added") -> 1
+                    else -> 2
+                }
+            }
+            .flatMap { it.items }
+        ranked.firstOrNull { it.stream.streamIcon.isNotBlank() }
+            ?: tvDisplayItems.firstOrNull { it.stream.streamIcon.isNotBlank() }
+            ?: ranked.firstOrNull()
+            ?: tvDisplayItems.firstOrNull()
+    }
+
+    val isDiscoveryHomeMode = selectedCategoryId == null && searchQuery.isBlank() && !forceGridMode
+    val hasCatalogContent = tvDisplayItems.isNotEmpty() || discoveryShelves.isNotEmpty() || continueWatchingItems.isNotEmpty()
+
+    if (showTvCategoriesDialog) {
+        TvVodCategoryOverlayDialog(
+            isMovies = isMovies,
+            categories = categories,
+            categoryCounts = categoryCounts,
+            selectedCategoryId = selectedCategoryId,
+            sectionBaseBg = sectionBaseBg,
+            sectionSurface = sectionSurface,
+            sectionPrimaryAccent = sectionPrimaryAccent,
+            sectionHighlight = sectionHighlight,
+            onSelectDiscoverHome = {
+                forceGridMode = false
+                onSelectCategory(null)
+            },
+            onSelectCategory = { cat ->
+                if (cat.isLocked && !isParentalUnlocked) {
+                    onRequestUnlockCategory?.invoke(cat.categoryId) {
+                        onSelectCategory(cat.categoryId)
+                    }
+                } else {
+                    onSelectCategory(cat.categoryId)
+                }
+            },
+            onDismiss = { showTvCategoriesDialog = false }
+        )
+    }
+
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .testTag("tv_vod_cinema_screen")
     ) {
-        val activeCategoryLabel = categories.find { it.categoryId == selectedCatId }?.categoryName?.let {
-            StreamMetadataParser.cleanDisplayTitle(it)
-        } ?: if (isMovies) "All Cinema" else "All Series"
-
-        // Sleek 36.dp Single-Line Glass Telemetry Bar (Reclaims 35% of Vertical Screen Space)
-        Surface(
-            shape = RoundedCornerShape(12.dp),
-            color = (if (isMovies) MoviesAtlanticTeal else SeriesCypressCard).copy(alpha = 0.86f),
-            border = BorderStroke(
-                width = 0.8.dp,
-                color = sectionHighlight.copy(alpha = 0.32f)
-            ),
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 16.dp, vertical = 4.dp)
-                .height(36.dp)
-        ) {
-            Row(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .background(
-                        Brush.horizontalGradient(
-                            colors = if (isMovies) {
-                                listOf(MoviesSapphireNavy, MoviesAtlanticTeal, MoviesOceanTeal.copy(alpha = 0.78f))
-                            } else {
-                                listOf(SeriesPineBase, SeriesForestSurface, SeriesCypressCard)
-                            }
-                        )
-                    )
-                    .padding(horizontal = 10.dp),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(7.dp),
-                    modifier = Modifier.weight(1f)
-                ) {
-                    Icon(
-                        imageVector = if (isMovies) Icons.Default.LocalMovies else Icons.Default.Layers,
-                        contentDescription = null,
-                        tint = sectionHighlight,
-                        modifier = Modifier.size(14.dp)
-                    )
-                    Text(
-                        text = if (isMovies) "CINEMA" else "SERIES",
-                        color = sectionHighlight,
-                        fontSize = 10.sp,
-                        fontWeight = FontWeight.ExtraBold,
-                        letterSpacing = 0.4.sp
-                    )
-                    Text(
-                        text = "•",
-                        color = Champagne.copy(alpha = 0.45f),
-                        fontSize = 10.sp
-                    )
-                    Text(
-                        text = if (isMovies) {
-                            "%,d Movies • %s".format(totalCount, activeCategoryLabel)
-                        } else {
-                            "%,d Series • %s".format(totalCount, activeCategoryLabel)
-                        },
-                        color = Color.White,
-                        fontSize = 11.sp,
-                        fontWeight = FontWeight.SemiBold,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
-                    )
+        // 1. 48.dp Top 10-Foot Control Strip
+        TvVodTopControlStrip(
+            isMovies = isMovies,
+            activeCategoryLabel = activeCategoryLabel,
+            selectedCategoryId = selectedCategoryId,
+            searchQuery = searchQuery,
+            isSearchExpanded = isSearchExpanded,
+            forceGridMode = forceGridMode,
+            totalCount = totalCount,
+            isRefreshing = isRefreshing,
+            syncBannerState = syncBannerState,
+            sectionBaseBg = sectionBaseBg,
+            sectionSurface = sectionSurface,
+            sectionPrimaryAccent = sectionPrimaryAccent,
+            sectionHighlight = sectionHighlight,
+            onOpenCategories = { showTvCategoriesDialog = true },
+            onToggleSearch = {
+                if (isSearchExpanded || searchQuery.isNotBlank()) {
+                    isSearchExpanded = false
+                    if (searchQuery.isNotBlank()) onSearchQueryChange("")
+                } else {
+                    isSearchExpanded = true
                 }
-
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(6.dp)
-                ) {
-                    Surface(
-                        color = Color.White.copy(alpha = 0.08f),
-                        shape = RoundedCornerShape(50),
-                        border = BorderStroke(0.6.dp, sectionHighlight.copy(alpha = 0.35f))
-                    ) {
-                        Text(
-                            text = "${categories.size} GENRES",
-                            color = sectionHighlight,
-                            fontSize = 9.sp,
-                            fontWeight = FontWeight.ExtraBold,
-                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.5.dp)
-                        )
-                    }
-
-                    Surface(
-                        color = sectionPrimaryAccent.copy(alpha = 0.22f),
-                        shape = RoundedCornerShape(50),
-                        border = BorderStroke(0.7.dp, sectionHighlight.copy(alpha = 0.55f)),
-                        modifier = Modifier
-                            .height(24.dp)
-                            .tvFocusablePill(
-                                accentColor = sectionHighlight,
-                                onClick = {
-                                    if (isMovies) {
-                                        viewModel.refreshMovies(activePlaylist)
-                                    } else {
-                                        viewModel.refreshSeries(activePlaylist)
-                                    }
-                                }
-                            )
-                            .testTag("section_refresh_button")
-                    ) {
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(4.dp),
-                            modifier = Modifier.padding(horizontal = 8.dp)
-                        ) {
-                            if (isRefreshing) {
-                                CircularProgressIndicator(
-                                    color = sectionHighlight,
-                                    strokeWidth = 1.5.dp,
-                                    modifier = Modifier.size(11.dp)
-                                )
-                            } else {
-                                Icon(
-                                    imageVector = Icons.Default.Refresh,
-                                    contentDescription = if (isMovies) "Refresh Movies" else "Refresh Series",
-                                    tint = sectionHighlight,
-                                    modifier = Modifier.size(12.dp)
-                                )
-                            }
-                            Text(
-                                text = if (isRefreshing) "Syncing…" else "Refresh",
-                                color = Color.White,
-                                fontSize = 9.sp,
-                                fontWeight = FontWeight.ExtraBold
-                            )
-                        }
-                    }
-                }
-            }
-        }
-
-        // Section-Tinted Search Bar
-        Box(modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp)) {
-            OutlinedTextField(
-                value = searchQuery,
-                onValueChange = onSearchChange,
-                placeholder = {
-                    val selectedCatName = categories.find { it.categoryId == selectedCatId }?.categoryName
-                    Text(
-                        text = when {
-                            selectedCatName != null -> "Search in $selectedCatName…"
-                            isMovies -> "Search %,d+ cinema movies…".format(totalCount)
-                            else -> "Search %,d+ series & shows…".format(totalCount)
-                        },
-                        color = sectionHighlight.copy(alpha = 0.65f),
-                        fontSize = 13.sp
-                    )
-                },
-                leadingIcon = {
-                    Icon(
-                        Icons.Default.Search,
-                        contentDescription = "Search",
-                        tint = sectionHighlight
-                    )
-                },
-                trailingIcon = {
-                    if (searchQuery.isNotEmpty()) {
-                        IconButton(onClick = { onSearchChange("") }) {
-                            Icon(Icons.Default.Clear, contentDescription = "Clear", tint = sectionHighlight)
-                        }
-                    }
-                },
-                singleLine = true,
-                shape = RoundedCornerShape(24.dp),
-                colors = OutlinedTextFieldDefaults.colors(
-                    focusedBorderColor = sectionHighlight,
-                    unfocusedBorderColor = Color.White.copy(alpha = 0.08f),
-                    focusedContainerColor = sectionSurface,
-                    unfocusedContainerColor = sectionSurface.copy(alpha = 0.85f),
-                    focusedTextColor = Color.White,
-                    unfocusedTextColor = Color.White
-                ),
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .testTag("vod_search_input")
-            )
-        }
+            },
+            onSearchQueryChange = onSearchQueryChange,
+            onToggleViewMode = { forceGridMode = !forceGridMode },
+            onSyncCatalog = onSyncCatalog
+        )
 
         Spacer(modifier = Modifier.height(6.dp))
 
-        // Horizontal Scrolling Row of Luxury Category Capsules (Multi-Stop Gradient Active vs Frosted Glass Inactive)
-        LazyRow(
-            modifier = Modifier.fillMaxWidth(),
-            contentPadding = PaddingValues(horizontal = 16.dp),
-            horizontalArrangement = Arrangement.spacedBy(8.dp)
-        ) {
-            item(key = "__all_vod_categories__") {
-                val isSelected = selectedCatId == null
-                Surface(
-                    color = if (isSelected) Color.Transparent else sectionSurface.copy(alpha = 0.78f),
-                    shape = RoundedCornerShape(50),
-                    border = BorderStroke(
-                        width = if (isSelected) 1.dp else 0.8.dp,
-                        color = if (isSelected) Color.White.copy(alpha = 0.55f) else Color.White.copy(alpha = 0.10f)
-                    ),
-                    modifier = Modifier
-                        .clip(RoundedCornerShape(50))
-                        .then(
-                            if (isSelected) {
-                                Modifier.background(
-                                    Brush.horizontalGradient(
-                                        if (isMovies) {
-                                            listOf(MoviesMintSpring, MoviesCyanTeal)
-                                        } else {
-                                            listOf(SeriesIceAqua, SeriesMistTeal)
-                                        }
-                                    )
-                                )
-                            } else {
-                                Modifier
-                            }
-                        )
-                        .tvFocusablePill(
-                            accentColor = sectionHighlight,
-                            shape = RoundedCornerShape(50),
-                            onClick = { onSelectCategory(null) }
-                        )
-                ) {
-                    Text(
-                        text = if (isMovies) "All Movies" else "All Series",
-                        color = if (isSelected) sectionBaseBg else Champagne,
-                        fontSize = 12.sp,
-                        fontWeight = if (isSelected) FontWeight.ExtraBold else FontWeight.SemiBold,
-                        modifier = Modifier.padding(horizontal = 14.dp, vertical = 6.5.dp)
-                    )
-                }
-            }
-            items(categories, key = { it.categoryId }) { cat ->
-                val isSelected = selectedCatId == cat.categoryId
-                Surface(
-                    color = if (isSelected) Color.Transparent else sectionSurface.copy(alpha = 0.78f),
-                    shape = RoundedCornerShape(50),
-                    border = BorderStroke(
-                        width = if (isSelected) 1.dp else 0.8.dp,
-                        color = if (isSelected) Color.White.copy(alpha = 0.55f) else Color.White.copy(alpha = 0.10f)
-                    ),
-                    modifier = Modifier
-                        .clip(RoundedCornerShape(50))
-                        .then(
-                            if (isSelected) {
-                                Modifier.background(
-                                    Brush.horizontalGradient(
-                                        if (isMovies) {
-                                            listOf(MoviesMintSpring, MoviesCyanTeal)
-                                        } else {
-                                            listOf(SeriesIceAqua, SeriesMistTeal)
-                                        }
-                                    )
-                                )
-                            } else {
-                                Modifier
-                            }
-                        )
-                        .tvFocusablePill(
-                            accentColor = sectionHighlight,
-                            shape = RoundedCornerShape(50),
-                            onClick = {
-                                if (isSelected) {
-                                    onSelectCategory(null)
-                                } else if (cat.isLocked && !isParentalUnlocked) {
-                                    onRequestUnlockCategory?.invoke(cat.categoryId) {
-                                        onSelectCategory(cat.categoryId)
-                                    }
-                                } else {
-                                    onSelectCategory(cat.categoryId)
-                                }
-                            }
-                        )
-                ) {
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        modifier = Modifier.padding(horizontal = 14.dp, vertical = 6.5.dp)
-                    ) {
-                        Text(
-                            text = cat.categoryName,
-                            color = if (isSelected) sectionBaseBg else Champagne,
-                            fontSize = 12.sp,
-                            fontWeight = if (isSelected) FontWeight.ExtraBold else FontWeight.SemiBold
-                        )
-                        if (cat.isLocked) {
-                            Spacer(modifier = Modifier.width(5.dp))
-                            Icon(
-                                imageVector = Icons.Default.Lock,
-                                contentDescription = "Locked Category",
-                                tint = if (isSelected) sectionBaseBg else LiveRed,
-                                modifier = Modifier.size(12.dp)
-                            )
-                        }
-                    }
-                }
-            }
-        }
-
-        Spacer(modifier = Modifier.height(6.dp))
-
-        // Sleek Horizontal "Continue Watching" Rail when at root (selectedCatId == null && searchQuery.isBlank())
-        if (selectedCatId == null && searchQuery.isBlank() && continueWatchingItems.isNotEmpty()) {
-            ContinueWatchingVodRail(
-                items = continueWatchingItems,
-                isMovies = isMovies,
-                onItemClick = { item ->
-                    if (isMovies) {
-                        onItemClick(item)
-                    } else {
-                        viewModel.openSeriesDetails(item, activePlaylist)
-                    }
-                }
-            )
-            Spacer(modifier = Modifier.height(6.dp))
-        }
-
-        // Grid of Tailored Section Cards with Progressive Paging
-        if (items.isEmpty()) {
+        if (!hasCatalogContent) {
             Box(
                 modifier = Modifier
                     .fillMaxSize()
@@ -641,60 +785,179 @@ fun VodScreen(
                             "No matching titles found."
                         },
                         color = PaleGold,
-                        fontSize = 16.sp,
-                        fontWeight = FontWeight.SemiBold
+                        fontSize = 18.sp,
+                        fontWeight = FontWeight.Bold
                     )
                     Spacer(modifier = Modifier.height(6.dp))
                     Text(
                         text = if (totalCount == 0) {
-                            "Tap 'Sync Catalog' on the KickOff screen or Accounts page."
+                            "Select 'Sync Catalog' above to load your cinema library."
                         } else {
                             "Try clearing the search filter or selecting another category."
                         },
-                        color = sectionHighlight.copy(alpha = 0.8f),
-                        fontSize = 13.sp
+                        color = sectionHighlight.copy(alpha = 0.85f),
+                        fontSize = 13.5.sp
                     )
                 }
             }
+        } else if (isDiscoveryHomeMode) {
+            // 2. Dynamic 10-Foot Live Backdrop Stage (~38% top) + Horizontal Discovery Shelves (~62% bottom)
+            val stageItem = focusedTvItem ?: defaultSpotlightItem
+            if (stageItem != null) {
+                TvLiveBackdropBanner(
+                    grouped = stageItem,
+                    isMovies = isMovies,
+                    sectionBaseBg = sectionBaseBg,
+                    sectionSurface = sectionSurface,
+                    sectionPrimaryAccent = sectionPrimaryAccent,
+                    sectionHighlight = sectionHighlight,
+                    modifier = Modifier.weight(0.38f)
+                )
+                Spacer(modifier = Modifier.height(10.dp))
+            }
+
+            LazyColumn(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .weight(if (stageItem != null) 0.62f else 1f)
+                    .testTag("tv_discovery_shelves_list"),
+                contentPadding = PaddingValues(top = 4.dp, bottom = 28.dp),
+                verticalArrangement = Arrangement.spacedBy(16.dp)
+            ) {
+                if (continueWatchingItems.isNotEmpty()) {
+                    item(key = "tv_continue_watching_shelf") {
+                        TvContinueWatchingShelfRow(
+                            items = continueWatchingItems,
+                            isMovies = isMovies,
+                            sectionBaseBg = sectionBaseBg,
+                            sectionSurface = sectionSurface,
+                            sectionHighlight = sectionHighlight,
+                            onItemFocused = { focusedTvItem = it },
+                            onItemClick = onPlayImmediately
+                        )
+                    }
+                }
+
+                items(discoveryShelves, key = { "tv_shelf_${it.id}" }) { shelf ->
+                    TvDiscoveryShelfRow(
+                        shelf = shelf,
+                        isMovies = isMovies,
+                        sectionBaseBg = sectionBaseBg,
+                        sectionSurface = sectionSurface,
+                        sectionPrimaryAccent = sectionPrimaryAccent,
+                        sectionHighlight = sectionHighlight,
+                        onItemFocused = { focusedTvItem = it },
+                        onItemClick = { onOpenDetails(it.stream) }
+                    )
+                }
+
+                if (discoveryShelves.isEmpty() && tvDisplayItems.isNotEmpty()) {
+                    item(key = "tv_fallback_shelf") {
+                        TvDiscoveryShelfRow(
+                            shelf = VodDiscoveryShelf(
+                                id = "tv_featured_catalog",
+                                title = if (isMovies) "Featured Cinema" else "Featured Series",
+                                subtitle = "From your active library",
+                                items = tvDisplayItems.take(20)
+                            ),
+                            isMovies = isMovies,
+                            sectionBaseBg = sectionBaseBg,
+                            sectionSurface = sectionSurface,
+                            sectionPrimaryAccent = sectionPrimaryAccent,
+                            sectionHighlight = sectionHighlight,
+                            onItemFocused = { focusedTvItem = it },
+                            onItemClick = { onOpenDetails(it.stream) }
+                        )
+                    }
+                }
+
+                if (tvDisplayItems.isNotEmpty()) {
+                    item(key = "tv_browse_all_grid_footer") {
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 20.dp, vertical = 6.dp),
+                            contentAlignment = Alignment.CenterStart
+                        ) {
+                            Surface(
+                                color = sectionSurface.copy(alpha = 0.85f),
+                                shape = RoundedCornerShape(50),
+                                border = BorderStroke(1.dp, sectionHighlight.copy(alpha = 0.55f)),
+                                modifier = Modifier.tvFocusablePill(
+                                    accentColor = sectionHighlight,
+                                    onClick = { forceGridMode = true }
+                                )
+                            ) {
+                                Row(
+                                    modifier = Modifier.padding(horizontal = 18.dp, vertical = 10.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.GridView,
+                                        contentDescription = null,
+                                        tint = sectionHighlight,
+                                        modifier = Modifier.size(16.dp)
+                                    )
+                                    Text(
+                                        text = if (isMovies) "Browse Full Movie Grid" else "Browse Full Series Grid",
+                                        color = Color.White,
+                                        fontSize = 13.sp,
+                                        fontWeight = FontWeight.ExtraBold
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+            }
         } else {
+            // 3. Category / Search / Full Grid Mode on TV (Crisp 5- or 6-Column Deduplicated Grid)
             val gridState = rememberLazyGridState()
-            val shouldLoadMore by remember(items.size, currentLimit) {
+            val shouldLoadMore by remember(tvDisplayItems.size, currentLimit) {
                 derivedStateOf {
                     val lastVisible = gridState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: 0
-                    items.size >= currentLimit && lastVisible >= (items.size - 24).coerceAtLeast(0)
+                    tvDisplayItems.size >= currentLimit && lastVisible >= (tvDisplayItems.size - 24).coerceAtLeast(0)
                 }
             }
             LaunchedEffect(shouldLoadMore) {
                 if (shouldLoadMore) {
-                    viewModel.loadMore()
+                    onLoadMore()
                 }
             }
 
             BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
-                val minCellDp = calculateVodPosterMinCellDp(maxWidth.value.toInt())
+                val tvGridColumns = when {
+                    maxWidth >= 1120.dp -> 6
+                    maxWidth >= 780.dp -> 5
+                    else -> 4
+                }
                 LazyVerticalGrid(
                     state = gridState,
-                    columns = GridCells.Adaptive(minSize = minCellDp.dp),
+                    columns = GridCells.Fixed(tvGridColumns),
                     modifier = Modifier
                         .fillMaxSize()
                         .testTag("vod_grid"),
-                    contentPadding = PaddingValues(16.dp),
-                    horizontalArrangement = Arrangement.spacedBy(12.dp),
-                    verticalArrangement = Arrangement.spacedBy(14.dp)
+                    contentPadding = PaddingValues(horizontal = 20.dp, vertical = 12.dp),
+                    horizontalArrangement = Arrangement.spacedBy(14.dp),
+                    verticalArrangement = Arrangement.spacedBy(16.dp)
                 ) {
-                    items(items, key = { it.id }) { item ->
+                    items(tvDisplayItems, key = { it.stream.id }) { grouped ->
+                        val item = grouped.stream
                         if (isMovies) {
                             MoviePosterCard(
                                 item = item,
-                                onClick = { viewModel.openMovieDetails(item, activePlaylist) },
-                                onPlayImmediately = { onItemClick(item) },
-                                onToggleFavorite = { viewModel.toggleFavorite(item.id, item.isFavorite) }
+                                versionCount = grouped.versionCount,
+                                onClick = { onOpenDetails(item) },
+                                onPlayImmediately = { onPlayImmediately(item) },
+                                onToggleFavorite = { onToggleFavorite(item) }
                             )
                         } else {
                             SeriesVaultCard(
                                 item = item,
-                                onClick = { viewModel.openSeriesDetails(item, activePlaylist) },
-                                onToggleFavorite = { viewModel.toggleFavorite(item.id, item.isFavorite) }
+                                versionCount = grouped.versionCount,
+                                onClick = { onOpenDetails(item) },
+                                onToggleFavorite = { onToggleFavorite(item) }
                             )
                         }
                     }
@@ -907,14 +1170,16 @@ fun MoviePosterCard(
     onClick: () -> Unit,
     onPlayImmediately: () -> Unit = onClick,
     onToggleFavorite: () -> Unit,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    versionCount: Int = 1
 ) {
     MovieCinemaPosterCard(
         item = item,
         onClick = onClick,
         onPlayImmediately = onPlayImmediately,
         onToggleFavorite = onToggleFavorite,
-        modifier = modifier
+        modifier = modifier,
+        versionCount = versionCount
     )
 }
 
@@ -924,7 +1189,8 @@ fun MovieCinemaPosterCard(
     onClick: () -> Unit,
     onPlayImmediately: () -> Unit = onClick,
     onToggleFavorite: () -> Unit,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    versionCount: Int = 1
 ) {
     val cleanTitle = remember(item.name) {
         StreamMetadataParser.cleanDisplayTitle(item.name)
@@ -1013,7 +1279,10 @@ fun MovieCinemaPosterCard(
                         .align(Alignment.TopStart)
                         .padding(start = 8.dp, top = 8.dp, end = 36.dp)
                 ) {
-                    if (item.rating.isNotEmpty() && item.rating != "0" && item.rating != "0.0") {
+                    val normalizedMovieRating = remember(item.ratingNumeric) {
+                        formatNormalizedRating(item)
+                    }
+                    if (normalizedMovieRating != null) {
                         Surface(
                             color = MoviesSapphireNavy.copy(alpha = 0.84f),
                             shape = RoundedCornerShape(50),
@@ -1031,7 +1300,7 @@ fun MovieCinemaPosterCard(
                                 )
                                 Spacer(modifier = Modifier.width(2.5.dp))
                                 Text(
-                                    text = item.rating.take(3),
+                                    text = normalizedMovieRating,
                                     color = PaleGold,
                                     fontSize = 9.5.sp,
                                     fontWeight = FontWeight.ExtraBold
@@ -1089,6 +1358,26 @@ fun MovieCinemaPosterCard(
                         tint = if (item.isFavorite) AmberGold else Color.White.copy(alpha = 0.85f),
                         modifier = Modifier.size(15.dp)
                     )
+                }
+
+                // Bottom-Start Multi-Version Badge when grouped duplicates exist
+                if (versionCount > 1) {
+                    Surface(
+                        color = MoviesSapphireNavy.copy(alpha = 0.88f),
+                        shape = RoundedCornerShape(6.dp),
+                        border = BorderStroke(0.6.dp, MoviesMintSpring.copy(alpha = 0.72f)),
+                        modifier = Modifier
+                            .align(Alignment.BottomStart)
+                            .padding(8.dp)
+                    ) {
+                        Text(
+                            text = "${versionCount}x",
+                            color = MoviesMintSpring,
+                            fontSize = 8.5.sp,
+                            fontWeight = FontWeight.ExtraBold,
+                            modifier = Modifier.padding(horizontal = 5.5.dp, vertical = 2.dp)
+                        )
+                    }
                 }
 
                 // Bottom-End Sculpted Backlit IMAX Play Medallion (Plays Immediately)
@@ -1181,7 +1470,13 @@ fun ImaxMovieDossierModalSheet(
     isLoading: Boolean,
     onDismiss: () -> Unit,
     onWatchMovie: () -> Unit,
-    onToggleFavorite: () -> Unit
+    onToggleFavorite: () -> Unit,
+    availableVersions: List<StreamEntity> = emptyList(),
+    similarMovies: List<GroupedVodStream> = emptyList(),
+    categoryNameById: Map<String, String> = emptyMap(),
+    onSwitchVersion: (StreamEntity) -> Unit = {},
+    onSelectSimilarMovie: (StreamEntity) -> Unit = {},
+    isTvEdition: Boolean = false
 ) {
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
     val rawTitle = movieDetails?.title?.takeIf { it.isNotBlank() } ?: movieStream.name
@@ -1190,8 +1485,9 @@ fun ImaxMovieDossierModalSheet(
     val languageBadge = remember(movieStream.name) { StreamMetadataParser.extractLanguageBadge(movieStream.name) }
     val containerBadge = (movieDetails?.containerExtension?.takeIf { it.isNotBlank() } ?: movieStream.containerExtension)
         .ifBlank { "MP4" }.uppercase()
-    val ratingText = (movieDetails?.rating?.takeIf { it.isNotBlank() && it != "0" } ?: movieStream.rating)
-        .takeIf { it.isNotBlank() && it != "0" && it != "0.0" }
+    val ratingText = remember(movieDetails?.rating, movieStream.ratingNumeric) {
+        formatDetailNormalizedRating(movieDetails?.rating, movieStream)
+    }
     val releaseYear = remember(movieDetails?.releaseDate, movieStream.name) {
         val rawDate = movieDetails?.releaseDate?.trim().orEmpty()
         val yearFromDate = Regex("""\b(19\d{2}|20\d{2})\b""").find(rawDate)?.value
@@ -1216,7 +1512,8 @@ fun ImaxMovieDossierModalSheet(
         Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(bottom = 24.dp)
+                .verticalScroll(rememberScrollState())
+                .padding(bottom = 28.dp)
         ) {
             // 1. Hero Backdrop + Poster Header
             Box(
@@ -1353,7 +1650,7 @@ fun ImaxMovieDossierModalSheet(
                                         )
                                         Spacer(modifier = Modifier.width(3.dp))
                                         Text(
-                                            text = ratingText.take(3),
+                                            text = ratingText,
                                             color = PaleGold,
                                             fontSize = 9.5.sp,
                                             fontWeight = FontWeight.ExtraBold
@@ -1415,6 +1712,26 @@ fun ImaxMovieDossierModalSheet(
                         }
                     }
                 }
+            }
+
+            // 1b. Interactive Multi-Language / Multi-Quality Version Selector (when > 1 edition exists)
+            if (availableVersions.size > 1) {
+                Spacer(modifier = Modifier.height(6.dp))
+                VodVersionSelectorStrip(
+                    headerTitle = "AVAILABLE VERSIONS (${availableVersions.size})",
+                    versions = availableVersions,
+                    activeStreamId = movieStream.id,
+                    categoryNameById = categoryNameById,
+                    includeContainer = true,
+                    tagPrefix = "vod_version_chip",
+                    sectionBaseBg = MoviesSapphireNavy,
+                    sectionSurface = MoviesAtlanticTeal,
+                    sectionPrimaryAccent = MoviesCyanTeal,
+                    sectionHighlight = MoviesMintSpring,
+                    onSelectVersion = onSwitchVersion,
+                    isTvEdition = isTvEdition
+                )
+                Spacer(modifier = Modifier.height(4.dp))
             }
 
             // 2. Primary Action Deck: [ ▶ Watch Movie ] CTA + [ ★ Favorite ] Button
@@ -1561,6 +1878,26 @@ fun ImaxMovieDossierModalSheet(
                     }
                 }
             }
+
+            // 4. "More Like This" Similar Movies Shelf
+            if (similarMovies.isNotEmpty()) {
+                Spacer(modifier = Modifier.height(14.dp))
+                HorizontalDivider(
+                    color = Color.White.copy(alpha = 0.08f),
+                    modifier = Modifier.padding(horizontal = 18.dp)
+                )
+                Spacer(modifier = Modifier.height(14.dp))
+                VodSimilarTitlesRow(
+                    title = "More Like This",
+                    items = similarMovies,
+                    isMovies = true,
+                    sectionBaseBg = MoviesSapphireNavy,
+                    sectionSurface = MoviesAtlanticTeal,
+                    sectionPrimaryAccent = MoviesCyanTeal,
+                    sectionHighlight = MoviesMintSpring,
+                    onItemClick = onSelectSimilarMovie
+                )
+            }
         }
     }
 }
@@ -1594,7 +1931,8 @@ fun SeriesVaultCard(
     item: StreamEntity,
     onClick: () -> Unit,
     onToggleFavorite: () -> Unit,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    versionCount: Int = 1
 ) {
     val cleanTitle = remember(item.name) {
         StreamMetadataParser.cleanDisplayTitle(item.name)
@@ -1702,7 +2040,10 @@ fun SeriesVaultCard(
                             .align(Alignment.TopStart)
                             .padding(start = 8.dp, top = 8.dp, end = 36.dp)
                     ) {
-                        if (item.rating.isNotEmpty() && item.rating != "0" && item.rating != "0.0") {
+                        val normalizedSeriesRating = remember(item.ratingNumeric) {
+                            formatNormalizedRating(item)
+                        }
+                        if (normalizedSeriesRating != null) {
                             Surface(
                                 color = SeriesPineBase.copy(alpha = 0.84f),
                                 shape = RoundedCornerShape(50),
@@ -1720,7 +2061,7 @@ fun SeriesVaultCard(
                                     )
                                     Spacer(modifier = Modifier.width(2.5.dp))
                                     Text(
-                                        text = item.rating.take(3),
+                                        text = normalizedSeriesRating,
                                         color = PaleGold,
                                         fontSize = 9.5.sp,
                                         fontWeight = FontWeight.ExtraBold
@@ -1776,6 +2117,26 @@ fun SeriesVaultCard(
                             tint = if (item.isFavorite) AmberGold else Color.White.copy(alpha = 0.85f),
                             modifier = Modifier.size(15.dp)
                         )
+                    }
+
+                    // Bottom-Start Multi-Version Badge when grouped duplicates exist
+                    if (versionCount > 1) {
+                        Surface(
+                            color = SeriesPineBase.copy(alpha = 0.88f),
+                            shape = RoundedCornerShape(6.dp),
+                            border = BorderStroke(0.6.dp, SeriesIceAqua.copy(alpha = 0.72f)),
+                            modifier = Modifier
+                                .align(Alignment.BottomStart)
+                                .padding(8.dp)
+                        ) {
+                            Text(
+                                text = "${versionCount}x",
+                                color = SeriesIceAqua,
+                                fontSize = 8.5.sp,
+                                fontWeight = FontWeight.ExtraBold,
+                                modifier = Modifier.padding(horizontal = 5.5.dp, vertical = 2.dp)
+                            )
+                        }
                     }
 
                     // Bottom-End Sculpted Backlit Ice-Aqua Play Medallion
@@ -1860,7 +2221,13 @@ fun SeriesDetailHierarchyScreen(
     onBack: () -> Unit,
     onToggleFavorite: () -> Unit,
     onPlayEpisode: (SeriesEpisode) -> Unit,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    availableVersions: List<StreamEntity> = emptyList(),
+    similarSeries: List<GroupedVodStream> = emptyList(),
+    categoryNameById: Map<String, String> = emptyMap(),
+    onSwitchVersion: (StreamEntity) -> Unit = {},
+    onSelectSimilarSeries: (StreamEntity) -> Unit = {},
+    isTvEdition: Boolean = false
 ) {
     val seasons = seriesDetails?.seasons ?: emptyList()
     val activeSeason = seasons.find { it.seasonNumber == selectedSeasonNumber } ?: seasons.firstOrNull()
@@ -2005,8 +2372,10 @@ fun SeriesDetailHierarchyScreen(
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
-                        val ratingText = seriesDetails?.rating?.ifBlank { seriesStream.rating } ?: seriesStream.rating
-                        if (ratingText.isNotEmpty() && ratingText != "0") {
+                        val ratingText = remember(seriesDetails?.rating, seriesStream.ratingNumeric) {
+                            formatDetailNormalizedRating(seriesDetails?.rating, seriesStream)
+                        }
+                        if (ratingText != null) {
                             Surface(
                                 color = SeriesSeaJade,
                                 shape = RoundedCornerShape(6.dp),
@@ -2024,7 +2393,7 @@ fun SeriesDetailHierarchyScreen(
                                     )
                                     Spacer(modifier = Modifier.width(3.dp))
                                     Text(
-                                        text = ratingText.take(3),
+                                        text = ratingText,
                                         color = SeriesIceAqua,
                                         fontSize = 11.sp,
                                         fontWeight = FontWeight.Bold
@@ -2067,6 +2436,25 @@ fun SeriesDetailHierarchyScreen(
                     }
                 }
             }
+        }
+
+        // 1b. Interactive Series Version / Language Selector Pill Strip (visible immediately above Seasons)
+        if (availableVersions.size > 1) {
+            Spacer(modifier = Modifier.height(10.dp))
+            VodVersionSelectorStrip(
+                headerTitle = "SERIES VERSION / LANGUAGE (${availableVersions.size})",
+                versions = availableVersions,
+                activeStreamId = seriesStream.id,
+                categoryNameById = categoryNameById,
+                includeContainer = false,
+                tagPrefix = "series_version_chip",
+                sectionBaseBg = SeriesPineBase,
+                sectionSurface = SeriesCypressCard,
+                sectionPrimaryAccent = SeriesSeaJade,
+                sectionHighlight = SeriesIceAqua,
+                onSelectVersion = onSwitchVersion,
+                isTvEdition = isTvEdition
+            )
         }
 
         if (isLoading) {
@@ -2143,19 +2531,44 @@ fun SeriesDetailHierarchyScreen(
                 modifier = Modifier
                     .fillMaxSize()
                     .testTag("episode_vertical_list"),
-                contentPadding = PaddingValues(horizontal = 16.dp, vertical = 6.dp),
+                contentPadding = PaddingValues(top = 6.dp, bottom = 104.dp),
                 verticalArrangement = Arrangement.spacedBy(10.dp)
             ) {
                 items(episodes, key = { "${it.seasonNumber}_${it.episodeNumber}_${it.episodeId}" }) { episode ->
                     val resumeKey = "${seriesStream.playlistId}_ep_${episode.episodeId}"
                     val resumeInfo = episodeResumeMap[resumeKey]
                     val resolvedCover = seriesDetails?.coverUrl?.ifBlank { seriesStream.streamIcon } ?: seriesStream.streamIcon
-                    SeriesEpisodeCard(
-                        episode = episode,
-                        fallbackCover = resolvedCover,
-                        resumeInfo = resumeInfo,
-                        onPlay = { onPlayEpisode(episode) }
-                    )
+                    Box(modifier = Modifier.padding(horizontal = 16.dp)) {
+                        SeriesEpisodeCard(
+                            episode = episode,
+                            fallbackCover = resolvedCover,
+                            resumeInfo = resumeInfo,
+                            onPlay = { onPlayEpisode(episode) }
+                        )
+                    }
+                }
+
+                if (similarSeries.isNotEmpty()) {
+                    item(key = "series_similar_titles_section") {
+                        Column(modifier = Modifier.fillMaxWidth()) {
+                            Spacer(modifier = Modifier.height(10.dp))
+                            HorizontalDivider(
+                                color = Color.White.copy(alpha = 0.08f),
+                                modifier = Modifier.padding(horizontal = 16.dp)
+                            )
+                            Spacer(modifier = Modifier.height(14.dp))
+                            VodSimilarTitlesRow(
+                                title = "Similar Series",
+                                items = similarSeries,
+                                isMovies = false,
+                                sectionBaseBg = SeriesPineBase,
+                                sectionSurface = SeriesCypressCard,
+                                sectionPrimaryAccent = SeriesSeaJade,
+                                sectionHighlight = SeriesIceAqua,
+                                onItemClick = onSelectSimilarSeries
+                            )
+                        }
+                    }
                 }
             }
         }

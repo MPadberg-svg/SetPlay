@@ -5880,6 +5880,161 @@ class TvSyncDeviceSeparationComposeTest {
         composeTestRule.onNode(androidx.compose.ui.test.hasTestTag("tv_rail_parental_lock_btn")).assertExists()
         composeTestRule.onNode(androidx.compose.ui.test.hasTestTag("tv_rail_sync_status_pod")).assertExists()
     }
+
+    @Test
+    fun testVodRedesignDeduplicationRatingNormalizationAndMigration() = runBlocking {
+        // 1. TMDb Cross-Language Deduplication
+        val enKey = com.example.data.model.VodGroupingNormalizer.computeCanonicalGroupKey(
+            streamType = "movie",
+            rawName = "The Beekeeper",
+            tmdbId = "866398",
+            releaseYear = 2024,
+            streamId = 1L
+        )
+        val esKey = com.example.data.model.VodGroupingNormalizer.computeCanonicalGroupKey(
+            streamType = "movie",
+            rawName = "Beekeeper: El protector",
+            tmdbId = "866398",
+            releaseYear = 2024,
+            streamId = 2L
+        )
+        assertEquals("tmdb_movie_866398", enKey)
+        assertEquals(enKey, esKey)
+
+        // 2. Title + Year Fallback & Zero False Merge on Remakes/Sequels
+        val arSeriesKey = com.example.data.model.VodGroupingNormalizer.computeCanonicalGroupKey(
+            streamType = "series",
+            rawName = "AR | Mr. Robot",
+            tmdbId = "",
+            releaseYear = 2015,
+            streamId = 10L
+        )
+        val enSeriesKey = com.example.data.model.VodGroupingNormalizer.computeCanonicalGroupKey(
+            streamType = "series",
+            rawName = "EN | Mr. Robot",
+            tmdbId = "",
+            releaseYear = 2015,
+            streamId = 11L
+        )
+        assertEquals(arSeriesKey, enSeriesKey)
+
+        val dune1984Key = com.example.data.model.VodGroupingNormalizer.computeCanonicalGroupKey(
+            streamType = "movie",
+            rawName = "Dune (1984)",
+            tmdbId = "",
+            releaseYear = 1984,
+            streamId = 20L
+        )
+        val dune2021Key = com.example.data.model.VodGroupingNormalizer.computeCanonicalGroupKey(
+            streamType = "movie",
+            rawName = "Dune (2021)",
+            tmdbId = "",
+            releaseYear = 2021,
+            streamId = 21L
+        )
+        assertNotEquals(dune1984Key, dune2021Key)
+
+        // 3. Rating Normalization (Fixing 3.6 vs 7.2 Bug)
+        assertEquals(
+            "7.2" to 7.2,
+            com.example.data.model.VodGroupingNormalizer.normalizeRatingToTenScale("7.2", "3.6")
+        )
+        assertEquals(
+            "7.2" to 7.2,
+            com.example.data.model.VodGroupingNormalizer.normalizeRatingToTenScale("", "3.6")
+        )
+
+        // 4. Version Tag Extraction
+        val arTag = com.example.data.model.VodGroupingNormalizer.extractVersionTag("AR | Mr. Robot")
+        assertTrue("Expected AR tag in '$arTag'", arTag.contains("AR"))
+        val en4kTag = com.example.data.model.VodGroupingNormalizer.extractVersionTag("[EN] Breaking Bad 4K")
+        assertTrue("Expected EN tag in '$en4kTag'", en4kTag.contains("EN"))
+        assertTrue("Expected 4K tag in '$en4kTag'", en4kTag.contains("4K"))
+
+        // 5. Room In-Memory SQL Deduplication & Sibling Lookup
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val db = androidx.room.Room.inMemoryDatabaseBuilder(
+            context,
+            com.example.data.local.StreamVaultDatabase::class.java
+        ).allowMainThreadQueries().build()
+
+        try {
+            val playlistId = 42L
+            val versionsToInsert = listOf(
+                StreamEntity(
+                    playlistId = playlistId,
+                    streamId = 9001L,
+                    name = "EN | The Beekeeper (2024) 4K",
+                    streamType = "movie",
+                    streamIcon = "https://image.tmdb.org/t/p/w500/beekeeper.jpg",
+                    categoryId = "cat_4k",
+                    containerExtension = "mkv",
+                    rating = "7.2",
+                    tmdbId = "866398",
+                    canonicalGroupKey = "tmdb_movie_866398",
+                    versionTag = "EN • 4K",
+                    addedEpoch = 1710000300L,
+                    ratingNumeric = 7.2,
+                    genres = "Action, Thriller",
+                    releaseYear = 2024
+                ),
+                StreamEntity(
+                    playlistId = playlistId,
+                    streamId = 9002L,
+                    name = "ES | Beekeeper: El protector (2024)",
+                    streamType = "movie",
+                    streamIcon = "https://image.tmdb.org/t/p/w500/beekeeper_es.jpg",
+                    categoryId = "cat_es",
+                    containerExtension = "mp4",
+                    rating = "7.2",
+                    tmdbId = "866398",
+                    canonicalGroupKey = "tmdb_movie_866398",
+                    versionTag = "ES",
+                    addedEpoch = 1710000200L,
+                    ratingNumeric = 7.2,
+                    genres = "Action, Thriller",
+                    releaseYear = 2024
+                ),
+                StreamEntity(
+                    playlistId = playlistId,
+                    streamId = 9003L,
+                    name = "AR | The Beekeeper (2024)",
+                    streamType = "movie",
+                    streamIcon = "https://image.tmdb.org/t/p/w500/beekeeper_ar.jpg",
+                    categoryId = "cat_ar",
+                    containerExtension = "mp4",
+                    rating = "7.2",
+                    tmdbId = "866398",
+                    canonicalGroupKey = "tmdb_movie_866398",
+                    versionTag = "AR",
+                    addedEpoch = 1710000100L,
+                    ratingNumeric = 7.2,
+                    genres = "Action, Thriller",
+                    releaseYear = 2024
+                )
+            )
+            db.streamDao().insertStreamsBatch(versionsToInsert)
+
+            val grouped = db.streamDao().getDeduplicatedStreams(
+                playlistId = playlistId,
+                streamType = "movie",
+                limit = 50
+            ).first()
+            assertEquals(1, grouped.size)
+            assertEquals(3, grouped.first().versionCount)
+            assertEquals("tmdb_movie_866398", grouped.first().stream.canonicalGroupKey)
+
+            val siblings = db.streamDao().getVersionsByGroupKey(
+                playlistId = playlistId,
+                streamType = "movie",
+                canonicalGroupKey = "tmdb_movie_866398"
+            )
+            assertEquals(3, siblings.size)
+            assertEquals(setOf(9001L, 9002L, 9003L), siblings.map { it.streamId }.toSet())
+        } finally {
+            db.close()
+        }
+    }
 }
 
 
