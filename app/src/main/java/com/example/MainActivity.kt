@@ -13,6 +13,7 @@ import androidx.activity.enableEdgeToEdge
 import androidx.activity.viewModels
 import androidx.annotation.OptIn
 import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.RepeatMode
@@ -24,8 +25,10 @@ import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
+import androidx.compose.animation.expandHorizontally
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
+import androidx.compose.animation.shrinkHorizontally
 import androidx.compose.animation.slideInHorizontally
 import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.animation.togetherWith
@@ -34,6 +37,7 @@ import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.focusable
 import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.interaction.MutableInteractionSource
@@ -134,6 +138,8 @@ import com.example.ui.theme.tvFocusableControl
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.IntOffset
@@ -146,6 +152,7 @@ import androidx.media3.ui.AspectRatioFrameLayout
 import androidx.media3.ui.PlayerView
 import com.example.data.model.PlaylistEntity
 import com.example.data.model.StreamEntity
+import com.example.ui.components.SetPlaySectionNavIcon
 import com.example.ui.favorites.FavoritesScreen
 import com.example.ui.home.HomeScreen
 import com.example.ui.home.KickoffSettingsHexGearIcon
@@ -905,8 +912,40 @@ fun MainAppContent(
                         }
                     )
                 },
-                bottomBar = {
-                    Column(modifier = Modifier.fillMaxWidth()) {
+                bottomBar = {},
+                modifier = Modifier
+                    .fillMaxSize()
+                    .testTag("main_scaffold")
+            ) { innerPadding ->
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .padding(top = innerPadding.calculateTopPadding())
+                ) {
+                    renderMainScreenContent(Modifier.fillMaxSize())
+
+                    // Non-interactive soft vertical fade scrim so content glides seamlessly underneath the floating glass dock
+                    Box(
+                        modifier = Modifier
+                            .align(Alignment.BottomCenter)
+                            .fillMaxWidth()
+                            .height(96.dp)
+                            .background(
+                                Brush.verticalGradient(
+                                    colors = listOf(
+                                        Color.Transparent,
+                                        sectionBaseColor.copy(alpha = 0.72f),
+                                        sectionBaseColor.copy(alpha = 0.94f)
+                                    )
+                                )
+                            )
+                    )
+
+                    Column(
+                        modifier = Modifier
+                            .align(Alignment.BottomCenter)
+                            .fillMaxWidth()
+                    ) {
                         if (tvSyncState.role == SyncRole.PHONE_CONTROLLER && tvSyncState.isSyncActive) {
                             TvSyncCompanionBar(
                                 syncState = tvSyncState,
@@ -944,12 +983,7 @@ fun MainAppContent(
                             }
                         )
                     }
-                },
-                modifier = Modifier
-                    .fillMaxSize()
-                    .testTag("main_scaffold")
-            ) { innerPadding ->
-                renderMainScreenContent(Modifier.padding(innerPadding))
+                }
             }
         }
     }
@@ -1775,33 +1809,22 @@ private fun GhostTopBarIconButton(
     }
 }
 
-private enum class NavKineticStyle {
-    SOCCER_ORBIT,
-    BROADCAST_PULSE,
-    CLAPPER_SNAP,
-    CASCADE_LIFT,
-    STAR_CROWN
-}
-
-private data class LuxuryNavItemSpec(
+private data class LiquidPrismNavSpec(
     val screen: AppScreen,
     val label: String,
-    val defaultMicroTag: String,
-    val filledIcon: ImageVector,
-    val outlinedIcon: ImageVector,
-    val crestNeonColor: Color,
-    val crestCoreHighlight: Color,
-    val chamberTint: Color,
-    val activeLabelColor: Color,
-    val kineticStyle: NavKineticStyle
+    val dockGlassTint: Color,
+    val accentPrimary: Color,
+    val accentHighlight: Color,
+    val labelColor: Color
 )
 
 /**
- * SetPlay Flush Floating Stadium Pill Dock (`BottomStreamingNav`):
- * Strictly `60.dp` tall with zero upward protrusion or glowing halo bleed so bottom match cards
- * and side drawers remain 100% unobstructed. The active tab is framed inside an illuminated
- * internal capsule pill with a bottom accent bar; inactive tabs show clean outlined icons,
- * muted labels, and contextual live/favorites badge counters.
+ * SetPlay "Liquid Prism Beam" Floating Glass Dock (`BottomStreamingNav`):
+ * - Zero-seam floating hardware-glass capsule (`height = 60.dp`, `RoundedCornerShape(30.dp)`).
+ * - Smooth 280ms adaptive color cross-fade across KickOff, Live TV, Movies, Series, and Favorites.
+ * - Gliding `2.5.dp` top prismatic light-beam + soft inner radial ambient spotlight synced to the
+ *   morphing expanding horizontal active pill (`1.95f` active weight vs `1.0f` inactive icon slots).
+ * - Bespoke Compose Canvas navigation icons (`SetPlaySectionNavIcon`) + horizontal swipe-to-glide.
  */
 @Composable
 fun BottomStreamingNav(
@@ -1812,83 +1835,49 @@ fun BottomStreamingNav(
     onScreenSelected: (AppScreen) -> Unit
 ) {
     val haptic = LocalHapticFeedback.current
-
-    val targetDockSurface = when (currentScreen) {
-        AppScreen.HOME -> KickoffPitchBlack
-        AppScreen.LIVE_TV -> Color(0xFF131622)
-        AppScreen.MOVIES -> Color(0xFF061928)
-        AppScreen.SERIES -> Color(0xFF081C1B)
-        AppScreen.FAVORITES -> Color(0xFF061816)
-        else -> MetalCharcoal
-    }
-
-    val navContainerColor by animateColorAsState(
-        targetValue = targetDockSurface,
-        animationSpec = tween(durationMillis = 280),
-        label = "bottom_dock_surface"
-    )
+    val density = LocalDensity.current
 
     val navItems = remember {
         listOf(
-            LuxuryNavItemSpec(
+            LiquidPrismNavSpec(
                 screen = AppScreen.HOME,
                 label = "KickOff",
-                defaultMicroTag = "MATCHES",
-                filledIcon = Icons.Filled.SportsSoccer,
-                outlinedIcon = Icons.Outlined.SportsSoccer,
-                crestNeonColor = KickoffPitchEmerald,
-                crestCoreHighlight = KickoffFloodlightVolt,
-                chamberTint = KickoffStadiumForest,
-                activeLabelColor = KickoffFloodlightWhite,
-                kineticStyle = NavKineticStyle.SOCCER_ORBIT
+                dockGlassTint = Color(0xFF0A1612),
+                accentPrimary = KickoffPitchEmerald,
+                accentHighlight = KickoffFloodlightVolt,
+                labelColor = KickoffFloodlightWhite
             ),
-            LuxuryNavItemSpec(
+            LiquidPrismNavSpec(
                 screen = AppScreen.LIVE_TV,
                 label = "Live TV",
-                defaultMicroTag = "CHANNELS",
-                filledIcon = Icons.Filled.LiveTv,
-                outlinedIcon = Icons.Outlined.LiveTv,
-                crestNeonColor = Color(0xFFFF4D5E),
-                crestCoreHighlight = AmberGold,
-                chamberTint = TvBroadcastScarlet,
-                activeLabelColor = Color.White,
-                kineticStyle = NavKineticStyle.BROADCAST_PULSE
+                dockGlassTint = Color(0xFF1A111A),
+                accentPrimary = Color(0xFFFF4D5E),
+                accentHighlight = AmberGold,
+                labelColor = Color.White
             ),
-            LuxuryNavItemSpec(
+            LiquidPrismNavSpec(
                 screen = AppScreen.MOVIES,
                 label = "Movies",
-                defaultMicroTag = "4K CINEMA",
-                filledIcon = Icons.Filled.Movie,
-                outlinedIcon = Icons.Outlined.Movie,
-                crestNeonColor = Color(0xFF38E4AE),
-                crestCoreHighlight = MoviesMintSpring,
-                chamberTint = MoviesCyanTeal,
-                activeLabelColor = Color.White,
-                kineticStyle = NavKineticStyle.CLAPPER_SNAP
+                dockGlassTint = Color(0xFF071D2E),
+                accentPrimary = MoviesCyanTeal,
+                accentHighlight = Color(0xFF38E4AE),
+                labelColor = Color.White
             ),
-            LuxuryNavItemSpec(
+            LiquidPrismNavSpec(
                 screen = AppScreen.SERIES,
                 label = "Series",
-                defaultMicroTag = "EPISODES",
-                filledIcon = Icons.Filled.VideoLibrary,
-                outlinedIcon = Icons.Outlined.VideoLibrary,
-                crestNeonColor = SeriesIceAqua,
-                crestCoreHighlight = PaleGold,
-                chamberTint = SeriesSeaJade,
-                activeLabelColor = Color.White,
-                kineticStyle = NavKineticStyle.CASCADE_LIFT
+                dockGlassTint = Color(0xFF09201F),
+                accentPrimary = SeriesSeaJade,
+                accentHighlight = SeriesIceAqua,
+                labelColor = Color.White
             ),
-            LuxuryNavItemSpec(
+            LiquidPrismNavSpec(
                 screen = AppScreen.FAVORITES,
                 label = "Favorites",
-                defaultMicroTag = "COLLECTION",
-                filledIcon = Icons.Filled.Star,
-                outlinedIcon = Icons.Outlined.StarOutline,
-                crestNeonColor = FavoritesSagePrimary,
-                crestCoreHighlight = AmberGold,
-                chamberTint = FavoritesBotanicalBorder,
-                activeLabelColor = FavoritesPaleMint,
-                kineticStyle = NavKineticStyle.STAR_CROWN
+                dockGlassTint = Color(0xFF0A1E19),
+                accentPrimary = FavoritesSagePrimary,
+                accentHighlight = PaleGold,
+                labelColor = FavoritesPaleMint
             )
         )
     }
@@ -1896,217 +1885,344 @@ fun BottomStreamingNav(
     val selectedIndex = remember(currentScreen, navItems) {
         navItems.indexOfFirst { it.screen == currentScreen }.coerceAtLeast(0)
     }
-    val activeItemSpec = navItems[selectedIndex]
-    val animatedBorderColor by animateColorAsState(
-        targetValue = activeItemSpec.crestNeonColor.copy(alpha = 0.38f),
-        animationSpec = tween(durationMillis = 260),
-        label = "bottom_dock_border"
+    val activeSpec = navItems[selectedIndex]
+
+    val dockGlassTint by animateColorAsState(
+        targetValue = activeSpec.dockGlassTint,
+        animationSpec = tween(durationMillis = 280),
+        label = "prism_dock_glass_tint"
+    )
+    val accentPrimary by animateColorAsState(
+        targetValue = activeSpec.accentPrimary,
+        animationSpec = tween(durationMillis = 280),
+        label = "prism_accent_primary"
+    )
+    val accentHighlight by animateColorAsState(
+        targetValue = activeSpec.accentHighlight,
+        animationSpec = tween(durationMillis = 280),
+        label = "prism_accent_highlight"
+    )
+    val activeLabelColor by animateColorAsState(
+        targetValue = activeSpec.labelColor,
+        animationSpec = tween(durationMillis = 280),
+        label = "prism_active_label_color"
     )
 
+    // Active tab center normalized across expanded active weight (1.95f) + 4 inactive slots (1.0f each = 5.95f total)
+    val targetCenterFraction = (selectedIndex + 0.975f) / 5.95f
+    val activeCenterFraction by animateFloatAsState(
+        targetValue = targetCenterFraction,
+        animationSpec = spring(
+            dampingRatio = 0.76f,
+            stiffness = Spring.StiffnessMediumLow
+        ),
+        label = "prism_beam_center_fraction"
+    )
+
+    val swipeStepPx = with(density) { 36.dp.toPx() }
+
     Surface(
-        color = navContainerColor.copy(alpha = 0.96f),
-        shape = RoundedCornerShape(22.dp),
-        border = BorderStroke(1.dp, animatedBorderColor),
-        shadowElevation = 10.dp,
+        color = dockGlassTint.copy(alpha = 0.92f),
+        shape = RoundedCornerShape(30.dp),
+        border = BorderStroke(
+            width = 1.dp,
+            brush = Brush.verticalGradient(
+                colors = listOf(
+                    Color.White.copy(alpha = 0.22f),
+                    accentPrimary.copy(alpha = 0.34f)
+                )
+            )
+        ),
+        shadowElevation = 14.dp,
         modifier = Modifier
             .fillMaxWidth()
             .windowInsetsPadding(WindowInsets.navigationBars)
-            .padding(horizontal = 12.dp, vertical = 6.dp)
+            .padding(horizontal = 16.dp, vertical = 10.dp)
             .height(60.dp)
             .testTag("bottom_nav")
     ) {
-        Row(
+        Box(
             modifier = Modifier
                 .fillMaxSize()
-                .padding(horizontal = 6.dp, vertical = 5.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(2.dp)
-        ) {
-            navItems.forEach { item ->
-                val isSelected = currentScreen == item.screen
-                val badgeCountText = when (item.screen) {
-                    AppScreen.HOME -> if (!isSelected && liveMatchesCount > 0) liveMatchesCount.coerceAtMost(99).toString() else null
-                    AppScreen.FAVORITES -> if (favoritesCount > 0) favoritesCount.coerceAtMost(99).toString() else null
-                    else -> null
-                }
-                val isLiveMatchBadge = item.screen == AppScreen.HOME && !isSelected && liveMatchesCount > 0
-                val showLiveTvDot = item.screen == AppScreen.LIVE_TV && !isSelected && isStreamPlaying
-
-                FlushStadiumDockTabSlot(
-                    item = item,
-                    isSelected = isSelected,
-                    badgeCountText = badgeCountText,
-                    isLiveMatchBadge = isLiveMatchBadge,
-                    showLiveTvDot = showLiveTvDot,
-                    onSelect = {
-                        if (currentScreen != item.screen) {
-                            haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                .pointerInput(currentScreen) {
+                    var dragAccumPx = 0f
+                    detectHorizontalDragGestures(
+                        onDragStart = { dragAccumPx = 0f },
+                        onDragEnd = { dragAccumPx = 0f },
+                        onDragCancel = { dragAccumPx = 0f },
+                        onHorizontalDrag = { change, dragAmount ->
+                            change.consume()
+                            dragAccumPx += dragAmount
+                            if (dragAccumPx >= swipeStepPx) {
+                                val nextIdx = (selectedIndex + 1).coerceAtMost(navItems.lastIndex)
+                                if (nextIdx != selectedIndex) {
+                                    haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                                    onScreenSelected(navItems[nextIdx].screen)
+                                }
+                                dragAccumPx = 0f
+                            } else if (dragAccumPx <= -swipeStepPx) {
+                                val prevIdx = (selectedIndex - 1).coerceAtLeast(0)
+                                if (prevIdx != selectedIndex) {
+                                    haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                                    onScreenSelected(navItems[prevIdx].screen)
+                                }
+                                dragAccumPx = 0f
+                            }
                         }
-                        onScreenSelected(item.screen)
-                    },
-                    modifier = Modifier
-                        .weight(1f)
-                        .fillMaxHeight()
-                        .testTag("nav_item_${item.screen.name.lowercase()}")
+                    )
+                }
+        ) {
+            // 1. Gliding Top Prismatic Light-Beam & Inner Radial Ambient Spotlight
+            Canvas(modifier = Modifier.fillMaxSize()) {
+                val insetPx = 6.dp.toPx()
+                val usableW = (size.width - insetPx * 2f).coerceAtLeast(1f)
+                val activeCenterX = insetPx + usableW * activeCenterFraction
+
+                // Soft inner radial ambient spotlight behind the active expanding pill
+                val spotlightRadius = size.height * 1.15f
+                drawCircle(
+                    brush = Brush.radialGradient(
+                        colors = listOf(
+                            accentPrimary.copy(alpha = 0.22f),
+                            accentHighlight.copy(alpha = 0.06f),
+                            Color.Transparent
+                        ),
+                        center = Offset(activeCenterX, size.height * 0.5f),
+                        radius = spotlightRadius
+                    ),
+                    radius = spotlightRadius,
+                    center = Offset(activeCenterX, size.height * 0.5f)
                 )
+
+                // Gliding 2.5.dp-tall Top Prismatic Light-Beam (36.dp wide) along y = 1.dp
+                val beamHalfW = 18.dp.toPx()
+                val beamY = 1.25.dp.toPx()
+                drawLine(
+                    brush = Brush.horizontalGradient(
+                        colors = listOf(
+                            Color.Transparent,
+                            accentHighlight,
+                            accentPrimary,
+                            Color.Transparent
+                        ),
+                        startX = activeCenterX - beamHalfW,
+                        endX = activeCenterX + beamHalfW
+                    ),
+                    start = Offset(activeCenterX - beamHalfW, beamY),
+                    end = Offset(activeCenterX + beamHalfW, beamY),
+                    strokeWidth = 2.5.dp.toPx(),
+                    cap = StrokeCap.Round
+                )
+            }
+
+            // 2. Morphing Expanding Horizontal Active Pill + Icon-Only Inactive Slots
+            Row(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(horizontal = 6.dp, vertical = 6.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                navItems.forEach { item ->
+                    val isSelected = currentScreen == item.screen
+                    val slotWeight by animateFloatAsState(
+                        targetValue = if (isSelected) 1.95f else 1.0f,
+                        animationSpec = spring(
+                            dampingRatio = 0.78f,
+                            stiffness = Spring.StiffnessMediumLow
+                        ),
+                        label = "prism_slot_weight_${item.screen.name}"
+                    )
+
+                    LiquidPrismNavTabSlot(
+                        item = item,
+                        isSelected = isSelected,
+                        accentPrimary = accentPrimary,
+                        accentHighlight = accentHighlight,
+                        activeLabelColor = activeLabelColor,
+                        showKickoffLiveDot = item.screen == AppScreen.HOME && !isSelected && liveMatchesCount > 0,
+                        showLiveTvDot = item.screen == AppScreen.LIVE_TV && !isSelected && isStreamPlaying,
+                        favoritesBadgeCount = if (item.screen == AppScreen.FAVORITES && !isSelected && favoritesCount > 0) {
+                            favoritesCount.coerceAtMost(99)
+                        } else {
+                            0
+                        },
+                        onSelect = {
+                            haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                            onScreenSelected(item.screen)
+                        },
+                        modifier = Modifier
+                            .weight(slotWeight)
+                            .fillMaxHeight()
+                            .testTag("nav_${item.screen.name.lowercase()}")
+                    )
+                }
             }
         }
     }
 }
 
 @Composable
-private fun FlushStadiumDockTabSlot(
-    item: LuxuryNavItemSpec,
+private fun LiquidPrismNavTabSlot(
+    item: LiquidPrismNavSpec,
     isSelected: Boolean,
-    badgeCountText: String?,
-    isLiveMatchBadge: Boolean,
+    accentPrimary: Color,
+    accentHighlight: Color,
+    activeLabelColor: Color,
+    showKickoffLiveDot: Boolean,
     showLiveTvDot: Boolean,
+    favoritesBadgeCount: Int,
     onSelect: () -> Unit,
     modifier: Modifier = Modifier
 ) {
     var isTvFocused by remember { mutableStateOf(false) }
 
-    val capsuleColor by animateColorAsState(
-        targetValue = if (isSelected) item.crestNeonColor.copy(alpha = 0.18f) else Color.Transparent,
+    val pillShape = RoundedCornerShape(23.dp)
+    val pillBackground by animateColorAsState(
+        targetValue = if (isSelected) accentPrimary.copy(alpha = 0.20f) else Color.Transparent,
         animationSpec = tween(durationMillis = 220),
-        label = "dock_capsule_bg_${item.label}"
+        label = "prism_pill_bg_${item.screen.name}"
     )
-    val capsuleBorderColor by animateColorAsState(
+    val pillBorderColor by animateColorAsState(
         targetValue = when {
             isTvFocused -> AmberGold
-            isSelected -> item.crestNeonColor.copy(alpha = 0.65f)
+            isSelected -> accentPrimary.copy(alpha = 0.62f)
             else -> Color.Transparent
         },
         animationSpec = tween(durationMillis = 220),
-        label = "dock_capsule_border_${item.label}"
-    )
-    val labelColor by animateColorAsState(
-        targetValue = when {
-            isTvFocused -> AmberGold
-            isSelected -> item.activeLabelColor
-            else -> Color.White.copy(alpha = 0.62f)
-        },
-        animationSpec = tween(durationMillis = 200),
-        label = "dock_label_${item.label}"
+        label = "prism_pill_border_${item.screen.name}"
     )
 
     Box(
         contentAlignment = Alignment.Center,
         modifier = modifier
-            .clip(RoundedCornerShape(16.dp))
-            .background(capsuleColor, RoundedCornerShape(16.dp))
+            .height(46.dp)
+            .clip(pillShape)
+            .background(pillBackground, pillShape)
             .then(
                 if (isSelected || isTvFocused) {
                     Modifier.border(
                         width = if (isTvFocused) 1.5.dp else 1.dp,
-                        color = capsuleBorderColor,
-                        shape = RoundedCornerShape(16.dp)
+                        color = pillBorderColor,
+                        shape = pillShape
                     )
                 } else {
                     Modifier
                 }
             )
+            .semantics { contentDescription = item.label }
             .onFocusChanged { isTvFocused = it.isFocused }
-            .clickable(onClick = onSelect)
-            .padding(horizontal = 4.dp, vertical = 3.dp)
+            .clickable(
+                interactionSource = remember { MutableInteractionSource() },
+                indication = null,
+                onClick = onSelect
+            )
+            .padding(horizontal = if (isSelected) 10.dp else 4.dp)
     ) {
-        Column(
-            horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.Center,
-            modifier = Modifier.fillMaxSize()
-        ) {
+        if (isSelected) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.Center
+            ) {
+                SetPlaySectionNavIcon(
+                    screen = item.screen,
+                    isSelected = true,
+                    tint = accentHighlight,
+                    accentTint = accentPrimary,
+                    modifier = Modifier.size(20.dp)
+                )
+                Spacer(modifier = Modifier.width(6.dp))
+                Text(
+                    text = item.label,
+                    color = activeLabelColor,
+                    fontSize = 11.5.sp,
+                    fontWeight = FontWeight.Bold,
+                    letterSpacing = 0.2.sp,
+                    maxLines = 1,
+                    softWrap = false,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+        } else {
             Box(contentAlignment = Alignment.Center) {
-                Icon(
-                    imageVector = if (isSelected) item.filledIcon else item.outlinedIcon,
-                    contentDescription = item.label,
-                    tint = if (isSelected) item.crestCoreHighlight else Color.White.copy(alpha = 0.58f),
-                    modifier = Modifier.size(if (isSelected) 21.dp else 20.dp)
+                SetPlaySectionNavIcon(
+                    screen = item.screen,
+                    isSelected = false,
+                    tint = Color.White.copy(alpha = 0.58f),
+                    accentTint = Color.Transparent,
+                    modifier = Modifier.size(21.dp)
                 )
 
-                if (badgeCountText != null) {
+                if (showKickoffLiveDot) {
+                    Box(
+                        modifier = Modifier
+                            .align(Alignment.TopEnd)
+                            .offset(x = 3.dp, y = (-2).dp)
+                            .size(6.dp)
+                            .clip(CircleShape)
+                            .background(KickoffLiveCrimson)
+                    )
+                } else if (showLiveTvDot) {
+                    Box(
+                        modifier = Modifier
+                            .align(Alignment.TopEnd)
+                            .offset(x = 3.dp, y = (-2).dp)
+                            .size(5.5.dp)
+                            .clip(CircleShape)
+                            .background(LiveRed)
+                    )
+                } else if (favoritesBadgeCount > 0) {
                     Box(
                         contentAlignment = Alignment.Center,
                         modifier = Modifier
                             .align(Alignment.TopEnd)
-                            .offset(x = 9.dp, y = (-3).dp)
+                            .offset(x = 8.dp, y = (-4).dp)
                             .background(
-                                color = if (isLiveMatchBadge) KickoffLiveCrimson else KickoffTurfSurface.copy(alpha = 0.96f),
+                                color = KickoffTurfSurface.copy(alpha = 0.96f),
                                 shape = RoundedCornerShape(50)
                             )
                             .border(
                                 width = 0.75.dp,
-                                color = if (isLiveMatchBadge) KickoffFloodlightWhite.copy(alpha = 0.85f) else item.crestNeonColor.copy(alpha = 0.72f),
+                                color = item.accentPrimary.copy(alpha = 0.72f),
                                 shape = RoundedCornerShape(50)
                             )
                             .padding(horizontal = 4.dp, vertical = 0.5.dp)
                     ) {
                         Text(
-                            text = badgeCountText,
-                            color = if (isLiveMatchBadge) KickoffFloodlightWhite else item.crestCoreHighlight,
+                            text = favoritesBadgeCount.toString(),
+                            color = item.accentHighlight,
                             fontSize = 7.sp,
                             lineHeight = 8.sp,
                             fontWeight = FontWeight.ExtraBold,
                             maxLines = 1
                         )
                     }
-                } else if (showLiveTvDot) {
-                    Box(
-                        modifier = Modifier
-                            .align(Alignment.TopEnd)
-                            .offset(x = 4.dp, y = (-2).dp)
-                            .size(6.dp)
-                            .clip(CircleShape)
-                            .background(LiveRed)
-                    )
                 }
             }
-
-            Spacer(modifier = Modifier.height(2.dp))
-
-            Text(
-                text = item.label,
-                color = labelColor,
-                fontSize = if (isSelected) 10.sp else 9.5.sp,
-                lineHeight = 11.sp,
-                fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
-                letterSpacing = if (isSelected) 0.25.sp else 0.1.sp,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis
-            )
-
-            Spacer(modifier = Modifier.height(2.dp))
-
-            Box(
-                modifier = Modifier
-                    .width(18.dp)
-                    .height(2.5.dp)
-                    .clip(RoundedCornerShape(50))
-                    .background(
-                        if (isSelected) item.crestNeonColor else Color.Transparent
-                    )
-            )
         }
     }
 }
 
 private data class TvRailNavEntry(
     val label: String,
-    val icon: ImageVector,
     val testTag: String,
     val targetScreen: AppScreen? = null,
+    val systemIcon: ImageVector? = null,
     val badgeText: String? = null,
-    val accentColor: Color = AmberGold,
+    val hasCollapsedDot: Boolean = false,
+    val dotColor: Color = KickoffLiveCrimson,
+    val isPrimaryMedia: Boolean = true,
     val customAction: (() -> Unit)? = null
 )
 
 /**
- * Dedicated 10-Foot Widescreen Android TV Left Navigation Rail (`testTag("tv_left_navigation_rail")`):
- * - Sleek vertical glass rail (`width = 216.dp`, `Color(0xF2081018)`) with D-Pad focus rings (`Modifier.tvFocusableControl`).
- * - Top Brand Header (`Set ▶ Play` + `"TV EDITION"` gold badge + active live matches badge).
- * - Preserves all `nav_*` (`nav_home`, `nav_live_tv`, `nav_movies`, `nav_series`, `nav_favorites`) and
- *   `top_*` (`top_search_btn`, `top_tv_sync_btn`, `top_playlists_btn`) test tags.
- * - Bottom Live Sync Telemetry Pod (`testTag("tv_rail_sync_status_pod")`) displaying real-time Phone Sync
- *   status or the 6-digit Pairing PIN + LAN IP at a glance.
+ * Dedicated 10-Foot Widescreen Android TV "Collapsible Prism Glass Rail" (`testTag("tv_left_navigation_rail")`):
+ * - Expand-on-focus collapsible geometry (`74.dp` collapsed ↔ `236.dp` expanded via spring animation).
+ * - Adaptive 280ms section color palette matching `currentScreen` (KickOff, Live TV, Movies, Series, Favorites).
+ * - Clean 2-zone hierarchy with zero leading emojis:
+ *     1) Top Zone: 5 Primary Media Destinations powered by bespoke `SetPlaySectionNavIcon` (`23.dp`).
+ *     2) Bottom Zone: 4 Quieter System Utilities (`19.dp` muted silver icons) + Live Sync Telemetry Pod.
+ * - Unmistakable 10-foot Selected (left `3.dp × 24.dp` glowing vertical prism beam + adaptive tint)
+ *   vs. D-Pad Focused (`1.04f` spring scale + `2.dp` luminous focus border + crisp white bold label) states.
  */
 @Composable
 fun TvLeftNavigationRail(
@@ -2120,83 +2236,124 @@ fun TvLeftNavigationRail(
     hasKickoffSourceIssue: Boolean = false,
     onOpenKickoffSettings: () -> Unit = {}
 ) {
-    val entries = remember(currentScreen, liveMatchesCount, favoritesCount, hasKickoffSourceIssue) {
+    var isRailFocused by remember { mutableStateOf(false) }
+
+    val railWidth by animateDpAsState(
+        targetValue = if (isRailFocused) 236.dp else 74.dp,
+        animationSpec = spring(
+            dampingRatio = 0.82f,
+            stiffness = Spring.StiffnessMediumLow
+        ),
+        label = "tv_prism_rail_width"
+    )
+
+    // Adaptive Section Color Palette (280ms smooth cross-fade)
+    val (targetGlassTint, targetAccentPrimary, targetAccentHighlight) = when (currentScreen) {
+        AppScreen.HOME -> Triple(Color(0xFF0A1612), KickoffPitchEmerald, KickoffFloodlightVolt)
+        AppScreen.LIVE_TV -> Triple(Color(0xFF1A111A), Color(0xFFFF4D5E), AmberGold)
+        AppScreen.MOVIES -> Triple(Color(0xFF071D2E), MoviesCyanTeal, Color(0xFF38E4AE))
+        AppScreen.SERIES -> Triple(Color(0xFF09201F), SeriesSeaJade, SeriesIceAqua)
+        AppScreen.FAVORITES -> Triple(Color(0xFF0A1E19), FavoritesSagePrimary, PaleGold)
+        else -> Triple(Color(0xFF0A1612), KickoffPitchEmerald, KickoffFloodlightVolt)
+    }
+
+    val railGlassTint by animateColorAsState(
+        targetValue = targetGlassTint,
+        animationSpec = tween(durationMillis = 280),
+        label = "tv_rail_glass_tint"
+    )
+    val railAccentPrimary by animateColorAsState(
+        targetValue = targetAccentPrimary,
+        animationSpec = tween(durationMillis = 280),
+        label = "tv_rail_accent_primary"
+    )
+    val railAccentHighlight by animateColorAsState(
+        targetValue = targetAccentHighlight,
+        animationSpec = tween(durationMillis = 280),
+        label = "tv_rail_accent_highlight"
+    )
+
+    val primaryEntries = remember(liveMatchesCount, favoritesCount) {
         listOf(
             TvRailNavEntry(
-                label = "⚽ KickOff Arena",
-                icon = Icons.Default.SportsSoccer,
+                label = "KickOff",
                 testTag = "nav_home",
                 targetScreen = AppScreen.HOME,
                 badgeText = if (liveMatchesCount > 0) "$liveMatchesCount LIVE" else null,
-                accentColor = KickoffPitchEmerald
+                hasCollapsedDot = liveMatchesCount > 0,
+                dotColor = KickoffLiveCrimson,
+                isPrimaryMedia = true
             ),
             TvRailNavEntry(
-                label = "📺 Live TV",
-                icon = Icons.Default.LiveTv,
+                label = "Live TV",
                 testTag = "nav_live_tv",
                 targetScreen = AppScreen.LIVE_TV,
-                accentColor = TvBroadcastScarlet
+                isPrimaryMedia = true
             ),
             TvRailNavEntry(
-                label = "🎬 Movies",
-                icon = Icons.Default.Movie,
+                label = "Movies",
                 testTag = "nav_movies",
                 targetScreen = AppScreen.MOVIES,
-                accentColor = MoviesCyanTeal
+                isPrimaryMedia = true
             ),
             TvRailNavEntry(
-                label = "🎞️ Series",
-                icon = Icons.Default.VideoLibrary,
+                label = "Series",
                 testTag = "nav_series",
                 targetScreen = AppScreen.SERIES,
-                accentColor = SeriesEmerald
+                isPrimaryMedia = true
             ),
             TvRailNavEntry(
-                label = "⭐ Favorites",
-                icon = Icons.Default.Star,
+                label = "Favorites",
                 testTag = "nav_favorites",
                 targetScreen = AppScreen.FAVORITES,
-                badgeText = if (favoritesCount > 0) favoritesCount.toString() else null,
-                accentColor = FavoritesSagePrimary
-            ),
+                badgeText = if (favoritesCount > 0) favoritesCount.coerceAtMost(99).toString() else null,
+                isPrimaryMedia = true
+            )
+        )
+    }
+
+    val utilityEntries = remember(currentScreen, hasKickoffSourceIssue) {
+        listOf(
             if (currentScreen == AppScreen.HOME) {
                 TvRailNavEntry(
-                    label = "⚙️ KickOff Settings",
-                    icon = Icons.Default.Tune,
+                    label = "KickOff Settings",
                     testTag = "top_search_btn",
+                    systemIcon = Icons.Default.Tune,
                     badgeText = if (hasKickoffSourceIssue) "ALERT" else null,
-                    accentColor = if (hasKickoffSourceIssue) KickoffTrophyGold else KickoffPitchEmerald,
+                    hasCollapsedDot = hasKickoffSourceIssue,
+                    dotColor = KickoffTrophyGold,
+                    isPrimaryMedia = false,
                     customAction = onOpenKickoffSettings
                 )
             } else {
                 TvRailNavEntry(
-                    label = "🔍 Global Search",
-                    icon = Icons.Default.Search,
+                    label = "Global Search",
                     testTag = "top_search_btn",
                     targetScreen = AppScreen.GLOBAL_SEARCH,
-                    accentColor = AmberGold
+                    systemIcon = Icons.Default.Search,
+                    isPrimaryMedia = false
                 )
             },
             TvRailNavEntry(
-                label = "📲 Phone Sync QR",
-                icon = Icons.Default.Tv,
+                label = "Phone Sync QR",
                 testTag = "top_tv_sync_btn",
-                accentColor = ArenaFloodlightLime,
+                systemIcon = Icons.Default.Tv,
+                isPrimaryMedia = false,
                 customAction = onOpenTvSyncQr
             ),
             TvRailNavEntry(
-                label = "🖧 Xtream Servers",
-                icon = Icons.Default.Dns,
+                label = "Xtream Servers",
                 testTag = "top_playlists_btn",
                 targetScreen = AppScreen.PLAYLISTS,
-                accentColor = PaleGold
+                systemIcon = Icons.Default.Dns,
+                isPrimaryMedia = false
             ),
             TvRailNavEntry(
-                label = "🔒 Parental Lock",
-                icon = Icons.Default.Security,
+                label = "Parental Lock",
                 testTag = "tv_rail_parental_lock_btn",
                 targetScreen = AppScreen.PARENTAL_SETTINGS,
-                accentColor = LiveCrimson
+                systemIcon = Icons.Default.Security,
+                isPrimaryMedia = false
             )
         )
     }
@@ -2205,233 +2362,444 @@ fun TvLeftNavigationRail(
     val pinDisplay = tvSyncState.pairingPin.ifBlank { "READY" }
     val ipDisplay = tvSyncState.localIpAddress.ifBlank { "LAN Wi-Fi" }
     val activeRailItemFocusRequester = remember { FocusRequester() }
-    val hasMatchingTarget = entries.any { it.targetScreen != null && it.targetScreen == currentScreen }
+    val allEntries = primaryEntries + utilityEntries
+    val hasMatchingTarget = allEntries.any { it.targetScreen != null && it.targetScreen == currentScreen }
 
     LaunchedEffect(currentScreen) {
         runCatching { activeRailItemFocusRequester.requestFocus() }
     }
 
-    Row(modifier = modifier.fillMaxHeight()) {
+    Row(
+        modifier = modifier
+            .fillMaxHeight()
+            .onFocusChanged { focusState ->
+                isRailFocused = focusState.hasFocus
+            }
+    ) {
         Column(
             modifier = Modifier
-                .width(216.dp)
+                .width(railWidth)
                 .fillMaxHeight()
-                .background(Color(0xF2081018))
-                .padding(horizontal = 12.dp, vertical = 14.dp)
+                .background(railGlassTint.copy(alpha = 0.95f))
+                .padding(horizontal = 10.dp, vertical = 14.dp)
                 .testTag("tv_left_navigation_rail"),
             verticalArrangement = Arrangement.SpaceBetween
         ) {
-            // 1. Top Brand Header + TV EDITION Badge
-            Column {
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Box(
-                            contentAlignment = Alignment.Center,
-                            modifier = Modifier
-                                .size(30.dp)
-                                .clip(RoundedCornerShape(9.dp))
-                                .background(
-                                    Brush.linearGradient(
-                                        listOf(AmberGold, PaleGold)
-                                    )
-                                )
-                        ) {
-                            Icon(
-                                imageVector = Icons.Default.PlayArrow,
-                                contentDescription = "SetPlay TV",
-                                tint = DarkGraphite,
-                                modifier = Modifier.size(19.dp)
+            // 1. Brand Header: Compact SetPlay ▶ emblem when collapsed; full "Set ▶ Play" wordmark when expanded
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = if (isRailFocused) Arrangement.Start else Arrangement.Center,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 4.dp, vertical = 2.dp)
+            ) {
+                Box(
+                    contentAlignment = Alignment.Center,
+                    modifier = Modifier
+                        .size(34.dp)
+                        .clip(RoundedCornerShape(10.dp))
+                        .background(
+                            Brush.linearGradient(
+                                colors = listOf(railAccentPrimary, railAccentHighlight)
                             )
-                        }
-                        Spacer(modifier = Modifier.width(8.dp))
-                        Column {
+                        )
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.PlayArrow,
+                        contentDescription = "SetPlay TV",
+                        tint = KickoffPitchBlack,
+                        modifier = Modifier.size(20.dp)
+                    )
+                }
+
+                AnimatedVisibility(
+                    visible = isRailFocused,
+                    enter = fadeIn(tween(180)) + expandHorizontally(expandFrom = Alignment.Start),
+                    exit = fadeOut(tween(140)) + shrinkHorizontally(shrinkTowards = Alignment.Start)
+                ) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier.padding(start = 10.dp)
+                    ) {
+                        Column(modifier = Modifier.weight(1f, fill = false)) {
                             Text(
                                 text = "Set ▶ Play",
                                 color = Color.White,
                                 fontSize = 15.sp,
-                                fontWeight = FontWeight.ExtraBold
+                                fontWeight = FontWeight.ExtraBold,
+                                maxLines = 1,
+                                softWrap = false
                             )
                             Text(
-                                text = "10-FOOT CINEMA & ARENA",
-                                color = Champagne,
+                                text = "TV EDITION",
+                                color = railAccentHighlight,
                                 fontSize = 8.5.sp,
-                                fontWeight = FontWeight.Bold
+                                fontWeight = FontWeight.Bold,
+                                letterSpacing = 0.8.sp,
+                                maxLines = 1,
+                                softWrap = false
                             )
                         }
                     }
-
-                    Surface(
-                        color = AmberGold.copy(alpha = 0.20f),
-                        shape = RoundedCornerShape(6.dp),
-                        border = BorderStroke(0.8.dp, AmberGold)
-                    ) {
-                        Text(
-                            text = "TV EDITION",
-                            color = PaleGold,
-                            fontSize = 8.5.sp,
-                            fontWeight = FontWeight.ExtraBold,
-                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 3.dp)
-                        )
-                    }
                 }
-
-                Spacer(modifier = Modifier.height(12.dp))
             }
 
-            // 2. Scrollable 10-Foot Navigation Items
+            Spacer(modifier = Modifier.height(14.dp))
+
+            // 2. Clean 2-Zone Navigation Stack (Top Zone: 5 Primary Media + Divider + Bottom Zone: 4 System Utilities)
             Column(
                 modifier = Modifier
                     .weight(1f)
                     .verticalScroll(rememberScrollState()),
                 verticalArrangement = Arrangement.spacedBy(5.dp)
             ) {
-                entries.forEachIndexed { index, entry ->
+                // Top Zone: 5 Primary Media Destinations
+                primaryEntries.forEachIndexed { index, entry ->
                     val isSelected = entry.targetScreen != null && entry.targetScreen == currentScreen
                     val isInitialFocusTarget = isSelected || (!hasMatchingTarget && index == 0)
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .clip(RoundedCornerShape(12.dp))
-                            .background(
-                                if (isSelected) {
-                                    entry.accentColor.copy(alpha = 0.20f)
-                                } else {
-                                    Color.White.copy(alpha = 0.03f)
-                                }
-                            )
-                            .border(
-                                width = if (isSelected) 1.4.dp else 0.7.dp,
-                                color = if (isSelected) entry.accentColor else Color.White.copy(alpha = 0.07f),
-                                shape = RoundedCornerShape(12.dp)
-                            )
-                            .then(
-                                if (isInitialFocusTarget) {
-                                    Modifier.focusRequester(activeRailItemFocusRequester)
-                                } else {
-                                    Modifier
-                                }
-                            )
-                            .tvFocusableControl(
-                                accentColor = AmberGold,
-                                shape = RoundedCornerShape(12.dp),
-                                onClick = {
-                                    if (entry.customAction != null) {
-                                        entry.customAction.invoke()
-                                    } else if (entry.targetScreen != null) {
-                                        onScreenSelected(entry.targetScreen)
-                                    }
-                                }
-                            )
-                            .padding(horizontal = 10.dp, vertical = 8.dp)
-                            .testTag(entry.testTag)
+                    TvPrismRailRow(
+                        entry = entry,
+                        isSelected = isSelected,
+                        isRailExpanded = isRailFocused,
+                        railAccentPrimary = railAccentPrimary,
+                        railAccentHighlight = railAccentHighlight,
+                        focusRequester = if (isInitialFocusTarget) activeRailItemFocusRequester else null,
+                        onClick = {
+                            if (entry.customAction != null) {
+                                entry.customAction.invoke()
+                            } else if (entry.targetScreen != null) {
+                                onScreenSelected(entry.targetScreen)
+                            }
+                        }
+                    )
+                }
+
+                // Clean Visual Separator between Primary Media and System Utilities
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 6.dp, vertical = 8.dp)
+                        .height(1.dp)
+                        .background(Color.White.copy(alpha = 0.10f))
+                )
+
+                // Bottom Zone: 4 Quieter System Utilities
+                utilityEntries.forEach { entry ->
+                    val isSelected = entry.targetScreen != null && entry.targetScreen == currentScreen
+                    TvPrismRailRow(
+                        entry = entry,
+                        isSelected = isSelected,
+                        isRailExpanded = isRailFocused,
+                        railAccentPrimary = railAccentPrimary,
+                        railAccentHighlight = railAccentHighlight,
+                        focusRequester = if (isSelected) activeRailItemFocusRequester else null,
+                        onClick = {
+                            if (entry.customAction != null) {
+                                entry.customAction.invoke()
+                            } else if (entry.targetScreen != null) {
+                                onScreenSelected(entry.targetScreen)
+                            }
+                        }
+                    )
+                }
+            }
+
+            Spacer(modifier = Modifier.height(10.dp))
+
+            // 3. Bottom Live Sync Telemetry Pod (`tv_rail_sync_status_pod`)
+            var isSyncPodFocused by remember { mutableStateOf(false) }
+            val syncPodScale by animateFloatAsState(
+                targetValue = if (isSyncPodFocused) 1.04f else 1.0f,
+                animationSpec = spring(dampingRatio = 0.72f, stiffness = Spring.StiffnessMediumLow),
+                label = "tv_sync_pod_scale"
+            )
+            Surface(
+                color = Color.White.copy(alpha = if (isSyncPodFocused) 0.11f else 0.05f),
+                shape = RoundedCornerShape(14.dp),
+                border = BorderStroke(
+                    width = if (isSyncPodFocused) 2.dp else 0.9.dp,
+                    color = when {
+                        isSyncPodFocused -> railAccentHighlight
+                        isPhonePaired -> ArenaFloodlightLime.copy(alpha = 0.75f)
+                        else -> railAccentPrimary.copy(alpha = 0.35f)
+                    }
+                ),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .graphicsLayer {
+                        scaleX = syncPodScale
+                        scaleY = syncPodScale
+                    }
+                    .clip(RoundedCornerShape(14.dp))
+                    .onFocusChanged { isSyncPodFocused = it.isFocused }
+                    .clickable(onClick = onOpenTvSyncQr)
+                    .focusable()
+                    .testTag("tv_rail_sync_status_pod")
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = if (isRailFocused) Arrangement.Start else Arrangement.Center,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = if (isRailFocused) 10.dp else 6.dp, vertical = 9.dp)
+                ) {
+                    Box(contentAlignment = Alignment.Center) {
+                        Icon(
+                            imageVector = Icons.Default.Cast,
+                            contentDescription = "Wi-Fi Phone Sync",
+                            tint = if (isPhonePaired) ArenaFloodlightLime else Color.White.copy(alpha = 0.78f),
+                            modifier = Modifier.size(18.dp)
+                        )
+                        Box(
+                            modifier = Modifier
+                                .align(Alignment.TopEnd)
+                                .offset(x = 3.dp, y = (-2).dp)
+                                .size(6.dp)
+                                .clip(CircleShape)
+                                .background(if (isPhonePaired) ArenaFloodlightLime else railAccentHighlight)
+                        )
+                    }
+
+                    AnimatedVisibility(
+                        visible = isRailFocused,
+                        enter = fadeIn(tween(180)) + expandHorizontally(expandFrom = Alignment.Start),
+                        exit = fadeOut(tween(130)) + shrinkHorizontally(shrinkTowards = Alignment.Start)
                     ) {
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            modifier = Modifier.weight(1f)
-                        ) {
-                            Icon(
-                                imageVector = entry.icon,
-                                contentDescription = entry.label,
-                                tint = if (isSelected) entry.accentColor else Champagne,
-                                modifier = Modifier.size(16.dp)
-                            )
-                            Spacer(modifier = Modifier.width(9.dp))
+                        Column(modifier = Modifier.padding(start = 10.dp)) {
                             Text(
-                                text = entry.label,
-                                color = if (isSelected) Color.White else Champagne,
-                                fontSize = 12.sp,
-                                fontWeight = if (isSelected) FontWeight.ExtraBold else FontWeight.SemiBold,
+                                text = if (isPhonePaired) "Phone Connected" else "Sync PIN: $pinDisplay",
+                                color = if (isPhonePaired) ArenaFloodlightLime else Color.White,
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.Bold,
                                 maxLines = 1,
+                                softWrap = false,
                                 overflow = TextOverflow.Ellipsis
                             )
-                        }
-
-                        if (!entry.badgeText.isNullOrBlank()) {
-                            Surface(
-                                color = entry.accentColor.copy(alpha = 0.24f),
-                                shape = RoundedCornerShape(50),
-                                border = BorderStroke(0.7.dp, entry.accentColor)
-                            ) {
-                                Text(
-                                    text = entry.badgeText,
-                                    color = Color.White,
-                                    fontSize = 8.5.sp,
-                                    fontWeight = FontWeight.ExtraBold,
-                                    modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
-                                )
-                            }
+                            Text(
+                                text = if (isPhonePaired) {
+                                    tvSyncState.connectedPeerName
+                                } else {
+                                    "$ipDisplay:${tvSyncState.serverPort}"
+                                },
+                                color = Color.White.copy(alpha = 0.64f),
+                                fontSize = 9.5.sp,
+                                fontWeight = FontWeight.Medium,
+                                maxLines = 1,
+                                softWrap = false,
+                                overflow = TextOverflow.Ellipsis
+                            )
                         }
                     }
                 }
             }
-
-            Spacer(modifier = Modifier.height(8.dp))
-
-            // 3. Bottom Live Sync Telemetry Pod (`tv_rail_sync_status_pod`)
-            Surface(
-                color = Color(0xFF0E1B28),
-                shape = RoundedCornerShape(14.dp),
-                border = BorderStroke(
-                    width = 1.dp,
-                    color = if (isPhonePaired) ArenaFloodlightLime else AmberGold.copy(alpha = 0.55f)
-                ),
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .clip(RoundedCornerShape(14.dp))
-                    .tvFocusableControl(
-                        accentColor = AmberGold,
-                        shape = RoundedCornerShape(14.dp),
-                        onClick = onOpenTvSyncQr
-                    )
-                    .testTag("tv_rail_sync_status_pod")
-            ) {
-                Column(
-                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp)
-                ) {
-                    Text(
-                        text = if (isPhonePaired) {
-                            "🟢 Phone Connected"
-                        } else {
-                            "📲 Wi-Fi Sync Ready • PIN: $pinDisplay"
-                        },
-                        color = if (isPhonePaired) ArenaFloodlightLime else PaleGold,
-                        fontSize = 10.5.sp,
-                        fontWeight = FontWeight.ExtraBold,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
-                    )
-                    Spacer(modifier = Modifier.height(2.dp))
-                    Text(
-                        text = if (isPhonePaired) {
-                            tvSyncState.connectedPeerName
-                        } else {
-                            "IP: $ipDisplay:${tvSyncState.serverPort}"
-                        },
-                        color = Champagne,
-                        fontSize = 9.5.sp,
-                        fontWeight = FontWeight.Medium,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
-                    )
-                }
-            }
         }
 
-        // Right 1.dp Gold Divider Border
+        // Right-edge 1.dp Specular Adaptive Border
         Box(
             modifier = Modifier
                 .width(1.dp)
                 .fillMaxHeight()
-                .background(AmberGold.copy(alpha = 0.28f))
+                .background(railAccentPrimary.copy(alpha = 0.30f))
         )
     }
 }
+
+@Composable
+private fun TvPrismRailRow(
+    entry: TvRailNavEntry,
+    isSelected: Boolean,
+    isRailExpanded: Boolean,
+    railAccentPrimary: Color,
+    railAccentHighlight: Color,
+    focusRequester: FocusRequester?,
+    onClick: () -> Unit
+) {
+    var isItemFocused by remember { mutableStateOf(false) }
+
+    val focusScale by animateFloatAsState(
+        targetValue = if (isItemFocused) 1.04f else 1.0f,
+        animationSpec = spring(
+            dampingRatio = 0.72f,
+            stiffness = Spring.StiffnessMediumLow
+        ),
+        label = "tv_rail_item_scale_${entry.testTag}"
+    )
+
+    val rowBackground by animateColorAsState(
+        targetValue = when {
+            isSelected -> railAccentPrimary.copy(alpha = 0.20f)
+            isItemFocused -> Color.White.copy(alpha = 0.10f)
+            else -> Color.Transparent
+        },
+        animationSpec = tween(durationMillis = 200),
+        label = "tv_rail_item_bg_${entry.testTag}"
+    )
+
+    val rowShape = RoundedCornerShape(14.dp)
+
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(44.dp)
+            .graphicsLayer {
+                scaleX = focusScale
+                scaleY = focusScale
+            }
+            .clip(rowShape)
+            .background(rowBackground, rowShape)
+            .then(
+                if (isItemFocused) {
+                    Modifier.border(
+                        width = 2.dp,
+                        color = railAccentHighlight,
+                        shape = rowShape
+                    )
+                } else if (isSelected) {
+                    Modifier.border(
+                        width = 0.9.dp,
+                        color = railAccentPrimary.copy(alpha = 0.45f),
+                        shape = rowShape
+                    )
+                } else {
+                    Modifier
+                }
+            )
+            .then(if (focusRequester != null) Modifier.focusRequester(focusRequester) else Modifier)
+            .onFocusChanged { isItemFocused = it.isFocused }
+            .semantics { contentDescription = entry.label }
+            .clickable(onClick = onClick)
+            .focusable()
+            .testTag(entry.testTag)
+    ) {
+        // Active Section Indicator: 3.dp × 24.dp glowing vertical left prismatic light-beam
+        if (isSelected) {
+            Box(
+                modifier = Modifier
+                    .align(Alignment.CenterStart)
+                    .padding(start = 2.dp)
+                    .width(3.dp)
+                    .height(24.dp)
+                    .clip(RoundedCornerShape(50))
+                    .background(
+                        Brush.verticalGradient(
+                            colors = listOf(railAccentHighlight, railAccentPrimary)
+                        )
+                    )
+            )
+        }
+
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = if (isRailExpanded) Arrangement.Start else Arrangement.Center,
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(horizontal = if (isRailExpanded) 12.dp else 4.dp)
+        ) {
+            // Icon + Collapsed Micro Status Dot
+            Box(contentAlignment = Alignment.Center) {
+                if (entry.isPrimaryMedia && entry.targetScreen != null) {
+                    val iconTint = when {
+                        isSelected -> railAccentHighlight
+                        isItemFocused -> Color.White
+                        else -> Color.White.copy(alpha = 0.68f)
+                    }
+                    SetPlaySectionNavIcon(
+                        screen = entry.targetScreen,
+                        isSelected = isSelected,
+                        tint = iconTint,
+                        accentTint = if (isSelected) railAccentPrimary else Color.Transparent,
+                        modifier = Modifier.size(23.dp)
+                    )
+                } else if (entry.systemIcon != null) {
+                    val utilTint = when {
+                        isSelected -> railAccentHighlight
+                        isItemFocused -> Color.White
+                        else -> Color.White.copy(alpha = 0.70f)
+                    }
+                    Icon(
+                        imageVector = entry.systemIcon,
+                        contentDescription = null,
+                        tint = utilTint,
+                        modifier = Modifier.size(19.dp)
+                    )
+                }
+
+                if (!isRailExpanded && entry.hasCollapsedDot) {
+                    Box(
+                        modifier = Modifier
+                            .align(Alignment.TopEnd)
+                            .offset(x = 3.dp, y = (-2).dp)
+                            .size(6.dp)
+                            .clip(CircleShape)
+                            .background(entry.dotColor)
+                    )
+                }
+            }
+
+            // Expanded Label + Optional Live / Favorites / Alert Badge Pill
+            AnimatedVisibility(
+                visible = isRailExpanded,
+                enter = fadeIn(tween(180)) + expandHorizontally(expandFrom = Alignment.Start),
+                exit = fadeOut(tween(130)) + shrinkHorizontally(shrinkTowards = Alignment.Start)
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(start = 12.dp)
+                ) {
+                    Text(
+                        text = entry.label,
+                        color = when {
+                            isItemFocused -> Color.White
+                            isSelected -> Color.White
+                            entry.isPrimaryMedia -> Color.White.copy(alpha = 0.80f)
+                            else -> Color.White.copy(alpha = 0.70f)
+                        },
+                        fontSize = if (entry.isPrimaryMedia) 13.sp else 12.sp,
+                        fontWeight = when {
+                            isItemFocused -> FontWeight.ExtraBold
+                            isSelected -> FontWeight.Bold
+                            else -> FontWeight.Medium
+                        },
+                        maxLines = 1,
+                        softWrap = false,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f)
+                    )
+
+                    if (!entry.badgeText.isNullOrBlank()) {
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Surface(
+                            color = if (entry.hasCollapsedDot) {
+                                entry.dotColor.copy(alpha = 0.24f)
+                            } else {
+                                railAccentPrimary.copy(alpha = 0.22f)
+                            },
+                            shape = RoundedCornerShape(50),
+                            border = BorderStroke(
+                                width = 0.8.dp,
+                                color = if (entry.hasCollapsedDot) entry.dotColor else railAccentPrimary
+                            )
+                        ) {
+                            Text(
+                                text = entry.badgeText,
+                                color = Color.White,
+                                fontSize = 8.5.sp,
+                                fontWeight = FontWeight.ExtraBold,
+                                maxLines = 1,
+                                softWrap = false,
+                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
 
 
 

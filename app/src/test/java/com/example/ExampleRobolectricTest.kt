@@ -5822,7 +5822,66 @@ class TvSyncDeviceSeparationComposeTest {
             )
         )
     }
+
+    @Test
+    fun testDualPlatformPrismNavigationPrimaryScreensAndTestTags() {
+        // 1. Confirm all 5 primary media AppScreen destinations exist
+        val primaryScreens = listOf(
+            com.example.ui.viewmodel.AppScreen.HOME,
+            com.example.ui.viewmodel.AppScreen.LIVE_TV,
+            com.example.ui.viewmodel.AppScreen.MOVIES,
+            com.example.ui.viewmodel.AppScreen.SERIES,
+            com.example.ui.viewmodel.AppScreen.FAVORITES
+        )
+        assertEquals(5, primaryScreens.distinct().size)
+        primaryScreens.forEach { screen ->
+            assertTrue(com.example.ui.viewmodel.AppScreen.entries.contains(screen))
+        }
+
+        // 2. Verify Mobile Liquid Prism Beam Floating Glass Dock & TV Collapsible Prism Glass Rail tags
+        var selectedMobileScreen = com.example.ui.viewmodel.AppScreen.HOME
+        var selectedTvScreen = com.example.ui.viewmodel.AppScreen.MOVIES
+        val syncState = com.example.data.sync.TvSyncSessionState(
+            pairingPin = "4829",
+            localIpAddress = "192.168.1.44",
+            serverPort = 8765
+        )
+        composeTestRule.setContent {
+            androidx.compose.foundation.layout.Column {
+                BottomStreamingNav(
+                    currentScreen = selectedMobileScreen,
+                    isStreamPlaying = false,
+                    liveMatchesCount = 2,
+                    favoritesCount = 4,
+                    onScreenSelected = { selectedMobileScreen = it }
+                )
+                TvLeftNavigationRail(
+                    currentScreen = selectedTvScreen,
+                    liveMatchesCount = 2,
+                    favoritesCount = 4,
+                    tvSyncState = syncState,
+                    onScreenSelected = { selectedTvScreen = it },
+                    onOpenTvSyncQr = {}
+                )
+            }
+        }
+        composeTestRule.waitForIdle()
+
+        composeTestRule.onNode(androidx.compose.ui.test.hasTestTag("bottom_nav")).assertExists()
+        composeTestRule.onNode(androidx.compose.ui.test.hasTestTag("tv_left_navigation_rail")).assertExists()
+        assertEquals(2, composeTestRule.onAllNodes(androidx.compose.ui.test.hasTestTag("nav_home")).fetchSemanticsNodes().size)
+        assertEquals(2, composeTestRule.onAllNodes(androidx.compose.ui.test.hasTestTag("nav_live_tv")).fetchSemanticsNodes().size)
+        assertEquals(2, composeTestRule.onAllNodes(androidx.compose.ui.test.hasTestTag("nav_movies")).fetchSemanticsNodes().size)
+        assertEquals(2, composeTestRule.onAllNodes(androidx.compose.ui.test.hasTestTag("nav_series")).fetchSemanticsNodes().size)
+        assertEquals(2, composeTestRule.onAllNodes(androidx.compose.ui.test.hasTestTag("nav_favorites")).fetchSemanticsNodes().size)
+        composeTestRule.onNode(androidx.compose.ui.test.hasTestTag("top_search_btn")).assertExists()
+        composeTestRule.onNode(androidx.compose.ui.test.hasTestTag("top_tv_sync_btn")).assertExists()
+        composeTestRule.onNode(androidx.compose.ui.test.hasTestTag("top_playlists_btn")).assertExists()
+        composeTestRule.onNode(androidx.compose.ui.test.hasTestTag("tv_rail_parental_lock_btn")).assertExists()
+        composeTestRule.onNode(androidx.compose.ui.test.hasTestTag("tv_rail_sync_status_pod")).assertExists()
+    }
 }
+
 
 
 
