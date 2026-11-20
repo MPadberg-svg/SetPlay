@@ -172,13 +172,15 @@ object VodGroupingNormalizer {
                 val upper = part.trim().uppercase(Locale.US)
                 if (upper.isEmpty()) continue
                 if (allowLanguage) {
-                    LANG_CANONICAL_MAP[upper]?.let { mapped ->
+                    val mapped = LANG_CANONICAL_MAP[upper]
+                    if (mapped != null) {
                         if (mapped == "MULTI") qualityTags.add(mapped) else langTags.add(mapped)
                         continue
                     }
                 }
-                QUALITY_CANONICAL_MAP[upper]?.let { mapped ->
-                    qualityTags.add(mapped)
+                val qualityMapped = QUALITY_CANONICAL_MAP[upper]
+                if (qualityMapped != null) {
+                    qualityTags.add(qualityMapped)
                 }
             }
         }
