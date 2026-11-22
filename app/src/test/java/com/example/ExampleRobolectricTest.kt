@@ -6751,7 +6751,686 @@ class TvSyncDeviceSeparationComposeTest {
             }
         }
     }
+
+    @Test
+    fun phase5d_migration6To7PreservesUserDataAndCreatesV7Tables() {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val dbName = "phase5d_mig67_${System.nanoTime()}.db"
+        val dbFile = context.getDatabasePath(dbName)
+        val factory = androidx.sqlite.db.framework.FrameworkSQLiteOpenHelperFactory()
+        val config = androidx.sqlite.db.SupportSQLiteOpenHelper.Configuration.builder(context)
+            .name(dbName)
+            .callback(object : androidx.sqlite.db.SupportSQLiteOpenHelper.Callback(6) {
+                override fun onCreate(db: androidx.sqlite.db.SupportSQLiteDatabase) {
+                    db.execSQL(
+                        """
+                        CREATE TABLE IF NOT EXISTS `playlists` (
+                            `id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+                            `name` TEXT NOT NULL,
+                            `serverUrl` TEXT NOT NULL,
+                            `username` TEXT NOT NULL,
+                            `password` TEXT NOT NULL,
+                            `isActive` INTEGER NOT NULL,
+                            `lastSyncTimestamp` INTEGER NOT NULL,
+                            `channelCount` INTEGER NOT NULL,
+                            `vodCount` INTEGER NOT NULL,
+                            `seriesCount` INTEGER NOT NULL
+                        )
+                        """.trimIndent()
+                    )
+                    db.execSQL(
+                        """
+                        CREATE TABLE IF NOT EXISTS `streams` (
+                            `id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+                            `playlistId` INTEGER NOT NULL,
+                            `streamId` INTEGER NOT NULL,
+                            `categoryId` TEXT NOT NULL,
+                            `name` TEXT NOT NULL,
+                            `streamType` TEXT NOT NULL,
+                            `streamIcon` TEXT NOT NULL,
+                            `epgChannelId` TEXT NOT NULL,
+                            `rating` TEXT NOT NULL,
+                            `tvArchive` INTEGER NOT NULL,
+                            `tvArchiveDuration` INTEGER NOT NULL,
+                            `containerExtension` TEXT NOT NULL,
+                            `isFavorite` INTEGER NOT NULL,
+                            `watchHistoryTimestamp` INTEGER NOT NULL,
+                            `lastPositionMs` INTEGER NOT NULL,
+                            `tmdbId` TEXT NOT NULL DEFAULT '',
+                            `canonicalGroupKey` TEXT NOT NULL DEFAULT '',
+                            `versionTag` TEXT NOT NULL DEFAULT '',
+                            `addedEpoch` INTEGER NOT NULL DEFAULT 0,
+                            `ratingNumeric` REAL NOT NULL DEFAULT 0.0,
+                            `releaseYear` INTEGER NOT NULL DEFAULT 0,
+                            `genres` TEXT NOT NULL DEFAULT ''
+                        )
+                        """.trimIndent()
+                    )
+                    StreamVaultDatabase.MIGRATION_4_5.migrate(db)
+                    StreamVaultDatabase.MIGRATION_5_6.migrate(db)
+                }
+
+                override fun onUpgrade(
+                    db: androidx.sqlite.db.SupportSQLiteDatabase,
+                    oldVersion: Int,
+                    newVersion: Int
+                ) {
+                    // Tested explicitly below
+                }
+            })
+            .build()
+
+        val helper = factory.create(config)
+        try {
+            val db = helper.writableDatabase
+            db.execSQL(
+                "INSERT INTO playlists (id, name, serverUrl, username, password, isActive, lastSyncTimestamp, channelCount, vodCount, seriesCount) " +
+                    "VALUES (7, 'Living Room IPTV', 'http://demo.example.com', 'alice', 'secret', 1, 1700000000000, 10, 20, 5)"
+            )
+            db.execSQL(
+                "INSERT INTO streams (id, playlistId, streamId, categoryId, name, streamType, streamIcon, epgChannelId, rating, tvArchive, tvArchiveDuration, containerExtension, isFavorite, watchHistoryTimestamp, lastPositionMs, tmdbId, canonicalGroupKey, versionTag, addedEpoch, ratingNumeric, releaseYear, genres) " +
+                    "VALUES (101, 7, 5555, 'cat_1', 'The Beekeeper (2024)', 'movie', 'https://image.tmdb.org/t/p/w500/bee.jpg', '', '7.8', 0, 0, 'mp4', 1, 1710000000000, 245000, '866398', 'tmdb_movie_866398', 'English • 4K', 1710000000, 7.8, 2024, 'Action')"
+            )
+            db.execSQL(
+                "INSERT INTO vod_catalog_groups (id, playlistId, streamType, groupKey, representativeStreamDbId, representativeStreamId, cleanTitle, posterUrl, rating, ratingNumeric, releaseYear, addedEpoch, genres, primaryCategoryId, categoryIdsCsv, versionCount, defaultVersionTag, containerExtension, popularityScore) " +
+                    "VALUES (1, 7, 'movie', 'tmdb_movie_866398', 101, 5555, 'The Beekeeper', 'https://image.tmdb.org/t/p/w500/bee.jpg', '7.8', 7.8, 2024, 1710000000, 'Action', 'cat_1', ',cat_1,', 1, 'English • 4K', 'mp4', 82.0)"
+            )
+
+            // Execute non-destructive MIGRATION_6_7
+            StreamVaultDatabase.MIGRATION_6_7.migrate(db)
+
+            // 1. Verify playlist row preserved
+            db.query("SELECT name, username FROM playlists WHERE id = 7").use { c ->
+                assertTrue(c.moveToFirst())
+                assertEquals("Living Room IPTV", c.getString(0))
+                assertEquals("alice", c.getString(1))
+            }
+
+            // 2. Verify stream user state preserved + metadataHash column added with default 0
+            db.query("SELECT isFavorite, lastPositionMs, metadataHash FROM streams WHERE id = 101").use { c ->
+                assertTrue(c.moveToFirst())
+                assertEquals(1, c.getInt(0))
+                assertEquals(245000L, c.getLong(1))
+                assertEquals(0L, c.getLong(2))
+            }
+
+            // 3. Verify vod_catalog_groups.platformTags column added with default ''
+            db.query("SELECT platformTags FROM vod_catalog_groups WHERE id = 1").use { c ->
+                assertTrue(c.moveToFirst())
+                assertEquals("", c.getString(0))
+            }
+
+            // 4. Verify vod_group_members table exists and accepts inserts/queries
+            db.execSQL(
+                "INSERT INTO vod_group_members (playlistId, streamType, groupKey, streamDbId) VALUES (7, 'movie', 'tmdb_movie_866398', 101)"
+            )
+            db.query("SELECT streamDbId FROM vod_group_members WHERE playlistId = 7 AND groupKey = 'tmdb_movie_866398'").use { c ->
+                assertTrue(c.moveToFirst())
+                assertEquals(101L, c.getLong(0))
+            }
+
+            // 5. Verify sync_section_state table exists and accepts inserts/queries
+            db.execSQL(
+                "INSERT INTO sync_section_state (playlistId, sectionType, status, stage, sessionId, isIndeterminate, progressPercent, totalDiscovered, itemsDownloaded, itemsProcessed, itemsUnchanged, itemsAdded, itemsUpdated, itemsRemoved, itemsSkipped, itemsGrouped, itemsPersisted, lastSuccessfulSyncMs, lastAttemptedSyncMs, pendingUpdateAvailable, pendingUpdateSummary, etag, lastModified, lastContentLength, errorMessage) " +
+                    "VALUES (7, 'MOVIE', 'COMPLETED', 'FINALIZING', 'sess-1', 0, 100, 20, 20, 20, 18, 2, 0, 0, 0, 15, 2, 1710000001000, 1710000000000, 0, '', '\"e1\"', '', 4096, '')"
+            )
+            db.query("SELECT status, progressPercent, itemsUnchanged FROM sync_section_state WHERE playlistId = 7 AND sectionType = 'MOVIE'").use { c ->
+                assertTrue(c.moveToFirst())
+                assertEquals("COMPLETED", c.getString(0))
+                assertEquals(100, c.getInt(1))
+                assertEquals(18, c.getInt(2))
+            }
+        } finally {
+            helper.close()
+            dbFile.delete()
+            java.io.File(dbFile.path + "-wal").delete()
+            java.io.File(dbFile.path + "-shm").delete()
+        }
+    }
+
+    @Test
+    fun phase5d_globalPopularityIndexAllowsConfiguredUrlFoldsDiacriticsAndMatchesYearTolerance() = runBlocking {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val cacheFile = java.io.File(context.filesDir, "global_popularity_index.json")
+        val metaFile = java.io.File(context.filesDir, "global_popularity_index.meta")
+        cacheFile.delete()
+        metaFile.delete()
+        com.example.data.remote.GlobalPopularityIndexManager.clearForTest()
+
+        try {
+            val defaultUrl = com.example.data.remote.GlobalPopularityIndexManager.DEFAULT_INDEX_URL
+            assertTrue("DEFAULT_INDEX_URL must point to configured GitHub Pages host", defaultUrl.contains("MPadberg-svg"))
+            assertFalse("DEFAULT_INDEX_URL must not contain placeholder", defaultUrl.contains("YOUR_GITHUB_USERNAME"))
+
+            val requestHitCount = java.util.concurrent.atomic.AtomicInteger(0)
+            val payload = """
+                {
+                  "v": 1,
+                  "generatedAt": 1730000000,
+                  "m": { "866398": 91.0 },
+                  "s": {},
+                  "t": {
+                    "m:amelie_2001": 92.4,
+                    "s:elite_2018": 88.6,
+                    "m:the beekeeper_2024": 91.0,
+                    "m:the beekeeper": 91.0
+                  }
+                }
+            """.trimIndent()
+
+            val mockClient = okhttp3.OkHttpClient.Builder()
+                .addInterceptor { chain ->
+                    requestHitCount.incrementAndGet()
+                    okhttp3.Response.Builder()
+                        .request(chain.request())
+                        .protocol(okhttp3.Protocol.HTTP_1_1)
+                        .code(200)
+                        .message("OK")
+                        .header("ETag", "\"v15-test-etag\"")
+                        .body(
+                            okhttp3.ResponseBody.Companion.run {
+                                payload.toResponseBody(
+                                    okhttp3.MediaType.Companion.run { "application/json".toMediaType() }
+                                )
+                            }
+                        )
+                        .build()
+                }
+                .build()
+
+            val downloaded = com.example.data.remote.GlobalPopularityIndexManager.ensureLoaded(
+                context = context,
+                okHttpClient = mockClient,
+                url = defaultUrl
+            )
+            assertTrue("Configured DEFAULT_INDEX_URL must NOT be skipped", downloaded)
+            assertEquals(1, requestHitCount.get())
+
+            // Diacritic folding lookups
+            assertEquals(
+                92.4,
+                com.example.data.remote.GlobalPopularityIndexManager.lookupGlobalScore("movie", "", "Amélie", 2001),
+                0.01
+            )
+            assertEquals(
+                88.6,
+                com.example.data.remote.GlobalPopularityIndexManager.lookupGlobalScore("series", "", "Élite", 2018),
+                0.01
+            )
+
+            // ±1 year tolerance & year-0 lookup
+            assertEquals(
+                91.0,
+                com.example.data.remote.GlobalPopularityIndexManager.lookupGlobalScore("movie", "", "The Beekeeper", 2023),
+                0.01
+            )
+            assertEquals(
+                91.0,
+                com.example.data.remote.GlobalPopularityIndexManager.lookupGlobalScore("movie", "", "The Beekeeper", 2025),
+                0.01
+            )
+            assertEquals(
+                91.0,
+                com.example.data.remote.GlobalPopularityIndexManager.lookupGlobalScore("movie", "", "The Beekeeper", 0),
+                0.01
+            )
+        } finally {
+            com.example.data.remote.GlobalPopularityIndexManager.clearForTest()
+            cacheFile.delete()
+            metaFile.delete()
+        }
+    }
+
+    @Test
+    fun phase5d_unionFindBridgesFragmentedBeekeeperCopiesLosslessly() = runBlocking {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val db = Room.inMemoryDatabaseBuilder(context, StreamVaultDatabase::class.java)
+            .allowMainThreadQueries()
+            .build()
+
+        try {
+            val playlistId = db.playlistDao().insertPlaylist(
+                PlaylistEntity(
+                    name = "Union-Find Test",
+                    serverUrl = "http://unionfind.example.com",
+                    username = "u",
+                    password = "p",
+                    isActive = true
+                )
+            )
+            val sharedPoster = "https://image.tmdb.org/t/p/w500/A7EByudX0eOzlkQ2FIbogzyazm2.jpg"
+            val fragmentedStreams = listOf(
+                StreamEntity(
+                    playlistId = playlistId,
+                    streamId = 9001L,
+                    categoryId = "cat_en",
+                    name = "[EN] The Beekeeper (2024) 4K",
+                    streamType = "movie",
+                    streamIcon = sharedPoster,
+                    rating = "7.6",
+                    ratingNumeric = 7.6,
+                    tmdbId = "866398",
+                    releaseYear = 2024,
+                    containerExtension = "mkv",
+                    addedEpoch = 1710000100L
+                ),
+                StreamEntity(
+                    playlistId = playlistId,
+                    streamId = 9002L,
+                    categoryId = "cat_fr",
+                    name = "[FR] The Beekeeper (2024)",
+                    streamType = "movie",
+                    streamIcon = "",
+                    rating = "7.5",
+                    ratingNumeric = 7.5,
+                    tmdbId = "866398",
+                    releaseYear = 2024,
+                    containerExtension = "mp4",
+                    addedEpoch = 1710000090L
+                ),
+                StreamEntity(
+                    playlistId = playlistId,
+                    streamId = 9003L,
+                    categoryId = "cat_ar",
+                    name = "[AR] The Beekeeper",
+                    streamType = "movie",
+                    streamIcon = sharedPoster,
+                    rating = "",
+                    ratingNumeric = 0.0,
+                    tmdbId = "",
+                    releaseYear = 0,
+                    containerExtension = "mp4",
+                    addedEpoch = 1710000080L
+                ),
+                StreamEntity(
+                    playlistId = playlistId,
+                    streamId = 9004L,
+                    categoryId = "cat_es",
+                    name = "[ES] El Apicultor",
+                    streamType = "movie",
+                    streamIcon = sharedPoster,
+                    rating = "",
+                    ratingNumeric = 0.0,
+                    tmdbId = "",
+                    releaseYear = 0,
+                    containerExtension = "mp4",
+                    addedEpoch = 1710000070L
+                )
+            )
+            db.streamDao().insertStreamsBatch(fragmentedStreams)
+
+            val projections = db.streamDao().getStreamIndexProjectionsChunk(playlistId, "movie", 100, 0)
+            assertEquals(4, projections.size)
+
+            val (groups, members) = com.example.data.sync.CatalogDiffEngine.buildLosslessGroups(
+                playlistId = playlistId,
+                streamType = "movie",
+                streams = projections,
+                categoryNameMap = mapOf(
+                    "cat_en" to "EN | Action 4K",
+                    "cat_fr" to "FR | Films Action",
+                    "cat_ar" to "AR | Aflam",
+                    "cat_es" to "ES | Cine"
+                )
+            )
+
+            assertEquals("All 4 fragmented copies must unify into 1 group", 1, groups.size)
+            assertEquals("Group versionCount must equal 4 losslessly", 4, groups.first().versionCount)
+            assertEquals("Membership join table must contain all 4 streams", 4, members.size)
+
+            db.vodGroupDao().insertGroupsBatch(groups)
+            db.vodGroupDao().insertGroupMembersBatch(members)
+
+            val persistedMembers = db.vodGroupDao().getMemberStreamsForGroup(
+                playlistId = playlistId,
+                streamType = "movie",
+                groupKey = groups.first().groupKey
+            )
+            assertEquals(
+                setOf(9001L, 9002L, 9003L, 9004L),
+                persistedMembers.map { it.streamId }.toSet()
+            )
+        } finally {
+            db.close()
+        }
+    }
+
+    @Test
+    fun phase5d_incrementalSmartDiffSkipsUnchangedPreservesUserStateAndSafetyFloorInterrupts() = runBlocking {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val db = Room.inMemoryDatabaseBuilder(context, StreamVaultDatabase::class.java)
+            .allowMainThreadQueries()
+            .build()
+
+        // Avoid external network calls for global popularity index during this sync test
+        val cacheFile = java.io.File(context.filesDir, "global_popularity_index.json")
+        val metaFile = java.io.File(context.filesDir, "global_popularity_index.meta")
+        cacheFile.writeText("{\"v\":1,\"generatedAt\":1730000000,\"m\":{},\"s\":{},\"t\":{}}")
+        metaFile.writeText("etag=\nlastFetchMs=${System.currentTimeMillis()}\n")
+
+        val serverPhase = java.util.concurrent.atomic.AtomicInteger(1)
+        val stallStreamLatch = java.util.concurrent.CountDownLatch(1)
+        val releaseStallLatch = java.util.concurrent.CountDownLatch(1)
+        val serverSocket = java.net.ServerSocket(0)
+        val port = serverSocket.localPort
+        val serverRunning = java.util.concurrent.atomic.AtomicBoolean(true)
+
+        fun buildVodJson(count: Int, renameFirst: Boolean): String {
+            val sb = StringBuilder(count * 140)
+            sb.append('[')
+            for (i in 1..count) {
+                if (i > 1) sb.append(',')
+                val streamId = 1000 + i
+                val title = if (i == 1 && renameFirst) {
+                    "Action Hero 1 (Director's Cut) (2024)"
+                } else {
+                    "Action Hero $i (2024)"
+                }
+                sb.append(
+                    """{"stream_id":$streamId,"name":"$title","category_id":"cat_movies","stream_icon":"https://image.tmdb.org/t/p/w500/p$i.jpg","rating":"7.5","added":"1710000000","container_extension":"mp4"}"""
+                )
+            }
+            sb.append(']')
+            return sb.toString()
+        }
+
+        val serverThread = Thread {
+            while (serverRunning.get()) {
+                try {
+                    val client = serverSocket.accept()
+                    Thread {
+                        client.use { sock ->
+                            val reader = sock.getInputStream().bufferedReader()
+                            val requestLine = reader.readLine() ?: return@use
+                            while (true) {
+                                val headerLine = reader.readLine()
+                                if (headerLine.isNullOrEmpty()) break
+                            }
+                            val out = sock.getOutputStream()
+                            val body = when {
+                                requestLine.contains("action=get_vod_categories") ->
+                                    """[{"category_id":"cat_movies","category_name":"Movies Action"}]"""
+                                requestLine.contains("action=get_vod_streams") -> {
+                                    when (serverPhase.get()) {
+                                        1, 2 -> buildVodJson(120, renameFirst = false)
+                                        3 -> buildVodJson(120, renameFirst = true)
+                                        4 -> buildVodJson(20, renameFirst = true) // < 50% of 120 -> safety floor
+                                        else -> {
+                                            // Phase 5: abrupt mid-stream truncation (incomplete JSON array)
+                                            val partial = """[{"stream_id":1001,"name":"Action Hero 1 (2024)","category_id":"cat_movies"},"""
+                                            val partialBytes = partial.toByteArray(Charsets.UTF_8)
+                                            val respHeader = "HTTP/1.1 200 OK\r\n" +
+                                                "Content-Type: application/json\r\n" +
+                                                "Content-Length: ${partialBytes.size + 4096}\r\n" +
+                                                "Connection: close\r\n\r\n"
+                                            out.write(respHeader.toByteArray(Charsets.UTF_8))
+                                            out.write(partialBytes)
+                                            out.flush()
+                                            return@use
+                                        }
+                                    }
+                                }
+                                else ->
+                                    """{"user_info":{"auth":1,"status":"Active"},"server_info":{"url":"127.0.0.1","port":"$port","server_protocol":"http"}}"""
+                            }
+                            val bytes = body.toByteArray(Charsets.UTF_8)
+                            val response = "HTTP/1.1 200 OK\r\n" +
+                                "Content-Type: application/json\r\n" +
+                                "Content-Length: ${bytes.size}\r\n" +
+                                "Connection: close\r\n\r\n"
+                            out.write(response.toByteArray(Charsets.UTF_8))
+                            out.write(bytes)
+                            out.flush()
+                        }
+                    }.start()
+                } catch (_: Exception) {
+                    // Socket closed on shutdown
+                }
+            }
+        }
+        serverThread.isDaemon = true
+        serverThread.start()
+
+        try {
+            val playlistId = db.playlistDao().insertPlaylist(
+                PlaylistEntity(
+                    name = "Smart Diff Test",
+                    serverUrl = "http://127.0.0.1:$port",
+                    username = "demo",
+                    password = "secret",
+                    isActive = true
+                )
+            )
+            val playlist = db.playlistDao().getPlaylistById(playlistId)!!
+            val repo = IptvRepository(
+                playlistDao = db.playlistDao(),
+                categoryDao = db.categoryDao(),
+                streamDao = db.streamDao(),
+                epgDao = db.epgDao(),
+                parentalDao = db.parentalSettingsDao(),
+                vodGroupDao = db.vodGroupDao(),
+                database = db,
+                appContext = context,
+                syncSectionStateDao = db.syncSectionStateDao()
+            )
+
+            // Sync 1: Initial load of 120 movies
+            serverPhase.set(1)
+            assertTrue(repo.syncPlaylistSection(playlist, "MOVIE").isSuccess)
+            assertEquals(120, db.streamDao().countStreams(playlistId, "movie"))
+            val state1 = db.syncSectionStateDao().getSectionOnce(playlistId, "MOVIE")!!
+            assertEquals("COMPLETED", state1.status)
+            assertEquals(120, state1.itemsAdded)
+            assertEquals(0, state1.itemsUnchanged)
+
+            // Mark stream 1001 as favorite with resume position
+            val targetStream = db.streamDao().getStreamByProviderId(playlistId, 1001L)!!
+            db.streamDao().toggleFavorite(targetStream.id, true)
+            db.streamDao().updatePlaybackPosition(targetStream.id, 180_000L, 1715000000000L)
+
+            // Sync 2: Identical payload -> 120 unchanged, 0 added, 0 updated, 0 removed
+            serverPhase.set(2)
+            assertTrue(repo.syncPlaylistSection(playlist, "MOVIE").isSuccess)
+            val state2 = db.syncSectionStateDao().getSectionOnce(playlistId, "MOVIE")!!
+            assertEquals("COMPLETED", state2.status)
+            assertEquals(120, state2.itemsUnchanged)
+            assertEquals(0, state2.itemsAdded)
+            assertEquals(0, state2.itemsUpdated)
+            assertEquals(0, state2.itemsRemoved)
+
+            // Sync 3: 1 modified item -> 1 updated, 119 unchanged, favorite & resume position preserved
+            serverPhase.set(3)
+            assertTrue(repo.syncPlaylistSection(playlist, "MOVIE").isSuccess)
+            val state3 = db.syncSectionStateDao().getSectionOnce(playlistId, "MOVIE")!!
+            assertEquals(1, state3.itemsUpdated)
+            assertEquals(119, state3.itemsUnchanged)
+            assertEquals(0, state3.itemsRemoved)
+
+            val updatedTarget = db.streamDao().getStreamByProviderId(playlistId, 1001L)!!
+            assertEquals("Action Hero 1 (Director's Cut) (2024)", updatedTarget.name)
+            assertTrue("isFavorite must survive incremental update", updatedTarget.isFavorite)
+            assertEquals("lastPositionMs must survive incremental update", 180_000L, updatedTarget.lastPositionMs)
+
+            // Sync 4: Provider returns < 50% (20 of 120) -> 50% safety floor blocks destructive deletions
+            serverPhase.set(4)
+            assertTrue(repo.syncPlaylistSection(playlist, "MOVIE").isSuccess)
+            val state4 = db.syncSectionStateDao().getSectionOnce(playlistId, "MOVIE")!!
+            assertEquals("Safety floor must block deletions when < 50% returned", 0, state4.itemsRemoved)
+            assertEquals("All 120 existing movies must remain intact", 120, db.streamDao().countStreams(playlistId, "movie"))
+            assertTrue("Safety floor should flag pending warning", state4.pendingUpdateAvailable)
+
+            // Sync 5a: Abrupt mid-stream socket truncation never deletes existing movies
+            serverPhase.set(5)
+            repo.syncPlaylistSection(playlist, "MOVIE")
+            assertEquals("Abrupt stream drop must never delete existing items", 120, db.streamDao().countStreams(playlistId, "movie"))
+
+            // Sync 5b: Simulated process kill mid-sync -> repository startup marks RUNNING as INTERRUPTED
+            db.syncSectionStateDao().upsert(
+                state4.copy(
+                    status = "RUNNING",
+                    stage = "DOWNLOADING_AND_DIFFING",
+                    progressPercent = 34
+                )
+            )
+            IptvRepository(
+                playlistDao = db.playlistDao(),
+                categoryDao = db.categoryDao(),
+                streamDao = db.streamDao(),
+                epgDao = db.epgDao(),
+                parentalDao = db.parentalSettingsDao(),
+                vodGroupDao = db.vodGroupDao(),
+                database = db,
+                appContext = context,
+                syncSectionStateDao = db.syncSectionStateDao()
+            )
+            val deadline = System.currentTimeMillis() + 3_000L
+            var recovered = db.syncSectionStateDao().getSectionOnce(playlistId, "MOVIE")!!
+            while (System.currentTimeMillis() < deadline && recovered.status != "INTERRUPTED") {
+                Thread.sleep(20L)
+                recovered = db.syncSectionStateDao().getSectionOnce(playlistId, "MOVIE")!!
+            }
+            assertEquals("INTERRUPTED", recovered.status)
+            assertEquals(120, db.streamDao().countStreams(playlistId, "movie"))
+        } finally {
+            serverRunning.set(false)
+            runCatching { serverSocket.close() }
+            db.close()
+            cacheFile.delete()
+            metaFile.delete()
+        }
+    }
+
+    @Test
+    fun phase5d_playbackResourceGovernorScalesBatchSizeDuringActivePlayback() {
+        try {
+            com.example.data.sync.PlaybackResourceGovernor.setPlaybackActive(false)
+            assertFalse(com.example.data.sync.PlaybackResourceGovernor.isPlaybackActive.value)
+            assertEquals(1_000, com.example.data.sync.PlaybackResourceGovernor.recommendedDbBatchSize())
+
+            com.example.data.sync.PlaybackResourceGovernor.setPlaybackActive(true)
+            assertTrue(com.example.data.sync.PlaybackResourceGovernor.isPlaybackActive.value)
+            assertEquals(250, com.example.data.sync.PlaybackResourceGovernor.recommendedDbBatchSize())
+        } finally {
+            com.example.data.sync.PlaybackResourceGovernor.setPlaybackActive(false)
+        }
+        assertEquals(1_000, com.example.data.sync.PlaybackResourceGovernor.recommendedDbBatchSize())
+    }
+
+    @Test
+    fun phase5d_catalogUpdateCheckWorkerDetectsNewCategoriesWithoutDownloadingStreams() = runBlocking {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val db = StreamVaultDatabase.getInstance(context)
+        val cacheFile = java.io.File(context.filesDir, "global_popularity_index.json")
+        val metaFile = java.io.File(context.filesDir, "global_popularity_index.meta")
+        cacheFile.writeText("{\"v\":1,\"generatedAt\":1730000000,\"m\":{},\"s\":{},\"t\":{}}")
+        metaFile.writeText("etag=\nlastFetchMs=${System.currentTimeMillis()}\n")
+
+        val receivedRequests = java.util.Collections.synchronizedList(ArrayList<String>())
+        val serverSocket = java.net.ServerSocket(0)
+        val port = serverSocket.localPort
+        val serverRunning = java.util.concurrent.atomic.AtomicBoolean(true)
+
+        val serverThread = Thread {
+            while (serverRunning.get()) {
+                try {
+                    val client = serverSocket.accept()
+                    Thread {
+                        client.use { sock ->
+                            val reader = sock.getInputStream().bufferedReader()
+                            val requestLine = reader.readLine() ?: return@use
+                            receivedRequests.add(requestLine)
+                            while (true) {
+                                val headerLine = reader.readLine()
+                                if (headerLine.isNullOrEmpty()) break
+                            }
+                            val body = when {
+                                requestLine.contains("action=get_vod_categories") ->
+                                    """[{"category_id":"cat_vod_1","category_name":"Action"},{"category_id":"cat_vod_2","category_name":"2026 Releases"}]"""
+                                requestLine.contains("action=get_live_categories") ->
+                                    """[{"category_id":"cat_live_1","category_name":"Sports"}]"""
+                                requestLine.contains("action=get_series_categories") ->
+                                    """[{"category_id":"cat_ser_1","category_name":"Drama"}]"""
+                                else -> "[]"
+                            }
+                            val bytes = body.toByteArray(Charsets.UTF_8)
+                            val response = "HTTP/1.1 200 OK\r\n" +
+                                "Content-Type: application/json\r\n" +
+                                "Content-Length: ${bytes.size}\r\n" +
+                                "Connection: close\r\n\r\n"
+                            val out = sock.getOutputStream()
+                            out.write(response.toByteArray(Charsets.UTF_8))
+                            out.write(bytes)
+                            out.flush()
+                        }
+                    }.start()
+                } catch (_: Exception) {
+                    // Closed on teardown
+                }
+            }
+        }
+        serverThread.isDaemon = true
+        serverThread.start()
+
+        var seededPlaylistId = -1L
+        try {
+            seededPlaylistId = db.playlistDao().insertPlaylist(
+                PlaylistEntity(
+                    name = "Update Probe Test",
+                    serverUrl = "http://127.0.0.1:$port",
+                    username = "probe",
+                    password = "secret",
+                    isActive = true
+                )
+            )
+            db.playlistDao().setActivePlaylist(seededPlaylistId)
+            db.categoryDao().insertCategories(
+                listOf(
+                    CategoryEntity(playlistId = seededPlaylistId, categoryId = "cat_live_1", categoryName = "Sports", type = "LIVE"),
+                    CategoryEntity(playlistId = seededPlaylistId, categoryId = "cat_vod_1", categoryName = "Action", type = "MOVIE"),
+                    CategoryEntity(playlistId = seededPlaylistId, categoryId = "cat_ser_1", categoryName = "Drama", type = "SERIES")
+                )
+            )
+
+            val worker = androidx.work.testing.TestListenableWorkerBuilder<com.example.data.sync.CatalogUpdateCheckWorker>(
+                context
+            ).build()
+            val workResult = worker.doWork()
+            assertEquals(androidx.work.ListenableWorker.Result.success(), workResult)
+
+            // Verify MOVIE section flagged pendingUpdateAvailable due to new cat_vod_2
+            val movieSyncState = db.syncSectionStateDao().getSectionOnce(seededPlaylistId, "MOVIE")
+            assertNotNull("MOVIE sync state should be flagged for pending update", movieSyncState)
+            assertTrue(movieSyncState!!.pendingUpdateAvailable)
+            assertTrue(movieSyncState.pendingUpdateSummary.contains("1 new category"))
+
+            // Verify ZERO GET requests were made to full stream catalog endpoints
+            val forbiddenGets = receivedRequests.filter { req ->
+                req.startsWith("GET ") && (
+                    req.contains("action=get_vod_streams") ||
+                        req.contains("action=get_live_streams") ||
+                        req.contains("action=get_series&") ||
+                        req.contains("action=get_series ")
+                    )
+            }
+            assertTrue("Background probe must NEVER GET full stream catalogs, saw: $forbiddenGets", forbiddenGets.isEmpty())
+            assertTrue(receivedRequests.any { it.contains("action=get_vod_categories") })
+        } finally {
+            serverRunning.set(false)
+            runCatching { serverSocket.close() }
+            if (seededPlaylistId > 0L) {
+                db.openHelper.writableDatabase.execSQL(
+                    "DELETE FROM sync_section_state WHERE playlistId = ?",
+                    arrayOf(seededPlaylistId)
+                )
+                db.categoryDao().clearCategoriesForPlaylist(seededPlaylistId)
+                db.playlistDao().deletePlaylist(seededPlaylistId)
+            }
+            cacheFile.delete()
+            metaFile.delete()
+        }
+    }
 }
+
 
 
 

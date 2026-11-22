@@ -12,14 +12,15 @@ import okhttp3.OkHttpClient
 import okhttp3.Request
 import java.io.File
 import java.io.StringReader
+import java.text.Normalizer
 import java.util.Locale
 
 /**
  * V15 Inverted Cloud Global Popularity Index client.
  *
  * Performs a 100% read-only HTTP GET (never sending user playlists, Xtream URLs, or credentials)
- * to download and ETag-cache a static JSON popularity index (~350 KB gzipped) from GitHub Pages
- * at most once every 24 hours. Fails silently to an empty map when offline or unconfigured.
+ * to download and ETag-cache a static JSON popularity index (~350 KB raw, ~110 KB gzipped) from
+ * GitHub Pages at most once every 24 hours. Fails silently to an empty map when offline or unconfigured.
  */
 object GlobalPopularityIndexManager {
     const val DEFAULT_INDEX_URL = "https://MPadberg-svg.github.io/SetPlay/popularity_index.json"
@@ -30,6 +31,7 @@ object GlobalPopularityIndexManager {
     private const val REFRESH_INTERVAL_MS = 24L * 60L * 60L * 1000L
     private const val PLACEHOLDER_HOST_MARKER = "MPadberg-svg"
 
+    private val COMBINING_MARKS_REGEX = Regex("\\p{Mn}+")
     private val NON_ALNUM_REGEX = Regex("[^\\p{L}\\p{N}]+")
     private val MULTI_SPACE_REGEX = Regex("\\s+")
 
@@ -51,12 +53,14 @@ object GlobalPopularityIndexManager {
      * Loads the cached index from `context.filesDir/global_popularity_index.json` if present,
      * and refreshes from [url] at most once every 24 hours using `If-None-Match` ETag validation.
      * Always fails silently without throwing when offline, unconfigured, or receiving non-200/304.
+     *
+     * @return `true` ONLY when a fresh HTTP 200 payload was downloaded and parsed cleanly; `false` otherwise.
      */
     suspend fun ensureLoaded(
         context: Context,
         okHttpClient: OkHttpClient,
         url: String = DEFAULT_INDEX_URL
-    ) = withContext(Dispatchers.IO) {
+    ): Boolean = withContext(Dispatchers.IO) {
         loadMutex.withLock {
             val cacheFile = File(context.filesDir, CACHE_FILE_NAME)
             val metaFile = File(context.filesDir, META_FILE_NAME)
@@ -78,17 +82,18 @@ object GlobalPopularityIndexManager {
             // 2. Skip network fetch when URL is blank or still has the template placeholder
             val cleanUrl = url.trim()
             if (cleanUrl.isEmpty() || cleanUrl.contains(PLACEHOLDER_HOST_MARKER, ignoreCase = true)) {
-                return@withLock
+                return@withLock false
             }
 
             // 3. Respect 24-hour refresh throttle
             val (savedEtag, lastFetchMs) = readMeta(metaFile)
             val nowMs = System.currentTimeMillis()
             if (lastFetchMs > 0L && (nowMs - lastFetchMs) < REFRESH_INTERVAL_MS && cacheFile.exists()) {
-                return@withLock
+                return@withLock false
             }
 
             // 4. Perform strictly read-only GET with ETag caching (OkHttp negotiates gzip transparently)
+            var downloadedFresh = false
             runCatching {
                 val reqBuilder = Request.Builder()
                     .url(cleanUrl)
@@ -118,6 +123,7 @@ object GlobalPopularityIndexManager {
                                     writeMeta(metaFile, newEtag, nowMs)
                                     snapshot = parsed
                                     diskLoaded = true
+                                    downloadedFresh = true
                                 }
                             }
                         }
@@ -129,12 +135,14 @@ object GlobalPopularityIndexManager {
             }.onFailure {
                 // Offline or transient network error — fail silently to existing/empty map
             }
+            downloadedFresh
         }
     }
 
     /**
      * Pure O(1) lookup returning the global popularity score in `0.0..100.0`, or `0.0` if absent.
-     * Checks numeric TMDb ID first, then normalized title + releaseYear key.
+     * Checks numeric TMDb ID first, then NFD-normalized title with exact year, year - 1, year + 1,
+     * and yearless key `"$prefix:$alnumLower"` when `releaseYear == 0`.
      */
     fun lookupGlobalScore(
         streamType: String,
@@ -163,7 +171,7 @@ object GlobalPopularityIndexManager {
             }
         }
 
-        // 2. Fallback to normalized title + year lookup
+        // 2. Fallback to NFD-normalized title + year lookup
         val trimmedTitle = cleanTitle.trim()
         if (trimmedTitle.isEmpty() || current.byTitleKey.isEmpty()) {
             return 0.0
@@ -173,23 +181,40 @@ object GlobalPopularityIndexManager {
             .lowercase(Locale.US)
             .replace(MULTI_SPACE_REGEX, " ")
             .trim()
-        val yearSuffix = if (releaseYear > 0) releaseYear else 0
-
-        val exactTitleKey = "$prefix:${rawLower}_$yearSuffix"
-        val exactMatch = current.byTitleKey[exactTitleKey]
-        if (exactMatch != null && exactMatch > 0.0) {
-            return exactMatch.coerceIn(0.0, 100.0)
-        }
-
-        val alnumLower = rawLower
+        val alnumLower = Normalizer.normalize(trimmedTitle, Normalizer.Form.NFD)
+            .replace(COMBINING_MARKS_REGEX, "")
+            .lowercase(Locale.US)
             .replace(NON_ALNUM_REGEX, " ")
             .replace(MULTI_SPACE_REGEX, " ")
             .trim()
-        if (alnumLower.isNotEmpty() && alnumLower != rawLower) {
-            val alnumKey = "$prefix:${alnumLower}_$yearSuffix"
-            val alnumMatch = current.byTitleKey[alnumKey]
-            if (alnumMatch != null && alnumMatch > 0.0) {
-                return alnumMatch.coerceIn(0.0, 100.0)
+
+        fun lookupForYear(year: Int): Double? {
+            val rawScore = current.byTitleKey["$prefix:${rawLower}_$year"]
+            if (rawScore != null && rawScore > 0.0) return rawScore.coerceIn(0.0, 100.0)
+            if (alnumLower.isNotEmpty() && alnumLower != rawLower) {
+                val alnumScore = current.byTitleKey["$prefix:${alnumLower}_$year"]
+                if (alnumScore != null && alnumScore > 0.0) return alnumScore.coerceIn(0.0, 100.0)
+            }
+            return null
+        }
+
+        if (releaseYear > 0) {
+            lookupForYear(releaseYear)?.let { return it }
+            lookupForYear(releaseYear - 1)?.let { return it }
+            lookupForYear(releaseYear + 1)?.let { return it }
+        } else {
+            lookupForYear(0)?.let { return it }
+            if (alnumLower.isNotEmpty()) {
+                val yearlessAlnum = current.byTitleKey["$prefix:$alnumLower"]
+                if (yearlessAlnum != null && yearlessAlnum > 0.0) {
+                    return yearlessAlnum.coerceIn(0.0, 100.0)
+                }
+            }
+            if (rawLower.isNotEmpty() && rawLower != alnumLower) {
+                val yearlessRaw = current.byTitleKey["$prefix:$rawLower"]
+                if (yearlessRaw != null && yearlessRaw > 0.0) {
+                    return yearlessRaw.coerceIn(0.0, 100.0)
+                }
             }
         }
 

@@ -13,6 +13,10 @@ import com.example.data.repository.EpisodeResumeInfo
 import com.example.data.repository.IptvRepository
 import com.example.data.repository.VodPipelinePhase
 import com.example.data.repository.VodPipelineState
+import com.example.data.sync.CatalogSyncWorker
+import com.example.data.sync.SyncStage
+import com.example.data.sync.SyncStatus
+import com.example.data.sync.SyncTelemetry
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.FlowPreview
 import kotlinx.coroutines.Job
@@ -76,8 +80,112 @@ data class VodSyncBannerState(
     val statusText: String = "",
     val isError: Boolean = false,
     val isCompleted: Boolean = false,
-    val progressPercent: Int = 0
+    val progressPercent: Int = 0,
+    val stageLabel: String = "",
+    val statsSubtitle: String = "",
+    val isIndeterminate: Boolean = false,
+    val isInterrupted: Boolean = false,
+    val pendingUpdateAvailable: Boolean = false,
+    val pendingUpdateSummary: String = "",
+    val lastSuccessfulSyncMs: Long = 0L
 )
+
+internal fun formatSyncStatsSubtitle(telemetry: SyncTelemetry): String {
+    val checked = maxOf(telemetry.itemsDownloaded, telemetry.itemsProcessed)
+    return when {
+        telemetry.status == SyncStatus.INTERRUPTED -> {
+            if (checked > 0) {
+                "Paused after %,d checked • Tap Resume".format(Locale.US, checked)
+            } else {
+                "Sync paused mid-stream • Tap Resume"
+            }
+        }
+        telemetry.status == SyncStatus.FAILED -> {
+            telemetry.errorMessage.ifBlank { "Check your connection and retry" }
+        }
+        telemetry.status == SyncStatus.PENDING -> {
+            "Queued for background sync…"
+        }
+        telemetry.status == SyncStatus.RUNNING -> {
+            when (telemetry.stage) {
+                SyncStage.CONNECTING_AND_CHECKING -> {
+                    if (telemetry.totalDiscovered > 0) {
+                        "%,d items discovered".format(Locale.US, telemetry.totalDiscovered)
+                    } else {
+                        "Checking catalog changes…"
+                    }
+                }
+                SyncStage.DOWNLOADING_AND_DIFFING, SyncStage.PARSING_AND_VALIDATING -> {
+                    if (checked > 0) {
+                        val base = "%,d checked • %,d new • %,d updated".format(
+                            Locale.US,
+                            checked,
+                            telemetry.itemsAdded,
+                            telemetry.itemsUpdated
+                        )
+                        if (telemetry.itemsRemoved > 0) {
+                            "$base • %,d removed".format(Locale.US, telemetry.itemsRemoved)
+                        } else {
+                            base
+                        }
+                    } else {
+                        "Streaming catalog changes…"
+                    }
+                }
+                SyncStage.GROUPING_AND_ORGANIZING -> {
+                    if (telemetry.totalDiscovered > 0) {
+                        "%,d / %,d grouped".format(
+                            Locale.US,
+                            telemetry.itemsGrouped.coerceAtMost(telemetry.totalDiscovered),
+                            telemetry.totalDiscovered
+                        )
+                    } else if (telemetry.itemsGrouped > 0) {
+                        "%,d titles grouped".format(Locale.US, telemetry.itemsGrouped)
+                    } else {
+                        "Grouping & ranking versions…"
+                    }
+                }
+                SyncStage.PERSISTING_DATABASE -> {
+                    if (telemetry.itemsPersisted > 0) {
+                        "%,d changes saved".format(Locale.US, telemetry.itemsPersisted)
+                    } else if (telemetry.itemsAdded > 0 || telemetry.itemsUpdated > 0) {
+                        "%,d new • %,d updated".format(Locale.US, telemetry.itemsAdded, telemetry.itemsUpdated)
+                    } else {
+                        "Committing changes…"
+                    }
+                }
+                SyncStage.FINALIZING -> {
+                    if (telemetry.totalDiscovered > 0) {
+                        "%,d total • %,d new • %,d updated".format(
+                            Locale.US,
+                            telemetry.totalDiscovered,
+                            telemetry.itemsAdded,
+                            telemetry.itemsUpdated
+                        )
+                    } else {
+                        "Finalizing catalog…"
+                    }
+                }
+                SyncStage.IDLE -> ""
+            }
+        }
+        telemetry.status == SyncStatus.COMPLETED -> {
+            when {
+                telemetry.itemsAdded > 0 || telemetry.itemsUpdated > 0 || telemetry.itemsRemoved > 0 -> {
+                    val base = "%,d new • %,d updated".format(Locale.US, telemetry.itemsAdded, telemetry.itemsUpdated)
+                    if (telemetry.itemsRemoved > 0) {
+                        "$base • %,d removed".format(Locale.US, telemetry.itemsRemoved)
+                    } else {
+                        base
+                    }
+                }
+                telemetry.totalDiscovered > 0 -> "%,d items checked • Up to date".format(Locale.US, telemetry.totalDiscovered)
+                else -> ""
+            }
+        }
+        else -> ""
+    }
+}
 
 @OptIn(ExperimentalCoroutinesApi::class, FlowPreview::class)
 class VodViewModel(application: Application) : AndroidViewModel(application) {
@@ -310,12 +418,43 @@ class VodViewModel(application: Application) : AndroidViewModel(application) {
     private val _similarMovies = MutableStateFlow<List<GroupedVodStream>>(emptyList())
     val similarMovies: StateFlow<List<GroupedVodStream>> = _similarMovies.asStateFlow()
 
-    // Pull-to-Refresh & Isolated Per-Section Sync Banner Telemetry
-    private val _isRefreshingMovies = MutableStateFlow(false)
-    val isRefreshingMovies: StateFlow<Boolean> = _isRefreshingMovies.asStateFlow()
+    // Persisted per-section SyncTelemetry (survives app restarts, backgrounding, and process death)
+    val movieSyncTelemetry: StateFlow<SyncTelemetry> = repository.activePlaylist
+        .flatMapLatest { playlist ->
+            if (playlist == null) {
+                flowOf(SyncTelemetry(sectionType = "MOVIE"))
+            } else {
+                repository.observeSectionSyncState(playlist.id, "MOVIE")
+            }
+        }
+        .stateIn(viewModelScope, SharingStarted.Eagerly, SyncTelemetry(sectionType = "MOVIE"))
 
-    private val _isRefreshingSeries = MutableStateFlow(false)
-    val isRefreshingSeries: StateFlow<Boolean> = _isRefreshingSeries.asStateFlow()
+    val seriesSyncTelemetry: StateFlow<SyncTelemetry> = repository.activePlaylist
+        .flatMapLatest { playlist ->
+            if (playlist == null) {
+                flowOf(SyncTelemetry(sectionType = "SERIES"))
+            } else {
+                repository.observeSectionSyncState(playlist.id, "SERIES")
+            }
+        }
+        .stateIn(viewModelScope, SharingStarted.Eagerly, SyncTelemetry(sectionType = "SERIES"))
+
+    // Pull-to-Refresh & Isolated Per-Section Sync Banner Telemetry
+    private val _isRefreshingMoviesTrigger = MutableStateFlow(false)
+    val isRefreshingMovies: StateFlow<Boolean> = combine(
+        _isRefreshingMoviesTrigger,
+        movieSyncTelemetry
+    ) { trigger, telemetry ->
+        trigger || telemetry.isActive
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000L), false)
+
+    private val _isRefreshingSeriesTrigger = MutableStateFlow(false)
+    val isRefreshingSeries: StateFlow<Boolean> = combine(
+        _isRefreshingSeriesTrigger,
+        seriesSyncTelemetry
+    ) { trigger, telemetry ->
+        trigger || telemetry.isActive
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000L), false)
 
     private val _movieBannerState = MutableStateFlow(VodSyncBannerState())
     val movieBannerState: StateFlow<VodSyncBannerState> = _movieBannerState.asStateFlow()
@@ -326,16 +465,30 @@ class VodViewModel(application: Application) : AndroidViewModel(application) {
     // Compatibility alias pointing to movieBannerState
     val vodSyncBannerState: StateFlow<VodSyncBannerState> = movieBannerState
 
-    private var lastMoviesRefreshMs: Long = 0L
-    private var lastSeriesRefreshMs: Long = 0L
     private var movieBannerAutoClearJob: Job? = null
     private var seriesBannerAutoClearJob: Job? = null
+    private var lastMovieTelemetryStatus: SyncStatus = SyncStatus.IDLE
+    private var lastSeriesTelemetryStatus: SyncStatus = SyncStatus.IDLE
+    private var lastMoviePipelinePhase: VodPipelinePhase = VodPipelinePhase.IDLE
+    private var lastSeriesPipelinePhase: VodPipelinePhase = VodPipelinePhase.IDLE
 
     init {
         viewModelScope.launch {
-            repository.moviesPipelineState.collect { state ->
-                applyPipelineStateToBanner(
-                    state = state,
+            combine(movieSyncTelemetry, repository.moviesPipelineState) { telemetry, pipeline ->
+                telemetry to pipeline
+            }.collect { (telemetry, pipeline) ->
+                val transitionedToComplete =
+                    (lastMovieTelemetryStatus == SyncStatus.RUNNING || lastMovieTelemetryStatus == SyncStatus.PENDING) &&
+                        telemetry.status == SyncStatus.COMPLETED
+                val pipelineTransitionedReady =
+                    (lastMoviePipelinePhase == VodPipelinePhase.DOWNLOADING || lastMoviePipelinePhase == VodPipelinePhase.ORGANIZING) &&
+                        pipeline.phase == VodPipelinePhase.READY
+                lastMovieTelemetryStatus = telemetry.status
+                lastMoviePipelinePhase = pipeline.phase
+                applyCombinedSyncStateToBanner(
+                    telemetry = telemetry,
+                    pipeline = pipeline,
+                    transitionedToComplete = transitionedToComplete || pipelineTransitionedReady,
                     targetBanner = _movieBannerState,
                     cancelExistingAutoClear = { movieBannerAutoClearJob?.cancel() },
                     setAutoClearJob = { job -> movieBannerAutoClearJob = job }
@@ -343,9 +496,21 @@ class VodViewModel(application: Application) : AndroidViewModel(application) {
             }
         }
         viewModelScope.launch {
-            repository.seriesPipelineState.collect { state ->
-                applyPipelineStateToBanner(
-                    state = state,
+            combine(seriesSyncTelemetry, repository.seriesPipelineState) { telemetry, pipeline ->
+                telemetry to pipeline
+            }.collect { (telemetry, pipeline) ->
+                val transitionedToComplete =
+                    (lastSeriesTelemetryStatus == SyncStatus.RUNNING || lastSeriesTelemetryStatus == SyncStatus.PENDING) &&
+                        telemetry.status == SyncStatus.COMPLETED
+                val pipelineTransitionedReady =
+                    (lastSeriesPipelinePhase == VodPipelinePhase.DOWNLOADING || lastSeriesPipelinePhase == VodPipelinePhase.ORGANIZING) &&
+                        pipeline.phase == VodPipelinePhase.READY
+                lastSeriesTelemetryStatus = telemetry.status
+                lastSeriesPipelinePhase = pipeline.phase
+                applyCombinedSyncStateToBanner(
+                    telemetry = telemetry,
+                    pipeline = pipeline,
+                    transitionedToComplete = transitionedToComplete || pipelineTransitionedReady,
                     targetBanner = _seriesBannerState,
                     cancelExistingAutoClear = { seriesBannerAutoClearJob?.cancel() },
                     setAutoClearJob = { job -> seriesBannerAutoClearJob = job }
@@ -354,59 +519,163 @@ class VodViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    private fun applyPipelineStateToBanner(
-        state: VodPipelineState,
+    private fun applyCombinedSyncStateToBanner(
+        telemetry: SyncTelemetry,
+        pipeline: VodPipelineState,
+        transitionedToComplete: Boolean,
         targetBanner: MutableStateFlow<VodSyncBannerState>,
         cancelExistingAutoClear: () -> Unit,
         setAutoClearJob: (Job?) -> Unit
     ) {
-        when (state.phase) {
-            VodPipelinePhase.IDLE -> {
+        val pendingAvailable = telemetry.pendingUpdateAvailable
+        val pendingSummary = telemetry.pendingUpdateSummary
+        val lastSuccessMs = telemetry.lastSuccessfulSyncMs
+
+        when {
+            telemetry.isActive -> {
                 cancelExistingAutoClear()
                 setAutoClearJob(null)
-                targetBanner.value = VodSyncBannerState()
-            }
-            VodPipelinePhase.DOWNLOADING, VodPipelinePhase.ORGANIZING -> {
-                cancelExistingAutoClear()
-                setAutoClearJob(null)
+                val stageText = if (telemetry.status == SyncStatus.PENDING) {
+                    "Preparing sync…"
+                } else {
+                    telemetry.stage.label
+                }
                 targetBanner.value = VodSyncBannerState(
                     isSyncing = true,
-                    statusText = state.statusText.ifBlank {
-                        if (state.phase == VodPipelinePhase.DOWNLOADING) "Downloading catalog…" else "Organizing catalog…"
-                    },
+                    statusText = stageText,
+                    stageLabel = stageText,
+                    statsSubtitle = formatSyncStatsSubtitle(telemetry),
+                    isIndeterminate = telemetry.isIndeterminate || telemetry.status == SyncStatus.PENDING,
                     isError = false,
                     isCompleted = false,
-                    progressPercent = state.progressPercent.coerceIn(0, 100)
+                    isInterrupted = false,
+                    progressPercent = telemetry.progressPercent.coerceIn(0, 99),
+                    pendingUpdateAvailable = false,
+                    pendingUpdateSummary = "",
+                    lastSuccessfulSyncMs = lastSuccessMs
                 )
             }
-            VodPipelinePhase.ERROR -> {
+            pipeline.phase == VodPipelinePhase.DOWNLOADING || pipeline.phase == VodPipelinePhase.ORGANIZING -> {
+                cancelExistingAutoClear()
+                setAutoClearJob(null)
+                val stageText = pipeline.statusText.ifBlank {
+                    if (pipeline.phase == VodPipelinePhase.DOWNLOADING) {
+                        SyncStage.DOWNLOADING_AND_DIFFING.label
+                    } else {
+                        SyncStage.GROUPING_AND_ORGANIZING.label
+                    }
+                }
+                val stats = if (pipeline.totalCount > 0) {
+                    "%,d / %,d grouped".format(
+                        Locale.US,
+                        pipeline.processedCount.coerceAtMost(pipeline.totalCount),
+                        pipeline.totalCount
+                    )
+                } else {
+                    ""
+                }
+                val pct = pipeline.progressPercent.coerceIn(0, 99)
+                targetBanner.value = VodSyncBannerState(
+                    isSyncing = true,
+                    statusText = stageText,
+                    stageLabel = stageText,
+                    statsSubtitle = stats,
+                    isIndeterminate = pct <= 0,
+                    isError = false,
+                    isCompleted = false,
+                    isInterrupted = false,
+                    progressPercent = pct,
+                    pendingUpdateAvailable = false,
+                    pendingUpdateSummary = "",
+                    lastSuccessfulSyncMs = lastSuccessMs
+                )
+            }
+            telemetry.status == SyncStatus.INTERRUPTED -> {
                 cancelExistingAutoClear()
                 setAutoClearJob(null)
                 targetBanner.value = VodSyncBannerState(
                     isSyncing = false,
-                    statusText = state.error?.takeIf { it.isNotBlank() }
-                        ?: state.statusText.ifBlank { "Sync failed" },
-                    isError = true,
+                    statusText = "Sync interrupted",
+                    stageLabel = "Sync interrupted",
+                    statsSubtitle = formatSyncStatsSubtitle(telemetry),
+                    isIndeterminate = false,
+                    isError = false,
                     isCompleted = false,
-                    progressPercent = 0
+                    isInterrupted = true,
+                    progressPercent = telemetry.progressPercent.coerceIn(0, 99),
+                    pendingUpdateAvailable = pendingAvailable,
+                    pendingUpdateSummary = pendingSummary,
+                    lastSuccessfulSyncMs = lastSuccessMs
                 )
             }
-            VodPipelinePhase.READY -> {
+            telemetry.status == SyncStatus.FAILED || pipeline.phase == VodPipelinePhase.ERROR -> {
                 cancelExistingAutoClear()
+                setAutoClearJob(null)
+                val errText = telemetry.errorMessage.takeIf { it.isNotBlank() }
+                    ?: pipeline.error?.takeIf { it.isNotBlank() }
+                    ?: pipeline.statusText.ifBlank { "Sync failed" }
                 targetBanner.value = VodSyncBannerState(
                     isSyncing = false,
-                    statusText = state.statusText.ifBlank { "Catalog updated" },
+                    statusText = errText,
+                    stageLabel = "Sync failed",
+                    statsSubtitle = errText,
+                    isIndeterminate = false,
+                    isError = true,
+                    isCompleted = false,
+                    isInterrupted = false,
+                    progressPercent = 0,
+                    pendingUpdateAvailable = pendingAvailable,
+                    pendingUpdateSummary = pendingSummary,
+                    lastSuccessfulSyncMs = lastSuccessMs
+                )
+            }
+            transitionedToComplete -> {
+                cancelExistingAutoClear()
+                val completionStats = formatSyncStatsSubtitle(telemetry)
+                val msg = pipeline.statusText.takeIf { it.isNotBlank() && pipeline.phase == VodPipelinePhase.READY }
+                    ?: "Catalog updated"
+                targetBanner.value = VodSyncBannerState(
+                    isSyncing = false,
+                    statusText = msg,
+                    stageLabel = msg,
+                    statsSubtitle = completionStats,
+                    isIndeterminate = false,
                     isError = false,
                     isCompleted = true,
-                    progressPercent = 100
+                    isInterrupted = false,
+                    progressPercent = 100,
+                    pendingUpdateAvailable = pendingAvailable,
+                    pendingUpdateSummary = pendingSummary,
+                    lastSuccessfulSyncMs = lastSuccessMs
                 )
                 val job = viewModelScope.launch {
                     delay(READY_BANNER_AUTO_DISMISS_MS)
-                    if (targetBanner.value.isCompleted && !targetBanner.value.isSyncing) {
-                        targetBanner.value = VodSyncBannerState()
+                    val cur = targetBanner.value
+                    if (cur.isCompleted && !cur.isSyncing) {
+                        targetBanner.value = VodSyncBannerState(
+                            pendingUpdateAvailable = cur.pendingUpdateAvailable,
+                            pendingUpdateSummary = cur.pendingUpdateSummary,
+                            lastSuccessfulSyncMs = cur.lastSuccessfulSyncMs
+                        )
                     }
                 }
                 setAutoClearJob(job)
+            }
+            else -> {
+                val cur = targetBanner.value
+                if (!cur.isCompleted) {
+                    targetBanner.value = VodSyncBannerState(
+                        pendingUpdateAvailable = pendingAvailable,
+                        pendingUpdateSummary = pendingSummary,
+                        lastSuccessfulSyncMs = lastSuccessMs
+                    )
+                } else {
+                    targetBanner.value = cur.copy(
+                        pendingUpdateAvailable = pendingAvailable,
+                        pendingUpdateSummary = pendingSummary,
+                        lastSuccessfulSyncMs = lastSuccessMs
+                    )
+                }
             }
         }
     }
@@ -417,6 +686,7 @@ class VodViewModel(application: Application) : AndroidViewModel(application) {
         durationMs: Long = READY_BANNER_AUTO_DISMISS_MS
     ) {
         val targetBanner = if (tab == VodTab.MOVIES) _movieBannerState else _seriesBannerState
+        val telemetry = if (tab == VodTab.MOVIES) movieSyncTelemetry.value else seriesSyncTelemetry.value
         if (tab == VodTab.MOVIES) {
             movieBannerAutoClearJob?.cancel()
         } else {
@@ -425,14 +695,24 @@ class VodViewModel(application: Application) : AndroidViewModel(application) {
         targetBanner.value = VodSyncBannerState(
             isSyncing = false,
             statusText = message,
+            stageLabel = message,
+            statsSubtitle = formatSyncStatsSubtitle(telemetry),
             isError = false,
             isCompleted = true,
-            progressPercent = 100
+            progressPercent = 100,
+            pendingUpdateAvailable = telemetry.pendingUpdateAvailable,
+            pendingUpdateSummary = telemetry.pendingUpdateSummary,
+            lastSuccessfulSyncMs = telemetry.lastSuccessfulSyncMs
         )
         val job = viewModelScope.launch {
             delay(durationMs)
-            if (targetBanner.value.isCompleted && !targetBanner.value.isSyncing) {
-                targetBanner.value = VodSyncBannerState()
+            val cur = targetBanner.value
+            if (cur.isCompleted && !cur.isSyncing) {
+                targetBanner.value = VodSyncBannerState(
+                    pendingUpdateAvailable = cur.pendingUpdateAvailable,
+                    pendingUpdateSummary = cur.pendingUpdateSummary,
+                    lastSuccessfulSyncMs = cur.lastSuccessfulSyncMs
+                )
             }
         }
         if (tab == VodTab.MOVIES) {
@@ -446,12 +726,30 @@ class VodViewModel(application: Application) : AndroidViewModel(application) {
         if (tab == null || tab == VodTab.MOVIES) {
             movieBannerAutoClearJob?.cancel()
             movieBannerAutoClearJob = null
-            _movieBannerState.value = VodSyncBannerState()
+            val tel = movieSyncTelemetry.value
+            _movieBannerState.value = VodSyncBannerState(
+                pendingUpdateAvailable = tel.pendingUpdateAvailable,
+                pendingUpdateSummary = tel.pendingUpdateSummary,
+                lastSuccessfulSyncMs = tel.lastSuccessfulSyncMs
+            )
         }
         if (tab == null || tab == VodTab.SERIES) {
             seriesBannerAutoClearJob?.cancel()
             seriesBannerAutoClearJob = null
-            _seriesBannerState.value = VodSyncBannerState()
+            val tel = seriesSyncTelemetry.value
+            _seriesBannerState.value = VodSyncBannerState(
+                pendingUpdateAvailable = tel.pendingUpdateAvailable,
+                pendingUpdateSummary = tel.pendingUpdateSummary,
+                lastSuccessfulSyncMs = tel.lastSuccessfulSyncMs
+            )
+        }
+    }
+
+    fun dismissPendingUpdate(tab: VodTab) {
+        viewModelScope.launch {
+            val target = repository.getActivePlaylistOnce() ?: return@launch
+            val sectionType = if (tab == VodTab.MOVIES) "MOVIE" else "SERIES"
+            repository.markPendingUpdate(target.id, sectionType, "")
         }
     }
 
@@ -535,8 +833,8 @@ class VodViewModel(application: Application) : AndroidViewModel(application) {
         val sectionPipelineBusy = sectionPhase == VodPipelinePhase.DOWNLOADING ||
             sectionPhase == VodPipelinePhase.ORGANIZING
         if (sectionPipelineBusy) return
-        if (isMovies && _isRefreshingMovies.value) return
-        if (!isMovies && _isRefreshingSeries.value) return
+        if (isMovies && (_isRefreshingMoviesTrigger.value || movieSyncTelemetry.value.isActive)) return
+        if (!isMovies && (_isRefreshingSeriesTrigger.value || seriesSyncTelemetry.value.isActive)) return
 
         val recoveryKey = "${targetPlaylist.id}_$streamType"
         if (!autoSectionRecoveryGuard.add(recoveryKey)) return
@@ -982,43 +1280,119 @@ class VodViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun refreshMovies(playlist: PlaylistEntity? = null, force: Boolean = false) {
-        if (_isRefreshingMovies.value) return
+        val telemetry = movieSyncTelemetry.value
+        if (telemetry.isActive || _isRefreshingMoviesTrigger.value) return
+        val selectedCat = _selectedMovieCategoryId.value?.takeIf { it.isNotBlank() }
         val now = System.currentTimeMillis()
-        if (!force && lastMoviesRefreshMs > 0L && (now - lastMoviesRefreshMs) < REFRESH_COOLDOWN_MS) {
+        val canCooldownSkip = !force &&
+            selectedCat == null &&
+            !telemetry.pendingUpdateAvailable &&
+            telemetry.status != SyncStatus.INTERRUPTED &&
+            telemetry.status != SyncStatus.FAILED &&
+            telemetry.lastSuccessfulSyncMs > 0L &&
+            (now - telemetry.lastSuccessfulSyncMs) < REFRESH_COOLDOWN_MS
+        if (canCooldownSkip) {
             showTransientCompletionBanner(VodTab.MOVIES, "Catalog is up to date", durationMs = 2_000L)
             return
         }
         viewModelScope.launch {
             val target = playlist ?: repository.getActivePlaylistOnce() ?: return@launch
-            _isRefreshingMovies.value = true
+            _isRefreshingMoviesTrigger.value = true
             try {
-                val result = repository.syncPlaylistSection(target, "MOVIE")
-                if (result.isSuccess) {
-                    lastMoviesRefreshMs = System.currentTimeMillis()
-                }
+                CatalogSyncWorker.enqueueSectionSync(
+                    context = getApplication(),
+                    playlistId = target.id,
+                    sectionType = "MOVIE",
+                    categoryId = selectedCat,
+                    forceFull = force,
+                    expedited = true
+                )
             } finally {
-                _isRefreshingMovies.value = false
+                _isRefreshingMoviesTrigger.value = false
+            }
+        }
+    }
+
+    fun refreshMoviesCategory(categoryId: String, playlist: PlaylistEntity? = null) {
+        val cleanCatId = categoryId.trim()
+        if (cleanCatId.isEmpty()) {
+            refreshMovies(playlist = playlist, force = false)
+            return
+        }
+        if (movieSyncTelemetry.value.isActive || _isRefreshingMoviesTrigger.value) return
+        viewModelScope.launch {
+            val target = playlist ?: repository.getActivePlaylistOnce() ?: return@launch
+            _isRefreshingMoviesTrigger.value = true
+            try {
+                CatalogSyncWorker.enqueueSectionSync(
+                    context = getApplication(),
+                    playlistId = target.id,
+                    sectionType = "MOVIE",
+                    categoryId = cleanCatId,
+                    forceFull = false,
+                    expedited = true
+                )
+            } finally {
+                _isRefreshingMoviesTrigger.value = false
             }
         }
     }
 
     fun refreshSeries(playlist: PlaylistEntity? = null, force: Boolean = false) {
-        if (_isRefreshingSeries.value) return
+        val telemetry = seriesSyncTelemetry.value
+        if (telemetry.isActive || _isRefreshingSeriesTrigger.value) return
+        val selectedCat = _selectedSeriesCategoryId.value?.takeIf { it.isNotBlank() }
         val now = System.currentTimeMillis()
-        if (!force && lastSeriesRefreshMs > 0L && (now - lastSeriesRefreshMs) < REFRESH_COOLDOWN_MS) {
+        val canCooldownSkip = !force &&
+            selectedCat == null &&
+            !telemetry.pendingUpdateAvailable &&
+            telemetry.status != SyncStatus.INTERRUPTED &&
+            telemetry.status != SyncStatus.FAILED &&
+            telemetry.lastSuccessfulSyncMs > 0L &&
+            (now - telemetry.lastSuccessfulSyncMs) < REFRESH_COOLDOWN_MS
+        if (canCooldownSkip) {
             showTransientCompletionBanner(VodTab.SERIES, "Catalog is up to date", durationMs = 2_000L)
             return
         }
         viewModelScope.launch {
             val target = playlist ?: repository.getActivePlaylistOnce() ?: return@launch
-            _isRefreshingSeries.value = true
+            _isRefreshingSeriesTrigger.value = true
             try {
-                val result = repository.syncPlaylistSection(target, "SERIES")
-                if (result.isSuccess) {
-                    lastSeriesRefreshMs = System.currentTimeMillis()
-                }
+                CatalogSyncWorker.enqueueSectionSync(
+                    context = getApplication(),
+                    playlistId = target.id,
+                    sectionType = "SERIES",
+                    categoryId = selectedCat,
+                    forceFull = force,
+                    expedited = true
+                )
             } finally {
-                _isRefreshingSeries.value = false
+                _isRefreshingSeriesTrigger.value = false
+            }
+        }
+    }
+
+    fun refreshSeriesCategory(categoryId: String, playlist: PlaylistEntity? = null) {
+        val cleanCatId = categoryId.trim()
+        if (cleanCatId.isEmpty()) {
+            refreshSeries(playlist = playlist, force = false)
+            return
+        }
+        if (seriesSyncTelemetry.value.isActive || _isRefreshingSeriesTrigger.value) return
+        viewModelScope.launch {
+            val target = playlist ?: repository.getActivePlaylistOnce() ?: return@launch
+            _isRefreshingSeriesTrigger.value = true
+            try {
+                CatalogSyncWorker.enqueueSectionSync(
+                    context = getApplication(),
+                    playlistId = target.id,
+                    sectionType = "SERIES",
+                    categoryId = cleanCatId,
+                    forceFull = false,
+                    expedited = true
+                )
+            } finally {
+                _isRefreshingSeriesTrigger.value = false
             }
         }
     }

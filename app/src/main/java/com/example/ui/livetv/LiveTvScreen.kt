@@ -34,9 +34,12 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.Category
 import androidx.compose.material.icons.filled.ChevronRight
 import androidx.compose.material.icons.filled.Clear
+import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.ErrorOutline
 import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.LiveTv
 import androidx.compose.material.icons.filled.Lock
@@ -53,6 +56,7 @@ import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.foundation.lazy.rememberLazyListState
@@ -81,6 +85,9 @@ import coil.compose.AsyncImage
 import com.example.data.model.CategoryWithCount
 import com.example.data.model.PlaylistEntity
 import com.example.data.model.StreamEntity
+import com.example.data.sync.SyncStatus
+import com.example.data.sync.SyncTelemetry
+import com.example.ui.vod.formatSyncStatsSubtitle
 import com.example.ui.theme.AmberGold
 import com.example.ui.theme.CatchupGreen
 import com.example.ui.theme.Champagne
@@ -151,6 +158,7 @@ fun LiveTvScreen(
     val channels by viewModel.channels.collectAsStateWithLifecycle()
     val currentLimit by viewModel.currentLimit.collectAsStateWithLifecycle()
     val isRefreshing by viewModel.isRefreshing.collectAsStateWithLifecycle()
+    val liveSyncTelemetry by viewModel.liveSyncTelemetry.collectAsStateWithLifecycle()
 
     // Pulsing broadcast signal animation for Live TV Studio identity
     val infiniteTransition = rememberInfiniteTransition(label = "live_pulse")
@@ -313,6 +321,12 @@ fun LiveTvScreen(
                         }
                     }
                 }
+
+                LiveTvSyncStatusBanner(
+                    telemetry = liveSyncTelemetry,
+                    onRefresh = { viewModel.refreshLiveTv(activePlaylist, force = true) },
+                    onDismissPendingUpdate = { viewModel.dismissPendingUpdate(activePlaylist) }
+                )
 
                 Spacer(modifier = Modifier.height(6.dp))
 
@@ -570,6 +584,18 @@ fun LiveTvScreen(
                             .fillMaxWidth()
                             .testTag("channel_search_input")
                     )
+
+                    LiveTvSyncStatusBanner(
+                        telemetry = liveSyncTelemetry,
+                        onRefresh = {
+                            viewModel.refreshLiveTv(
+                                playlist = activePlaylist,
+                                categoryId = currentCat.categoryId,
+                                force = false
+                            )
+                        },
+                        onDismissPendingUpdate = { viewModel.dismissPendingUpdate(activePlaylist) }
+                    )
                 }
             }
 
@@ -632,6 +658,248 @@ fun LiveTvScreen(
                         }
                     }
                 }
+            }
+        }
+    }
+}
+
+@Composable
+private fun LiveTvSyncStatusBanner(
+    telemetry: SyncTelemetry,
+    onRefresh: () -> Unit,
+    onDismissPendingUpdate: () -> Unit
+) {
+    val showPendingChip = !telemetry.isActive &&
+        telemetry.status != SyncStatus.FAILED &&
+        telemetry.status != SyncStatus.INTERRUPTED &&
+        telemetry.pendingUpdateAvailable
+    val showSyncBanner = telemetry.isActive ||
+        telemetry.status == SyncStatus.INTERRUPTED ||
+        telemetry.status == SyncStatus.FAILED
+
+    if (!showSyncBanner && !showPendingChip) return
+
+    Spacer(modifier = Modifier.height(6.dp))
+
+    if (showPendingChip) {
+        Surface(
+            color = TvTwilightIndigo.copy(alpha = 0.94f),
+            shape = RoundedCornerShape(12.dp),
+            border = BorderStroke(0.9.dp, TvCrimsonRose.copy(alpha = 0.65f)),
+            modifier = Modifier
+                .fillMaxWidth()
+                .testTag("live_pending_update_chip")
+        ) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clickable(onClick = onRefresh)
+                    .padding(horizontal = 12.dp, vertical = 7.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    modifier = Modifier.weight(1f)
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.AutoAwesome,
+                        contentDescription = "Updates available",
+                        tint = TvCrimsonRose,
+                        modifier = Modifier.size(15.dp)
+                    )
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = "Updates available • Refresh",
+                            color = Color.White,
+                            fontSize = 11.5.sp,
+                            fontWeight = FontWeight.Bold,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                        if (telemetry.pendingUpdateSummary.isNotBlank()) {
+                            Text(
+                                text = telemetry.pendingUpdateSummary,
+                                color = Champagne.copy(alpha = 0.80f),
+                                fontSize = 10.sp,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
+                    }
+                }
+                IconButton(
+                    onClick = onDismissPendingUpdate,
+                    modifier = Modifier
+                        .size(28.dp)
+                        .testTag("live_pending_update_dismiss_btn")
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Close,
+                        contentDescription = "Dismiss update notice",
+                        tint = Champagne.copy(alpha = 0.80f),
+                        modifier = Modifier.size(14.dp)
+                    )
+                }
+            }
+        }
+        return
+    }
+
+    val isInterrupted = telemetry.status == SyncStatus.INTERRUPTED
+    val isFailed = telemetry.status == SyncStatus.FAILED
+    val hasDeterminate = telemetry.isActive &&
+        !telemetry.isIndeterminate &&
+        telemetry.progressPercent in 1..99
+    val hasIndeterminate = telemetry.isActive && !hasDeterminate
+    val stageTitle = when {
+        isFailed -> "Sync failed • ${telemetry.errorMessage.ifBlank { "Check connection" }}"
+        isInterrupted -> "Sync interrupted — Resume"
+        telemetry.status == SyncStatus.PENDING -> "Preparing Live TV sync…"
+        else -> telemetry.stage.label
+    }
+    val statsSubtitle = remember(telemetry) { formatSyncStatsSubtitle(telemetry) }
+
+    Surface(
+        color = when {
+            isFailed -> Color(0xFF2B1018).copy(alpha = 0.94f)
+            isInterrupted -> Color(0xFF2C220B).copy(alpha = 0.94f)
+            else -> TvTwilightIndigo.copy(alpha = 0.94f)
+        },
+        shape = RoundedCornerShape(12.dp),
+        border = BorderStroke(
+            width = 0.9.dp,
+            color = when {
+                isFailed -> LiveRed.copy(alpha = 0.72f)
+                isInterrupted -> AmberGold.copy(alpha = 0.75f)
+                else -> TvCrimsonRose.copy(alpha = 0.55f)
+            }
+        ),
+        modifier = Modifier
+            .fillMaxWidth()
+            .testTag("live_sync_status_banner")
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 12.dp, vertical = 7.dp),
+            verticalArrangement = Arrangement.spacedBy(5.dp)
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    modifier = Modifier.weight(1f)
+                ) {
+                    when {
+                        hasIndeterminate -> {
+                            CircularProgressIndicator(
+                                color = TvCrimsonRose,
+                                strokeWidth = 2.dp,
+                                modifier = Modifier.size(14.dp)
+                            )
+                        }
+                        isInterrupted -> {
+                            Icon(
+                                imageVector = Icons.Default.Refresh,
+                                contentDescription = "Sync Interrupted",
+                                tint = AmberGold,
+                                modifier = Modifier.size(15.dp)
+                            )
+                        }
+                        isFailed -> {
+                            Icon(
+                                imageVector = Icons.Default.ErrorOutline,
+                                contentDescription = "Sync Failed",
+                                tint = LiveRed,
+                                modifier = Modifier.size(15.dp)
+                            )
+                        }
+                        else -> Unit
+                    }
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = stageTitle,
+                            color = Color.White,
+                            fontSize = 11.5.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                        if (statsSubtitle.isNotBlank() && !isFailed) {
+                            Text(
+                                text = statsSubtitle,
+                                color = Champagne.copy(alpha = 0.80f),
+                                fontSize = 10.sp,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
+                    }
+                }
+
+                if (hasDeterminate) {
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text(
+                        text = "${telemetry.progressPercent}%",
+                        color = TvCrimsonRose,
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.ExtraBold
+                    )
+                }
+
+                if (isInterrupted || isFailed) {
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Surface(
+                        color = (if (isInterrupted) AmberGold else LiveRed).copy(alpha = 0.24f),
+                        shape = RoundedCornerShape(50),
+                        border = BorderStroke(
+                            0.8.dp,
+                            (if (isInterrupted) AmberGold else LiveRed).copy(alpha = 0.82f)
+                        ),
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(50))
+                            .tvFocusablePill(
+                                accentColor = if (isInterrupted) AmberGold else LiveRed,
+                                onClick = onRefresh
+                            )
+                            .testTag(if (isInterrupted) "live_sync_resume_btn" else "live_sync_retry_btn")
+                    ) {
+                        Text(
+                            text = if (isInterrupted) "Resume" else "Retry",
+                            color = if (isInterrupted) PaleGold else Color.White,
+                            fontSize = 10.5.sp,
+                            fontWeight = FontWeight.ExtraBold,
+                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp)
+                        )
+                    }
+                }
+            }
+
+            if (hasDeterminate) {
+                LinearProgressIndicator(
+                    progress = { telemetry.progressPercent / 100f },
+                    color = TvCrimsonRose,
+                    trackColor = Color.White.copy(alpha = 0.14f),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(3.dp)
+                        .clip(RoundedCornerShape(50))
+                )
+            } else if (hasIndeterminate) {
+                LinearProgressIndicator(
+                    color = TvCrimsonRose,
+                    trackColor = Color.White.copy(alpha = 0.14f),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(3.dp)
+                        .clip(RoundedCornerShape(50))
+                )
             }
         }
     }

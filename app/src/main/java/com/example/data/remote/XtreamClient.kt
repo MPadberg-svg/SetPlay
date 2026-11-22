@@ -7,6 +7,7 @@ import com.example.data.model.CategoryEntity
 import com.example.data.model.EpgProgramEntity
 import com.example.data.model.StreamEntity
 import com.example.data.model.VodGroupingNormalizer
+import com.example.data.sync.CatalogDiffEngine
 import com.example.util.SecurityManager
 import com.squareup.moshi.JsonReader
 import com.squareup.moshi.Moshi
@@ -17,12 +18,22 @@ import okhttp3.HttpUrl
 import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import okhttp3.OkHttpClient
 import okhttp3.Request
+import okio.Buffer
+import okio.ForwardingSource
+import okio.buffer
 import org.json.JSONObject
 import java.io.IOException
 import java.net.URLEncoder
 import java.text.SimpleDateFormat
 import java.util.Locale
 import java.util.concurrent.TimeUnit
+
+data class StreamCatalogResult(
+    val totalProcessed: Int,
+    val completedCleanly: Boolean,
+    val notModified: Boolean,
+    val skippedAdult: Int
+)
 
 class XtreamClient(
     private val okHttpClient: OkHttpClient = OkHttpClient.Builder()
@@ -195,10 +206,11 @@ class XtreamClient(
     }
 
     /**
-     * Stage 1 streaming ingestion: parses catalog items directly in bounded batches and
-     * pre-computes `releaseYear`, 3-tier `canonicalGroupKey`, and category-aware `versionTag`
-     * for non-live (`"movie"` / `"series"`) entries so Stage 2 background materialization in
-     * [IptvRepository] can run 100% read-only without rewriting the `streams` table.
+     * Stage 1 streaming ingestion: parses catalog items directly in bounded batches,
+     * supports conditional HTTP caching (`If-None-Match` / `If-Modified-Since` / HTTP 304),
+     * optional category scoping (`category_id`), Okio byte-progress telemetry, and computes
+     * 64-bit FNV-1a `metadataHash`, `releaseYear`, `canonicalGroupKey`, and `versionTag`
+     * on the fly so Stage 2 grouping can run 100% read-only on `streams`.
      */
     suspend fun streamCatalogEntries(
         serverUrl: String,
@@ -209,38 +221,102 @@ class XtreamClient(
         playlistId: Long,
         batchSize: Int = 2000,
         categoryNameMap: Map<String, String> = emptyMap(),
+        categoryId: String? = null,
+        etag: String? = null,
+        lastModified: String? = null,
+        onHttpMeta: ((contentLength: Long, etag: String?, lastModified: String?, notModified: Boolean) -> Unit)? = null,
+        onBytesRead: ((Long) -> Unit)? = null,
         onBatchReady: suspend (List<StreamEntity>, Int) -> Unit
-    ): Int = withContext(Dispatchers.IO) {
+    ): StreamCatalogResult = withContext(Dispatchers.IO) {
         val plainPassword = SecurityManager.decryptCredential(password)
+        val queryParams = LinkedHashMap<String, String>(2)
+        queryParams["action"] = action
+        if (!categoryId.isNullOrBlank()) {
+            queryParams["category_id"] = categoryId.trim()
+        }
         val targetUrl = buildPlayerApiUrl(
             serverUrl = serverUrl,
             username = username,
             password = plainPassword,
-            queryParams = mapOf("action" to action)
+            queryParams = queryParams
         ) ?: throw IOException("Invalid server URL for $action")
 
         var totalProcessed = 0
+        var skippedAdult = 0
+        var completedCleanly = false
+        var notModified = false
         val effectiveBatchSize = batchSize.coerceAtLeast(100)
         val currentBatch = ArrayList<StreamEntity>(effectiveBatchSize)
         val defaultExt = if (streamType == "live") "ts" else "mp4"
 
         try {
-            val request = Request.Builder()
+            val requestBuilder = Request.Builder()
                 .url(targetUrl)
                 .header("User-Agent", USER_AGENT)
-                .build()
+            if (!etag.isNullOrBlank()) {
+                requestBuilder.header("If-None-Match", etag.trim())
+            }
+            if (!lastModified.isNullOrBlank()) {
+                requestBuilder.header("If-Modified-Since", lastModified.trim())
+            }
+            val request = requestBuilder.build()
 
             okHttpClient.newCall(request).execute().use { response ->
+                if (response.code == 304) {
+                    onHttpMeta?.invoke(
+                        -1L,
+                        response.header("ETag") ?: etag,
+                        response.header("Last-Modified") ?: lastModified,
+                        true
+                    )
+                    notModified = true
+                    completedCleanly = true
+                    return@use
+                }
                 if (!response.isSuccessful || response.body == null) {
                     throw IOException("Failed to fetch $action (HTTP ${response.code})")
                 }
-                val reader = JsonReader.of(response.body!!.source())
+
+                val responseBody = response.body!!
+                val contentLength = responseBody.contentLength()
+                onHttpMeta?.invoke(
+                    contentLength,
+                    response.header("ETag"),
+                    response.header("Last-Modified"),
+                    false
+                )
+
+                val bufferedSource = if (onBytesRead != null) {
+                    object : ForwardingSource(responseBody.source()) {
+                        private var totalBytes = 0L
+                        private var lastReportedBytes = 0L
+
+                        override fun read(sink: Buffer, byteCount: Long): Long {
+                            val bytesRead = super.read(sink, byteCount)
+                            if (bytesRead > 0L) {
+                                totalBytes += bytesRead
+                                if (totalBytes - lastReportedBytes >= 65_536L) {
+                                    lastReportedBytes = totalBytes
+                                    onBytesRead.invoke(totalBytes)
+                                }
+                            } else if (bytesRead == -1L && totalBytes > lastReportedBytes) {
+                                lastReportedBytes = totalBytes
+                                onBytesRead.invoke(totalBytes)
+                            }
+                            return bytesRead
+                        }
+                    }.buffer()
+                } else {
+                    responseBody.source()
+                }
+
+                val reader = JsonReader.of(bufferedSource)
                 if (reader.peek() == JsonReader.Token.BEGIN_ARRAY) {
                     reader.beginArray()
                     while (reader.hasNext()) {
                         if (reader.peek() == JsonReader.Token.BEGIN_OBJECT) {
                             var streamId = 0L
-                            var categoryId = ""
+                            var itemCategoryId = ""
                             var name = ""
                             var streamIcon = ""
                             var epgChannelId = ""
@@ -263,7 +339,7 @@ class XtreamClient(
                                         "category_id" -> {
                                             val parsedCat = readSafeString(reader).trim()
                                             if (parsedCat.isNotEmpty() && !parsedCat.equals("null", ignoreCase = true)) {
-                                                categoryId = parsedCat
+                                                itemCategoryId = parsedCat
                                             }
                                         }
                                         "category_ids" -> {
@@ -271,15 +347,15 @@ class XtreamClient(
                                                 reader.beginArray()
                                                 while (reader.hasNext()) {
                                                     val cid = readSafeString(reader).trim()
-                                                    if (categoryId.isBlank() && cid.isNotEmpty() && !cid.equals("null", ignoreCase = true)) {
-                                                        categoryId = cid
+                                                    if (itemCategoryId.isBlank() && cid.isNotEmpty() && !cid.equals("null", ignoreCase = true)) {
+                                                        itemCategoryId = cid
                                                     }
                                                 }
                                                 reader.endArray()
                                             } else {
                                                 val cid = readSafeString(reader).trim()
-                                                if (categoryId.isBlank() && cid.isNotEmpty() && !cid.equals("null", ignoreCase = true)) {
-                                                    categoryId = cid
+                                                if (itemCategoryId.isBlank() && cid.isNotEmpty() && !cid.equals("null", ignoreCase = true)) {
+                                                    itemCategoryId = cid
                                                 }
                                             }
                                         }
@@ -306,71 +382,83 @@ class XtreamClient(
                                 }
                                 reader.endObject()
 
-                                if (streamId > 0 &&
-                                    name.isNotEmpty() &&
-                                    !SecurityManager.isAdultContent(name, categoryName = null, isAdultFlag = isAdult)
-                                ) {
-                                    val cleanTmdbId = tmdbId
-                                        .takeIf { it.isNotEmpty() && !it.equals("null", ignoreCase = true) && it != "0" }
-                                        .orEmpty()
-                                    val (normalizedRatingStr, ratingNum) = VodGroupingNormalizer.normalizeRatingToTenScale(
-                                        rawRating10 = rating10Raw,
-                                        rawRating5 = rating5Raw
-                                    )
-                                    val isLive = streamType == "live"
-                                    val yearInt = if (isLive) {
-                                        0
+                                if (streamId > 0 && name.isNotEmpty()) {
+                                    if (SecurityManager.isAdultContent(name, categoryName = null, isAdultFlag = isAdult)) {
+                                        skippedAdult++
                                     } else {
-                                        extractFastReleaseYear(name, rawYear)
-                                    }
-                                    val computedGroupKey = if (isLive) {
-                                        "live_$streamId"
-                                    } else {
-                                        VodGroupingNormalizer.computeCanonicalGroupKey(
-                                            streamType = streamType,
-                                            rawName = name,
-                                            tmdbId = cleanTmdbId,
-                                            releaseYear = yearInt,
-                                            streamId = streamId,
-                                            posterUrl = streamIcon
+                                        val cleanTmdbId = tmdbId
+                                            .takeIf { it.isNotEmpty() && !it.equals("null", ignoreCase = true) && it != "0" }
+                                            .orEmpty()
+                                        val (normalizedRatingStr, ratingNum) = VodGroupingNormalizer.normalizeRatingToTenScale(
+                                            rawRating10 = rating10Raw,
+                                            rawRating5 = rating5Raw
                                         )
-                                    }
-                                    val computedVersionTag = if (isLive) {
-                                        ""
-                                    } else {
-                                        VodGroupingNormalizer.extractVersionTagWithCategory(
-                                            rawName = name,
-                                            categoryName = categoryNameMap[categoryId].orEmpty()
-                                        )
-                                    }
-
-                                    currentBatch.add(
-                                        StreamEntity(
-                                            playlistId = playlistId,
-                                            streamId = streamId,
-                                            categoryId = categoryId,
+                                        val isLive = streamType == "live"
+                                        val yearInt = if (isLive) {
+                                            0
+                                        } else {
+                                            extractFastReleaseYear(name, rawYear)
+                                        }
+                                        val computedGroupKey = if (isLive) {
+                                            "live_$streamId"
+                                        } else {
+                                            VodGroupingNormalizer.computeCanonicalGroupKey(
+                                                streamType = streamType,
+                                                rawName = name,
+                                                tmdbId = cleanTmdbId,
+                                                releaseYear = yearInt,
+                                                streamId = streamId,
+                                                posterUrl = streamIcon
+                                            )
+                                        }
+                                        val computedVersionTag = if (isLive) {
+                                            ""
+                                        } else {
+                                            VodGroupingNormalizer.extractVersionTagWithCategory(
+                                                rawName = name,
+                                                categoryName = categoryNameMap[itemCategoryId].orEmpty()
+                                            )
+                                        }
+                                        val metadataHash = CatalogDiffEngine.computeMetadataHash(
                                             name = name,
-                                            streamType = streamType,
+                                            categoryId = itemCategoryId,
                                             streamIcon = streamIcon,
-                                            epgChannelId = epgChannelId,
                                             rating = normalizedRatingStr,
-                                            tvArchive = tvArchive,
-                                            tvArchiveDuration = tvArchiveDuration,
-                                            containerExtension = containerExt,
                                             tmdbId = cleanTmdbId,
-                                            canonicalGroupKey = computedGroupKey,
-                                            versionTag = computedVersionTag,
                                             addedEpoch = addedEpoch,
-                                            ratingNumeric = ratingNum,
-                                            releaseYear = yearInt,
-                                            genres = genres
+                                            genres = genres,
+                                            containerExtension = containerExt
                                         )
-                                    )
-                                    totalProcessed++
 
-                                    if (currentBatch.size >= effectiveBatchSize) {
-                                        onBatchReady(ArrayList(currentBatch), totalProcessed)
-                                        currentBatch.clear()
+                                        currentBatch.add(
+                                            StreamEntity(
+                                                playlistId = playlistId,
+                                                streamId = streamId,
+                                                categoryId = itemCategoryId,
+                                                name = name,
+                                                streamType = streamType,
+                                                streamIcon = streamIcon,
+                                                epgChannelId = epgChannelId,
+                                                rating = normalizedRatingStr,
+                                                tvArchive = tvArchive,
+                                                tvArchiveDuration = tvArchiveDuration,
+                                                containerExtension = containerExt,
+                                                tmdbId = cleanTmdbId,
+                                                canonicalGroupKey = computedGroupKey,
+                                                versionTag = computedVersionTag,
+                                                addedEpoch = addedEpoch,
+                                                ratingNumeric = ratingNum,
+                                                releaseYear = yearInt,
+                                                genres = genres,
+                                                metadataHash = metadataHash
+                                            )
+                                        )
+                                        totalProcessed++
+
+                                        if (currentBatch.size >= effectiveBatchSize) {
+                                            onBatchReady(ArrayList(currentBatch), totalProcessed)
+                                            currentBatch.clear()
+                                        }
                                     }
                                 }
                             } catch (_: Exception) {
@@ -386,9 +474,11 @@ class XtreamClient(
                         onBatchReady(ArrayList(currentBatch), totalProcessed)
                         currentBatch.clear()
                     }
+                    completedCleanly = true
                 }
             }
         } catch (e: Exception) {
+            completedCleanly = false
             val safeMsg = SecurityManager.redactSensitiveText(e.message, username, plainPassword)
             Log.e("XtreamClient", "Error streaming catalog ($action): $safeMsg")
             if (currentBatch.isNotEmpty()) {
@@ -400,7 +490,12 @@ class XtreamClient(
                 throw IOException(errMessage, e)
             }
         }
-        totalProcessed
+        StreamCatalogResult(
+            totalProcessed = totalProcessed,
+            completedCleanly = completedCleanly,
+            notModified = notModified,
+            skippedAdult = skippedAdult
+        )
     }
 
     /**

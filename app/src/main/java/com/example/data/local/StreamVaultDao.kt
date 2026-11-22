@@ -15,8 +15,10 @@ import com.example.data.model.GroupedVodStream
 import com.example.data.model.ParentalSettingsEntity
 import com.example.data.model.PlaylistEntity
 import com.example.data.model.StreamEntity
+import com.example.data.model.SyncSectionStateEntity
 import com.example.data.model.TournamentPreferenceEntity
 import com.example.data.model.VodCatalogGroupEntity
+import com.example.data.model.VodGroupMemberEntity
 import kotlinx.coroutines.flow.Flow
 
 @Dao
@@ -163,6 +165,11 @@ data class StreamIndexProjection(
     val addedEpoch: Long,
     val releaseYear: Int,
     val genres: String
+)
+
+data class StreamHashTuple(
+    val streamId: Long,
+    val metadataHash: Long
 )
 
 @Dao
@@ -577,6 +584,101 @@ interface StreamDao {
 
     @Query("SELECT * FROM streams WHERE id = :id LIMIT 1")
     suspend fun getStreamByDbId(id: Long): StreamEntity?
+
+    // Phase 5A diff-sync & partial-reindex DAO queries
+    @Query("""
+        SELECT streamId, metadataHash
+        FROM streams
+        WHERE playlistId = :playlistId
+          AND streamType = :streamType
+    """)
+    suspend fun getStreamHashesByType(
+        playlistId: Long,
+        streamType: String
+    ): List<StreamHashTuple>
+
+    @Query("""
+        SELECT streamId, metadataHash
+        FROM streams
+        WHERE playlistId = :playlistId
+          AND streamType = :streamType
+          AND categoryId = :categoryId
+    """)
+    suspend fun getStreamHashesByCategory(
+        playlistId: Long,
+        streamType: String,
+        categoryId: String
+    ): List<StreamHashTuple>
+
+    @Query("""
+        UPDATE streams
+        SET categoryId = :categoryId,
+            name = :name,
+            streamIcon = :streamIcon,
+            epgChannelId = :epgChannelId,
+            rating = :rating,
+            tvArchive = :tvArchive,
+            tvArchiveDuration = :tvArchiveDuration,
+            containerExtension = :containerExtension,
+            tmdbId = :tmdbId,
+            canonicalGroupKey = :canonicalGroupKey,
+            versionTag = :versionTag,
+            addedEpoch = :addedEpoch,
+            ratingNumeric = :ratingNumeric,
+            releaseYear = :releaseYear,
+            genres = :genres,
+            metadataHash = :metadataHash
+        WHERE playlistId = :playlistId
+          AND streamType = :streamType
+          AND streamId = :streamId
+    """)
+    suspend fun updateStreamMetadataByProviderId(
+        playlistId: Long,
+        streamType: String,
+        streamId: Long,
+        categoryId: String,
+        name: String,
+        streamIcon: String,
+        epgChannelId: String,
+        rating: String,
+        tvArchive: Int,
+        tvArchiveDuration: Int,
+        containerExtension: String,
+        tmdbId: String,
+        canonicalGroupKey: String,
+        versionTag: String,
+        addedEpoch: Long,
+        ratingNumeric: Double,
+        releaseYear: Int,
+        genres: String,
+        metadataHash: Long
+    )
+
+    @Query("""
+        DELETE FROM streams
+        WHERE playlistId = :playlistId
+          AND streamType = :streamType
+          AND streamId IN (:streamIds)
+    """)
+    suspend fun deleteStreamsByProviderIds(
+        playlistId: Long,
+        streamType: String,
+        streamIds: List<Long>
+    )
+
+    @Query("""
+        SELECT id, streamId, categoryId, name, streamIcon, rating, ratingNumeric, containerExtension, tmdbId, canonicalGroupKey, versionTag, addedEpoch, releaseYear, genres
+        FROM streams
+        WHERE playlistId = :playlistId
+          AND streamType = :streamType
+          AND canonicalGroupKey IN (:groupKeys)
+        ORDER BY id ASC
+    """)
+    suspend fun getStreamsByCanonicalKeys(
+        playlistId: Long,
+        streamType: String,
+        groupKeys: List<String>
+    ): List<StreamIndexProjection>
 }
 
 @Dao
@@ -584,8 +686,53 @@ interface VodCatalogGroupDao {
     @Query("DELETE FROM vod_catalog_groups WHERE playlistId = :playlistId AND streamType = :streamType")
     suspend fun deleteGroupsByType(playlistId: Long, streamType: String)
 
+    @Query("""
+        DELETE FROM vod_catalog_groups
+        WHERE playlistId = :playlistId
+          AND streamType = :streamType
+          AND groupKey IN (:groupKeys)
+    """)
+    suspend fun deleteGroupsByKeys(
+        playlistId: Long,
+        streamType: String,
+        groupKeys: List<String>
+    )
+
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertGroupsBatch(groups: List<VodCatalogGroupEntity>)
+
+    @Query("DELETE FROM vod_group_members WHERE playlistId = :playlistId AND streamType = :streamType")
+    suspend fun deleteGroupMembersByType(playlistId: Long, streamType: String)
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insertGroupMembersBatch(members: List<VodGroupMemberEntity>)
+
+    @Query("""
+        DELETE FROM vod_group_members
+        WHERE playlistId = :playlistId
+          AND streamType = :streamType
+          AND groupKey IN (:groupKeys)
+    """)
+    suspend fun deleteGroupMembersByKeys(
+        playlistId: Long,
+        streamType: String,
+        groupKeys: List<String>
+    )
+
+    @Query("""
+        SELECT s.*
+        FROM streams s
+        INNER JOIN vod_group_members m ON s.id = m.streamDbId
+        WHERE m.playlistId = :playlistId
+          AND m.streamType = :streamType
+          AND m.groupKey = :groupKey
+        ORDER BY s.id ASC
+    """)
+    suspend fun getMemberStreamsForGroup(
+        playlistId: Long,
+        streamType: String,
+        groupKey: String
+    ): List<StreamEntity>
 
     @Query("SELECT COUNT(*) FROM vod_catalog_groups WHERE playlistId = :playlistId AND streamType = :streamType")
     suspend fun countGroupsByType(playlistId: Long, streamType: String): Int
@@ -620,9 +767,14 @@ interface VodCatalogGroupDao {
 
     @Query("""
         SELECT *
-        FROM vod_catalog_groups
-        WHERE playlistId = :playlistId
-          AND streamType = :streamType
+        FROM (
+            SELECT *
+            FROM vod_catalog_groups
+            WHERE playlistId = :playlistId
+              AND streamType = :streamType
+            ORDER BY addedEpoch DESC
+            LIMIT (:limit * 4)
+        )
         ORDER BY (addedEpoch / 86400) DESC,
                  CASE
                      WHEN UPPER(defaultVersionTag) LIKE '%ENGLISH%'
@@ -747,22 +899,12 @@ interface VodCatalogGroupDao {
     ): Flow<List<VodCatalogGroupEntity>>
 
     @Query("""
-        SELECT g.*
-        FROM vod_catalog_groups g
-        WHERE g.playlistId = :playlistId
-          AND g.streamType = :streamType
-          AND EXISTS (
-              SELECT 1
-              FROM categories c
-              WHERE c.playlistId = g.playlistId
-                AND c.type = CASE WHEN g.streamType = 'movie' THEN 'MOVIE' ELSE 'SERIES' END
-                AND c.categoryName LIKE '%' || :platformKeyword || '%'
-                AND (
-                    g.primaryCategoryId = c.categoryId
-                    OR g.categoryIdsCsv LIKE '%,' || c.categoryId || ',%'
-                )
-          )
-        ORDER BY g.popularityScore DESC, g.addedEpoch DESC
+        SELECT *
+        FROM vod_catalog_groups
+        WHERE playlistId = :playlistId
+          AND streamType = :streamType
+          AND platformTags LIKE '%,' || UPPER(:platformKeyword) || ',%'
+        ORDER BY popularityScore DESC, addedEpoch DESC
         LIMIT :limit
     """)
     fun getPlatformShelfGroups(
@@ -924,4 +1066,29 @@ interface TournamentPreferenceDao {
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsertPreferences(preferences: List<TournamentPreferenceEntity>)
 }
+
+@Dao
+interface SyncSectionStateDao {
+    @Query("SELECT * FROM sync_section_state WHERE playlistId = :playlistId ORDER BY sectionType ASC")
+    fun observeAllForPlaylist(playlistId: Long): Flow<List<SyncSectionStateEntity>>
+
+    @Query("SELECT * FROM sync_section_state WHERE playlistId = :playlistId AND sectionType = :sectionType LIMIT 1")
+    fun observeSection(playlistId: Long, sectionType: String): Flow<SyncSectionStateEntity?>
+
+    @Query("SELECT * FROM sync_section_state WHERE playlistId = :playlistId AND sectionType = :sectionType LIMIT 1")
+    suspend fun getSectionOnce(playlistId: Long, sectionType: String): SyncSectionStateEntity?
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsert(state: SyncSectionStateEntity)
+
+    @Query("""
+        UPDATE sync_section_state
+        SET status = 'INTERRUPTED',
+            stage = 'INTERRUPTED',
+            lastAttemptedSyncMs = :nowMs
+        WHERE status IN ('RUNNING', 'PENDING')
+    """)
+    suspend fun markAllRunningAsInterrupted(nowMs: Long)
+}
+
 

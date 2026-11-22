@@ -450,7 +450,8 @@ fun VodScreen(
                             viewModel.refreshSeries(activePlaylist, force = true)
                         }
                     },
-                    onDismiss = { viewModel.dismissSyncBanner(sectionTab) }
+                    onDismiss = { viewModel.dismissSyncBanner(sectionTab) },
+                    onDismissPendingUpdate = { viewModel.dismissPendingUpdate(sectionTab) }
                 )
 
                 val isDiscoveryHomeMode = selectedShelfFilter == null && selectedCatId == null && searchQuery.isBlank() && !forceGridMode
@@ -459,10 +460,19 @@ fun VodScreen(
                 PullToRefreshBox(
                     isRefreshing = isRefreshing,
                     onRefresh = {
+                        val catId = selectedCatId
                         if (isMovies) {
-                            viewModel.refreshMovies(activePlaylist)
+                            if (catId != null) {
+                                viewModel.refreshMoviesCategory(catId, activePlaylist)
+                            } else {
+                                viewModel.refreshMovies(activePlaylist)
+                            }
                         } else {
-                            viewModel.refreshSeries(activePlaylist)
+                            if (catId != null) {
+                                viewModel.refreshSeriesCategory(catId, activePlaylist)
+                            } else {
+                                viewModel.refreshSeries(activePlaylist)
+                            }
                         }
                     },
                     modifier = Modifier
@@ -752,12 +762,22 @@ fun VodScreen(
                     onRequestUnlockCategory = onRequestUnlockCategory,
                     onSearchQueryChange = onSearchChange,
                     onSyncCatalog = {
+                        val catId = selectedCatId
                         if (isMovies) {
-                            viewModel.refreshMovies(activePlaylist, force = true)
+                            if (catId != null) {
+                                viewModel.refreshMoviesCategory(catId, activePlaylist)
+                            } else {
+                                viewModel.refreshMovies(activePlaylist, force = true)
+                            }
                         } else {
-                            viewModel.refreshSeries(activePlaylist, force = true)
+                            if (catId != null) {
+                                viewModel.refreshSeriesCategory(catId, activePlaylist)
+                            } else {
+                                viewModel.refreshSeries(activePlaylist, force = true)
+                            }
                         }
                     },
+                    onDismissPendingUpdate = { viewModel.dismissPendingUpdate(sectionTab) },
                     onLoadMore = { viewModel.loadMore() },
                     onOpenShelfSeeAll = { filter -> viewModel.openShelfSeeAll(sectionTab, filter) },
                     onCloseShelfSeeAll = { viewModel.closeShelfSeeAll(sectionTab) },
@@ -821,6 +841,7 @@ private fun TvVodCinemaScreen(
     onRequestUnlockCategory: ((String, () -> Unit) -> Unit)?,
     onSearchQueryChange: (String) -> Unit,
     onSyncCatalog: () -> Unit,
+    onDismissPendingUpdate: () -> Unit = {},
     onLoadMore: () -> Unit,
     onOpenShelfSeeAll: (VodShelfFilter) -> Unit,
     onCloseShelfSeeAll: () -> Unit,
@@ -925,7 +946,8 @@ private fun TvVodCinemaScreen(
                 onCloseShelfSeeAll()
                 forceGridMode = !forceGridMode
             },
-            onSyncCatalog = onSyncCatalog
+            onSyncCatalog = onSyncCatalog,
+            onDismissPendingUpdate = onDismissPendingUpdate
         )
 
         Spacer(modifier = Modifier.height(6.dp))
@@ -2702,8 +2724,12 @@ fun SeriesDetailHierarchyScreen(
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
-                        val ratingText = remember(seriesDetails?.rating, seriesStream.ratingNumeric) {
-                            formatDetailNormalizedRating(seriesDetails?.rating, seriesStream)
+                        val ratingText = remember(seriesDetails?.rating, seriesStream.ratingNumeric, availableVersions.size) {
+                            formatDetailNormalizedRating(
+                                detailsRating = seriesDetails?.rating,
+                                stream = seriesStream,
+                                versionCount = availableVersions.size.coerceAtLeast(1)
+                            )
                         }
                         if (ratingText != null) {
                             Surface(
@@ -2994,12 +3020,14 @@ fun SeriesEpisodeCard(
                         .border(0.8.dp, Color.White.copy(alpha = 0.10f), RoundedCornerShape(10.dp)),
                     contentAlignment = Alignment.Center
                 ) {
-                    val hasEpisodeStill = episode.thumbnail.isNotBlank()
+                    var imageLoadFailed by remember(episode.thumbnail) { mutableStateOf(false) }
+                    val hasEpisodeStill = episode.thumbnail.isNotBlank() && !imageLoadFailed
                     if (hasEpisodeStill) {
                         AsyncImage(
                             model = episode.thumbnail,
                             contentDescription = episode.title,
                             contentScale = ContentScale.Crop,
+                            onError = { imageLoadFailed = true },
                             modifier = Modifier.fillMaxSize()
                         )
                         Box(
@@ -3038,7 +3066,7 @@ fun SeriesEpisodeCard(
                                 contentScale = ContentScale.Crop,
                                 modifier = Modifier
                                     .fillMaxSize()
-                                    .alpha(0.36f)
+                                    .alpha(0.45f)
                             )
                         }
                         Box(
@@ -3047,20 +3075,27 @@ fun SeriesEpisodeCard(
                                 .background(
                                     Brush.verticalGradient(
                                         listOf(
-                                            SeriesPineBase.copy(alpha = 0.42f),
-                                            SeriesForestSurface.copy(alpha = 0.72f)
+                                            SeriesPineBase.copy(alpha = 0.45f),
+                                            SeriesForestSurface.copy(alpha = 0.78f)
                                         )
                                     )
                                 )
                         )
-                        // Clean centered "EP N" watermark overlay
-                        Text(
-                            text = "EP ${episode.episodeNumber}",
-                            color = SeriesIceAqua.copy(alpha = 0.92f),
-                            fontSize = 14.sp,
-                            fontWeight = FontWeight.ExtraBold,
-                            letterSpacing = 1.sp
-                        )
+                        // Clean centered "EP N" badge overlay over dimmed parent poster fallback
+                        Surface(
+                            color = SeriesPineBase.copy(alpha = 0.76f),
+                            shape = RoundedCornerShape(6.dp),
+                            border = BorderStroke(0.7.dp, SeriesIceAqua.copy(alpha = 0.55f))
+                        ) {
+                            Text(
+                                text = "EP ${episode.episodeNumber}",
+                                color = SeriesIceAqua,
+                                fontSize = 11.5.sp,
+                                fontWeight = FontWeight.ExtraBold,
+                                letterSpacing = 0.8.sp,
+                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
+                            )
+                        }
                     }
                 }
 

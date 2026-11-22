@@ -5,8 +5,11 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.data.local.StreamVaultDatabase
 import com.example.data.model.CategoryWithCount
+import com.example.data.model.PlaylistEntity
 import com.example.data.model.StreamEntity
 import com.example.data.repository.IptvRepository
+import com.example.data.sync.CatalogSyncWorker
+import com.example.data.sync.SyncTelemetry
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -116,18 +119,55 @@ class LiveTvViewModel(application: Application) : AndroidViewModel(application) 
         loadMore()
     }
 
-    private val _isRefreshing = MutableStateFlow(false)
-    val isRefreshing: StateFlow<Boolean> = _isRefreshing.asStateFlow()
+    // Persistent Live TV sync telemetry (shared architecture with Movies & Series)
+    val liveSyncTelemetry: StateFlow<SyncTelemetry> = repository.activePlaylist
+        .flatMapLatest { playlist ->
+            if (playlist == null) {
+                flowOf(SyncTelemetry(sectionType = "LIVE"))
+            } else {
+                repository.observeSectionSyncState(playlist.id, "LIVE")
+            }
+        }
+        .stateIn(viewModelScope, SharingStarted.Eagerly, SyncTelemetry(sectionType = "LIVE"))
 
-    fun refreshLiveTv(playlist: com.example.data.model.PlaylistEntity? = null) {
+    private val _isRefreshingTrigger = MutableStateFlow(false)
+    val isRefreshing: StateFlow<Boolean> = combine(
+        _isRefreshingTrigger,
+        liveSyncTelemetry
+    ) { trigger, telemetry ->
+        trigger || telemetry.isActive
+    }.stateIn(viewModelScope, SharingStarted.Eagerly, false)
+
+    fun refreshLiveTv(
+        playlist: PlaylistEntity? = null,
+        categoryId: String? = null,
+        force: Boolean = false
+    ) {
+        if (liveSyncTelemetry.value.isActive || _isRefreshingTrigger.value) return
+        val resolvedCatId = categoryId?.trim()
+            ?.takeIf { it.isNotEmpty() && it != ALL_CHANNELS_CATEGORY_ID }
         viewModelScope.launch {
             val target = playlist ?: repository.getActivePlaylistOnce() ?: return@launch
-            _isRefreshing.value = true
+            _isRefreshingTrigger.value = true
             try {
-                repository.syncPlaylistSection(target, "LIVE")
+                CatalogSyncWorker.enqueueSectionSync(
+                    context = getApplication(),
+                    playlistId = target.id,
+                    sectionType = "LIVE",
+                    categoryId = resolvedCatId,
+                    forceFull = force,
+                    expedited = true
+                )
             } finally {
-                _isRefreshing.value = false
+                _isRefreshingTrigger.value = false
             }
+        }
+    }
+
+    fun dismissPendingUpdate(playlist: PlaylistEntity? = null) {
+        viewModelScope.launch {
+            val target = playlist ?: repository.getActivePlaylistOnce() ?: return@launch
+            repository.markPendingUpdate(target.id, "LIVE", "")
         }
     }
 

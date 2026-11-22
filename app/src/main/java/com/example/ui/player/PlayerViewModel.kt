@@ -36,6 +36,7 @@ import com.example.data.remote.WyzieSubtitleOption
 import com.example.data.remote.WyzieSubtitleService
 import com.example.data.remote.XtreamClient
 import com.example.data.repository.IptvRepository
+import com.example.data.sync.PlaybackResourceGovernor
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -144,7 +145,7 @@ data class PlayerUiState(
 class PlayerViewModel(application: Application) : AndroidViewModel(application) {
     private val database = StreamVaultDatabase.getInstance(application)
     val repository = IptvRepository.getInstance(application)
-    private val wyzieSubtitleService = WyzieSubtitleService(IptvRepository.sharedOkHttpClient)
+    private val wyzieSubtitleService = WyzieSubtitleService(IptvRepository.playbackOkHttpClient)
     private val subtitlePrefs = application.getSharedPreferences(SUBTITLE_PREFS_NAME, Context.MODE_PRIVATE)
 
     private val audioManager = application.getSystemService(Context.AUDIO_SERVICE) as AudioManager
@@ -166,7 +167,7 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application) 
     private var dismissedUpNextForStreamId: Long? = null
 
     val player: ExoPlayer by lazy {
-        val okHttpDataSourceFactory = OkHttpDataSource.Factory(IptvRepository.sharedOkHttpClient)
+        val okHttpDataSourceFactory = OkHttpDataSource.Factory(IptvRepository.playbackOkHttpClient)
             .setUserAgent("SetPlay-IPTV/3.0")
 
         val dataSourceFactory = DefaultDataSource.Factory(application, okHttpDataSourceFactory)
@@ -210,6 +211,7 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application) 
 
     private val playerListener = object : Player.Listener {
         override fun onIsPlayingChanged(isPlaying: Boolean) {
+            PlaybackResourceGovernor.setPlaybackActive(isPlaying)
             _uiState.value = _uiState.value.copy(isPlaying = isPlaying)
         }
 
@@ -847,6 +849,7 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application) 
         } catch (_: Exception) {}
         player.stop()
         player.clearMediaItems()
+        PlaybackResourceGovernor.setPlaybackActive(false)
         _uiState.value = _uiState.value.copy(
             currentStream = null,
             alternateQualityFeeds = emptyList(),
@@ -1747,6 +1750,7 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application) 
 
     override fun onCleared() {
         super.onCleared()
+        PlaybackResourceGovernor.setPlaybackActive(false)
         progressTrackingJob?.cancel()
         controlsFadeJob?.cancel()
         gestureFadeJob?.cancel()

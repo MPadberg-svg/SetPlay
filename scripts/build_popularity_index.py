@@ -34,17 +34,19 @@ REQUEST_TIMEOUT_SECONDS = 25
 MAX_RETRIES = 4
 BAYESIAN_PRIOR_M = 200.0
 
-# Endpoints and page ranges for global Movies & TV Series
-MOVIE_SOURCES: list[tuple[str, int, str]] = [
-    ("/trending/movie/week", 15, "trending"),
-    ("/movie/popular", 25, "popular"),
-    ("/movie/top_rated", 20, "top_rated"),
+# Endpoints, page ranges, bucket names, and optional query params for global Movies & TV Series
+MOVIE_SOURCES: list[tuple[str, int, str, dict[str, str]]] = [
+    ("/trending/movie/week", 15, "trending", {}),
+    ("/movie/popular", 25, "popular", {}),
+    ("/movie/top_rated", 20, "top_rated", {}),
+    ("/discover/movie", 40, "discover_votes", {"sort_by": "vote_count.desc"}),
 ]
 
-SERIES_SOURCES: list[tuple[str, int, str]] = [
-    ("/trending/tv/week", 15, "trending"),
-    ("/tv/popular", 25, "popular"),
-    ("/tv/top_rated", 20, "top_rated"),
+SERIES_SOURCES: list[tuple[str, int, str, dict[str, str]]] = [
+    ("/trending/tv/week", 15, "trending", {}),
+    ("/tv/popular", 25, "popular", {}),
+    ("/tv/top_rated", 20, "top_rated", {}),
+    ("/discover/tv", 40, "discover_votes", {"sort_by": "vote_count.desc"}),
 ]
 
 NON_ALNUM_OR_UNDERSCORE_RE = re.compile(r"(?:[^\w]|_)+", re.UNICODE)
@@ -74,11 +76,18 @@ def is_bearer_token(api_key: str) -> bool:
     return len(api_key) > 64 and api_key.count(".") == 2
 
 
-def fetch_tmdb_page(endpoint: str, page: int, api_key: str) -> dict[str, Any]:
+def fetch_tmdb_page(
+    endpoint: str,
+    page: int,
+    api_key: str,
+    extra_params: dict[str, str] | None = None,
+) -> dict[str, Any]:
     params: dict[str, str] = {
         "language": "en-US",
         "page": str(page),
     }
+    if extra_params:
+        params.update(extra_params)
     headers: dict[str, str] = {
         "Accept": "application/json",
         "User-Agent": "SetPlay-PopularityIndexBuilder/1.0",
@@ -178,7 +187,7 @@ def ascii_fold_title(normalized_title: str) -> str:
 
 
 def collect_media_catalog(
-    sources: list[tuple[str, int, str]],
+    sources: list[tuple[str, int, str, dict[str, str]]],
     is_movie: bool,
     api_key: str,
 ) -> dict[int, dict[str, Any]]:
@@ -187,10 +196,10 @@ def collect_media_catalog(
     orig_title_field = "original_title" if is_movie else "original_name"
     date_field = "release_date" if is_movie else "first_air_date"
 
-    for endpoint, max_pages, bucket in sources:
+    for endpoint, max_pages, bucket, extra_params in sources:
         rank_counter = 0
         for page in range(1, max_pages + 1):
-            payload = fetch_tmdb_page(endpoint, page, api_key)
+            payload = fetch_tmdb_page(endpoint, page, api_key, extra_params=extra_params)
             results = payload.get("results") or []
             if not results:
                 break
@@ -360,6 +369,13 @@ def register_title_keys(
         prev = title_map.get(key)
         if prev is None or score > prev:
             title_map[key] = score
+
+        # Also index yearless key for strong global titles so year-0 IPTV items match
+        if score >= 45.0:
+            yearless_key = f"{prefix}:{norm_title}"
+            prev_yearless = title_map.get(yearless_key)
+            if prev_yearless is None or score > prev_yearless:
+                title_map[yearless_key] = score
 
 
 def build_index() -> dict[str, Any]:

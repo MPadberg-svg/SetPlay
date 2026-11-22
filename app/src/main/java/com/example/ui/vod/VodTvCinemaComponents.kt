@@ -26,6 +26,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.GridItemSpan
@@ -39,6 +40,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowForward
 import androidx.compose.material.icons.filled.AutoAwesome
+import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Clear
 import androidx.compose.material.icons.filled.Close
@@ -53,6 +55,7 @@ import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Star
+import androidx.compose.material.icons.filled.Translate
 import androidx.compose.material.icons.filled.VideoLibrary
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.HorizontalDivider
@@ -136,7 +139,8 @@ internal fun TvVodTopControlStrip(
     onSearchQueryChange: (String) -> Unit,
     onToggleViewMode: () -> Unit,
     onSyncCatalog: () -> Unit,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    onDismissPendingUpdate: () -> Unit = {}
 ) {
     val categoryButtonLabel = if (selectedCategoryId == null) {
         if (isMovies) "Categories • All Movies" else "Categories • All Series"
@@ -145,7 +149,15 @@ internal fun TvVodTopControlStrip(
     }
     val showSearchField = isSearchExpanded || searchQuery.isNotBlank()
     val showModeToggle = selectedCategoryId == null && searchQuery.isBlank()
-    val showInlineSyncPill = syncBannerState.isSyncing || syncBannerState.isCompleted || syncBannerState.isError
+    val showPendingChip = !syncBannerState.isSyncing &&
+        !syncBannerState.isCompleted &&
+        !syncBannerState.isError &&
+        !syncBannerState.isInterrupted &&
+        syncBannerState.pendingUpdateAvailable
+    val showInlineSyncPill = syncBannerState.isSyncing ||
+        syncBannerState.isCompleted ||
+        syncBannerState.isError ||
+        syncBannerState.isInterrupted
 
     Column(modifier = modifier.fillMaxWidth()) {
         Row(
@@ -206,23 +218,46 @@ internal fun TvVodTopControlStrip(
                 }
             }
 
-            // Compact inline sync status pill (only when syncing / completed / error — renders NOTHING when idle)
+            // Compact inline sync status pill (6-stage telemetry / interrupted / error / ready)
             if (showInlineSyncPill) {
                 val emeraldAccent = Color(0xFF10B981)
-                val hasDeterminateProgress = syncBannerState.isSyncing && syncBannerState.progressPercent in 1..99
+                val hasDeterminateProgress = syncBannerState.isSyncing &&
+                    !syncBannerState.isIndeterminate &&
+                    syncBannerState.progressPercent in 1..99
+                val hasIndeterminateProgress = syncBannerState.isSyncing && !hasDeterminateProgress
+
                 val pillLabel = when {
                     syncBannerState.isError -> syncBannerState.statusText.ifBlank { "Sync failed" }
+                    syncBannerState.isInterrupted -> "Sync interrupted — Resume"
                     hasDeterminateProgress -> {
-                        val base = syncBannerState.statusText.ifBlank { "Organizing catalog…" }
-                        if (base.contains("%")) base else "$base ${syncBannerState.progressPercent}%"
+                        val base = syncBannerState.stageLabel.ifBlank {
+                            syncBannerState.statusText.ifBlank { "Organizing catalog…" }
+                        }
+                        if (base.contains("%")) base else "$base (${syncBannerState.progressPercent}%)"
                     }
-                    syncBannerState.isSyncing -> syncBannerState.statusText.ifBlank { "Syncing catalog…" }
+                    syncBannerState.isSyncing -> syncBannerState.stageLabel.ifBlank {
+                        syncBannerState.statusText.ifBlank { "Syncing catalog…" }
+                    }
                     else -> syncBannerState.statusText.ifBlank { "Catalog ready" }
+                }
+
+                val pillModifier = if (syncBannerState.isInterrupted || syncBannerState.isError) {
+                    Modifier
+                        .tvFocusableControl(
+                            accentColor = if (syncBannerState.isInterrupted) AmberGold else LiveRed,
+                            shape = RoundedCornerShape(14.dp),
+                            focusedScale = 1.04f,
+                            onClick = onSyncCatalog
+                        )
+                        .testTag("vod_sync_status_pill")
+                } else {
+                    Modifier.testTag("vod_sync_status_pill")
                 }
 
                 Surface(
                     color = when {
                         syncBannerState.isError -> Color(0xFF2B1018).copy(alpha = 0.92f)
+                        syncBannerState.isInterrupted -> Color(0xFF2C220B).copy(alpha = 0.94f)
                         syncBannerState.isCompleted -> Color(0xFF0A2A22).copy(alpha = 0.94f)
                         else -> sectionSurface.copy(alpha = 0.92f)
                     },
@@ -231,23 +266,23 @@ internal fun TvVodTopControlStrip(
                         width = 0.85.dp,
                         color = when {
                             syncBannerState.isError -> LiveRed.copy(alpha = 0.75f)
+                            syncBannerState.isInterrupted -> AmberGold.copy(alpha = 0.78f)
                             syncBannerState.isCompleted -> emeraldAccent.copy(alpha = 0.75f)
                             else -> sectionHighlight.copy(alpha = 0.55f)
                         }
                     ),
-                    modifier = Modifier
-                        .testTag("vod_sync_status_pill")
+                    modifier = pillModifier
                 ) {
                     Column(
-                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
-                        verticalArrangement = Arrangement.spacedBy(4.dp)
+                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 5.dp),
+                        verticalArrangement = Arrangement.spacedBy(3.dp)
                     ) {
                         Row(
                             verticalAlignment = Alignment.CenterVertically,
                             horizontalArrangement = Arrangement.spacedBy(7.dp)
                         ) {
                             when {
-                                syncBannerState.isSyncing && !hasDeterminateProgress -> {
+                                hasIndeterminateProgress -> {
                                     CircularProgressIndicator(
                                         color = sectionHighlight,
                                         strokeWidth = 2.dp,
@@ -262,6 +297,14 @@ internal fun TvVodTopControlStrip(
                                         modifier = Modifier.size(15.dp)
                                     )
                                 }
+                                syncBannerState.isInterrupted -> {
+                                    Icon(
+                                        imageVector = Icons.Default.Refresh,
+                                        contentDescription = "Resume Sync",
+                                        tint = AmberGold,
+                                        modifier = Modifier.size(15.dp)
+                                    )
+                                }
                                 syncBannerState.isCompleted -> {
                                     Icon(
                                         imageVector = Icons.Default.CheckCircle,
@@ -272,14 +315,26 @@ internal fun TvVodTopControlStrip(
                                 }
                                 else -> Unit
                             }
-                            Text(
-                                text = pillLabel,
-                                color = Color.White,
-                                fontSize = 11.5.sp,
-                                fontWeight = FontWeight.SemiBold,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis
-                            )
+                            Column {
+                                Text(
+                                    text = pillLabel,
+                                    color = Color.White,
+                                    fontSize = 11.sp,
+                                    fontWeight = FontWeight.SemiBold,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                                if (syncBannerState.statsSubtitle.isNotBlank() && !syncBannerState.isError) {
+                                    Text(
+                                        text = syncBannerState.statsSubtitle,
+                                        color = Champagne.copy(alpha = 0.78f),
+                                        fontSize = 9.5.sp,
+                                        fontWeight = FontWeight.Medium,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                }
+                            }
                         }
                         if (hasDeterminateProgress) {
                             LinearProgressIndicator(
@@ -287,9 +342,81 @@ internal fun TvVodTopControlStrip(
                                 color = sectionHighlight,
                                 trackColor = Color.White.copy(alpha = 0.16f),
                                 modifier = Modifier
-                                    .width(160.dp)
+                                    .width(180.dp)
                                     .height(3.dp)
                                     .clip(RoundedCornerShape(50))
+                            )
+                        } else if (hasIndeterminateProgress) {
+                            LinearProgressIndicator(
+                                color = sectionHighlight,
+                                trackColor = Color.White.copy(alpha = 0.16f),
+                                modifier = Modifier
+                                    .width(180.dp)
+                                    .height(3.dp)
+                                    .clip(RoundedCornerShape(50))
+                            )
+                        }
+                    }
+                }
+            } else if (showPendingChip) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    modifier = Modifier.testTag("vod_pending_update_chip")
+                ) {
+                    Surface(
+                        color = sectionSurface.copy(alpha = 0.92f),
+                        shape = RoundedCornerShape(14.dp),
+                        border = BorderStroke(0.9.dp, sectionHighlight.copy(alpha = 0.72f)),
+                        modifier = Modifier
+                            .height(38.dp)
+                            .tvFocusableControl(
+                                accentColor = sectionHighlight,
+                                shape = RoundedCornerShape(14.dp),
+                                focusedScale = 1.04f,
+                                onClick = onSyncCatalog
+                            )
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(horizontal = 12.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.AutoAwesome,
+                                contentDescription = "Updates Available",
+                                tint = sectionHighlight,
+                                modifier = Modifier.size(14.dp)
+                            )
+                            Text(
+                                text = "Updates available • Refresh",
+                                color = Color.White,
+                                fontSize = 11.5.sp,
+                                fontWeight = FontWeight.Bold,
+                                maxLines = 1
+                            )
+                        }
+                    }
+                    Surface(
+                        color = sectionSurface.copy(alpha = 0.85f),
+                        shape = RoundedCornerShape(10.dp),
+                        border = BorderStroke(0.7.dp, Color.White.copy(alpha = 0.16f)),
+                        modifier = Modifier
+                            .size(34.dp)
+                            .tvFocusableControl(
+                                accentColor = sectionHighlight,
+                                shape = RoundedCornerShape(10.dp),
+                                focusedScale = 1.06f,
+                                onClick = onDismissPendingUpdate
+                            )
+                            .testTag("vod_pending_update_dismiss_btn")
+                    ) {
+                        Box(contentAlignment = Alignment.Center, modifier = Modifier.fillMaxSize()) {
+                            Icon(
+                                imageVector = Icons.Default.Close,
+                                contentDescription = "Dismiss update notice",
+                                tint = Champagne,
+                                modifier = Modifier.size(14.dp)
                             )
                         }
                     }
@@ -1665,6 +1792,251 @@ internal fun TvDiscoveryShelfRow(
                         overflow = TextOverflow.Ellipsis,
                         modifier = Modifier.padding(horizontal = 8.dp)
                     )
+                }
+            }
+        }
+    }
+}
+
+/**
+ * Purpose-built 10-Foot Android TV Right-Side Version Drawer grouped by Language.
+ * Supports full D-Pad Up/Down focus navigation with bright `tvFocusableControl` focus rings
+ * and instant OK/Enter selection.
+ */
+@Composable
+internal fun TvVersionSelectorDrawer(
+    totalCount: Int,
+    groupedVersions: List<Pair<String, List<ParsedVersionMetadata>>>,
+    activeStreamId: Long,
+    tagPrefix: String,
+    sectionBaseBg: Color,
+    sectionSurface: Color,
+    sectionPrimaryAccent: Color,
+    sectionHighlight: Color,
+    onSelectVersion: (StreamEntity) -> Unit,
+    onDismiss: () -> Unit
+) {
+    Dialog(
+        onDismissRequest = onDismiss,
+        properties = DialogProperties(usePlatformDefaultWidth = false)
+    ) {
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(Color.Black.copy(alpha = 0.68f))
+                .clickable(
+                    interactionSource = remember { MutableInteractionSource() },
+                    indication = null,
+                    onClick = onDismiss
+                )
+        ) {
+            Surface(
+                color = sectionBaseBg.copy(alpha = 0.98f),
+                shape = RoundedCornerShape(topStart = 22.dp, bottomStart = 22.dp),
+                border = BorderStroke(1.2.dp, sectionHighlight.copy(alpha = 0.45f)),
+                modifier = Modifier
+                    .align(Alignment.CenterEnd)
+                    .fillMaxHeight()
+                    .width(440.dp)
+                    .clickable(
+                        interactionSource = remember { MutableInteractionSource() },
+                        indication = null,
+                        onClick = {}
+                    )
+                    .testTag("${tagPrefix}_tv_drawer")
+            ) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .padding(horizontal = 20.dp, vertical = 18.dp)
+                ) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(10.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Translate,
+                                contentDescription = null,
+                                tint = sectionHighlight,
+                                modifier = Modifier.size(22.dp)
+                            )
+                            Text(
+                                text = "Select Version ($totalCount)",
+                                color = Color.White,
+                                fontSize = 19.sp,
+                                fontWeight = FontWeight.ExtraBold
+                            )
+                        }
+
+                        Surface(
+                            color = sectionSurface.copy(alpha = 0.90f),
+                            shape = RoundedCornerShape(12.dp),
+                            border = BorderStroke(0.9.dp, Color.White.copy(alpha = 0.18f)),
+                            modifier = Modifier
+                                .size(38.dp)
+                                .tvFocusableControl(
+                                    accentColor = sectionHighlight,
+                                    shape = RoundedCornerShape(12.dp),
+                                    focusedScale = 1.08f,
+                                    onClick = onDismiss
+                                )
+                                .testTag("${tagPrefix}_tv_drawer_close")
+                        ) {
+                            Box(contentAlignment = Alignment.Center, modifier = Modifier.fillMaxSize()) {
+                                Icon(
+                                    imageVector = Icons.Default.Close,
+                                    contentDescription = "Close Version Drawer",
+                                    tint = Color.White,
+                                    modifier = Modifier.size(18.dp)
+                                )
+                            }
+                        }
+                    }
+
+                    Spacer(modifier = Modifier.height(10.dp))
+                    HorizontalDivider(color = Color.White.copy(alpha = 0.12f))
+                    Spacer(modifier = Modifier.height(10.dp))
+
+                    LazyColumn(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .weight(1f),
+                        verticalArrangement = Arrangement.spacedBy(8.dp),
+                        contentPadding = PaddingValues(bottom = 24.dp)
+                    ) {
+                        groupedVersions.forEach { (languageHeader, itemsInGroup) ->
+                            item(key = "tv_hdr_${languageHeader}") {
+                                Text(
+                                    text = "$languageHeader (${itemsInGroup.size})",
+                                    color = sectionHighlight,
+                                    fontSize = 13.sp,
+                                    fontWeight = FontWeight.ExtraBold,
+                                    letterSpacing = 0.5.sp,
+                                    modifier = Modifier.padding(top = 8.dp, bottom = 2.dp)
+                                )
+                            }
+                            items(itemsInGroup, key = { "tv_ver_${it.stream.id}_${it.stream.streamId}" }) { meta ->
+                                val isSelected = meta.stream.id == activeStreamId
+                                val rowShape = RoundedCornerShape(14.dp)
+                                Surface(
+                                    color = if (isSelected) {
+                                        sectionPrimaryAccent.copy(alpha = 0.34f)
+                                    } else {
+                                        sectionSurface.copy(alpha = 0.78f)
+                                    },
+                                    shape = rowShape,
+                                    border = BorderStroke(
+                                        width = if (isSelected) 1.4.dp else 0.8.dp,
+                                        color = if (isSelected) sectionHighlight else Color.White.copy(alpha = 0.14f)
+                                    ),
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .tvFocusableControl(
+                                            accentColor = sectionHighlight,
+                                            shape = rowShape,
+                                            focusedScale = 1.03f,
+                                            onClick = { onSelectVersion(meta.stream) }
+                                        )
+                                        .testTag("${tagPrefix}_tv_row_${meta.stream.streamId}")
+                                ) {
+                                    Row(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .padding(horizontal = 14.dp, vertical = 12.dp),
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.SpaceBetween
+                                    ) {
+                                        Column(
+                                            modifier = Modifier.weight(1f),
+                                            verticalArrangement = Arrangement.spacedBy(4.dp)
+                                        ) {
+                                            Row(
+                                                verticalAlignment = Alignment.CenterVertically,
+                                                horizontalArrangement = Arrangement.spacedBy(7.dp)
+                                            ) {
+                                                Surface(
+                                                    color = sectionBaseBg.copy(alpha = 0.85f),
+                                                    shape = RoundedCornerShape(6.dp),
+                                                    border = BorderStroke(0.7.dp, sectionHighlight.copy(alpha = 0.52f))
+                                                ) {
+                                                    Text(
+                                                        text = meta.languageSubBadge,
+                                                        color = Color.White,
+                                                        fontSize = 11.5.sp,
+                                                        fontWeight = FontWeight.Bold,
+                                                        modifier = Modifier.padding(horizontal = 7.dp, vertical = 2.dp)
+                                                    )
+                                                }
+                                                if (meta.qualityPill != null) {
+                                                    Surface(
+                                                        color = if (meta.qualityPill == "4K") {
+                                                            AmberGold.copy(alpha = 0.24f)
+                                                        } else {
+                                                            sectionHighlight.copy(alpha = 0.20f)
+                                                        },
+                                                        shape = RoundedCornerShape(6.dp)
+                                                    ) {
+                                                        Text(
+                                                            text = meta.qualityPill,
+                                                            color = if (meta.qualityPill == "4K") PaleGold else sectionHighlight,
+                                                            fontSize = 10.5.sp,
+                                                            fontWeight = FontWeight.ExtraBold,
+                                                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                                                        )
+                                                    }
+                                                }
+                                                if (meta.containerPill != null) {
+                                                    Surface(
+                                                        color = Color.White.copy(alpha = 0.12f),
+                                                        shape = RoundedCornerShape(6.dp)
+                                                    ) {
+                                                        Text(
+                                                            text = meta.containerPill,
+                                                            color = Champagne,
+                                                            fontSize = 10.sp,
+                                                            fontWeight = FontWeight.Bold,
+                                                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                                                        )
+                                                    }
+                                                }
+                                            }
+                                            if (meta.categoryName.isNotBlank()) {
+                                                Text(
+                                                    text = meta.categoryName,
+                                                    color = sectionHighlight.copy(alpha = 0.88f),
+                                                    fontSize = 11.5.sp,
+                                                    fontWeight = FontWeight.SemiBold,
+                                                    maxLines = 1,
+                                                    overflow = TextOverflow.Ellipsis
+                                                )
+                                            }
+                                            Text(
+                                                text = meta.stream.name,
+                                                color = Champagne.copy(alpha = 0.82f),
+                                                fontSize = 12.sp,
+                                                maxLines = 1,
+                                                overflow = TextOverflow.Ellipsis
+                                            )
+                                        }
+                                        if (isSelected) {
+                                            Spacer(modifier = Modifier.width(10.dp))
+                                            Icon(
+                                                imageVector = Icons.Default.Check,
+                                                contentDescription = "Active Version",
+                                                tint = sectionHighlight,
+                                                modifier = Modifier.size(22.dp)
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
                 }
             }
         }

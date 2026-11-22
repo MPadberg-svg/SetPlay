@@ -49,6 +49,7 @@ import androidx.compose.material.icons.filled.Layers
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.Movie
 import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Star
 import androidx.compose.material.icons.filled.Translate
@@ -58,15 +59,18 @@ import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
+import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.derivedStateOf
@@ -110,6 +114,7 @@ import com.example.ui.theme.SeriesPineBase
 import com.example.ui.theme.SeriesSeaJade
 import com.example.ui.theme.luxuryFocusableCard
 import com.example.ui.theme.tvFocusableControl
+import com.example.util.StreamMetadataParser
 import java.util.Locale
 
 internal fun formatNormalizedRating(stream: StreamEntity, versionCount: Int = 1): String? {
@@ -134,10 +139,20 @@ internal fun vodShelfFilterTitle(filter: VodShelfFilter, isMovies: Boolean): Str
 }
 
 internal fun formatDetailNormalizedRating(detailsRating: String?, stream: StreamEntity, versionCount: Int = 1): String? {
-    val parsed = detailsRating?.trim()?.replace(',', '.')?.toDoubleOrNull()
-        ?.takeIf { it > 0.0 && it <= 10.0 }
-    if (parsed != null && !VodGroupingNormalizer.isPlaceholderPerfectRating(parsed, versionCount) && parsed < 9.95) {
-        return String.format(Locale.US, "%.1f", parsed)
+    val raw = detailsRating?.trim()?.replace(',', '.')
+    val parsed = raw?.toDoubleOrNull()?.takeIf { it > 0.0 && it <= 10.0 }
+    val normalized = when {
+        parsed == null -> null
+        parsed <= 5.0 -> {
+            // Provider detail endpoints frequently return 5-star ratings ("4.0", "4.5");
+            // normalize to the 10-point scale ("8.0", "9.0") to match poster cards.
+            val (_, scaled) = VodGroupingNormalizer.normalizeRatingToTenScale("", raw)
+            if (scaled > 0.0) scaled else (parsed * 2.0).coerceAtMost(10.0)
+        }
+        else -> parsed
+    }
+    if (normalized != null && !VodGroupingNormalizer.isPlaceholderPerfectRating(normalized, versionCount) && normalized < 9.95) {
+        return String.format(Locale.US, "%.1f", normalized)
     }
     return formatNormalizedRating(stream, versionCount)
 }
@@ -380,6 +395,7 @@ internal fun VodMobileTopCommandBar(
 
 /**
  * Unobtrusive animated live sync status pill displayed during Pull-to-Refresh,
+ * 6-stage background sync telemetry, interrupted resume state, pending updates,
  * brief completion feedback, or sync error with Retry action.
  */
 @Composable
@@ -389,38 +405,115 @@ internal fun VodSyncStatusPill(
     sectionHighlight: Color,
     onRetry: () -> Unit,
     onDismiss: () -> Unit,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    onDismissPendingUpdate: () -> Unit = {}
 ) {
-    val isVisible = bannerState.isSyncing || bannerState.isCompleted || bannerState.isError
+    val showPendingChip = !bannerState.isSyncing &&
+        !bannerState.isError &&
+        !bannerState.isInterrupted &&
+        !bannerState.isCompleted &&
+        bannerState.pendingUpdateAvailable
+    val isVisible = bannerState.isSyncing ||
+        bannerState.isCompleted ||
+        bannerState.isError ||
+        bannerState.isInterrupted ||
+        showPendingChip
     if (!isVisible) return
 
     val emeraldAccent = Color(0xFF10B981)
-    val hasDeterminateProgress = bannerState.isSyncing && bannerState.progressPercent in 1..99
+    if (showPendingChip) {
+        Surface(
+            color = sectionSurface.copy(alpha = 0.94f),
+            shape = RoundedCornerShape(14.dp),
+            border = BorderStroke(0.9.dp, sectionHighlight.copy(alpha = 0.58f)),
+            modifier = modifier
+                .fillMaxWidth()
+                .padding(horizontal = 14.dp, vertical = 4.dp)
+                .testTag("vod_pending_update_chip")
+        ) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clickable(onClick = onRetry)
+                    .padding(horizontal = 12.dp, vertical = 8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    modifier = Modifier.weight(1f)
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.AutoAwesome,
+                        contentDescription = "Updates available",
+                        tint = sectionHighlight,
+                        modifier = Modifier.size(15.dp)
+                    )
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = "Updates available • Refresh",
+                            color = Color.White,
+                            fontSize = 11.5.sp,
+                            fontWeight = FontWeight.Bold,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                        if (bannerState.pendingUpdateSummary.isNotBlank()) {
+                            Text(
+                                text = bannerState.pendingUpdateSummary,
+                                color = sectionHighlight.copy(alpha = 0.85f),
+                                fontSize = 10.sp,
+                                fontWeight = FontWeight.Medium,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
+                    }
+                }
+                IconButton(
+                    onClick = onDismissPendingUpdate,
+                    modifier = Modifier
+                        .size(28.dp)
+                        .testTag("vod_pending_update_dismiss_btn")
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Close,
+                        contentDescription = "Dismiss update notice",
+                        tint = Color.White.copy(alpha = 0.72f),
+                        modifier = Modifier.size(14.dp)
+                    )
+                }
+            }
+        }
+        return
+    }
+
+    val hasDeterminateProgress = bannerState.isSyncing &&
+        !bannerState.isIndeterminate &&
+        bannerState.progressPercent in 1..99
+    val hasIndeterminateProgress = bannerState.isSyncing && !hasDeterminateProgress
+
     val borderColor = when {
         bannerState.isError -> LiveRed.copy(alpha = 0.65f)
+        bannerState.isInterrupted -> AmberGold.copy(alpha = 0.72f)
         bannerState.isCompleted -> emeraldAccent.copy(alpha = 0.72f)
         else -> sectionHighlight.copy(alpha = 0.48f)
     }
     val bgColor = when {
         bannerState.isError -> Color(0xFF2B1018).copy(alpha = 0.92f)
+        bannerState.isInterrupted -> Color(0xFF2C220B).copy(alpha = 0.94f)
         bannerState.isCompleted -> Color(0xFF0A2A22).copy(alpha = 0.94f)
         else -> sectionSurface.copy(alpha = 0.94f)
     }
 
-    val statusLabel = when {
-        bannerState.isError -> {
-            "Sync failed • ${bannerState.statusText.ifBlank { "Check connection" }}"
-        }
-        hasDeterminateProgress -> {
-            val base = bannerState.statusText.ifBlank { "Organizing catalog…" }
-            if (base.contains("%")) base else "$base ${bannerState.progressPercent}%"
-        }
-        bannerState.isSyncing -> {
+    val primaryStageText = when {
+        bannerState.isError -> "Sync failed • ${bannerState.statusText.ifBlank { "Check connection" }}"
+        bannerState.isInterrupted -> "Sync interrupted — Resume"
+        bannerState.isSyncing -> bannerState.stageLabel.ifBlank {
             bannerState.statusText.ifBlank { "Syncing catalog…" }
         }
-        else -> {
-            bannerState.statusText.ifBlank { "Catalog ready" }
-        }
+        else -> bannerState.statusText.ifBlank { "Catalog ready" }
     }
 
     Surface(
@@ -436,7 +529,7 @@ internal fun VodSyncStatusPill(
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(horizontal = 12.dp, vertical = 8.dp),
-            verticalArrangement = Arrangement.spacedBy(6.dp)
+            verticalArrangement = Arrangement.spacedBy(5.dp)
         ) {
             Row(
                 modifier = Modifier.fillMaxWidth(),
@@ -449,7 +542,7 @@ internal fun VodSyncStatusPill(
                     modifier = Modifier.weight(1f)
                 ) {
                     when {
-                        bannerState.isSyncing && !hasDeterminateProgress -> {
+                        hasIndeterminateProgress -> {
                             CircularProgressIndicator(
                                 color = sectionHighlight,
                                 strokeWidth = 2.dp,
@@ -464,6 +557,14 @@ internal fun VodSyncStatusPill(
                                 modifier = Modifier.size(16.dp)
                             )
                         }
+                        bannerState.isInterrupted -> {
+                            Icon(
+                                imageVector = Icons.Default.Refresh,
+                                contentDescription = "Sync Interrupted",
+                                tint = AmberGold,
+                                modifier = Modifier.size(16.dp)
+                            )
+                        }
                         bannerState.isCompleted -> {
                             Icon(
                                 imageVector = Icons.Default.CheckCircle,
@@ -475,23 +576,57 @@ internal fun VodSyncStatusPill(
                         else -> Unit
                     }
 
-                    Text(
-                        text = statusLabel,
-                        color = Color.White,
-                        fontSize = 11.5.sp,
-                        fontWeight = FontWeight.SemiBold,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
-                    )
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = primaryStageText,
+                            color = Color.White,
+                            fontSize = 11.5.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                        if (bannerState.statsSubtitle.isNotBlank() && !bannerState.isError) {
+                            Text(
+                                text = bannerState.statsSubtitle,
+                                color = Champagne.copy(alpha = 0.80f),
+                                fontSize = 10.sp,
+                                fontWeight = FontWeight.Medium,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
+                    }
                 }
 
                 if (hasDeterminateProgress) {
+                    Spacer(modifier = Modifier.width(8.dp))
                     Text(
                         text = "${bannerState.progressPercent}%",
                         color = sectionHighlight,
                         fontSize = 11.sp,
                         fontWeight = FontWeight.ExtraBold
                     )
+                }
+
+                if (bannerState.isInterrupted) {
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Surface(
+                        color = AmberGold.copy(alpha = 0.24f),
+                        shape = RoundedCornerShape(50),
+                        border = BorderStroke(0.8.dp, AmberGold.copy(alpha = 0.82f)),
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(50))
+                            .clickable(onClick = onRetry)
+                            .testTag("vod_sync_resume_btn")
+                    ) {
+                        Text(
+                            text = "Resume",
+                            color = PaleGold,
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.ExtraBold,
+                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp)
+                        )
+                    }
                 }
 
                 if (bannerState.isError) {
@@ -531,6 +666,15 @@ internal fun VodSyncStatusPill(
             if (hasDeterminateProgress) {
                 LinearProgressIndicator(
                     progress = { bannerState.progressPercent / 100f },
+                    color = sectionHighlight,
+                    trackColor = Color.White.copy(alpha = 0.14f),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(3.dp)
+                        .clip(RoundedCornerShape(50))
+                )
+            } else if (hasIndeterminateProgress) {
+                LinearProgressIndicator(
                     color = sectionHighlight,
                     trackColor = Color.White.copy(alpha = 0.14f),
                     modifier = Modifier
@@ -1983,10 +2127,197 @@ internal fun formatVersionChipLabels(
     }
 }
 
+internal data class ParsedVersionMetadata(
+    val stream: StreamEntity,
+    val languageGroup: String,
+    val languageSubBadge: String,
+    val qualityPill: String?,
+    val containerPill: String?,
+    val categoryName: String,
+    val priorityRank: Int
+)
+
+private val VERSION_QUALITY_TOKENS = setOf("4K", "UHD", "FHD", "HD", "HEVC", "HDR", "1080P", "720P", "SD")
+
+internal fun parseVersionMetadata(
+    version: StreamEntity,
+    categoryNameById: Map<String, String>,
+    includeContainer: Boolean
+): ParsedVersionMetadata {
+    val rawCat = categoryNameById[version.categoryId].orEmpty()
+    val cleanCat = if (rawCat.isNotBlank()) {
+        VodViewModel.parseCategoryLanguageAndName(rawCat).second.ifBlank { rawCat.trim() }
+    } else {
+        ""
+    }
+    val combinedUpper = "${version.name} $rawCat ${version.versionTag}".uppercase(Locale.US)
+    val categoryAwareTag = VodGroupingNormalizer.extractVersionTagWithCategory(
+        rawName = version.name,
+        categoryName = rawCat
+    )
+    val rawTokens = (categoryAwareTag.ifBlank { version.versionTag.ifBlank { VodGroupingNormalizer.extractVersionTag(version.name) } })
+        .split("•", "|", "/", ",")
+        .map { it.trim() }
+        .filter { it.isNotEmpty() }
+
+    val qualityFromParser = StreamMetadataParser.extractCompactQualityBadge(version.name)
+        ?.uppercase(Locale.US)
+        ?.let { if (it == "4K UHD" || it == "UHD") "4K" else it }
+    val qualityFromTokens = rawTokens.firstOrNull { it.uppercase(Locale.US) in VERSION_QUALITY_TOKENS }
+        ?.uppercase(Locale.US)
+        ?.let {
+            when (it) {
+                "UHD", "4K" -> "4K"
+                "1080P", "FHD" -> "FHD"
+                "720P", "HD" -> "HD"
+                else -> it
+            }
+        }
+    val qualityPill = qualityFromParser ?: qualityFromTokens ?: when {
+        combinedUpper.contains("4K") || combinedUpper.contains("UHD") || combinedUpper.contains("2160P") -> "4K"
+        combinedUpper.contains("FHD") || combinedUpper.contains("1080P") -> "FHD"
+        Regex("\\bHD\\b").containsMatchIn(combinedUpper) || combinedUpper.contains("720P") -> "HD"
+        else -> null
+    }
+
+    val containerPill = version.containerExtension.trim().uppercase(Locale.US)
+        .takeIf { it.isNotEmpty() && (includeContainer || it == "MKV" || it == "MP4" || it == "AVI") }
+
+    val isVostfr = combinedUpper.contains("VOSTFR") || combinedUpper.contains("VOST")
+    val isSub = combinedUpper.contains("SUB") || combinedUpper.contains("مترجم")
+    val isMulti = combinedUpper.contains("MULTI")
+
+    val langTokens = rawTokens
+        .filter { it.uppercase(Locale.US) !in VERSION_QUALITY_TOKENS }
+        .map { token -> VERSION_TOKEN_LABELS[token.uppercase(Locale.US)] ?: token }
+        .distinct()
+
+    val primaryLang = langTokens.firstOrNull {
+        !it.equals("Subbed", ignoreCase = true) &&
+            !it.equals("Dubbed", ignoreCase = true) &&
+            !it.equals("VOSTFR", ignoreCase = true) &&
+            !it.equals("Multi", ignoreCase = true)
+    }
+
+    val (languageGroup, priorityRank) = when {
+        primaryLang.equals("English", ignoreCase = true) ||
+            primaryLang.equals("US", ignoreCase = true) ||
+            primaryLang.equals("UK", ignoreCase = true) ||
+            primaryLang.equals("Canada", ignoreCase = true) ||
+            primaryLang.equals("Australia", ignoreCase = true) -> {
+            if (isMulti) "English (Multi)" to 0 else "English" to 0
+        }
+        primaryLang.equals("Arabic", ignoreCase = true) -> {
+            (if (isSub) "Arabic (Sub)" else "Arabic") to 1
+        }
+        primaryLang.equals("French", ignoreCase = true) || isVostfr -> {
+            (if (isVostfr) "French (VOSTFR)" else "French") to 2
+        }
+        primaryLang.equals("Spanish", ignoreCase = true) || primaryLang.equals("Latino", ignoreCase = true) -> {
+            "Spanish" to 3
+        }
+        primaryLang != null -> {
+            val suffix = when {
+                isSub -> " (Sub)"
+                isMulti -> " (Multi)"
+                else -> ""
+            }
+            "$primaryLang$suffix" to 4
+        }
+        isMulti -> "Multi-Audio" to 3
+        else -> "Other" to 5
+    }
+
+    val languageSubBadge = when {
+        languageGroup != "Other" -> languageGroup
+        langTokens.isNotEmpty() -> langTokens.take(2).joinToString(" • ")
+        else -> "Standard"
+    }
+
+    return ParsedVersionMetadata(
+        stream = version,
+        languageGroup = languageGroup,
+        languageSubBadge = languageSubBadge,
+        qualityPill = qualityPill,
+        containerPill = containerPill,
+        categoryName = cleanCat.ifBlank { rawCat.trim() },
+        priorityRank = priorityRank
+    )
+}
+
+internal fun groupVersionsByLanguage(
+    parsedVersions: List<ParsedVersionMetadata>
+): List<Pair<String, List<ParsedVersionMetadata>>> {
+    val grouped = linkedMapOf<String, MutableList<ParsedVersionMetadata>>()
+    val sorted = parsedVersions.sortedWith(
+        compareBy<ParsedVersionMetadata> { it.priorityRank }
+            .thenBy { it.languageGroup.lowercase(Locale.US) }
+            .thenBy {
+                when (it.qualityPill) {
+                    "4K" -> 0
+                    "FHD" -> 1
+                    "HD" -> 2
+                    else -> 3
+                }
+            }
+    )
+    for (item in sorted) {
+        val bucket = grouped.getOrPut(item.languageGroup) { mutableListOf() }
+        bucket.add(item)
+    }
+    return grouped.entries.map { it.key to it.value.toList() }
+}
+
+private fun selectTopInlineVersions(
+    parsedVersions: List<ParsedVersionMetadata>,
+    activeStreamId: Long,
+    maxInline: Int = 4
+): List<ParsedVersionMetadata> {
+    if (parsedVersions.size <= maxInline) return parsedVersions
+    val ranked = parsedVersions.sortedWith(
+        compareBy<ParsedVersionMetadata> { it.priorityRank }
+            .thenBy {
+                when (it.qualityPill) {
+                    "4K" -> 0
+                    "FHD" -> 1
+                    "HD" -> 2
+                    else -> 3
+                }
+            }
+    )
+    val chosen = mutableListOf<ParsedVersionMetadata>()
+    val seenLangs = mutableSetOf<String>()
+    // First pass: pick best copy per preferred language group for diversity
+    for (item in ranked) {
+        if (chosen.size >= maxInline) break
+        if (seenLangs.add(item.languageGroup)) {
+            chosen.add(item)
+        }
+    }
+    // Second pass: fill remaining slots up to maxInline
+    for (item in ranked) {
+        if (chosen.size >= maxInline) break
+        if (chosen.none { it.stream.id == item.stream.id }) {
+            chosen.add(item)
+        }
+    }
+    // Guarantee the active selected version is visible among inline pills
+    if (chosen.none { it.stream.id == activeStreamId }) {
+        val activeItem = parsedVersions.firstOrNull { it.stream.id == activeStreamId }
+        if (activeItem != null && chosen.isNotEmpty()) {
+            chosen[chosen.lastIndex] = activeItem
+        }
+    }
+    return chosen
+}
+
 /**
- * Interactive multi-language / multi-quality version selector strip for Movie Dossier & Series Vault.
- * Switching versions selects the exact original StreamEntity without mutating URLs or streamIds.
+ * Interactive lossless multi-language / multi-quality version selector strip for Movie Dossier & Series Vault.
+ * - `versions.size <= 4`: renders clean inline pills displaying Language/Subtitle + Quality (`4K`/`FHD`/`HD`) + Container (`MKV`/`MP4`).
+ * - `versions.size > 4`: renders top 4 preferred language pills inline PLUS an interactive `"All (N) ▾"` pill (`${tagPrefix}_all_btn`)
+ *   that opens a grouped Mobile `ModalBottomSheet` or 10-foot Android TV Right-Side Version Drawer.
  */
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 internal fun VodVersionSelectorStrip(
     headerTitle: String,
@@ -2005,8 +2336,16 @@ internal fun VodVersionSelectorStrip(
 ) {
     if (versions.size <= 1) return
 
-    val chipLabels = remember(versions, categoryNameById, includeContainer) {
-        formatVersionChipLabels(versions, categoryNameById, includeContainer)
+    var showAllVersionsPicker by remember(versions.size, activeStreamId) { mutableStateOf(false) }
+
+    val parsedVersions = remember(versions, categoryNameById, includeContainer) {
+        versions.map { parseVersionMetadata(it, categoryNameById, includeContainer) }
+    }
+    val inlineVersions = remember(parsedVersions, activeStreamId) {
+        selectTopInlineVersions(parsedVersions, activeStreamId, maxInline = 4)
+    }
+    val groupedVersions = remember(parsedVersions) {
+        groupVersionsByLanguage(parsedVersions)
     }
 
     Column(
@@ -2040,9 +2379,9 @@ internal fun VodVersionSelectorStrip(
             contentPadding = PaddingValues(horizontal = 18.dp, vertical = if (isTvEdition) 4.dp else 0.dp),
             horizontalArrangement = Arrangement.spacedBy(if (isTvEdition) 10.dp else 8.dp)
         ) {
-            items(versions, key = { "${tagPrefix}_${it.id}_${it.streamId}" }) { version ->
+            items(inlineVersions, key = { "${tagPrefix}_${it.stream.id}_${it.stream.streamId}" }) { meta ->
+                val version = meta.stream
                 val isSelected = version.id == activeStreamId
-                val label = chipLabels[version.id] ?: "Standard"
                 val chipShape = RoundedCornerShape(if (isTvEdition) 14.dp else 12.dp)
 
                 Surface(
@@ -2067,9 +2406,9 @@ internal fun VodVersionSelectorStrip(
                 ) {
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        horizontalArrangement = Arrangement.spacedBy(5.dp),
                         modifier = Modifier.padding(
-                            horizontal = if (isTvEdition) 15.dp else 11.dp,
+                            horizontal = if (isTvEdition) 14.dp else 10.dp,
                             vertical = if (isTvEdition) 10.dp else 8.dp
                         )
                     ) {
@@ -2078,17 +2417,323 @@ internal fun VodVersionSelectorStrip(
                                 imageVector = Icons.Default.Check,
                                 contentDescription = "Selected Version",
                                 tint = sectionHighlight,
-                                modifier = Modifier.size(if (isTvEdition) 16.dp else 14.dp)
+                                modifier = Modifier.size(if (isTvEdition) 16.dp else 13.dp)
                             )
                         }
                         Text(
-                            text = label,
-                            color = if (isSelected) Color.White else Champagne.copy(alpha = 0.92f),
+                            text = meta.languageSubBadge,
+                            color = if (isSelected) Color.White else Champagne.copy(alpha = 0.94f),
                             fontSize = if (isTvEdition) 13.sp else 11.5.sp,
                             fontWeight = if (isSelected) FontWeight.ExtraBold else FontWeight.SemiBold,
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis
                         )
+                        if (meta.qualityPill != null) {
+                            Surface(
+                                color = if (meta.qualityPill == "4K") {
+                                    AmberGold.copy(alpha = 0.22f)
+                                } else {
+                                    sectionHighlight.copy(alpha = 0.18f)
+                                },
+                                shape = RoundedCornerShape(5.dp)
+                            ) {
+                                Text(
+                                    text = meta.qualityPill,
+                                    color = if (meta.qualityPill == "4K") PaleGold else sectionHighlight,
+                                    fontSize = if (isTvEdition) 10.5.sp else 9.sp,
+                                    fontWeight = FontWeight.ExtraBold,
+                                    modifier = Modifier.padding(horizontal = 5.dp, vertical = 1.5.dp)
+                                )
+                            }
+                        }
+                        if (meta.containerPill != null) {
+                            Surface(
+                                color = Color.White.copy(alpha = 0.10f),
+                                shape = RoundedCornerShape(5.dp)
+                            ) {
+                                Text(
+                                    text = meta.containerPill,
+                                    color = Champagne.copy(alpha = 0.85f),
+                                    fontSize = if (isTvEdition) 10.sp else 8.5.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    modifier = Modifier.padding(horizontal = 4.5.dp, vertical = 1.5.dp)
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+
+            if (versions.size > 4) {
+                item(key = "${tagPrefix}_all_pill") {
+                    val allShape = RoundedCornerShape(if (isTvEdition) 14.dp else 12.dp)
+                    Surface(
+                        color = sectionBaseBg.copy(alpha = 0.88f),
+                        shape = allShape,
+                        border = BorderStroke(1.dp, sectionHighlight.copy(alpha = 0.68f)),
+                        modifier = Modifier
+                            .tvFocusableControl(
+                                accentColor = sectionHighlight,
+                                shape = allShape,
+                                focusedScale = if (isTvEdition) 1.06f else 1.03f,
+                                onClick = { showAllVersionsPicker = true }
+                            )
+                            .testTag("${tagPrefix}_all_btn")
+                    ) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(4.dp),
+                            modifier = Modifier.padding(
+                                horizontal = if (isTvEdition) 15.dp else 11.dp,
+                                vertical = if (isTvEdition) 10.dp else 8.dp
+                            )
+                        ) {
+                            Text(
+                                text = "All (${versions.size}) ▾",
+                                color = sectionHighlight,
+                                fontSize = if (isTvEdition) 13.sp else 11.5.sp,
+                                fontWeight = FontWeight.ExtraBold,
+                                maxLines = 1
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    if (showAllVersionsPicker) {
+        if (isTvEdition) {
+            TvVersionSelectorDrawer(
+                totalCount = versions.size,
+                groupedVersions = groupedVersions,
+                activeStreamId = activeStreamId,
+                tagPrefix = tagPrefix,
+                sectionBaseBg = sectionBaseBg,
+                sectionSurface = sectionSurface,
+                sectionPrimaryAccent = sectionPrimaryAccent,
+                sectionHighlight = sectionHighlight,
+                onSelectVersion = { selected ->
+                    showAllVersionsPicker = false
+                    onSelectVersion(selected)
+                },
+                onDismiss = { showAllVersionsPicker = false }
+            )
+        } else {
+            MobileVersionSelectorBottomSheet(
+                totalCount = versions.size,
+                groupedVersions = groupedVersions,
+                activeStreamId = activeStreamId,
+                tagPrefix = tagPrefix,
+                sectionBaseBg = sectionBaseBg,
+                sectionSurface = sectionSurface,
+                sectionPrimaryAccent = sectionPrimaryAccent,
+                sectionHighlight = sectionHighlight,
+                onSelectVersion = { selected ->
+                    showAllVersionsPicker = false
+                    onSelectVersion(selected)
+                },
+                onDismiss = { showAllVersionsPicker = false }
+            )
+        }
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun MobileVersionSelectorBottomSheet(
+    totalCount: Int,
+    groupedVersions: List<Pair<String, List<ParsedVersionMetadata>>>,
+    activeStreamId: Long,
+    tagPrefix: String,
+    sectionBaseBg: Color,
+    sectionSurface: Color,
+    sectionPrimaryAccent: Color,
+    sectionHighlight: Color,
+    onSelectVersion: (StreamEntity) -> Unit,
+    onDismiss: () -> Unit
+) {
+    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+    ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        sheetState = sheetState,
+        containerColor = sectionBaseBg,
+        contentColor = Color.White,
+        scrimColor = Color.Black.copy(alpha = 0.72f),
+        modifier = Modifier.testTag("${tagPrefix}_mobile_sheet")
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .navigationBarsPadding()
+                .padding(horizontal = 16.dp, vertical = 4.dp)
+        ) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(bottom = 10.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Translate,
+                        contentDescription = null,
+                        tint = sectionHighlight,
+                        modifier = Modifier.size(18.dp)
+                    )
+                    Text(
+                        text = "Select Version ($totalCount)",
+                        color = Color.White,
+                        fontSize = 17.sp,
+                        fontWeight = FontWeight.ExtraBold
+                    )
+                }
+                IconButton(onClick = onDismiss) {
+                    Icon(
+                        imageVector = Icons.Default.Close,
+                        contentDescription = "Close Version Picker",
+                        tint = Champagne
+                    )
+                }
+            }
+
+            HorizontalDivider(color = Color.White.copy(alpha = 0.10f))
+            Spacer(modifier = Modifier.height(8.dp))
+
+            LazyColumn(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(420.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+                contentPadding = PaddingValues(bottom = 24.dp)
+            ) {
+                groupedVersions.forEach { (languageHeader, itemsInGroup) ->
+                    item(key = "hdr_${languageHeader}") {
+                        Text(
+                            text = "$languageHeader (${itemsInGroup.size})",
+                            color = sectionHighlight,
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.ExtraBold,
+                            letterSpacing = 0.4.sp,
+                            modifier = Modifier.padding(top = 6.dp, bottom = 2.dp)
+                        )
+                    }
+                    items(itemsInGroup, key = { "sheet_${it.stream.id}_${it.stream.streamId}" }) { meta ->
+                        val isSelected = meta.stream.id == activeStreamId
+                        Surface(
+                            color = if (isSelected) {
+                                sectionPrimaryAccent.copy(alpha = 0.30f)
+                            } else {
+                                sectionSurface.copy(alpha = 0.72f)
+                            },
+                            shape = RoundedCornerShape(12.dp),
+                            border = BorderStroke(
+                                width = if (isSelected) 1.3.dp else 0.7.dp,
+                                color = if (isSelected) sectionHighlight else Color.White.copy(alpha = 0.12f)
+                            ),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(12.dp))
+                                .clickable { onSelectVersion(meta.stream) }
+                                .testTag("${tagPrefix}_sheet_row_${meta.stream.streamId}")
+                        ) {
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(horizontal = 12.dp, vertical = 10.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.SpaceBetween
+                            ) {
+                                Column(
+                                    modifier = Modifier.weight(1f),
+                                    verticalArrangement = Arrangement.spacedBy(4.dp)
+                                ) {
+                                    Row(
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                    ) {
+                                        Surface(
+                                            color = sectionBaseBg.copy(alpha = 0.80f),
+                                            shape = RoundedCornerShape(6.dp),
+                                            border = BorderStroke(0.6.dp, sectionHighlight.copy(alpha = 0.48f))
+                                        ) {
+                                            Text(
+                                                text = meta.languageSubBadge,
+                                                color = Color.White,
+                                                fontSize = 10.5.sp,
+                                                fontWeight = FontWeight.Bold,
+                                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                                            )
+                                        }
+                                        if (meta.qualityPill != null) {
+                                            Surface(
+                                                color = if (meta.qualityPill == "4K") {
+                                                    AmberGold.copy(alpha = 0.22f)
+                                                } else {
+                                                    sectionHighlight.copy(alpha = 0.18f)
+                                                },
+                                                shape = RoundedCornerShape(6.dp)
+                                            ) {
+                                                Text(
+                                                    text = meta.qualityPill,
+                                                    color = if (meta.qualityPill == "4K") PaleGold else sectionHighlight,
+                                                    fontSize = 9.5.sp,
+                                                    fontWeight = FontWeight.ExtraBold,
+                                                    modifier = Modifier.padding(horizontal = 5.5.dp, vertical = 2.dp)
+                                                )
+                                            }
+                                        }
+                                        if (meta.containerPill != null) {
+                                            Surface(
+                                                color = Color.White.copy(alpha = 0.10f),
+                                                shape = RoundedCornerShape(6.dp)
+                                            ) {
+                                                Text(
+                                                    text = meta.containerPill,
+                                                    color = Champagne,
+                                                    fontSize = 9.5.sp,
+                                                    fontWeight = FontWeight.Bold,
+                                                    modifier = Modifier.padding(horizontal = 5.5.dp, vertical = 2.dp)
+                                                )
+                                            }
+                                        }
+                                    }
+
+                                    if (meta.categoryName.isNotBlank()) {
+                                        Text(
+                                            text = meta.categoryName,
+                                            color = sectionHighlight.copy(alpha = 0.85f),
+                                            fontSize = 10.5.sp,
+                                            fontWeight = FontWeight.SemiBold,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis
+                                        )
+                                    }
+
+                                    Text(
+                                        text = meta.stream.name,
+                                        color = Champagne.copy(alpha = 0.78f),
+                                        fontSize = 11.sp,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                }
+
+                                if (isSelected) {
+                                    Spacer(modifier = Modifier.width(8.dp))
+                                    Icon(
+                                        imageVector = Icons.Default.Check,
+                                        contentDescription = "Active Version",
+                                        tint = sectionHighlight,
+                                        modifier = Modifier.size(20.dp)
+                                    )
+                                }
+                            }
+                        }
                     }
                 }
             }

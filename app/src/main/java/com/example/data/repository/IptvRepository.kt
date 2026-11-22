@@ -9,7 +9,9 @@ import com.example.data.local.EpgDao
 import com.example.data.local.ParentalSettingsDao
 import com.example.data.local.PlaylistDao
 import com.example.data.local.StreamDao
+import com.example.data.local.StreamIndexProjection
 import com.example.data.local.StreamVaultDatabase
+import com.example.data.local.SyncSectionStateDao
 import com.example.data.local.VodCatalogGroupDao
 import com.example.data.model.CategoryEntity
 import com.example.data.model.CategoryWithCount
@@ -23,10 +25,19 @@ import com.example.data.model.VodGroupingNormalizer
 import com.example.data.remote.GlobalPopularityIndexManager
 import com.example.data.remote.XtreamAuthResponse
 import com.example.data.remote.XtreamClient
+import com.example.data.sync.CatalogDiffEngine
+import com.example.data.sync.CatalogUpdateCheckWorker
+import com.example.data.sync.PlaybackResourceGovernor
+import com.example.data.sync.SyncStage
+import com.example.data.sync.SyncStatus
+import com.example.data.sync.SyncTelemetry
+import com.example.data.sync.toSyncTelemetry
 import com.example.util.SecurityManager
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -41,12 +52,15 @@ import kotlinx.coroutines.flow.onStart
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import okhttp3.ConnectionPool
+import okhttp3.Dispatcher
 import okhttp3.OkHttpClient
 import org.json.JSONArray
 import java.util.Locale
+import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicLong
 
 data class SyncProgress(
     val isSyncing: Boolean = false,
@@ -84,10 +98,11 @@ class IptvRepository(
     private val streamDao: StreamDao,
     private val epgDao: EpgDao,
     private val parentalDao: ParentalSettingsDao,
-    private val xtreamClient: XtreamClient = XtreamClient(sharedOkHttpClient),
+    private val xtreamClient: XtreamClient = XtreamClient(syncOkHttpClient),
     private val vodGroupDao: VodCatalogGroupDao? = null,
     private val database: StreamVaultDatabase? = null,
-    private val appContext: Context? = null
+    private val appContext: Context? = null,
+    private val syncSectionStateDao: SyncSectionStateDao? = database?.syncSectionStateDao()
 ) {
     private val _syncProgress = MutableStateFlow(SyncProgress())
     val syncProgress = _syncProgress.asStateFlow()
@@ -99,10 +114,72 @@ class IptvRepository(
     val seriesPipelineState: StateFlow<VodPipelineState> = _seriesPipelineState.asStateFlow()
 
     private val isSyncInProgress = AtomicBoolean(false)
+    private val liveSyncLock = AtomicBoolean(false)
     private val moviesSyncLock = AtomicBoolean(false)
     private val seriesSyncLock = AtomicBoolean(false)
     private val indexingScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private val activeIndexJobs = ConcurrentHashMap<String, AtomicBoolean>()
+
+    init {
+        val stateDao = syncSectionStateDao
+        if (stateDao != null) {
+            indexingScope.launch(Dispatchers.IO) {
+                runCatching {
+                    stateDao.markAllRunningAsInterrupted(System.currentTimeMillis())
+                }
+            }
+        }
+    }
+
+    fun observeSectionSyncState(playlistId: Long, sectionType: String): Flow<SyncTelemetry> {
+        val normalized = SyncTelemetry.normalizeSyncSectionType(sectionType)
+        val dao = syncSectionStateDao ?: return flowOf(
+            SyncTelemetry(playlistId = playlistId, sectionType = normalized)
+        )
+        return dao.observeSection(playlistId, normalized).map { entity ->
+            entity?.toSyncTelemetry() ?: SyncTelemetry(playlistId = playlistId, sectionType = normalized)
+        }
+    }
+
+    private suspend fun persistSyncTelemetry(telemetry: SyncTelemetry) {
+        val dao = syncSectionStateDao ?: return
+        runCatching {
+            dao.upsert(telemetry.toEntity())
+        }
+    }
+
+    suspend fun markSectionInterrupted(playlistId: Long, sectionType: String) {
+        val dao = syncSectionStateDao ?: return
+        val normalized = SyncTelemetry.normalizeSyncSectionType(sectionType)
+        runCatching {
+            val existing = dao.getSectionOnce(playlistId, normalized)
+            val base = existing?.toSyncTelemetry()
+                ?: SyncTelemetry(playlistId = playlistId, sectionType = normalized)
+            dao.upsert(
+                base.copy(
+                    status = SyncStatus.INTERRUPTED,
+                    isIndeterminate = false,
+                    lastAttemptedSyncMs = System.currentTimeMillis()
+                ).toEntity(playlistId, normalized)
+            )
+        }
+    }
+
+    suspend fun markPendingUpdate(playlistId: Long, sectionType: String, summary: String) {
+        val dao = syncSectionStateDao ?: return
+        val normalized = SyncTelemetry.normalizeSyncSectionType(sectionType)
+        runCatching {
+            val existing = dao.getSectionOnce(playlistId, normalized)
+            val base = existing?.toSyncTelemetry()
+                ?: SyncTelemetry(playlistId = playlistId, sectionType = normalized)
+            dao.upsert(
+                base.copy(
+                    pendingUpdateAvailable = summary.isNotBlank(),
+                    pendingUpdateSummary = summary
+                ).toEntity(playlistId, normalized)
+            )
+        }
+    }
 
     private fun updateVodPipelineState(streamType: String, state: VodPipelineState) {
         when (streamType.trim().lowercase(Locale.US)) {
@@ -183,6 +260,8 @@ class IptvRepository(
     suspend fun deletePlaylist(id: Long) {
         vodGroupDao?.deleteGroupsByType(id, "movie")
         vodGroupDao?.deleteGroupsByType(id, "series")
+        vodGroupDao?.deleteGroupMembersByType(id, "movie")
+        vodGroupDao?.deleteGroupMembersByType(id, "series")
         streamDao.clearStreamsForPlaylist(id)
         categoryDao.clearCategoriesForPlaylist(id)
         epgDao.clearEpgForPlaylist(id)
@@ -250,25 +329,6 @@ class IptvRepository(
 
     // --- Materialized <5ms Movies & Series Catalog, Versions, Discovery Shelves & Stage 2 Indexer ---
 
-    private class GroupAccumulator(
-        var representativeStreamDbId: Long,
-        var representativeStreamId: Long,
-        var representativeRawName: String,
-        var representativeScore: Int,
-        var tmdbId: String,
-        var posterUrl: String,
-        var rating: String,
-        var ratingNumeric: Double,
-        var releaseYear: Int,
-        var maxAddedEpoch: Long,
-        var genres: String,
-        var primaryCategoryId: String,
-        var defaultVersionTag: String,
-        var containerExtension: String,
-        var versionCount: Int,
-        val categoryIds: LinkedHashSet<String>
-    )
-
     private fun VodCatalogGroupEntity.toGroupedVodStream(): GroupedVodStream {
         return GroupedVodStream(
             stream = StreamEntity(
@@ -318,13 +378,11 @@ class IptvRepository(
 
     /**
      * Stage 2 Asynchronous Background Indexer (100% Read-Only on `streams`):
-     * Streams lightweight [com.example.data.local.StreamIndexProjection] rows for [streamType]
-     * (`"movie"` or `"series"`) in bounded 10,000-row chunks on [Dispatchers.Default], uses
-     * Stage 1 pre-computed `canonicalGroupKey` / `versionTag` (or computes them in-memory on the
-     * fly for legacy rows without ever writing back to `streams`), selects the highest-preference
-     * representative copy per group, calculates Bayesian `popularityScore`, and atomically writes
-     * materialized rows into `vod_catalog_groups` while emitting determinate progress into that
-     * section's independent [VodPipelineState].
+     * Streams lightweight [StreamIndexProjection] rows for [streamType] (`"movie"` or `"series"`)
+     * in bounded 10,000-row chunks on [Dispatchers.Default], runs O(N) lossless multi-bridge
+     * Union-Find grouping via [CatalogDiffEngine.buildLosslessGroups], and atomically writes
+     * materialized rows into BOTH `vod_catalog_groups` and `vod_group_members` while emitting
+     * determinate progress into that section's independent [VodPipelineState].
      */
     suspend fun rebuildVodCatalogGroups(
         playlistId: Long,
@@ -348,6 +406,7 @@ class IptvRepository(
                 if (totalCount <= 0) {
                     runInDbTransaction {
                         dao.deleteGroupsByType(playlistId, normalizedType)
+                        dao.deleteGroupMembersByType(playlistId, normalizedType)
                     }
                     updateVodPipelineState(
                         normalizedType,
@@ -377,7 +436,7 @@ class IptvRepository(
                 val categoryNameMap = categoryDao.getCategoriesOnce(playlistId, catType)
                     .associate { it.categoryId to it.categoryName }
 
-                val groupsMap = HashMap<String, GroupAccumulator>(4096)
+                val allProjections = ArrayList<StreamIndexProjection>(totalCount)
                 val chunkSize = 10_000
                 var offset = 0
 
@@ -390,105 +449,13 @@ class IptvRepository(
                     )
                     if (chunk.isEmpty()) break
 
-                    for (s in chunk) {
-                        val effectiveYear = if (s.releaseYear > 0) {
-                            s.releaseYear
-                        } else {
-                            VodGroupingNormalizer.extractReleaseYear(s.name, "")
-                        }
-                        val groupKey = if (s.canonicalGroupKey.isNotBlank()) {
-                            s.canonicalGroupKey
-                        } else {
-                            VodGroupingNormalizer.computeCanonicalGroupKey(
-                                streamType = normalizedType,
-                                rawName = s.name,
-                                tmdbId = s.tmdbId,
-                                releaseYear = effectiveYear,
-                                streamId = s.streamId,
-                                posterUrl = s.streamIcon
-                            )
-                        }
-                        val versionTag = if (s.versionTag.isNotBlank()) {
-                            s.versionTag
-                        } else {
-                            VodGroupingNormalizer.extractVersionTagWithCategory(
-                                rawName = s.name,
-                                categoryName = categoryNameMap[s.categoryId].orEmpty()
-                            )
-                        }
-
-                        val hasPoster = s.streamIcon.isNotBlank()
-                        val prefScore = VodGroupingNormalizer.scoreVersionPreference(
-                            versionTag = versionTag,
-                            hasPoster = hasPoster,
-                            containerExt = s.containerExtension,
-                            ratingNumeric = s.ratingNumeric
-                        )
-
-                        val existing = groupsMap[groupKey]
-                        if (existing == null) {
-                            val catSet = LinkedHashSet<String>(4)
-                            if (s.categoryId.isNotBlank()) catSet.add(s.categoryId)
-                            groupsMap[groupKey] = GroupAccumulator(
-                                representativeStreamDbId = s.id,
-                                representativeStreamId = s.streamId,
-                                representativeRawName = s.name,
-                                representativeScore = prefScore,
-                                tmdbId = s.tmdbId,
-                                posterUrl = s.streamIcon,
-                                rating = s.rating,
-                                ratingNumeric = s.ratingNumeric,
-                                releaseYear = effectiveYear,
-                                maxAddedEpoch = s.addedEpoch,
-                                genres = s.genres,
-                                primaryCategoryId = s.categoryId,
-                                defaultVersionTag = versionTag,
-                                containerExtension = s.containerExtension,
-                                versionCount = 1,
-                                categoryIds = catSet
-                            )
-                        } else {
-                            existing.versionCount += 1
-                            if (existing.tmdbId.isBlank() && s.tmdbId.isNotBlank()) {
-                                existing.tmdbId = s.tmdbId
-                            }
-                            if (s.categoryId.isNotBlank()) {
-                                existing.categoryIds.add(s.categoryId)
-                            }
-                            if (s.addedEpoch > existing.maxAddedEpoch) {
-                                existing.maxAddedEpoch = s.addedEpoch
-                            }
-                            if (s.ratingNumeric > existing.ratingNumeric) {
-                                existing.ratingNumeric = s.ratingNumeric
-                                if (s.rating.isNotBlank()) existing.rating = s.rating
-                            }
-                            if (existing.releaseYear == 0 && effectiveYear > 0) {
-                                existing.releaseYear = effectiveYear
-                            }
-                            if (existing.genres.isBlank() && s.genres.isNotBlank()) {
-                                existing.genres = s.genres
-                            }
-                            if (existing.posterUrl.isBlank() && hasPoster) {
-                                existing.posterUrl = s.streamIcon
-                            }
-                            if (prefScore > existing.representativeScore) {
-                                existing.representativeScore = prefScore
-                                existing.representativeStreamDbId = s.id
-                                existing.representativeStreamId = s.streamId
-                                existing.representativeRawName = s.name
-                                if (hasPoster) existing.posterUrl = s.streamIcon
-                                if (s.categoryId.isNotBlank()) existing.primaryCategoryId = s.categoryId
-                                existing.defaultVersionTag = versionTag
-                                existing.containerExtension = s.containerExtension
-                            }
-                        }
-                    }
-
+                    allProjections.addAll(chunk)
                     processed += chunk.size
                     offset += chunk.size
-                    val progressPct = ((processed.toLong() * 85L) / totalCount.coerceAtLeast(1).toLong())
+
+                    val progressPct = ((processed.toLong() * 65L) / totalCount.coerceAtLeast(1).toLong())
                         .toInt()
-                        .coerceIn(5, 85)
+                        .coerceIn(5, 65)
                     updateVodPipelineState(
                         normalizedType,
                         VodPipelineState(
@@ -499,6 +466,7 @@ class IptvRepository(
                             statusText = "Organizing $sectionLabel ($processed / $totalCount)…"
                         )
                     )
+                    PlaybackResourceGovernor.throttleIfPlaybackActive()
                     if (chunk.size < chunkSize) break
                 }
 
@@ -506,79 +474,58 @@ class IptvRepository(
                 val ctx = appContext ?: cachedAppContext
                 if (ctx != null) {
                     runCatching {
-                        GlobalPopularityIndexManager.ensureLoaded(ctx, sharedOkHttpClient)
+                        GlobalPopularityIndexManager.ensureLoaded(ctx, syncOkHttpClient)
                     }
-                }
-
-                val materialized = ArrayList<VodCatalogGroupEntity>(groupsMap.size)
-                for ((groupKey, acc) in groupsMap) {
-                    val cleanTitle = VodGroupingNormalizer.extractCleanDisplayTitle(acc.representativeRawName)
-                    val upperTag = acc.defaultVersionTag.uppercase(Locale.US)
-                    val isPreferredLang = upperTag.contains("ENGLISH") ||
-                        upperTag.contains("ARABIC") ||
-                        upperTag.contains("FRENCH") ||
-                        upperTag.contains("VOSTFR") ||
-                        upperTag.contains("MULTI")
-                    val globalScore = GlobalPopularityIndexManager.lookupGlobalScore(
-                        streamType = normalizedType,
-                        tmdbId = acc.tmdbId,
-                        cleanTitle = cleanTitle,
-                        releaseYear = acc.releaseYear
-                    )
-                    val popularityScore = VodGroupingNormalizer.computePopularityQualityScore(
-                        ratingNumeric = acc.ratingNumeric,
-                        versionCount = acc.versionCount,
-                        releaseYear = acc.releaseYear,
-                        hasPoster = acc.posterUrl.isNotBlank(),
-                        isPreferredLang = isPreferredLang,
-                        globalTmdbScore = globalScore
-                    )
-                    val categoryIdsCsv = if (acc.categoryIds.isEmpty()) {
-                        ""
-                    } else {
-                        ",${acc.categoryIds.joinToString(",")},"
-                    }
-
-                    materialized.add(
-                        VodCatalogGroupEntity(
-                            playlistId = playlistId,
-                            streamType = normalizedType,
-                            groupKey = groupKey,
-                            representativeStreamDbId = acc.representativeStreamDbId,
-                            representativeStreamId = acc.representativeStreamId,
-                            cleanTitle = cleanTitle,
-                            posterUrl = acc.posterUrl,
-                            rating = acc.rating,
-                            ratingNumeric = acc.ratingNumeric,
-                            releaseYear = acc.releaseYear,
-                            addedEpoch = acc.maxAddedEpoch,
-                            genres = acc.genres,
-                            primaryCategoryId = acc.primaryCategoryId,
-                            categoryIdsCsv = categoryIdsCsv,
-                            versionCount = acc.versionCount,
-                            defaultVersionTag = acc.defaultVersionTag,
-                            containerExtension = acc.containerExtension.ifBlank { "mp4" },
-                            popularityScore = popularityScore
-                        )
-                    )
                 }
 
                 updateVodPipelineState(
                     normalizedType,
                     VodPipelineState(
                         phase = VodPipelinePhase.ORGANIZING,
-                        progressPercent = 92,
+                        progressPercent = 78,
                         processedCount = processed,
                         totalCount = totalCount,
-                        statusText = "Finalizing ${materialized.size} $sectionLabel titles…"
+                        statusText = "Grouping $sectionLabel editions…"
                     )
                 )
 
+                val (materializedGroups, materializedMembers) = CatalogDiffEngine.buildLosslessGroups(
+                    playlistId = playlistId,
+                    streamType = normalizedType,
+                    streams = allProjections,
+                    categoryNameMap = categoryNameMap
+                )
+
+                updateVodPipelineState(
+                    normalizedType,
+                    VodPipelineState(
+                        phase = VodPipelinePhase.ORGANIZING,
+                        progressPercent = 90,
+                        processedCount = processed,
+                        totalCount = totalCount,
+                        statusText = "Saving ${materializedGroups.size} $sectionLabel titles…"
+                    )
+                )
+
+                val groupBatchSize = PlaybackResourceGovernor.recommendedDbBatchSize()
+                val memberBatchSize = (groupBatchSize * 2).coerceAtMost(2_000)
                 runInDbTransaction {
                     dao.deleteGroupsByType(playlistId, normalizedType)
-                    for (batch in materialized.chunked(2_000)) {
+                    dao.deleteGroupMembersByType(playlistId, normalizedType)
+                }
+                PlaybackResourceGovernor.throttleIfPlaybackActive()
+
+                for (batch in materializedGroups.chunked(groupBatchSize)) {
+                    runInDbTransaction {
                         dao.insertGroupsBatch(batch)
                     }
+                    PlaybackResourceGovernor.throttleIfPlaybackActive()
+                }
+                for (batch in materializedMembers.chunked(memberBatchSize)) {
+                    runInDbTransaction {
+                        dao.insertGroupMembersBatch(batch)
+                    }
+                    PlaybackResourceGovernor.throttleIfPlaybackActive()
                 }
 
                 updateVodPipelineState(
@@ -588,7 +535,7 @@ class IptvRepository(
                         progressPercent = 100,
                         processedCount = totalCount,
                         totalCount = totalCount,
-                        statusText = "${materialized.size} $sectionLabel ready"
+                        statusText = "${materializedGroups.size} $sectionLabel ready"
                     )
                 )
             } catch (e: Exception) {
@@ -609,6 +556,87 @@ class IptvRepository(
                 lock.set(false)
             }
         }
+    }
+
+    /**
+     * Partial incremental Stage 2 recompute for small Smart Diff deltas (`1..2_000` changed rows).
+     * Re-groups only affected canonical keys and atomically updates `vod_catalog_groups` and
+     * `vod_group_members` without scanning the entire catalog.
+     */
+    private suspend fun recomputeAffectedVodGroups(
+        playlistId: Long,
+        streamType: String,
+        dirtyGroupKeys: Set<String>,
+        categoryNameMap: Map<String, String>
+    ): Pair<Int, Int> {
+        val dao = vodGroupDao ?: return 0 to 0
+        if (dirtyGroupKeys.isEmpty()) return 0 to 0
+
+        val normalizedType = streamType.trim().lowercase(Locale.US)
+        val projectionsById = LinkedHashMap<Long, StreamIndexProjection>()
+        val keysToReplace = LinkedHashSet<String>(dirtyGroupKeys)
+
+        for (keyChunk in dirtyGroupKeys.chunked(500)) {
+            val rows = streamDao.getStreamsByCanonicalKeys(playlistId, normalizedType, keyChunk)
+            for (row in rows) {
+                projectionsById[row.id] = row
+                if (row.canonicalGroupKey.isNotBlank()) {
+                    keysToReplace.add(row.canonicalGroupKey)
+                }
+            }
+        }
+
+        // Also include any surviving member streams previously attached to these group keys
+        for (groupKey in dirtyGroupKeys) {
+            val existingMembers = dao.getMemberStreamsForGroup(playlistId, normalizedType, groupKey)
+            for (member in existingMembers) {
+                if (!projectionsById.containsKey(member.id)) {
+                    projectionsById[member.id] = StreamIndexProjection(
+                        id = member.id,
+                        streamId = member.streamId,
+                        categoryId = member.categoryId,
+                        name = member.name,
+                        streamIcon = member.streamIcon,
+                        rating = member.rating,
+                        ratingNumeric = member.ratingNumeric,
+                        containerExtension = member.containerExtension,
+                        tmdbId = member.tmdbId,
+                        canonicalGroupKey = member.canonicalGroupKey,
+                        versionTag = member.versionTag,
+                        addedEpoch = member.addedEpoch,
+                        releaseYear = member.releaseYear,
+                        genres = member.genres
+                    )
+                }
+                if (member.canonicalGroupKey.isNotBlank()) {
+                    keysToReplace.add(member.canonicalGroupKey)
+                }
+            }
+        }
+
+        val (newGroups, newMembers) = CatalogDiffEngine.buildLosslessGroups(
+            playlistId = playlistId,
+            streamType = normalizedType,
+            streams = projectionsById.values.toList(),
+            categoryNameMap = categoryNameMap
+        )
+        for (g in newGroups) {
+            keysToReplace.add(g.groupKey)
+        }
+
+        runInDbTransaction {
+            for (keyChunk in keysToReplace.chunked(500)) {
+                dao.deleteGroupsByKeys(playlistId, normalizedType, keyChunk)
+                dao.deleteGroupMembersByKeys(playlistId, normalizedType, keyChunk)
+            }
+            for (batch in newGroups.chunked(2_000)) {
+                dao.insertGroupsBatch(batch)
+            }
+            for (batch in newMembers.chunked(4_000)) {
+                dao.insertGroupMembersBatch(batch)
+            }
+        }
+        return newGroups.size to newMembers.size
     }
 
     /**
@@ -754,7 +782,12 @@ class IptvRepository(
             return@withContext listOf(enrichVersionTag(dbRep ?: fallbackStream))
         }
 
-        var versions = streamDao.getVersionsByGroupKey(playlistId, streamType, canonicalGroupKey)
+        // Lossless Phase 5B lookup: resolve exact Union-Find members via vod_group_members FIRST
+        var versions = vodGroupDao?.getMemberStreamsForGroup(playlistId, streamType, canonicalGroupKey).orEmpty()
+
+        if (versions.isEmpty()) {
+            versions = streamDao.getVersionsByGroupKey(playlistId, streamType, canonicalGroupKey)
+        }
 
         // Legacy fallback for un-rewritten databases where streams.canonicalGroupKey may be blank:
         // match by tmdbId, clean title, or representativeStreamDbId from vod_catalog_groups.
@@ -1767,13 +1800,26 @@ class IptvRepository(
     }
 
     /**
-     * Granular per-section catalog refresh (`"LIVE"`, `"MOVIE"`, or `"SERIES"`).
-     * Movies and Series acquire completely independent locks (`moviesSyncLock` / `seriesSyncLock`)
-     * and update only their own [VodPipelineState] (`moviesPipelineState` / `seriesPipelineState`)
-     * without blocking each other or mutating `_syncProgress`. Live TV continues using
-     * `isSyncInProgress` and `_syncProgress` for compatibility.
+     * Granular per-section Smart Incremental Diff synchronization (`"LIVE"`, `"MOVIE"`, or `"SERIES"`).
+     *
+     * Key architectural guarantees:
+     * - Independent locks (`liveSyncLock`, `moviesSyncLock`, `seriesSyncLock`) allow LIVE, MOVIES,
+     *   and SERIES to sync without blocking one another.
+     * - Never calls `deleteStreamsByType`: preserves `isFavorite`, `isLocked`, `watchHistoryTimestamp`,
+     *   and `lastPositionMs` in-place via `updateStreamMetadataByProviderId`, skipping unchanged rows
+     *   with 0 SQLite writes via 64-bit FNV-1a `metadataHash`.
+     * - Conditional HTTP (`If-None-Match` / `If-Modified-Since` / HTTP 304) short-circuits unchanged
+     *   catalogs with zero writes unless [forceFullReconcile] or [categoryId] is set.
+     * - Safe Removal Validation protects against truncated/partial provider responses.
+     * - Truthful 6-stage monotonic telemetry persisted to `sync_section_state` (`100%` emitted ONLY
+     *   after the final database commit in [SyncStage.FINALIZING]).
      */
-    suspend fun syncPlaylistSection(playlist: PlaylistEntity, sectionType: String): Result<Unit> = withContext(Dispatchers.IO) {
+    suspend fun syncPlaylistSection(
+        playlist: PlaylistEntity,
+        sectionType: String,
+        categoryId: String? = null,
+        forceFullReconcile: Boolean = false
+    ): Result<Unit> = withContext(PlaybackResourceGovernor.syncDispatcher) {
         val normalizedSection = sectionType.trim().uppercase(Locale.US)
         val (catAction, catType, streamAction, streamType, sectionLabel) = when (normalizedSection) {
             "LIVE", "LIVE_TV" -> SectionSyncSpec("get_live_categories", "LIVE", "get_live_streams", "live", "Live TV")
@@ -1786,36 +1832,133 @@ class IptvRepository(
         val sectionLock = when (streamType) {
             "movie" -> moviesSyncLock
             "series" -> seriesSyncLock
-            else -> isSyncInProgress
+            else -> liveSyncLock
         }
 
         if (!sectionLock.compareAndSet(false, true)) {
             return@withContext Result.failure(IllegalStateException("A $sectionLabel synchronization job is already running"))
         }
 
-        val expectedTotal = when (streamType) {
-            "movie" -> playlist.vodCount
-            "series" -> playlist.seriesCount
-            else -> playlist.channelCount
-        }
-        if (isVodSection) {
-            updateVodPipelineState(
-                streamType,
-                VodPipelineState(
-                    phase = VodPipelinePhase.DOWNLOADING,
-                    progressPercent = 5,
-                    processedCount = 0,
-                    totalCount = expectedTotal,
-                    statusText = "Connecting to sync $sectionLabel…"
+        val cleanCategoryId = categoryId?.trim()?.takeIf { it.isNotEmpty() }
+        val isCategoryScoped = cleanCategoryId != null
+        val existingSyncState = syncSectionStateDao?.getSectionOnce(playlist.id, catType)
+        val priorLastSuccessMs = existingSyncState?.lastSuccessfulSyncMs ?: 0L
+        val priorEtag = existingSyncState?.etag.orEmpty()
+        val priorLastModified = existingSyncState?.lastModified.orEmpty()
+        val sendEtag = if (!forceFullReconcile && !isCategoryScoped && priorEtag.isNotBlank()) priorEtag else null
+        val sendLastModified = if (!forceFullReconcile && !isCategoryScoped && priorLastModified.isNotBlank()) priorLastModified else null
+
+        val sessionId = UUID.randomUUID().toString()
+        val attemptStartMs = System.currentTimeMillis()
+        var lastPersistedAtMs = 0L
+        var lastPersistedStage = SyncStage.IDLE
+        var lastPersistedStatus = SyncStatus.IDLE
+
+        var telemetry = SyncTelemetry(
+            playlistId = playlist.id,
+            sectionType = catType,
+            status = SyncStatus.RUNNING,
+            stage = SyncStage.CONNECTING_AND_CHECKING,
+            sessionId = sessionId,
+            isIndeterminate = false,
+            progressPercent = 1,
+            lastSuccessfulSyncMs = priorLastSuccessMs,
+            lastAttemptedSyncMs = attemptStartMs,
+            etag = priorEtag,
+            lastModified = priorLastModified,
+            lastContentLength = existingSyncState?.lastContentLength ?: -1L
+        )
+
+        fun mirrorLegacyUiState(t: SyncTelemetry, statusText: String) {
+            if (isVodSection) {
+                val mappedPhase = when (t.status) {
+                    SyncStatus.COMPLETED -> VodPipelinePhase.READY
+                    SyncStatus.FAILED -> VodPipelinePhase.ERROR
+                    SyncStatus.RUNNING, SyncStatus.PENDING -> when (t.stage) {
+                        SyncStage.GROUPING_AND_ORGANIZING,
+                        SyncStage.PERSISTING_DATABASE,
+                        SyncStage.FINALIZING -> VodPipelinePhase.ORGANIZING
+                        else -> VodPipelinePhase.DOWNLOADING
+                    }
+                    else -> VodPipelinePhase.IDLE
+                }
+                val displayedPct = when {
+                    t.status == SyncStatus.COMPLETED -> 100
+                    t.status == SyncStatus.FAILED -> 0
+                    t.isIndeterminate -> 0
+                    else -> t.progressPercent.coerceIn(0, 99)
+                }
+                updateVodPipelineState(
+                    streamType,
+                    VodPipelineState(
+                        phase = mappedPhase,
+                        progressPercent = displayedPct,
+                        processedCount = t.itemsProcessed,
+                        totalCount = t.totalDiscovered,
+                        statusText = statusText,
+                        error = t.errorMessage.takeIf { it.isNotBlank() }
+                    )
                 )
+            } else {
+                _syncProgress.value = SyncProgress(
+                    isSyncing = t.status == SyncStatus.RUNNING || t.status == SyncStatus.PENDING,
+                    phase = statusText,
+                    itemsProcessed = t.itemsProcessed,
+                    error = t.errorMessage.takeIf { it.isNotBlank() }
+                )
+            }
+        }
+
+        suspend fun emitTelemetry(
+            updated: SyncTelemetry,
+            statusText: String,
+            forceDbWrite: Boolean = false
+        ) {
+            val isTerminal = updated.status == SyncStatus.COMPLETED ||
+                updated.status == SyncStatus.FAILED ||
+                updated.status == SyncStatus.INTERRUPTED
+            val monotonicPct = when (updated.status) {
+                SyncStatus.COMPLETED -> 100
+                SyncStatus.FAILED -> updated.progressPercent.coerceIn(0, 99)
+                else -> maxOf(telemetry.progressPercent, updated.progressPercent).coerceIn(0, 99)
+            }
+            val normalizedTelemetry = updated.copy(
+                progressPercent = monotonicPct,
+                itemsRemaining = if (updated.totalDiscovered > 0) {
+                    (updated.totalDiscovered - updated.itemsProcessed).coerceAtLeast(0)
+                } else {
+                    0
+                }
             )
-        } else {
-            _syncProgress.value = SyncProgress(isSyncing = true, phase = "Refreshing $sectionLabel…")
+            telemetry = normalizedTelemetry
+            mirrorLegacyUiState(normalizedTelemetry, statusText)
+
+            val now = System.currentTimeMillis()
+            val stageChanged = normalizedTelemetry.stage != lastPersistedStage ||
+                normalizedTelemetry.status != lastPersistedStatus
+            if (forceDbWrite || isTerminal || stageChanged || (now - lastPersistedAtMs >= 400L)) {
+                persistSyncTelemetry(normalizedTelemetry)
+                lastPersistedAtMs = now
+                lastPersistedStage = normalizedTelemetry.stage
+                lastPersistedStatus = normalizedTelemetry.status
+            }
         }
 
         val plainPassword = SecurityManager.decryptCredential(playlist.password)
 
         try {
+            // Stage 1: CONNECTING_AND_CHECKING (0..5%)
+            emitTelemetry(
+                updated = telemetry.copy(
+                    status = SyncStatus.RUNNING,
+                    stage = SyncStage.CONNECTING_AND_CHECKING,
+                    progressPercent = 1,
+                    isIndeterminate = false
+                ),
+                statusText = "Connecting to sync $sectionLabel…",
+                forceDbWrite = true
+            )
+
             val authResult = xtreamClient.authenticate(
                 playlist.serverUrl,
                 playlist.username,
@@ -1824,65 +1967,86 @@ class IptvRepository(
             if (authResult.isFailure) {
                 val rawErr = authResult.exceptionOrNull()?.message ?: "Authentication failed"
                 val safeErr = SecurityManager.redactSensitiveText(rawErr, playlist.username, plainPassword)
-                if (isVodSection) {
-                    updateVodPipelineState(
-                        streamType,
-                        VodPipelineState(
-                            phase = VodPipelinePhase.ERROR,
-                            progressPercent = 0,
-                            statusText = "$sectionLabel sync failed",
-                            error = safeErr
-                        )
-                    )
-                } else {
-                    _syncProgress.value = SyncProgress(isSyncing = false, error = safeErr)
-                }
+                emitTelemetry(
+                    updated = telemetry.copy(
+                        status = SyncStatus.FAILED,
+                        isIndeterminate = false,
+                        errorMessage = safeErr
+                    ),
+                    statusText = "$sectionLabel sync failed",
+                    forceDbWrite = true
+                )
                 return@withContext Result.failure(Exception(safeErr))
             }
 
             val authData = authResult.getOrNull()
             val resolvedServerUrl = authData?.resolvedServerUrl?.takeIf { it.isNotBlank() } ?: playlist.serverUrl.trim()
 
-            // 1. Fetch & replace ONLY this section's categories while tracking explicit adult category IDs
-            if (isVodSection) {
-                updateVodPipelineState(
-                    streamType,
-                    VodPipelineState(
-                        phase = VodPipelinePhase.DOWNLOADING,
-                        progressPercent = 10,
-                        processedCount = 0,
-                        totalCount = expectedTotal,
-                        statusText = "Fetching $sectionLabel categories…"
-                    )
-                )
-            }
+            emitTelemetry(
+                updated = telemetry.copy(
+                    stage = SyncStage.CONNECTING_AND_CHECKING,
+                    progressPercent = 3
+                ),
+                statusText = "Fetching $sectionLabel categories…",
+                forceDbWrite = false
+            )
+
             val (sectionCatsRaw, adultCatIds) = xtreamClient.fetchCategoriesWithAdultIds(
                 resolvedServerUrl, playlist.username, plainPassword,
                 action = catAction, categoryType = catType, playlistId = playlist.id
             )
             val sectionCats = sectionCatsRaw.filterNot { SecurityManager.isAdultContent(it.categoryName) }
-            val sectionCategoryNameMap = if (isVodSection) {
-                sectionCats.associate { it.categoryId to it.categoryName }
-            } else {
-                emptyMap()
-            }
-
-            if (sectionCats.isNotEmpty()) {
+            if (!isCategoryScoped && sectionCats.isNotEmpty()) {
                 runInDbTransaction {
                     categoryDao.clearCategoriesByType(playlist.id, catType)
                     categoryDao.insertCategories(sectionCats)
                 }
                 restoreLockedCategories(playlist.id)
             }
+            val sectionCategoryNameMap = if (isVodSection) {
+                val sourceCats = if (sectionCats.isNotEmpty()) sectionCats else categoryDao.getCategoriesOnce(playlist.id, catType)
+                sourceCats.associate { it.categoryId to it.categoryName }
+            } else {
+                emptyMap()
+            }
 
-            // 2. Snapshot favorites & positions for this section's streamType
-            val favIds = streamDao.getFavoriteProviderIds(playlist.id, streamType)
-            val savedPositions = streamDao.getSavedStreamPositions(playlist.id, streamType)
+            val hashRows = if (isCategoryScoped) {
+                streamDao.getStreamHashesByCategory(playlist.id, streamType, cleanCategoryId!!)
+            } else {
+                streamDao.getStreamHashesByType(playlist.id, streamType)
+            }
+            val existingHashes = HashMap<Long, Long>(hashRows.size * 2 + 16)
+            for (row in hashRows) {
+                existingHashes[row.streamId] = row.metadataHash
+            }
+            val isInitialSync = existingHashes.isEmpty()
 
-            // 3. Stage 1: Stream & replace ONLY this section's catalog entries in 2,000-row transactional batches
-            var firstBatchCleared = false
-            var insertedCount = 0
-            xtreamClient.streamCatalogEntries(
+            emitTelemetry(
+                updated = telemetry.copy(
+                    stage = SyncStage.CONNECTING_AND_CHECKING,
+                    progressPercent = 5
+                ),
+                statusText = "Checking $sectionLabel catalog updates…",
+                forceDbWrite = true
+            )
+
+            // Stage 2: DOWNLOADING_AND_DIFFING (5..55%)
+            var responseContentLength = -1L
+            var responseEtag: String? = null
+            var responseLastModified: String? = null
+            var httpNotModified = false
+            val latestBytesRead = AtomicLong(0L)
+
+            var itemsDownloaded = 0
+            var itemsAdded = 0
+            var itemsUpdated = 0
+            var itemsUnchanged = 0
+            var itemsSkipped = 0
+            var itemsPersisted = 0
+            val seenStreamIds = HashSet<Long>(existingHashes.size + 256)
+            val dirtyGroupKeys = LinkedHashSet<String>()
+
+            val streamResult = xtreamClient.streamCatalogEntries(
                 serverUrl = resolvedServerUrl,
                 username = playlist.username,
                 password = plainPassword,
@@ -1890,117 +2054,555 @@ class IptvRepository(
                 streamType = streamType,
                 playlistId = playlist.id,
                 batchSize = 2000,
-                categoryNameMap = sectionCategoryNameMap
-            ) { batch, _ ->
-                val safeBatch = batch.filter { item ->
-                    !SecurityManager.isAdultContent(item.name) &&
-                        (item.categoryId.isBlank() || item.categoryId !in adultCatIds)
-                }
-                if (safeBatch.isNotEmpty()) {
-                    runInDbTransaction {
-                        if (!firstBatchCleared) {
-                            streamDao.deleteStreamsByType(playlist.id, streamType)
-                            firstBatchCleared = true
-                        }
-                        streamDao.insertStreamsBatch(safeBatch)
-                    }
-                    insertedCount += safeBatch.size
-                }
-                if (isVodSection) {
-                    val downloadPct = computeDownloadProgressPercent(insertedCount, expectedTotal)
-                    updateVodPipelineState(
-                        streamType,
-                        VodPipelineState(
-                            phase = VodPipelinePhase.DOWNLOADING,
-                            progressPercent = downloadPct,
-                            processedCount = insertedCount,
-                            totalCount = expectedTotal.coerceAtLeast(insertedCount),
-                            statusText = "Downloading $sectionLabel ($insertedCount items)…"
+                categoryNameMap = sectionCategoryNameMap,
+                categoryId = cleanCategoryId,
+                etag = sendEtag,
+                lastModified = sendLastModified,
+                onHttpMeta = { contentLength, respEtag, respLastMod, notModified ->
+                    responseContentLength = contentLength
+                    responseEtag = respEtag
+                    responseLastModified = respLastMod
+                    httpNotModified = notModified
+                    if (!notModified) {
+                        val isIndet = contentLength <= 0L
+                        val nextState = telemetry.copy(
+                            stage = SyncStage.DOWNLOADING_AND_DIFFING,
+                            progressPercent = maxOf(telemetry.progressPercent, SyncStage.DOWNLOADING_AND_DIFFING.startPct),
+                            isIndeterminate = isIndet,
+                            lastContentLength = contentLength
                         )
-                    )
+                        telemetry = nextState
+                        mirrorLegacyUiState(nextState, "Downloading $sectionLabel…")
+                    }
+                },
+                onBytesRead = { bytes ->
+                    latestBytesRead.set(bytes)
+                    if (responseContentLength > 0L) {
+                        val (pct, isIndet) = SyncTelemetry.computeDownloadStageProgress(
+                            bytesRead = bytes,
+                            contentLength = responseContentLength,
+                            previousPercent = telemetry.progressPercent
+                        )
+                        if (pct > telemetry.progressPercent) {
+                            val nextState = telemetry.copy(
+                                stage = SyncStage.DOWNLOADING_AND_DIFFING,
+                                progressPercent = pct,
+                                isIndeterminate = isIndet
+                            )
+                            telemetry = nextState
+                            mirrorLegacyUiState(
+                                nextState,
+                                "Downloading $sectionLabel ($itemsDownloaded items)…"
+                            )
+                        }
+                    }
+                }
+            ) { batch, _ ->
+                val toInsert = ArrayList<StreamEntity>(batch.size / 2 + 16)
+                val toUpdate = ArrayList<StreamEntity>(batch.size / 4 + 16)
+
+                for (item in batch) {
+                    val isAdultItem = SecurityManager.isAdultContent(item.name) ||
+                        (item.categoryId.isNotBlank() && item.categoryId in adultCatIds)
+                    if (isAdultItem) {
+                        itemsSkipped++
+                    } else {
+                        itemsDownloaded++
+                        seenStreamIds.add(item.streamId)
+                        val oldHash = existingHashes[item.streamId]
+                        if (oldHash == null) {
+                            toInsert.add(item)
+                            itemsAdded++
+                            if (isVodSection && item.canonicalGroupKey.isNotBlank()) {
+                                dirtyGroupKeys.add(item.canonicalGroupKey)
+                            }
+                        } else if (oldHash != item.metadataHash) {
+                            toUpdate.add(item)
+                            itemsUpdated++
+                            if (isVodSection && item.canonicalGroupKey.isNotBlank()) {
+                                dirtyGroupKeys.add(item.canonicalGroupKey)
+                            }
+                        } else {
+                            itemsUnchanged++
+                        }
+                    }
+                }
+
+                if (toInsert.isNotEmpty() || toUpdate.isNotEmpty()) {
+                    val dbBatchSize = PlaybackResourceGovernor.recommendedDbBatchSize()
+                    if (toInsert.isNotEmpty()) {
+                        for (insertChunk in toInsert.chunked(dbBatchSize)) {
+                            runInDbTransaction {
+                                streamDao.insertStreamsBatch(insertChunk)
+                            }
+                            PlaybackResourceGovernor.throttleIfPlaybackActive()
+                        }
+                    }
+                    if (toUpdate.isNotEmpty()) {
+                        for (updateChunk in toUpdate.chunked(dbBatchSize)) {
+                            runInDbTransaction {
+                                for (u in updateChunk) {
+                                    streamDao.updateStreamMetadataByProviderId(
+                                        playlistId = u.playlistId,
+                                        streamType = u.streamType,
+                                        streamId = u.streamId,
+                                        categoryId = u.categoryId,
+                                        name = u.name,
+                                        streamIcon = u.streamIcon,
+                                        epgChannelId = u.epgChannelId,
+                                        rating = u.rating,
+                                        tvArchive = u.tvArchive,
+                                        tvArchiveDuration = u.tvArchiveDuration,
+                                        containerExtension = u.containerExtension,
+                                        tmdbId = u.tmdbId,
+                                        canonicalGroupKey = u.canonicalGroupKey,
+                                        versionTag = u.versionTag,
+                                        addedEpoch = u.addedEpoch,
+                                        ratingNumeric = u.ratingNumeric,
+                                        releaseYear = u.releaseYear,
+                                        genres = u.genres,
+                                        metadataHash = u.metadataHash
+                                    )
+                                }
+                            }
+                            PlaybackResourceGovernor.throttleIfPlaybackActive()
+                        }
+                    }
+                    itemsPersisted += toInsert.size + toUpdate.size
                 } else {
-                    _syncProgress.value = SyncProgress(
-                        isSyncing = true,
-                        phase = "Refreshing $sectionLabel ($insertedCount items)…",
-                        itemsProcessed = insertedCount
+                    PlaybackResourceGovernor.throttleIfPlaybackActive()
+                }
+
+                val (dlPct, isIndet) = SyncTelemetry.computeDownloadStageProgress(
+                    bytesRead = latestBytesRead.get(),
+                    contentLength = responseContentLength,
+                    previousPercent = telemetry.progressPercent
+                )
+                emitTelemetry(
+                    updated = telemetry.copy(
+                        stage = SyncStage.DOWNLOADING_AND_DIFFING,
+                        progressPercent = dlPct,
+                        isIndeterminate = isIndet,
+                        itemsDownloaded = itemsDownloaded,
+                        itemsProcessed = itemsDownloaded,
+                        itemsUnchanged = itemsUnchanged,
+                        itemsAdded = itemsAdded,
+                        itemsUpdated = itemsUpdated,
+                        itemsSkipped = itemsSkipped,
+                        itemsPersisted = itemsPersisted,
+                        lastContentLength = responseContentLength
+                    ),
+                    statusText = "Downloading $sectionLabel ($itemsDownloaded items)…"
+                )
+            }
+
+            // Fast-path HTTP 304 Not Modified: zero stream writes
+            if (streamResult.notModified || httpNotModified) {
+                val existingGroupCount = if (isVodSection && vodGroupDao != null) {
+                    vodGroupDao.countGroupsByType(playlist.id, streamType)
+                } else {
+                    0
+                }
+                val needsInitialMaterialization = isVodSection && vodGroupDao != null &&
+                    existingGroupCount == 0 && existingHashes.isNotEmpty()
+                if (!needsInitialMaterialization) {
+                    val nowMs = System.currentTimeMillis()
+                    val finalCount = streamDao.countStreams(playlist.id, streamType)
+                    emitTelemetry(
+                        updated = telemetry.copy(
+                            status = SyncStatus.COMPLETED,
+                            stage = SyncStage.FINALIZING,
+                            isIndeterminate = false,
+                            progressPercent = 100,
+                            totalDiscovered = finalCount,
+                            itemsProcessed = finalCount,
+                            itemsUnchanged = finalCount,
+                            itemsGrouped = existingGroupCount,
+                            lastSuccessfulSyncMs = nowMs,
+                            etag = responseEtag ?: priorEtag,
+                            lastModified = responseLastModified ?: priorLastModified,
+                            pendingUpdateAvailable = false,
+                            pendingUpdateSummary = "",
+                            errorMessage = ""
+                        ),
+                        statusText = "$sectionLabel up to date",
+                        forceDbWrite = true
                     )
+                    return@withContext Result.success(Unit)
                 }
             }
 
-            if (favIds.isNotEmpty() || savedPositions.isNotEmpty()) {
-                runInDbTransaction {
-                    favIds.chunked(400).forEach { chunk ->
-                        streamDao.restoreFavorites(playlist.id, streamType, chunk)
+            // Stage 3: PARSING_AND_VALIDATING (55..65%)
+            itemsSkipped += streamResult.skippedAdult
+            val totalDiscovered = itemsDownloaded
+            emitTelemetry(
+                updated = telemetry.copy(
+                    stage = SyncStage.PARSING_AND_VALIDATING,
+                    isIndeterminate = false,
+                    progressPercent = maxOf(telemetry.progressPercent, SyncStage.PARSING_AND_VALIDATING.startPct),
+                    totalDiscovered = totalDiscovered,
+                    itemsDownloaded = itemsDownloaded,
+                    itemsProcessed = itemsDownloaded,
+                    itemsUnchanged = itemsUnchanged,
+                    itemsAdded = itemsAdded,
+                    itemsUpdated = itemsUpdated,
+                    itemsSkipped = itemsSkipped,
+                    itemsPersisted = itemsPersisted
+                ),
+                statusText = "Validating $sectionLabel changes…",
+                forceDbWrite = true
+            )
+
+            // Safe Removal Validation (only when full section completed cleanly)
+            var itemsRemoved = 0
+            var pendingWarning = ""
+            var forceFullVodRebuildFromRemovals = false
+
+            if (!isCategoryScoped && streamResult.completedCleanly && !streamResult.notModified) {
+                val missingIds = ArrayList<Long>()
+                for (existingId in existingHashes.keys) {
+                    if (existingId !in seenStreamIds) {
+                        missingIds.add(existingId)
                     }
-                    savedPositions.forEach { snap ->
-                        streamDao.restoreStreamPosition(playlist.id, streamType, snap.streamId, snap.lastPositionMs, snap.watchHistoryTimestamp)
+                }
+                if (missingIds.isNotEmpty()) {
+                    if (existingHashes.size > 100 && seenStreamIds.size < (existingHashes.size / 2)) {
+                        pendingWarning = "Skipped removing ${missingIds.size} $sectionLabel items: provider returned partial catalog (${seenStreamIds.size}/${existingHashes.size})"
+                        Log.w("IptvRepository", pendingWarning)
+                    } else {
+                        if (isVodSection) {
+                            if (missingIds.size <= 200) {
+                                for (missingId in missingIds) {
+                                    val oldStream = streamDao.getStreamByProviderId(playlist.id, missingId)
+                                    if (oldStream != null && oldStream.canonicalGroupKey.isNotBlank()) {
+                                        dirtyGroupKeys.add(oldStream.canonicalGroupKey)
+                                    }
+                                }
+                            } else {
+                                forceFullVodRebuildFromRemovals = true
+                            }
+                        }
+                        val deleteBatchSize = PlaybackResourceGovernor.recommendedDbBatchSize().coerceAtMost(500)
+                        for (chunk in missingIds.chunked(deleteBatchSize)) {
+                            runInDbTransaction {
+                                streamDao.deleteStreamsByProviderIds(playlist.id, streamType, chunk)
+                            }
+                            PlaybackResourceGovernor.throttleIfPlaybackActive()
+                        }
+                        itemsRemoved = missingIds.size
+                        itemsPersisted += itemsRemoved
                     }
                 }
             }
 
             purgeAllAdultContent()
 
-            val currentStored = playlistDao.getPlaylistById(playlist.id) ?: playlist.encryptedForStorage()
-            val updatedPlaylist = when (catType) {
-                "LIVE" -> currentStored.copy(channelCount = insertedCount, lastSyncTimestamp = System.currentTimeMillis())
-                "MOVIE" -> currentStored.copy(vodCount = insertedCount, lastSyncTimestamp = System.currentTimeMillis())
-                else -> currentStored.copy(seriesCount = insertedCount, lastSyncTimestamp = System.currentTimeMillis())
-            }
-            playlistDao.updatePlaylist(updatedPlaylist)
+            emitTelemetry(
+                updated = telemetry.copy(
+                    stage = SyncStage.PARSING_AND_VALIDATING,
+                    progressPercent = SyncStage.PARSING_AND_VALIDATING.endPct,
+                    itemsRemoved = itemsRemoved,
+                    itemsPersisted = itemsPersisted,
+                    pendingUpdateAvailable = pendingWarning.isNotEmpty(),
+                    pendingUpdateSummary = pendingWarning
+                ),
+                statusText = "Validated $sectionLabel catalog…",
+                forceDbWrite = true
+            )
 
-            if (isVodSection) {
-                if (insertedCount > 0 && vodGroupDao != null) {
-                    updateVodPipelineState(
-                        streamType,
-                        VodPipelineState(
-                            phase = VodPipelinePhase.ORGANIZING,
-                            progressPercent = 0,
-                            processedCount = 0,
-                            totalCount = insertedCount,
-                            statusText = "Organizing $sectionLabel…"
-                        )
-                    )
-                    // Stage 2: Decoupled read-only background materialization into vod_catalog_groups
-                    indexingScope.launch {
-                        rebuildVodCatalogGroups(playlist.id, streamType, emitSyncStatus = false)
-                    }
+            // Stage 4 & 5: GROUPING_AND_ORGANIZING (65..85%) & PERSISTING_DATABASE (85..95%)
+            var itemsGrouped = 0
+            if (isVodSection && vodGroupDao != null) {
+                val ctx = appContext ?: cachedAppContext
+                val cloudIndexUpdated = if (ctx != null) {
+                    runCatching {
+                        GlobalPopularityIndexManager.ensureLoaded(ctx, syncOkHttpClient)
+                    }.getOrDefault(false)
                 } else {
-                    updateVodPipelineState(
-                        streamType,
-                        VodPipelineState(
-                            phase = VodPipelinePhase.READY,
-                            progressPercent = 100,
-                            processedCount = insertedCount,
-                            totalCount = insertedCount,
-                            statusText = "$sectionLabel ready"
+                    false
+                }
+
+                val existingGroupCount = vodGroupDao.countGroupsByType(playlist.id, streamType)
+                val dirtyCount = itemsAdded + itemsUpdated + itemsRemoved
+
+                val canSkipStage2 = !isInitialSync &&
+                    !forceFullReconcile &&
+                    !cloudIndexUpdated &&
+                    !forceFullVodRebuildFromRemovals &&
+                    dirtyCount == 0 &&
+                    existingGroupCount > 0
+
+                val canPartialRecompute = !isInitialSync &&
+                    !forceFullReconcile &&
+                    !cloudIndexUpdated &&
+                    !forceFullVodRebuildFromRemovals &&
+                    dirtyCount in 1..2_000 &&
+                    existingGroupCount > 0 &&
+                    dirtyGroupKeys.isNotEmpty()
+
+                if (canSkipStage2) {
+                    itemsGrouped = existingGroupCount
+                    emitTelemetry(
+                        updated = telemetry.copy(
+                            stage = SyncStage.GROUPING_AND_ORGANIZING,
+                            progressPercent = SyncStage.GROUPING_AND_ORGANIZING.endPct,
+                            itemsGrouped = itemsGrouped
+                        ),
+                        statusText = "$sectionLabel catalog unchanged",
+                        forceDbWrite = false
+                    )
+                    emitTelemetry(
+                        updated = telemetry.copy(
+                            stage = SyncStage.PERSISTING_DATABASE,
+                            progressPercent = SyncStage.PERSISTING_DATABASE.endPct,
+                            itemsGrouped = itemsGrouped
+                        ),
+                        statusText = "Saving $sectionLabel metadata…",
+                        forceDbWrite = false
+                    )
+                } else if (canPartialRecompute) {
+                    emitTelemetry(
+                        updated = telemetry.copy(
+                            stage = SyncStage.GROUPING_AND_ORGANIZING,
+                            progressPercent = 72
+                        ),
+                        statusText = "Updating ${dirtyGroupKeys.size} changed $sectionLabel groups…",
+                        forceDbWrite = true
+                    )
+
+                    val (updatedGroups, _) = withContext(Dispatchers.Default) {
+                        recomputeAffectedVodGroups(
+                            playlistId = playlist.id,
+                            streamType = streamType,
+                            dirtyGroupKeys = dirtyGroupKeys,
+                            categoryNameMap = sectionCategoryNameMap
                         )
+                    }
+                    itemsGrouped = vodGroupDao.countGroupsByType(playlist.id, streamType)
+                    itemsPersisted += updatedGroups
+
+                    emitTelemetry(
+                        updated = telemetry.copy(
+                            stage = SyncStage.PERSISTING_DATABASE,
+                            progressPercent = SyncStage.PERSISTING_DATABASE.endPct,
+                            itemsGrouped = itemsGrouped,
+                            itemsPersisted = itemsPersisted
+                        ),
+                        statusText = "Saved $updatedGroups updated $sectionLabel titles…",
+                        forceDbWrite = true
+                    )
+                } else {
+                    // Full lossless Union-Find grouping (read-only on streams)
+                    val totalStreamRows = streamDao.countStreams(playlist.id, streamType)
+                    emitTelemetry(
+                        updated = telemetry.copy(
+                            stage = SyncStage.GROUPING_AND_ORGANIZING,
+                            progressPercent = 66,
+                            totalDiscovered = maxOf(totalDiscovered, totalStreamRows)
+                        ),
+                        statusText = "Organizing $sectionLabel (0 / $totalStreamRows)…",
+                        forceDbWrite = true
+                    )
+
+                    if (totalStreamRows <= 0) {
+                        runInDbTransaction {
+                            vodGroupDao.deleteGroupsByType(playlist.id, streamType)
+                            vodGroupDao.deleteGroupMembersByType(playlist.id, streamType)
+                        }
+                        itemsGrouped = 0
+                    } else {
+                        val allProjections = ArrayList<StreamIndexProjection>(totalStreamRows)
+                        val chunkSize = 10_000
+                        var offset = 0
+                        while (true) {
+                            val chunk = streamDao.getStreamIndexProjectionsChunk(
+                                playlistId = playlist.id,
+                                streamType = streamType,
+                                limit = chunkSize,
+                                offset = offset
+                            )
+                            if (chunk.isEmpty()) break
+                            allProjections.addAll(chunk)
+                            offset += chunk.size
+
+                            val readPct = SyncTelemetry.computeStageProgress(
+                                stage = SyncStage.GROUPING_AND_ORGANIZING,
+                                processed = allProjections.size,
+                                total = maxOf(totalStreamRows, allProjections.size) * 4 / 3,
+                                previousPercent = telemetry.progressPercent
+                            )
+                            emitTelemetry(
+                                updated = telemetry.copy(
+                                    stage = SyncStage.GROUPING_AND_ORGANIZING,
+                                    progressPercent = readPct
+                                ),
+                                statusText = "Organizing $sectionLabel (${allProjections.size} / $totalStreamRows)…"
+                            )
+                            PlaybackResourceGovernor.throttleIfPlaybackActive()
+                            if (chunk.size < chunkSize) break
+                        }
+
+                        val (materializedGroups, materializedMembers) = withContext(Dispatchers.Default) {
+                            CatalogDiffEngine.buildLosslessGroups(
+                                playlistId = playlist.id,
+                                streamType = streamType,
+                                streams = allProjections,
+                                categoryNameMap = sectionCategoryNameMap
+                            )
+                        }
+                        itemsGrouped = materializedGroups.size
+
+                        emitTelemetry(
+                            updated = telemetry.copy(
+                                stage = SyncStage.PERSISTING_DATABASE,
+                                progressPercent = SyncStage.PERSISTING_DATABASE.startPct + 2,
+                                itemsGrouped = itemsGrouped
+                            ),
+                            statusText = "Saving ${materializedGroups.size} $sectionLabel titles…",
+                            forceDbWrite = true
+                        )
+
+                        val groupBatchSize = PlaybackResourceGovernor.recommendedDbBatchSize()
+                        val memberBatchSize = (groupBatchSize * 2).coerceAtMost(2_000)
+                        runInDbTransaction {
+                            vodGroupDao.deleteGroupsByType(playlist.id, streamType)
+                            vodGroupDao.deleteGroupMembersByType(playlist.id, streamType)
+                        }
+                        PlaybackResourceGovernor.throttleIfPlaybackActive()
+
+                        for (batch in materializedGroups.chunked(groupBatchSize)) {
+                            runInDbTransaction {
+                                vodGroupDao.insertGroupsBatch(batch)
+                            }
+                            PlaybackResourceGovernor.throttleIfPlaybackActive()
+                        }
+                        for (batch in materializedMembers.chunked(memberBatchSize)) {
+                            runInDbTransaction {
+                                vodGroupDao.insertGroupMembersBatch(batch)
+                            }
+                            PlaybackResourceGovernor.throttleIfPlaybackActive()
+                        }
+                        itemsPersisted += materializedGroups.size
+                    }
+
+                    emitTelemetry(
+                        updated = telemetry.copy(
+                            stage = SyncStage.PERSISTING_DATABASE,
+                            progressPercent = SyncStage.PERSISTING_DATABASE.endPct,
+                            itemsGrouped = itemsGrouped,
+                            itemsPersisted = itemsPersisted
+                        ),
+                        statusText = "Saved $itemsGrouped $sectionLabel titles…",
+                        forceDbWrite = true
                     )
                 }
             } else {
-                _syncProgress.value = SyncProgress(
-                    isSyncing = false,
-                    phase = "Complete! Refreshed $insertedCount $sectionLabel items.",
-                    itemsProcessed = insertedCount
+                emitTelemetry(
+                    updated = telemetry.copy(
+                        stage = SyncStage.PERSISTING_DATABASE,
+                        progressPercent = SyncStage.PERSISTING_DATABASE.endPct,
+                        itemsPersisted = itemsPersisted
+                    ),
+                    statusText = "Saving $sectionLabel channels…",
+                    forceDbWrite = false
                 )
             }
 
+            // Stage 6: FINALIZING (95..100%) — emit 100% ONLY after final commit
+            emitTelemetry(
+                updated = telemetry.copy(
+                    stage = SyncStage.FINALIZING,
+                    progressPercent = 96
+                ),
+                statusText = "Finalizing $sectionLabel catalog…",
+                forceDbWrite = true
+            )
+
+            val finalSectionCount = streamDao.countStreams(playlist.id, streamType)
+            val completedAtMs = System.currentTimeMillis()
+            val currentStored = playlistDao.getPlaylistById(playlist.id) ?: playlist.encryptedForStorage()
+            val updatedPlaylist = when (catType) {
+                "LIVE" -> currentStored.copy(channelCount = finalSectionCount, lastSyncTimestamp = completedAtMs)
+                "MOVIE" -> currentStored.copy(vodCount = finalSectionCount, lastSyncTimestamp = completedAtMs)
+                else -> currentStored.copy(seriesCount = finalSectionCount, lastSyncTimestamp = completedAtMs)
+            }
+            playlistDao.updatePlaylist(updatedPlaylist)
+
+            val savedEtag = if (!isCategoryScoped && streamResult.completedCleanly) {
+                responseEtag ?: priorEtag
+            } else {
+                priorEtag
+            }
+            val savedLastModified = if (!isCategoryScoped && streamResult.completedCleanly) {
+                responseLastModified ?: priorLastModified
+            } else {
+                priorLastModified
+            }
+
+            val completionText = if (isVodSection) {
+                "${if (itemsGrouped > 0) itemsGrouped else finalSectionCount} $sectionLabel ready"
+            } else {
+                "Complete! Refreshed $finalSectionCount $sectionLabel items."
+            }
+
+            emitTelemetry(
+                updated = telemetry.copy(
+                    status = SyncStatus.COMPLETED,
+                    stage = SyncStage.FINALIZING,
+                    isIndeterminate = false,
+                    progressPercent = 100,
+                    totalDiscovered = finalSectionCount,
+                    itemsDownloaded = itemsDownloaded,
+                    itemsProcessed = finalSectionCount,
+                    itemsUnchanged = itemsUnchanged,
+                    itemsAdded = itemsAdded,
+                    itemsUpdated = itemsUpdated,
+                    itemsRemoved = itemsRemoved,
+                    itemsSkipped = itemsSkipped,
+                    itemsGrouped = itemsGrouped,
+                    itemsPersisted = itemsPersisted,
+                    lastSuccessfulSyncMs = completedAtMs,
+                    etag = savedEtag,
+                    lastModified = savedLastModified,
+                    pendingUpdateAvailable = pendingWarning.isNotEmpty(),
+                    pendingUpdateSummary = pendingWarning,
+                    errorMessage = ""
+                ),
+                statusText = completionText,
+                forceDbWrite = true
+            )
+
             Result.success(Unit)
+        } catch (ce: CancellationException) {
+            withContext(NonCancellable) {
+                emitTelemetry(
+                    updated = telemetry.copy(
+                        status = SyncStatus.INTERRUPTED,
+                        isIndeterminate = false,
+                        lastSuccessfulSyncMs = priorLastSuccessMs,
+                        etag = priorEtag,
+                        lastModified = priorLastModified
+                    ),
+                    statusText = "$sectionLabel sync interrupted",
+                    forceDbWrite = true
+                )
+            }
+            throw ce
         } catch (e: Exception) {
             val safeErr = SecurityManager.redactSensitiveText(e.message, playlist.username, plainPassword)
             Log.e("IptvRepository", "Section sync ($sectionType) failed: $safeErr")
-            if (isVodSection) {
-                updateVodPipelineState(
-                    streamType,
-                    VodPipelineState(
-                        phase = VodPipelinePhase.ERROR,
-                        progressPercent = 0,
-                        statusText = "$sectionLabel sync failed",
-                        error = safeErr
-                    )
-                )
-            } else {
-                _syncProgress.value = SyncProgress(isSyncing = false, error = safeErr)
-            }
+            emitTelemetry(
+                updated = telemetry.copy(
+                    status = SyncStatus.FAILED,
+                    isIndeterminate = false,
+                    lastSuccessfulSyncMs = priorLastSuccessMs,
+                    etag = priorEtag,
+                    lastModified = priorLastModified,
+                    errorMessage = safeErr
+                ),
+                statusText = "$sectionLabel sync failed",
+                forceDbWrite = true
+            )
             Result.failure(Exception(safeErr))
         } finally {
             sectionLock.set(false)
@@ -2020,12 +2622,39 @@ class IptvRepository(
         private const val EPISODE_RESUME_PREFS_NAME = "setplay_episode_resume_prefs"
 
         /**
-         * Globally shared OkHttpClient with HTTP/2 multiplexing & connection pool
-         * shared across Xtream catalog sync, VOD/Series metadata, and ExoPlayer media transport.
+         * Dedicated OkHttpClient with an isolated [Dispatcher] and [ConnectionPool] reserved
+         * exclusively for ExoPlayer video transport and [com.example.data.remote.WyzieSubtitleService].
+         * Zero socket or dispatcher contention with background Xtream catalog sync.
          */
-        val sharedOkHttpClient: OkHttpClient by lazy {
+        val playbackOkHttpClient: OkHttpClient by lazy {
+            val playbackDispatcher = Dispatcher().apply {
+                maxRequests = 32
+                maxRequestsPerHost = 8
+            }
             OkHttpClient.Builder()
-                .connectionPool(ConnectionPool(10, 5, TimeUnit.MINUTES))
+                .dispatcher(playbackDispatcher)
+                .connectionPool(ConnectionPool(8, 5, TimeUnit.MINUTES))
+                .connectTimeout(20, TimeUnit.SECONDS)
+                .readTimeout(60, TimeUnit.SECONDS)
+                .writeTimeout(30, TimeUnit.SECONDS)
+                .followRedirects(true)
+                .followSslRedirects(true)
+                .build()
+        }
+
+        /**
+         * Dedicated low-concurrency OkHttpClient for Xtream catalog synchronization and
+         * [GlobalPopularityIndexManager] background downloads (`maxRequestsPerHost = 2`,
+         * `readTimeout = 150s`), isolated from live/VOD video playback sockets.
+         */
+        val syncOkHttpClient: OkHttpClient by lazy {
+            val syncDispatcher = Dispatcher().apply {
+                maxRequests = 8
+                maxRequestsPerHost = 2
+            }
+            OkHttpClient.Builder()
+                .dispatcher(syncDispatcher)
+                .connectionPool(ConnectionPool(4, 3, TimeUnit.MINUTES))
                 .connectTimeout(20, TimeUnit.SECONDS)
                 .readTimeout(150, TimeUnit.SECONDS)
                 .writeTimeout(30, TimeUnit.SECONDS)
@@ -2033,6 +2662,12 @@ class IptvRepository(
                 .followSslRedirects(true)
                 .build()
         }
+
+        /**
+         * Backward-compatible alias pointing to [playbackOkHttpClient].
+         */
+        val sharedOkHttpClient: OkHttpClient
+            get() = playbackOkHttpClient
 
         @Volatile
         private var INSTANCE: IptvRepository? = null
@@ -2047,17 +2682,23 @@ class IptvRepository(
             return INSTANCE ?: synchronized(this) {
                 INSTANCE ?: run {
                     val db = StreamVaultDatabase.getInstance(appContext)
-                    IptvRepository(
+                    val repo = IptvRepository(
                         playlistDao = db.playlistDao(),
                         categoryDao = db.categoryDao(),
                         streamDao = db.streamDao(),
                         epgDao = db.epgDao(),
                         parentalDao = db.parentalSettingsDao(),
-                        xtreamClient = XtreamClient(sharedOkHttpClient),
+                        xtreamClient = XtreamClient(syncOkHttpClient),
                         vodGroupDao = db.vodGroupDao(),
                         database = db,
-                        appContext = appContext
-                    ).also { INSTANCE = it }
+                        appContext = appContext,
+                        syncSectionStateDao = db.syncSectionStateDao()
+                    )
+                    INSTANCE = repo
+                    runCatching {
+                        CatalogUpdateCheckWorker.schedulePeriodicUpdateCheck(appContext)
+                    }
+                    repo
                 }
             }
         }

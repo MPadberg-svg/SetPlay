@@ -67,7 +67,8 @@ data class CategoryCountTuple(
         Index(value = ["name"]),
         Index(value = ["playlistId", "streamType", "canonicalGroupKey"]),
         Index(value = ["playlistId", "streamType", "addedEpoch"]),
-        Index(value = ["playlistId", "streamType", "ratingNumeric"])
+        Index(value = ["playlistId", "streamType", "ratingNumeric"]),
+        Index(value = ["playlistId", "streamType", "streamId", "metadataHash"])
     ]
 )
 data class StreamEntity(
@@ -93,7 +94,8 @@ data class StreamEntity(
     val addedEpoch: Long = 0L,
     val ratingNumeric: Double = 0.0,
     val releaseYear: Int = 0,
-    val genres: String = ""
+    val genres: String = "",
+    val metadataHash: Long = 0L
 )
 
 data class GroupedVodStream(
@@ -130,7 +132,8 @@ data class VodCatalogGroupEntity(
     val versionCount: Int = 1,
     val defaultVersionTag: String = "",
     val containerExtension: String = "mp4",
-    val popularityScore: Double = 0.0
+    val popularityScore: Double = 0.0,
+    val platformTags: String = ""
 )
 
 @Fts4(contentEntity = VodCatalogGroupEntity::class)
@@ -138,6 +141,53 @@ data class VodCatalogGroupEntity(
 data class VodCatalogGroupFtsEntity(
     val cleanTitle: String,
     val genres: String
+)
+
+@Entity(
+    tableName = "vod_group_members",
+    primaryKeys = ["playlistId", "streamType", "groupKey", "streamDbId"],
+    indices = [
+        Index(value = ["playlistId", "streamType", "groupKey"]),
+        Index(value = ["streamDbId"])
+    ]
+)
+data class VodGroupMemberEntity(
+    val playlistId: Long,
+    val streamType: String,
+    val groupKey: String,
+    val streamDbId: Long
+)
+
+@Entity(
+    tableName = "sync_section_state",
+    primaryKeys = ["playlistId", "sectionType"]
+)
+data class SyncSectionStateEntity(
+    val playlistId: Long,
+    val sectionType: String, // "LIVE", "MOVIE", "SERIES"
+    val status: String = "IDLE", // IDLE, PENDING, RUNNING, COMPLETED, FAILED, INTERRUPTED
+    val stage: String = "IDLE",
+    val sessionId: String = "",
+    val isIndeterminate: Boolean = false,
+    val progressPercent: Int = 0,
+    val totalDiscovered: Int = 0,
+    val itemsDownloaded: Int = 0,
+    val itemsProcessed: Int = 0,
+    val itemsUnchanged: Int = 0,
+    val itemsAdded: Int = 0,
+    val itemsUpdated: Int = 0,
+    val itemsRemoved: Int = 0,
+    val itemsSkipped: Int = 0,
+    val itemsGrouped: Int = 0,
+    val itemsPersisted: Int = 0,
+    val lastSuccessfulSyncMs: Long = 0L,
+    val lastAttemptedSyncMs: Long = 0L,
+    val pendingUpdateAvailable: Boolean = false,
+    val pendingUpdateSummary: String = "",
+    val etag: String = "",
+    val lastModified: String = "",
+    val lastContentLength: Long = -1L,
+    val errorMessage: String = ""
 )
 
 object VodGroupingNormalizer {

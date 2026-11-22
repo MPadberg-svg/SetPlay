@@ -12,9 +12,11 @@ import com.example.data.model.FavoriteTeamEntity
 import com.example.data.model.ParentalSettingsEntity
 import com.example.data.model.PlaylistEntity
 import com.example.data.model.StreamEntity
+import com.example.data.model.SyncSectionStateEntity
 import com.example.data.model.TournamentPreferenceEntity
 import com.example.data.model.VodCatalogGroupEntity
 import com.example.data.model.VodCatalogGroupFtsEntity
+import com.example.data.model.VodGroupMemberEntity
 
 @Database(
     entities = [
@@ -26,9 +28,11 @@ import com.example.data.model.VodCatalogGroupFtsEntity
         FavoriteTeamEntity::class,
         TournamentPreferenceEntity::class,
         VodCatalogGroupEntity::class,
-        VodCatalogGroupFtsEntity::class
+        VodCatalogGroupFtsEntity::class,
+        VodGroupMemberEntity::class,
+        SyncSectionStateEntity::class
     ],
-    version = 6,
+    version = 7,
     exportSchema = false
 )
 abstract class StreamVaultDatabase : RoomDatabase() {
@@ -40,6 +44,7 @@ abstract class StreamVaultDatabase : RoomDatabase() {
     abstract fun favoriteTeamDao(): FavoriteTeamDao
     abstract fun tournamentPreferenceDao(): TournamentPreferenceDao
     abstract fun vodGroupDao(): VodCatalogGroupDao
+    abstract fun syncSectionStateDao(): SyncSectionStateDao
 
     companion object {
         @Volatile
@@ -135,6 +140,72 @@ abstract class StreamVaultDatabase : RoomDatabase() {
             }
         }
 
+        val MIGRATION_6_7: Migration = object : Migration(6, 7) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE streams ADD COLUMN metadataHash INTEGER NOT NULL DEFAULT 0")
+                db.execSQL(
+                    "CREATE INDEX IF NOT EXISTS `index_streams_playlistId_streamType_streamId_metadataHash` ON `streams` (`playlistId`, `streamType`, `streamId`, `metadataHash`)"
+                )
+                db.execSQL("ALTER TABLE vod_catalog_groups ADD COLUMN platformTags TEXT NOT NULL DEFAULT ''")
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS `vod_group_members` (
+                        `playlistId` INTEGER NOT NULL,
+                        `streamType` TEXT NOT NULL,
+                        `groupKey` TEXT NOT NULL,
+                        `streamDbId` INTEGER NOT NULL,
+                        PRIMARY KEY(`playlistId`, `streamType`, `groupKey`, `streamDbId`)
+                    )
+                    """.trimIndent()
+                )
+                db.execSQL(
+                    "CREATE INDEX IF NOT EXISTS `index_vod_group_members_playlistId_streamType_groupKey` ON `vod_group_members` (`playlistId`, `streamType`, `groupKey`)"
+                )
+                db.execSQL(
+                    "CREATE INDEX IF NOT EXISTS `index_vod_group_members_streamDbId` ON `vod_group_members` (`streamDbId`)"
+                )
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS `sync_section_state` (
+                        `playlistId` INTEGER NOT NULL,
+                        `sectionType` TEXT NOT NULL,
+                        `status` TEXT NOT NULL,
+                        `stage` TEXT NOT NULL,
+                        `sessionId` TEXT NOT NULL,
+                        `isIndeterminate` INTEGER NOT NULL,
+                        `progressPercent` INTEGER NOT NULL,
+                        `totalDiscovered` INTEGER NOT NULL,
+                        `itemsDownloaded` INTEGER NOT NULL,
+                        `itemsProcessed` INTEGER NOT NULL,
+                        `itemsUnchanged` INTEGER NOT NULL,
+                        `itemsAdded` INTEGER NOT NULL,
+                        `itemsUpdated` INTEGER NOT NULL,
+                        `itemsRemoved` INTEGER NOT NULL,
+                        `itemsSkipped` INTEGER NOT NULL,
+                        `itemsGrouped` INTEGER NOT NULL,
+                        `itemsPersisted` INTEGER NOT NULL,
+                        `lastSuccessfulSyncMs` INTEGER NOT NULL,
+                        `lastAttemptedSyncMs` INTEGER NOT NULL,
+                        `pendingUpdateAvailable` INTEGER NOT NULL,
+                        `pendingUpdateSummary` TEXT NOT NULL,
+                        `etag` TEXT NOT NULL,
+                        `lastModified` TEXT NOT NULL,
+                        `lastContentLength` INTEGER NOT NULL,
+                        `errorMessage` TEXT NOT NULL,
+                        PRIMARY KEY(`playlistId`, `sectionType`)
+                    )
+                    """.trimIndent()
+                )
+            }
+        }
+
+        private val walHardeningCallback = object : RoomDatabase.Callback() {
+            override fun onOpen(db: SupportSQLiteDatabase) {
+                super.onOpen(db)
+                db.query("PRAGMA busy_timeout = 5000").close()
+            }
+        }
+
         @Suppress("DEPRECATION")
         fun getInstance(context: Context): StreamVaultDatabase {
             com.example.data.repository.IptvRepository.initEpisodePreferences(context.applicationContext)
@@ -144,7 +215,9 @@ abstract class StreamVaultDatabase : RoomDatabase() {
                     StreamVaultDatabase::class.java,
                     "streamvault_database.db"
                 )
-                    .addMigrations(MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6)
+                    .setJournalMode(RoomDatabase.JournalMode.WRITE_AHEAD_LOGGING)
+                    .addCallback(walHardeningCallback)
+                    .addMigrations(MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7)
                     .fallbackToDestructiveMigration()
                     .build()
                 INSTANCE = instance
