@@ -29,7 +29,7 @@ object GlobalPopularityIndexManager {
     private const val CACHE_FILE_NAME = "global_popularity_index.json"
     private const val META_FILE_NAME = "global_popularity_index.meta"
     private const val REFRESH_INTERVAL_MS = 24L * 60L * 60L * 1000L
-    private const val PLACEHOLDER_HOST_MARKER = "MPadberg-svg"
+    private const val PLACEHOLDER_HOST_MARKER = "YOUR_GITHUB_USERNAME"
 
     private val COMBINING_MARKS_REGEX = Regex("\\p{Mn}+")
     private val NON_ALNUM_REGEX = Regex("[^\\p{L}\\p{N}]+")
