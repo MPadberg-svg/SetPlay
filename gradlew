@@ -182,6 +182,7 @@ moshiKotlinCodegen = "1.15.1"
 robolectric = "4.14.1"
 secretsGradlePlugin = "2.0.1"
 media3 = "1.5.1"
+workRuntime = "2.10.0"
 
 [libraries]
 androidx-core-ktx = { group = "androidx.core", name = "core-ktx", version.ref = "coreKtx" }
@@ -224,6 +225,8 @@ androidx-media3-ui = { group = "androidx.media3", name = "media3-ui", version.re
 androidx-media3-common = { group = "androidx.media3", name = "media3-common", version.ref = "media3" }
 androidx-media3-exoplayer-hls = { group = "androidx.media3", name = "media3-exoplayer-hls", version.ref = "media3" }
 androidx-media3-datasource-okhttp = { group = "androidx.media3", name = "media3-datasource-okhttp", version.ref = "media3" }
+androidx-work-runtime-ktx = { group = "androidx.work", name = "work-runtime-ktx", version.ref = "workRuntime" }
+androidx-work-testing = { group = "androidx.work", name = "work-testing", version.ref = "workRuntime" }
 
 [plugins]
 android-application = { id = "com.android.application", version.ref = "agp" }
@@ -307,6 +310,7 @@ android {
     unitTests {
       isIncludeAndroidResources = true
       all {
+        it.systemProperty("java.awt.headless", "true")
         it.systemProperty("robolectric.dependency.repo.url", "https://maven-central.storage-download.googleapis.com/maven2/")
       }
     }
@@ -340,6 +344,7 @@ dependencies {
   implementation(libs.androidx.media3.common)
   implementation(libs.androidx.media3.exoplayer.hls)
   implementation(libs.androidx.media3.datasource.okhttp)
+  implementation(libs.androidx.work.runtime.ktx)
   implementation(libs.converter.moshi)
   implementation(libs.kotlinx.coroutines.android)
   implementation(libs.kotlinx.coroutines.core)
@@ -353,6 +358,7 @@ dependencies {
   testImplementation(libs.junit)
   testImplementation(libs.kotlinx.coroutines.test)
   testImplementation(libs.robolectric)
+  testImplementation(libs.androidx.work.testing)
   debugImplementation(libs.androidx.compose.ui.test.manifest)
   debugImplementation(libs.androidx.compose.ui.tooling)
   "ksp"(libs.androidx.room.compiler)

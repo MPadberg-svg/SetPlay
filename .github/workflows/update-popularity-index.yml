@@ -8,6 +8,9 @@ on:
 permissions:
   contents: write
 
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+
 concurrency:
   group: update-popularity-index
   cancel-in-progress: false
@@ -34,7 +37,7 @@ jobs:
 
       - name: Commit and push updated popularity index
         run: |
-          if [ -z "$(git status --porcelain docs/popularity_index.json)" ]; then
+          if [ -z "$(git status --porcelain -- docs/popularity_index.json)" ]; then
             echo "No changes to docs/popularity_index.json; skipping commit."
             exit 0
           fi
@@ -44,4 +47,5 @@ jobs:
 
           git add docs/popularity_index.json
           git commit -m "chore(index): update global popularity index"
+          git pull --rebase --autostash origin main
           git push origin HEAD:main

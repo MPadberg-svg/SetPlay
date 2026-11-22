@@ -137,6 +137,12 @@ def fetch_tmdb_page(
                     file=sys.stderr,
                 )
                 sys.exit(1)
+            if status in (400, 404, 422) and page > 1:
+                print(
+                    f"[{status}] Reached page cap on {endpoint} at page={page}; stopping pagination.",
+                    file=sys.stderr,
+                )
+                return {"results": [], "total_pages": page - 1}
             raise
         except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as err:
             last_error = err

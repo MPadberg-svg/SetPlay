@@ -37,7 +37,7 @@ class CatalogSyncWorker(
 
         if (playlistId <= 0L || rawSectionType.isEmpty()) {
             Log.w(TAG, "Invalid inputs: playlistId=$playlistId sectionType=$rawSectionType")
-            return Result.failure(IllegalArgumentException("Invalid playlist id or section type"))
+            return Result.failure(errorOutputData("Invalid playlist id or section type"))
         }
 
         val normalizedSection = SyncTelemetry.normalizeSyncSectionType(rawSectionType)
@@ -45,7 +45,7 @@ class CatalogSyncWorker(
         val playlist = repository.getPlaylistById(playlistId)
         if (playlist == null) {
             Log.w(TAG, "Playlist $playlistId not found for $normalizedSection sync")
-            return Result.failure(IllegalStateException("Playlist $playlistId not found"))
+            return Result.failure(errorOutputData("Playlist $playlistId not found"))
         }
 
         return try {
@@ -67,8 +67,9 @@ class CatalogSyncWorker(
                     Log.w(TAG, "Transient sync failure for $normalizedSection (attempt ${runAttemptCount + 1}), scheduling retry")
                     Result.retry()
                 } else {
-                    Log.e(TAG, "Sync failed for $normalizedSection: ${err?.message}")
-                    Result.failure(err ?: IllegalStateException("Sync failed for $normalizedSection"))
+                    val msg = err?.message ?: "Sync failed for $normalizedSection"
+                    Log.e(TAG, "Sync failed for $normalizedSection: $msg")
+                    Result.failure(errorOutputData(msg))
                 }
             }
         } catch (ce: CancellationException) {
@@ -81,13 +82,21 @@ class CatalogSyncWorker(
                 Log.w(TAG, "Transient IOException during $normalizedSection sync (attempt ${runAttemptCount + 1}), retrying")
                 Result.retry()
             } else {
-                Log.e(TAG, "Max retries reached for $normalizedSection sync: ${ioe.message}")
-                Result.failure(ioe)
+                val msg = ioe.message ?: "Network error during $normalizedSection sync"
+                Log.e(TAG, "Max retries reached for $normalizedSection sync: $msg")
+                Result.failure(errorOutputData(msg))
             }
         } catch (e: Exception) {
-            Log.e(TAG, "Unexpected error during $normalizedSection sync: ${e.message}")
-            Result.failure(e)
+            val msg = e.message ?: "Unexpected error during $normalizedSection sync"
+            Log.e(TAG, "Unexpected error during $normalizedSection sync: $msg")
+            Result.failure(errorOutputData(msg))
         }
+    }
+
+    private fun errorOutputData(message: String): Data {
+        return Data.Builder()
+            .putString(KEY_ERROR, message.take(512))
+            .build()
     }
 
     private fun isTransientNetworkFailure(error: Throwable?): Boolean {
@@ -120,6 +129,7 @@ class CatalogSyncWorker(
         const val KEY_SECTION_TYPE = "section_type"
         const val KEY_CATEGORY_ID = "category_id"
         const val KEY_FORCE_FULL = "force_full"
+        const val KEY_ERROR = "error"
 
         fun uniqueWorkName(playlistId: Long, sectionType: String): String {
             val normalized = SyncTelemetry.normalizeSyncSectionType(sectionType)
