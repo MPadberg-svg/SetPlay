@@ -22,13 +22,13 @@ import java.util.Locale
  * at most once every 24 hours. Fails silently to an empty map when offline or unconfigured.
  */
 object GlobalPopularityIndexManager {
-    const val DEFAULT_INDEX_URL = "https://YOUR_GITHUB_USERNAME.github.io/SetPlay/popularity_index.json"
+    const val DEFAULT_INDEX_URL = "https://MPadberg-svg.github.io/SetPlay/popularity_index.json"
 
     private const val TAG = "GlobalPopularityIndex"
     private const val CACHE_FILE_NAME = "global_popularity_index.json"
     private const val META_FILE_NAME = "global_popularity_index.meta"
     private const val REFRESH_INTERVAL_MS = 24L * 60L * 60L * 1000L
-    private const val PLACEHOLDER_HOST_MARKER = "YOUR_GITHUB_USERNAME"
+    private const val PLACEHOLDER_HOST_MARKER = "MPadberg-svg"
 
     private val NON_ALNUM_REGEX = Regex("[^\\p{L}\\p{N}]+")
     private val MULTI_SPACE_REGEX = Regex("\\s+")
