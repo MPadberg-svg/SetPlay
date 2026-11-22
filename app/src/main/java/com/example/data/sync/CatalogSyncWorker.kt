@@ -37,7 +37,7 @@ class CatalogSyncWorker(
 
         if (playlistId <= 0L || rawSectionType.isEmpty()) {
             Log.w(TAG, "Invalid inputs: playlistId=$playlistId sectionType=$rawSectionType")
-            return Result.failure()
+            return Result.failure(IllegalArgumentException("Invalid playlist id or section type"))
         }
 
         val normalizedSection = SyncTelemetry.normalizeSyncSectionType(rawSectionType)
@@ -45,7 +45,7 @@ class CatalogSyncWorker(
         val playlist = repository.getPlaylistById(playlistId)
         if (playlist == null) {
             Log.w(TAG, "Playlist $playlistId not found for $normalizedSection sync")
-            return Result.failure()
+            return Result.failure(IllegalStateException("Playlist $playlistId not found"))
         }
 
         return try {
@@ -68,7 +68,7 @@ class CatalogSyncWorker(
                     Result.retry()
                 } else {
                     Log.e(TAG, "Sync failed for $normalizedSection: ${err?.message}")
-                    Result.failure()
+                    Result.failure(err ?: IllegalStateException("Sync failed for $normalizedSection"))
                 }
             }
         } catch (ce: CancellationException) {
@@ -82,11 +82,11 @@ class CatalogSyncWorker(
                 Result.retry()
             } else {
                 Log.e(TAG, "Max retries reached for $normalizedSection sync: ${ioe.message}")
-                Result.failure()
+                Result.failure(ioe)
             }
         } catch (e: Exception) {
             Log.e(TAG, "Unexpected error during $normalizedSection sync: ${e.message}")
-            Result.failure()
+            Result.failure(e)
         }
     }
 
