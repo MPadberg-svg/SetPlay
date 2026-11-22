@@ -195,9 +195,10 @@ class XtreamClient(
     }
 
     /**
-     * Stage 1 streaming ingestion: parses catalog items directly in bounded batches with ONLY
-     * fast primitive extraction on the network thread, delegating heavy deduplication, version-tag
-     * enrichment, and materialized grouping to Stage 2 background indexing in [IptvRepository].
+     * Stage 1 streaming ingestion: parses catalog items directly in bounded batches and
+     * pre-computes `releaseYear`, 3-tier `canonicalGroupKey`, and category-aware `versionTag`
+     * for non-live (`"movie"` / `"series"`) entries so Stage 2 background materialization in
+     * [IptvRepository] can run 100% read-only without rewriting the `streams` table.
      */
     suspend fun streamCatalogEntries(
         serverUrl: String,
@@ -207,6 +208,7 @@ class XtreamClient(
         streamType: String, // "live", "movie", "series"
         playlistId: Long,
         batchSize: Int = 2000,
+        categoryNameMap: Map<String, String> = emptyMap(),
         onBatchReady: suspend (List<StreamEntity>, Int) -> Unit
     ): Int = withContext(Dispatchers.IO) {
         val plainPassword = SecurityManager.decryptCredential(password)
@@ -315,15 +317,31 @@ class XtreamClient(
                                         rawRating10 = rating10Raw,
                                         rawRating5 = rating5Raw
                                     )
-                                    val yearInt = if (streamType == "live") {
+                                    val isLive = streamType == "live"
+                                    val yearInt = if (isLive) {
                                         0
                                     } else {
                                         extractFastReleaseYear(name, rawYear)
                                     }
-                                    val initialGroupKey = if (streamType == "live") {
+                                    val computedGroupKey = if (isLive) {
                                         "live_$streamId"
                                     } else {
+                                        VodGroupingNormalizer.computeCanonicalGroupKey(
+                                            streamType = streamType,
+                                            rawName = name,
+                                            tmdbId = cleanTmdbId,
+                                            releaseYear = yearInt,
+                                            streamId = streamId,
+                                            posterUrl = streamIcon
+                                        )
+                                    }
+                                    val computedVersionTag = if (isLive) {
                                         ""
+                                    } else {
+                                        VodGroupingNormalizer.extractVersionTagWithCategory(
+                                            rawName = name,
+                                            categoryName = categoryNameMap[categoryId].orEmpty()
+                                        )
                                     }
 
                                     currentBatch.add(
@@ -340,8 +358,8 @@ class XtreamClient(
                                             tvArchiveDuration = tvArchiveDuration,
                                             containerExtension = containerExt,
                                             tmdbId = cleanTmdbId,
-                                            canonicalGroupKey = initialGroupKey,
-                                            versionTag = "",
+                                            canonicalGroupKey = computedGroupKey,
+                                            versionTag = computedVersionTag,
                                             addedEpoch = addedEpoch,
                                             ratingNumeric = ratingNum,
                                             releaseYear = yearInt,

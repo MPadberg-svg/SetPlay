@@ -148,6 +148,23 @@ data class StreamPositionSnapshot(
     val watchHistoryTimestamp: Long
 )
 
+data class StreamIndexProjection(
+    val id: Long,
+    val streamId: Long,
+    val categoryId: String,
+    val name: String,
+    val streamIcon: String,
+    val rating: String,
+    val ratingNumeric: Double,
+    val containerExtension: String,
+    val tmdbId: String,
+    val canonicalGroupKey: String,
+    val versionTag: String,
+    val addedEpoch: Long,
+    val releaseYear: Int,
+    val genres: String
+)
+
 @Dao
 interface StreamDao {
     @Query("""
@@ -407,6 +424,37 @@ interface StreamDao {
     ): List<StreamEntity>
 
     @Query("""
+        SELECT *
+        FROM streams
+        WHERE playlistId = :playlistId
+          AND streamType = :streamType
+          AND tmdbId = :tmdbId
+          AND tmdbId != ''
+        ORDER BY ratingNumeric DESC, id ASC
+        LIMIT 50
+    """)
+    suspend fun getVersionsByTmdbId(
+        playlistId: Long,
+        streamType: String,
+        tmdbId: String
+    ): List<StreamEntity>
+
+    @Query("""
+        SELECT *
+        FROM streams
+        WHERE playlistId = :playlistId
+          AND streamType = :streamType
+          AND name LIKE '%' || :titleQuery || '%'
+        ORDER BY ratingNumeric DESC, id ASC
+        LIMIT 80
+    """)
+    suspend fun getVersionsByTitleLike(
+        playlistId: Long,
+        streamType: String,
+        titleQuery: String
+    ): List<StreamEntity>
+
+    @Query("""
         SELECT *, COUNT(*) AS versionCount
         FROM streams
         WHERE playlistId = :playlistId
@@ -510,7 +558,7 @@ interface StreamDao {
         limit: Int = 20
     ): Flow<List<GroupedVodStream>>
 
-    // Chunked streaming helpers for low-RAM background materialization into vod_catalog_groups
+    // Chunked streaming helpers for low-RAM read-only background materialization into vod_catalog_groups
     @Query("SELECT * FROM streams WHERE playlistId = :playlistId AND streamType = :streamType ORDER BY id ASC LIMIT :limit OFFSET :offset")
     suspend fun getStreamsChunkByType(
         playlistId: Long,
@@ -518,6 +566,14 @@ interface StreamDao {
         limit: Int,
         offset: Int
     ): List<StreamEntity>
+
+    @Query("SELECT id, streamId, categoryId, name, streamIcon, rating, ratingNumeric, containerExtension, tmdbId, canonicalGroupKey, versionTag, addedEpoch, releaseYear, genres FROM streams WHERE playlistId = :playlistId AND streamType = :streamType ORDER BY id ASC LIMIT :limit OFFSET :offset")
+    suspend fun getStreamIndexProjectionsChunk(
+        playlistId: Long,
+        streamType: String,
+        limit: Int,
+        offset: Int
+    ): List<StreamIndexProjection>
 
     @Query("SELECT * FROM streams WHERE id = :id LIMIT 1")
     suspend fun getStreamByDbId(id: Long): StreamEntity?
@@ -539,6 +595,20 @@ interface VodCatalogGroupDao {
         FROM vod_catalog_groups
         WHERE playlistId = :playlistId
           AND streamType = :streamType
+          AND groupKey = :groupKey
+        LIMIT 1
+    """)
+    suspend fun getGroupByKey(
+        playlistId: Long,
+        streamType: String,
+        groupKey: String
+    ): VodCatalogGroupEntity?
+
+    @Query("""
+        SELECT *
+        FROM vod_catalog_groups
+        WHERE playlistId = :playlistId
+          AND streamType = :streamType
         ORDER BY popularityScore DESC, addedEpoch DESC
         LIMIT :limit
     """)
@@ -553,7 +623,18 @@ interface VodCatalogGroupDao {
         FROM vod_catalog_groups
         WHERE playlistId = :playlistId
           AND streamType = :streamType
-        ORDER BY addedEpoch DESC, popularityScore DESC
+        ORDER BY (addedEpoch / 86400) DESC,
+                 CASE
+                     WHEN UPPER(defaultVersionTag) LIKE '%ENGLISH%'
+                       OR UPPER(defaultVersionTag) LIKE '%ARABIC%'
+                       OR UPPER(defaultVersionTag) LIKE '%FRENCH%'
+                       OR UPPER(defaultVersionTag) LIKE '%VOSTFR%'
+                       OR UPPER(defaultVersionTag) LIKE '%MULTI%'
+                     THEN 1
+                     ELSE 0
+                 END DESC,
+                 popularityScore DESC,
+                 addedEpoch DESC
         LIMIT :limit
     """)
     fun getRecentlyAddedGroups(
@@ -639,6 +720,56 @@ interface VodCatalogGroupDao {
         categoryId: String?,
         query: String,
         limit: Int = 180
+    ): Flow<List<VodCatalogGroupEntity>>
+
+    @Query("""
+        SELECT g.*
+        FROM vod_catalog_groups g
+        JOIN vod_catalog_groups_fts ON g.id = vod_catalog_groups_fts.docid
+        WHERE vod_catalog_groups_fts MATCH :ftsQuery
+          AND g.playlistId = :playlistId
+          AND g.streamType = :streamType
+          AND (
+              :categoryId IS NULL
+              OR :categoryId = ''
+              OR g.primaryCategoryId = :categoryId
+              OR g.categoryIdsCsv LIKE '%,' || :categoryId || ',%'
+          )
+        ORDER BY g.popularityScore DESC, g.addedEpoch DESC
+        LIMIT :limit
+    """)
+    fun searchGroupsFts(
+        playlistId: Long,
+        streamType: String,
+        categoryId: String?,
+        ftsQuery: String,
+        limit: Int = 180
+    ): Flow<List<VodCatalogGroupEntity>>
+
+    @Query("""
+        SELECT g.*
+        FROM vod_catalog_groups g
+        WHERE g.playlistId = :playlistId
+          AND g.streamType = :streamType
+          AND EXISTS (
+              SELECT 1
+              FROM categories c
+              WHERE c.playlistId = g.playlistId
+                AND c.type = CASE WHEN g.streamType = 'movie' THEN 'MOVIE' ELSE 'SERIES' END
+                AND c.categoryName LIKE '%' || :platformKeyword || '%'
+                AND (
+                    g.primaryCategoryId = c.categoryId
+                    OR g.categoryIdsCsv LIKE '%,' || c.categoryId || ',%'
+                )
+          )
+        ORDER BY g.popularityScore DESC, g.addedEpoch DESC
+        LIMIT :limit
+    """)
+    fun getPlatformShelfGroups(
+        playlistId: Long,
+        streamType: String,
+        platformKeyword: String,
+        limit: Int = 24
     ): Flow<List<VodCatalogGroupEntity>>
 
     @Query("""

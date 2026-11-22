@@ -14,6 +14,7 @@ import com.example.data.model.PlaylistEntity
 import com.example.data.model.StreamEntity
 import com.example.data.model.TournamentPreferenceEntity
 import com.example.data.model.VodCatalogGroupEntity
+import com.example.data.model.VodCatalogGroupFtsEntity
 
 @Database(
     entities = [
@@ -24,9 +25,10 @@ import com.example.data.model.VodCatalogGroupEntity
         ParentalSettingsEntity::class,
         FavoriteTeamEntity::class,
         TournamentPreferenceEntity::class,
-        VodCatalogGroupEntity::class
+        VodCatalogGroupEntity::class,
+        VodCatalogGroupFtsEntity::class
     ],
-    version = 5,
+    version = 6,
     exportSchema = false
 )
 abstract class StreamVaultDatabase : RoomDatabase() {
@@ -110,6 +112,29 @@ abstract class StreamVaultDatabase : RoomDatabase() {
             }
         }
 
+        val MIGRATION_5_6: Migration = object : Migration(5, 6) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    "CREATE VIRTUAL TABLE IF NOT EXISTS `vod_catalog_groups_fts` USING FTS4(`cleanTitle` TEXT NOT NULL, `genres` TEXT NOT NULL, content=`vod_catalog_groups`)"
+                )
+                db.execSQL(
+                    "CREATE TRIGGER IF NOT EXISTS room_fts_content_sync_vod_catalog_groups_fts_BEFORE_UPDATE BEFORE UPDATE ON `vod_catalog_groups` BEGIN DELETE FROM `vod_catalog_groups_fts` WHERE `docid`=OLD.`rowid`; END"
+                )
+                db.execSQL(
+                    "CREATE TRIGGER IF NOT EXISTS room_fts_content_sync_vod_catalog_groups_fts_BEFORE_DELETE BEFORE DELETE ON `vod_catalog_groups` BEGIN DELETE FROM `vod_catalog_groups_fts` WHERE `docid`=OLD.`rowid`; END"
+                )
+                db.execSQL(
+                    "CREATE TRIGGER IF NOT EXISTS room_fts_content_sync_vod_catalog_groups_fts_AFTER_UPDATE AFTER UPDATE ON `vod_catalog_groups` BEGIN INSERT INTO `vod_catalog_groups_fts`(`docid`, `cleanTitle`, `genres`) VALUES (NEW.`rowid`, NEW.`cleanTitle`, NEW.`genres`); END"
+                )
+                db.execSQL(
+                    "CREATE TRIGGER IF NOT EXISTS room_fts_content_sync_vod_catalog_groups_fts_AFTER_INSERT AFTER INSERT ON `vod_catalog_groups` BEGIN INSERT INTO `vod_catalog_groups_fts`(`docid`, `cleanTitle`, `genres`) VALUES (NEW.`rowid`, NEW.`cleanTitle`, NEW.`genres`); END"
+                )
+                db.execSQL(
+                    "INSERT INTO `vod_catalog_groups_fts`(`vod_catalog_groups_fts`) VALUES('rebuild')"
+                )
+            }
+        }
+
         @Suppress("DEPRECATION")
         fun getInstance(context: Context): StreamVaultDatabase {
             com.example.data.repository.IptvRepository.initEpisodePreferences(context.applicationContext)
@@ -119,7 +144,7 @@ abstract class StreamVaultDatabase : RoomDatabase() {
                     StreamVaultDatabase::class.java,
                     "streamvault_database.db"
                 )
-                    .addMigrations(MIGRATION_3_4, MIGRATION_4_5)
+                    .addMigrations(MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6)
                     .fallbackToDestructiveMigration()
                     .build()
                 INSTANCE = instance

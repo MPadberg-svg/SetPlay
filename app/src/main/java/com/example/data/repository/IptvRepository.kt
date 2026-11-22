@@ -20,6 +20,7 @@ import com.example.data.model.PlaylistEntity
 import com.example.data.model.StreamEntity
 import com.example.data.model.VodCatalogGroupEntity
 import com.example.data.model.VodGroupingNormalizer
+import com.example.data.remote.GlobalPopularityIndexManager
 import com.example.data.remote.XtreamAuthResponse
 import com.example.data.remote.XtreamClient
 import com.example.util.SecurityManager
@@ -54,6 +55,23 @@ data class SyncProgress(
     val error: String? = null
 )
 
+enum class VodPipelinePhase {
+    IDLE,
+    DOWNLOADING,
+    ORGANIZING,
+    READY,
+    ERROR
+}
+
+data class VodPipelineState(
+    val phase: VodPipelinePhase = VodPipelinePhase.IDLE,
+    val progressPercent: Int = 0,
+    val processedCount: Int = 0,
+    val totalCount: Int = 0,
+    val statusText: String = "",
+    val error: String? = null
+)
+
 data class EpisodeResumeInfo(
     val positionMs: Long,
     val durationMs: Long = 0L,
@@ -68,14 +86,30 @@ class IptvRepository(
     private val parentalDao: ParentalSettingsDao,
     private val xtreamClient: XtreamClient = XtreamClient(sharedOkHttpClient),
     private val vodGroupDao: VodCatalogGroupDao? = null,
-    private val database: StreamVaultDatabase? = null
+    private val database: StreamVaultDatabase? = null,
+    private val appContext: Context? = null
 ) {
     private val _syncProgress = MutableStateFlow(SyncProgress())
     val syncProgress = _syncProgress.asStateFlow()
 
+    private val _moviesPipelineState = MutableStateFlow(VodPipelineState())
+    val moviesPipelineState: StateFlow<VodPipelineState> = _moviesPipelineState.asStateFlow()
+
+    private val _seriesPipelineState = MutableStateFlow(VodPipelineState())
+    val seriesPipelineState: StateFlow<VodPipelineState> = _seriesPipelineState.asStateFlow()
+
     private val isSyncInProgress = AtomicBoolean(false)
+    private val moviesSyncLock = AtomicBoolean(false)
+    private val seriesSyncLock = AtomicBoolean(false)
     private val indexingScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private val activeIndexJobs = ConcurrentHashMap<String, AtomicBoolean>()
+
+    private fun updateVodPipelineState(streamType: String, state: VodPipelineState) {
+        when (streamType.trim().lowercase(Locale.US)) {
+            "movie", "movies", "vod" -> _moviesPipelineState.value = state
+            "series" -> _seriesPipelineState.value = state
+        }
+    }
 
     private suspend fun runInDbTransaction(block: suspend () -> Unit) {
         val db = database
@@ -221,6 +255,7 @@ class IptvRepository(
         var representativeStreamId: Long,
         var representativeRawName: String,
         var representativeScore: Int,
+        var tmdbId: String,
         var posterUrl: String,
         var rating: String,
         var ratingNumeric: Double,
@@ -282,11 +317,14 @@ class IptvRepository(
     }
 
     /**
-     * Stage 2 Asynchronous Background Indexer:
-     * Streams raw rows for [streamType] (`"movie"` or `"series"`) in bounded 5,000-row chunks on
-     * [Dispatchers.Default], computes 3-tier `canonicalGroupKey` & category-aware `versionTag`,
-     * selects the highest-preference representative copy per group, calculates Bayesian
-     * `popularityScore`, and atomically writes materialized rows into `vod_catalog_groups`.
+     * Stage 2 Asynchronous Background Indexer (100% Read-Only on `streams`):
+     * Streams lightweight [com.example.data.local.StreamIndexProjection] rows for [streamType]
+     * (`"movie"` or `"series"`) in bounded 10,000-row chunks on [Dispatchers.Default], uses
+     * Stage 1 pre-computed `canonicalGroupKey` / `versionTag` (or computes them in-memory on the
+     * fly for legacy rows without ever writing back to `streams`), selects the highest-preference
+     * representative copy per group, calculates Bayesian `popularityScore`, and atomically writes
+     * materialized rows into `vod_catalog_groups` while emitting determinate progress into that
+     * section's independent [VodPipelineState].
      */
     suspend fun rebuildVodCatalogGroups(
         playlistId: Long,
@@ -301,28 +339,50 @@ class IptvRepository(
         val lock = activeIndexJobs.computeIfAbsent(lockKey) { AtomicBoolean(false) }
         if (!lock.compareAndSet(false, true)) return
 
+        val sectionLabel = if (normalizedType == "movie") "Movies" else "Series"
         withContext(Dispatchers.Default) {
-            var statusEmitted = false
+            var processed = 0
+            var totalCount = 0
             try {
-                if (emitSyncStatus && !isSyncInProgress.get()) {
-                    _syncProgress.value = SyncProgress(
-                        isSyncing = true,
-                        phase = "Organizing library…"
+                totalCount = streamDao.countStreams(playlistId, normalizedType)
+                if (totalCount <= 0) {
+                    runInDbTransaction {
+                        dao.deleteGroupsByType(playlistId, normalizedType)
+                    }
+                    updateVodPipelineState(
+                        normalizedType,
+                        VodPipelineState(
+                            phase = VodPipelinePhase.READY,
+                            progressPercent = 100,
+                            processedCount = 0,
+                            totalCount = 0,
+                            statusText = "$sectionLabel ready"
+                        )
                     )
-                    statusEmitted = true
+                    return@withContext
                 }
+
+                updateVodPipelineState(
+                    normalizedType,
+                    VodPipelineState(
+                        phase = VodPipelinePhase.ORGANIZING,
+                        progressPercent = 5,
+                        processedCount = 0,
+                        totalCount = totalCount,
+                        statusText = "Organizing $sectionLabel (0 / $totalCount)…"
+                    )
+                )
 
                 val catType = if (normalizedType == "movie") "MOVIE" else "SERIES"
                 val categoryNameMap = categoryDao.getCategoriesOnce(playlistId, catType)
                     .associate { it.categoryId to it.categoryName }
 
                 val groupsMap = HashMap<String, GroupAccumulator>(4096)
-                val changedStreams = ArrayList<StreamEntity>(2_000)
-                val chunkSize = 5_000
+                val chunkSize = 10_000
                 var offset = 0
 
                 while (true) {
-                    val chunk = streamDao.getStreamsChunkByType(
+                    val chunk = streamDao.getStreamIndexProjectionsChunk(
                         playlistId = playlistId,
                         streamType = normalizedType,
                         limit = chunkSize,
@@ -336,38 +396,25 @@ class IptvRepository(
                         } else {
                             VodGroupingNormalizer.extractReleaseYear(s.name, "")
                         }
-                        val groupKey = VodGroupingNormalizer.computeCanonicalGroupKey(
-                            streamType = normalizedType,
-                            rawName = s.name,
-                            tmdbId = s.tmdbId,
-                            releaseYear = effectiveYear,
-                            streamId = s.streamId,
-                            posterUrl = s.streamIcon
-                        )
-                        val catName = categoryNameMap[s.categoryId].orEmpty()
-                        val versionTag = VodGroupingNormalizer.extractVersionTagWithCategory(
-                            rawName = s.name,
-                            categoryName = catName
-                        )
-
-                        if (s.canonicalGroupKey != groupKey ||
-                            s.versionTag != versionTag ||
-                            s.releaseYear != effectiveYear
-                        ) {
-                            changedStreams.add(
-                                s.copy(
-                                    canonicalGroupKey = groupKey,
-                                    versionTag = versionTag,
-                                    releaseYear = effectiveYear
-                                )
+                        val groupKey = if (s.canonicalGroupKey.isNotBlank()) {
+                            s.canonicalGroupKey
+                        } else {
+                            VodGroupingNormalizer.computeCanonicalGroupKey(
+                                streamType = normalizedType,
+                                rawName = s.name,
+                                tmdbId = s.tmdbId,
+                                releaseYear = effectiveYear,
+                                streamId = s.streamId,
+                                posterUrl = s.streamIcon
                             )
-                            if (changedStreams.size >= 2_000) {
-                                val batchToPersist = ArrayList(changedStreams)
-                                changedStreams.clear()
-                                runInDbTransaction {
-                                    streamDao.insertStreamsBatch(batchToPersist)
-                                }
-                            }
+                        }
+                        val versionTag = if (s.versionTag.isNotBlank()) {
+                            s.versionTag
+                        } else {
+                            VodGroupingNormalizer.extractVersionTagWithCategory(
+                                rawName = s.name,
+                                categoryName = categoryNameMap[s.categoryId].orEmpty()
+                            )
                         }
 
                         val hasPoster = s.streamIcon.isNotBlank()
@@ -387,6 +434,7 @@ class IptvRepository(
                                 representativeStreamId = s.streamId,
                                 representativeRawName = s.name,
                                 representativeScore = prefScore,
+                                tmdbId = s.tmdbId,
                                 posterUrl = s.streamIcon,
                                 rating = s.rating,
                                 ratingNumeric = s.ratingNumeric,
@@ -401,6 +449,9 @@ class IptvRepository(
                             )
                         } else {
                             existing.versionCount += 1
+                            if (existing.tmdbId.isBlank() && s.tmdbId.isNotBlank()) {
+                                existing.tmdbId = s.tmdbId
+                            }
                             if (s.categoryId.isNotBlank()) {
                                 existing.categoryIds.add(s.categoryId)
                             }
@@ -433,15 +484,29 @@ class IptvRepository(
                         }
                     }
 
+                    processed += chunk.size
                     offset += chunk.size
+                    val progressPct = ((processed.toLong() * 85L) / totalCount.coerceAtLeast(1).toLong())
+                        .toInt()
+                        .coerceIn(5, 85)
+                    updateVodPipelineState(
+                        normalizedType,
+                        VodPipelineState(
+                            phase = VodPipelinePhase.ORGANIZING,
+                            progressPercent = progressPct,
+                            processedCount = processed,
+                            totalCount = totalCount,
+                            statusText = "Organizing $sectionLabel ($processed / $totalCount)…"
+                        )
+                    )
                     if (chunk.size < chunkSize) break
                 }
 
-                if (changedStreams.isNotEmpty()) {
-                    val finalBatch = ArrayList(changedStreams)
-                    changedStreams.clear()
-                    runInDbTransaction {
-                        streamDao.insertStreamsBatch(finalBatch)
+                // Best-effort load of V15 Inverted Cloud Global Popularity Index (fail-silent if offline)
+                val ctx = appContext ?: cachedAppContext
+                if (ctx != null) {
+                    runCatching {
+                        GlobalPopularityIndexManager.ensureLoaded(ctx, sharedOkHttpClient)
                     }
                 }
 
@@ -454,12 +519,19 @@ class IptvRepository(
                         upperTag.contains("FRENCH") ||
                         upperTag.contains("VOSTFR") ||
                         upperTag.contains("MULTI")
+                    val globalScore = GlobalPopularityIndexManager.lookupGlobalScore(
+                        streamType = normalizedType,
+                        tmdbId = acc.tmdbId,
+                        cleanTitle = cleanTitle,
+                        releaseYear = acc.releaseYear
+                    )
                     val popularityScore = VodGroupingNormalizer.computePopularityQualityScore(
                         ratingNumeric = acc.ratingNumeric,
                         versionCount = acc.versionCount,
                         releaseYear = acc.releaseYear,
                         hasPoster = acc.posterUrl.isNotBlank(),
-                        isPreferredLang = isPreferredLang
+                        isPreferredLang = isPreferredLang,
+                        globalTmdbScore = globalScore
                     )
                     val categoryIdsCsv = if (acc.categoryIds.isEmpty()) {
                         ""
@@ -491,18 +563,49 @@ class IptvRepository(
                     )
                 }
 
+                updateVodPipelineState(
+                    normalizedType,
+                    VodPipelineState(
+                        phase = VodPipelinePhase.ORGANIZING,
+                        progressPercent = 92,
+                        processedCount = processed,
+                        totalCount = totalCount,
+                        statusText = "Finalizing ${materialized.size} $sectionLabel titles…"
+                    )
+                )
+
                 runInDbTransaction {
                     dao.deleteGroupsByType(playlistId, normalizedType)
                     for (batch in materialized.chunked(2_000)) {
                         dao.insertGroupsBatch(batch)
                     }
                 }
+
+                updateVodPipelineState(
+                    normalizedType,
+                    VodPipelineState(
+                        phase = VodPipelinePhase.READY,
+                        progressPercent = 100,
+                        processedCount = totalCount,
+                        totalCount = totalCount,
+                        statusText = "${materialized.size} $sectionLabel ready"
+                    )
+                )
             } catch (e: Exception) {
-                Log.e("IptvRepository", "Stage 2 VOD indexing failed for $normalizedType: ${e.message}")
+                val safeErr = SecurityManager.redactSensitiveText(e.message ?: "Indexing failed")
+                Log.e("IptvRepository", "Stage 2 VOD indexing failed for $normalizedType: $safeErr")
+                updateVodPipelineState(
+                    normalizedType,
+                    VodPipelineState(
+                        phase = VodPipelinePhase.ERROR,
+                        progressPercent = 0,
+                        processedCount = processed,
+                        totalCount = totalCount,
+                        statusText = "Failed to organize $sectionLabel",
+                        error = safeErr
+                    )
+                )
             } finally {
-                if (statusEmitted && !isSyncInProgress.get()) {
-                    _syncProgress.value = SyncProgress(isSyncing = false, phase = "")
-                }
                 lock.set(false)
             }
         }
@@ -525,6 +628,36 @@ class IptvRepository(
         }
     }
 
+    private fun buildFtsPrefixQuery(rawQuery: String): String? {
+        if (rawQuery.isBlank()) return null
+        var asciiAlnumCount = 0
+        for (ch in rawQuery) {
+            if (ch.code > 127 && ch.isLetter()) {
+                return null
+            }
+            if ((ch in 'a'..'z') || (ch in 'A'..'Z') || (ch in '0'..'9')) {
+                asciiAlnumCount++
+            }
+        }
+        if (asciiAlnumCount < 3) return null
+
+        val tokens = ArrayList<String>()
+        val currentToken = StringBuilder()
+        for (ch in rawQuery) {
+            if ((ch in 'a'..'z') || (ch in 'A'..'Z') || (ch in '0'..'9')) {
+                currentToken.append(ch.lowercaseChar())
+            } else if (currentToken.isNotEmpty()) {
+                tokens.add(currentToken.toString())
+                currentToken.setLength(0)
+            }
+        }
+        if (currentToken.isNotEmpty()) {
+            tokens.add(currentToken.toString())
+        }
+        if (tokens.isEmpty()) return null
+        return tokens.joinToString(" ") { "$it*" }
+    }
+
     fun queryDeduplicatedVodStreams(
         playlistId: Long,
         streamType: String,
@@ -536,12 +669,20 @@ class IptvRepository(
         val hasCategory = !categoryId.isNullOrBlank()
         val hasQuery = cleanQuery.isNotEmpty()
         val safeLimit = limit.coerceAtLeast(1)
+        val ftsQuery = if (hasQuery) buildFtsPrefixQuery(cleanQuery) else null
 
         return queryGroupsWithFallback(
             playlistId = playlistId,
             streamType = streamType,
             primary = { dao ->
                 when {
+                    hasQuery && ftsQuery != null -> dao.searchGroupsFts(
+                        playlistId = playlistId,
+                        streamType = streamType,
+                        categoryId = categoryId?.takeIf { it.isNotBlank() },
+                        ftsQuery = ftsQuery,
+                        limit = safeLimit
+                    )
                     hasQuery -> dao.searchGroups(
                         playlistId = playlistId,
                         streamType = streamType,
@@ -609,9 +750,76 @@ class IptvRepository(
         }
 
         if (canonicalGroupKey.isBlank()) {
-            return@withContext listOf(enrichVersionTag(fallbackStream))
+            val dbRep = fallbackStream.id.takeIf { it > 0L }?.let { streamDao.getStreamByDbId(it) }
+            return@withContext listOf(enrichVersionTag(dbRep ?: fallbackStream))
         }
-        val versions = streamDao.getVersionsByGroupKey(playlistId, streamType, canonicalGroupKey)
+
+        var versions = streamDao.getVersionsByGroupKey(playlistId, streamType, canonicalGroupKey)
+
+        // Legacy fallback for un-rewritten databases where streams.canonicalGroupKey may be blank:
+        // match by tmdbId, clean title, or representativeStreamDbId from vod_catalog_groups.
+        if (versions.isEmpty()) {
+            val groupRow = vodGroupDao?.getGroupByKey(playlistId, streamType, canonicalGroupKey)
+            val tmdbPrefix = "tmdb_${streamType.lowercase(Locale.US)}_"
+            val tmdbFromKey = if (canonicalGroupKey.startsWith(tmdbPrefix)) {
+                canonicalGroupKey.removePrefix(tmdbPrefix).trim()
+            } else {
+                ""
+            }
+            val effectiveTmdbId = fallbackStream.tmdbId.trim().ifBlank { tmdbFromKey }
+
+            if (effectiveTmdbId.isNotBlank()) {
+                versions = streamDao.getVersionsByTmdbId(playlistId, streamType, effectiveTmdbId)
+            }
+
+            if (versions.isEmpty()) {
+                val targetCleanTitle = groupRow?.cleanTitle?.trim()?.ifBlank { null }
+                    ?: VodGroupingNormalizer.extractCleanDisplayTitle(fallbackStream.name)
+                if (targetCleanTitle.length >= 2) {
+                    val candidates = streamDao.getVersionsByTitleLike(playlistId, streamType, targetCleanTitle)
+                    val exactKeyMatches = ArrayList<StreamEntity>()
+                    val cleanTitleMatches = ArrayList<StreamEntity>()
+                    for (candidate in candidates) {
+                        val candidateYear = if (candidate.releaseYear > 0) {
+                            candidate.releaseYear
+                        } else {
+                            VodGroupingNormalizer.extractReleaseYear(candidate.name, "")
+                        }
+                        val computedKey = candidate.canonicalGroupKey.ifBlank {
+                            VodGroupingNormalizer.computeCanonicalGroupKey(
+                                streamType = streamType,
+                                rawName = candidate.name,
+                                tmdbId = candidate.tmdbId,
+                                releaseYear = candidateYear,
+                                streamId = candidate.streamId,
+                                posterUrl = candidate.streamIcon
+                            )
+                        }
+                        if (computedKey == canonicalGroupKey) {
+                            exactKeyMatches.add(candidate)
+                        } else {
+                            val candidateClean = VodGroupingNormalizer.extractCleanDisplayTitle(candidate.name)
+                            val yearCompatible = fallbackStream.releaseYear == 0 ||
+                                candidateYear == 0 ||
+                                candidateYear == fallbackStream.releaseYear
+                            if (candidateClean.equals(targetCleanTitle, ignoreCase = true) && yearCompatible) {
+                                cleanTitleMatches.add(candidate)
+                            }
+                        }
+                    }
+                    versions = if (exactKeyMatches.isNotEmpty()) exactKeyMatches else cleanTitleMatches
+                }
+            }
+
+            if (versions.isEmpty()) {
+                val repId = groupRow?.representativeStreamDbId ?: fallbackStream.id
+                val repRow = if (repId > 0L) streamDao.getStreamByDbId(repId) else null
+                if (repRow != null) {
+                    versions = listOf(repRow)
+                }
+            }
+        }
+
         if (versions.isEmpty()) {
             return@withContext listOf(enrichVersionTag(fallbackStream))
         }
@@ -706,6 +914,43 @@ class IptvRepository(
                     playlistId = playlistId,
                     streamType = streamType,
                     genreKeyword = cleanGenre,
+                    limit = safeLimit
+                )
+            }
+        )
+    }
+
+    fun getPlatformShelfVod(
+        playlistId: Long,
+        streamType: String,
+        platformKeyword: String,
+        limit: Int = 24
+    ): Flow<List<GroupedVodStream>> {
+        val rawKeyword = platformKeyword.trim()
+        if (rawKeyword.isEmpty()) return flowOf(emptyList())
+        val sqlKeyword = when (rawKeyword.lowercase(Locale.US)) {
+            "prime video" -> "Prime"
+            "apple tv+" -> "Apple"
+            "disney+" -> "Disney"
+            else -> rawKeyword
+        }
+        val safeLimit = limit.coerceAtLeast(1)
+        return queryGroupsWithFallback(
+            playlistId = playlistId,
+            streamType = streamType,
+            primary = { dao ->
+                dao.getPlatformShelfGroups(
+                    playlistId = playlistId,
+                    streamType = streamType,
+                    platformKeyword = sqlKeyword,
+                    limit = safeLimit
+                )
+            },
+            fallback = {
+                streamDao.getGenreShelfDeduplicated(
+                    playlistId = playlistId,
+                    streamType = streamType,
+                    genreKeyword = sqlKeyword,
                     limit = safeLimit
                 )
             }
@@ -1283,8 +1528,18 @@ class IptvRepository(
                 }
             }
 
-            // 4. Stage 1: Stream VOD movies in bounded 2,000-row transactional batches
+            // 4. Stage 1: Stream VOD movies in bounded 2,000-row transactional batches with category-aware pre-computation
+            val vodCategoryNameMap = vodCats.associate { it.categoryId to it.categoryName }
             _syncProgress.value = SyncProgress(isSyncing = true, phase = "Syncing Movies catalog…")
+            updateVodPipelineState(
+                "movie",
+                VodPipelineState(
+                    phase = VodPipelinePhase.DOWNLOADING,
+                    progressPercent = 5,
+                    totalCount = playlist.vodCount,
+                    statusText = "Downloading Movies catalog…"
+                )
+            )
             var vodFirstBatchCleared = false
             var vodInsertedCount = 0
             xtreamClient.streamCatalogEntries(
@@ -1294,7 +1549,8 @@ class IptvRepository(
                 action = "get_vod_streams",
                 streamType = "movie",
                 playlistId = playlist.id,
-                batchSize = 2000
+                batchSize = 2000,
+                categoryNameMap = vodCategoryNameMap
             ) { batch, _ ->
                 val safeBatch = batch.filter { item ->
                     !SecurityManager.isAdultContent(item.name) &&
@@ -1310,6 +1566,17 @@ class IptvRepository(
                     }
                     vodInsertedCount += safeBatch.size
                 }
+                val vodDownloadPct = computeDownloadProgressPercent(vodInsertedCount, playlist.vodCount)
+                updateVodPipelineState(
+                    "movie",
+                    VodPipelineState(
+                        phase = VodPipelinePhase.DOWNLOADING,
+                        progressPercent = vodDownloadPct,
+                        processedCount = vodInsertedCount,
+                        totalCount = playlist.vodCount.coerceAtLeast(vodInsertedCount),
+                        statusText = "Downloading Movies ($vodInsertedCount titles)…"
+                    )
+                )
                 _syncProgress.value = SyncProgress(
                     isSyncing = true,
                     phase = "Ingesting Movies ($vodInsertedCount titles)…",
@@ -1328,7 +1595,17 @@ class IptvRepository(
             }
 
             // 5. Stage 1: Stream Series in bounded 2,000-row transactional batches (100% parity with Movies)
+            val seriesCategoryNameMap = seriesCats.associate { it.categoryId to it.categoryName }
             _syncProgress.value = SyncProgress(isSyncing = true, phase = "Syncing Series catalog…")
+            updateVodPipelineState(
+                "series",
+                VodPipelineState(
+                    phase = VodPipelinePhase.DOWNLOADING,
+                    progressPercent = 5,
+                    totalCount = playlist.seriesCount,
+                    statusText = "Downloading Series catalog…"
+                )
+            )
             var seriesFirstBatchCleared = false
             var seriesInsertedCount = 0
             xtreamClient.streamCatalogEntries(
@@ -1338,7 +1615,8 @@ class IptvRepository(
                 action = "get_series",
                 streamType = "series",
                 playlistId = playlist.id,
-                batchSize = 2000
+                batchSize = 2000,
+                categoryNameMap = seriesCategoryNameMap
             ) { batch, _ ->
                 val safeBatch = batch.filter { item ->
                     !SecurityManager.isAdultContent(item.name) &&
@@ -1354,6 +1632,17 @@ class IptvRepository(
                     }
                     seriesInsertedCount += safeBatch.size
                 }
+                val seriesDownloadPct = computeDownloadProgressPercent(seriesInsertedCount, playlist.seriesCount)
+                updateVodPipelineState(
+                    "series",
+                    VodPipelineState(
+                        phase = VodPipelinePhase.DOWNLOADING,
+                        progressPercent = seriesDownloadPct,
+                        processedCount = seriesInsertedCount,
+                        totalCount = playlist.seriesCount.coerceAtLeast(seriesInsertedCount),
+                        statusText = "Downloading Series ($seriesInsertedCount shows)…"
+                    )
+                )
                 _syncProgress.value = SyncProgress(
                     isSyncing = true,
                     phase = "Ingesting Series ($seriesInsertedCount shows)…",
@@ -1392,16 +1681,59 @@ class IptvRepository(
                 itemsProcessed = liveCount + vodCount + seriesCount
             )
 
-            // Stage 2: Decoupled background deduplication & vod_catalog_groups materialization
-            if (vodCount > 0 || seriesCount > 0) {
+            // Stage 2: Independent asynchronous read-only materialization into vod_catalog_groups
+            if (vodCount > 0 && vodGroupDao != null) {
+                updateVodPipelineState(
+                    "movie",
+                    VodPipelineState(
+                        phase = VodPipelinePhase.ORGANIZING,
+                        progressPercent = 0,
+                        processedCount = 0,
+                        totalCount = vodCount,
+                        statusText = "Organizing Movies…"
+                    )
+                )
                 indexingScope.launch {
-                    if (vodCount > 0) {
-                        rebuildVodCatalogGroups(playlist.id, "movie", emitSyncStatus = true)
-                    }
-                    if (seriesCount > 0) {
-                        rebuildVodCatalogGroups(playlist.id, "series", emitSyncStatus = true)
-                    }
+                    rebuildVodCatalogGroups(playlist.id, "movie", emitSyncStatus = false)
                 }
+            } else {
+                updateVodPipelineState(
+                    "movie",
+                    VodPipelineState(
+                        phase = VodPipelinePhase.READY,
+                        progressPercent = 100,
+                        processedCount = vodCount,
+                        totalCount = vodCount,
+                        statusText = "Movies ready"
+                    )
+                )
+            }
+
+            if (seriesCount > 0 && vodGroupDao != null) {
+                updateVodPipelineState(
+                    "series",
+                    VodPipelineState(
+                        phase = VodPipelinePhase.ORGANIZING,
+                        progressPercent = 0,
+                        processedCount = 0,
+                        totalCount = seriesCount,
+                        statusText = "Organizing Series…"
+                    )
+                )
+                indexingScope.launch {
+                    rebuildVodCatalogGroups(playlist.id, "series", emitSyncStatus = false)
+                }
+            } else {
+                updateVodPipelineState(
+                    "series",
+                    VodPipelineState(
+                        phase = VodPipelinePhase.READY,
+                        progressPercent = 100,
+                        processedCount = seriesCount,
+                        totalCount = seriesCount,
+                        statusText = "Series ready"
+                    )
+                )
             }
 
             Result.success(Unit)
@@ -1409,19 +1741,40 @@ class IptvRepository(
             val safeErr = SecurityManager.redactSensitiveText(e.message, playlist.username, plainPassword)
             Log.e("IptvRepository", "Sync failed: $safeErr")
             _syncProgress.value = SyncProgress(isSyncing = false, error = safeErr)
+            if (_moviesPipelineState.value.phase == VodPipelinePhase.DOWNLOADING) {
+                updateVodPipelineState(
+                    "movie",
+                    VodPipelineState(phase = VodPipelinePhase.ERROR, statusText = "Movies sync failed", error = safeErr)
+                )
+            }
+            if (_seriesPipelineState.value.phase == VodPipelinePhase.DOWNLOADING) {
+                updateVodPipelineState(
+                    "series",
+                    VodPipelineState(phase = VodPipelinePhase.ERROR, statusText = "Series sync failed", error = safeErr)
+                )
+            }
             Result.failure(Exception(safeErr))
         } finally {
             isSyncInProgress.set(false)
         }
     }
 
+    private fun computeDownloadProgressPercent(processed: Int, expectedTotal: Int): Int {
+        if (expectedTotal > 0) {
+            return ((processed.toLong() * 90L) / expectedTotal.toLong()).toInt().coerceIn(5, 95)
+        }
+        return (10 + (processed / 2_000) * 3).coerceIn(10, 90)
+    }
+
     /**
      * Granular per-section catalog refresh (`"LIVE"`, `"MOVIE"`, or `"SERIES"`).
-     * Syncs ONLY the requested section's categories and streams while preserving favorites,
-     * playback positions, and all other catalog sections untouched.
+     * Movies and Series acquire completely independent locks (`moviesSyncLock` / `seriesSyncLock`)
+     * and update only their own [VodPipelineState] (`moviesPipelineState` / `seriesPipelineState`)
+     * without blocking each other or mutating `_syncProgress`. Live TV continues using
+     * `isSyncInProgress` and `_syncProgress` for compatibility.
      */
     suspend fun syncPlaylistSection(playlist: PlaylistEntity, sectionType: String): Result<Unit> = withContext(Dispatchers.IO) {
-        val normalizedSection = sectionType.trim().uppercase()
+        val normalizedSection = sectionType.trim().uppercase(Locale.US)
         val (catAction, catType, streamAction, streamType, sectionLabel) = when (normalizedSection) {
             "LIVE", "LIVE_TV" -> SectionSyncSpec("get_live_categories", "LIVE", "get_live_streams", "live", "Live TV")
             "MOVIE", "MOVIES", "VOD" -> SectionSyncSpec("get_vod_categories", "MOVIE", "get_vod_streams", "movie", "Movies")
@@ -1429,11 +1782,37 @@ class IptvRepository(
             else -> return@withContext Result.failure(IllegalArgumentException("Unsupported sectionType: $sectionType"))
         }
 
-        if (!isSyncInProgress.compareAndSet(false, true)) {
-            return@withContext Result.failure(IllegalStateException("A synchronization job is already running"))
+        val isVodSection = streamType == "movie" || streamType == "series"
+        val sectionLock = when (streamType) {
+            "movie" -> moviesSyncLock
+            "series" -> seriesSyncLock
+            else -> isSyncInProgress
         }
 
-        _syncProgress.value = SyncProgress(isSyncing = true, phase = "Refreshing $sectionLabel…")
+        if (!sectionLock.compareAndSet(false, true)) {
+            return@withContext Result.failure(IllegalStateException("A $sectionLabel synchronization job is already running"))
+        }
+
+        val expectedTotal = when (streamType) {
+            "movie" -> playlist.vodCount
+            "series" -> playlist.seriesCount
+            else -> playlist.channelCount
+        }
+        if (isVodSection) {
+            updateVodPipelineState(
+                streamType,
+                VodPipelineState(
+                    phase = VodPipelinePhase.DOWNLOADING,
+                    progressPercent = 5,
+                    processedCount = 0,
+                    totalCount = expectedTotal,
+                    statusText = "Connecting to sync $sectionLabel…"
+                )
+            )
+        } else {
+            _syncProgress.value = SyncProgress(isSyncing = true, phase = "Refreshing $sectionLabel…")
+        }
+
         val plainPassword = SecurityManager.decryptCredential(playlist.password)
 
         try {
@@ -1445,7 +1824,19 @@ class IptvRepository(
             if (authResult.isFailure) {
                 val rawErr = authResult.exceptionOrNull()?.message ?: "Authentication failed"
                 val safeErr = SecurityManager.redactSensitiveText(rawErr, playlist.username, plainPassword)
-                _syncProgress.value = SyncProgress(isSyncing = false, error = safeErr)
+                if (isVodSection) {
+                    updateVodPipelineState(
+                        streamType,
+                        VodPipelineState(
+                            phase = VodPipelinePhase.ERROR,
+                            progressPercent = 0,
+                            statusText = "$sectionLabel sync failed",
+                            error = safeErr
+                        )
+                    )
+                } else {
+                    _syncProgress.value = SyncProgress(isSyncing = false, error = safeErr)
+                }
                 return@withContext Result.failure(Exception(safeErr))
             }
 
@@ -1453,11 +1844,28 @@ class IptvRepository(
             val resolvedServerUrl = authData?.resolvedServerUrl?.takeIf { it.isNotBlank() } ?: playlist.serverUrl.trim()
 
             // 1. Fetch & replace ONLY this section's categories while tracking explicit adult category IDs
+            if (isVodSection) {
+                updateVodPipelineState(
+                    streamType,
+                    VodPipelineState(
+                        phase = VodPipelinePhase.DOWNLOADING,
+                        progressPercent = 10,
+                        processedCount = 0,
+                        totalCount = expectedTotal,
+                        statusText = "Fetching $sectionLabel categories…"
+                    )
+                )
+            }
             val (sectionCatsRaw, adultCatIds) = xtreamClient.fetchCategoriesWithAdultIds(
                 resolvedServerUrl, playlist.username, plainPassword,
                 action = catAction, categoryType = catType, playlistId = playlist.id
             )
             val sectionCats = sectionCatsRaw.filterNot { SecurityManager.isAdultContent(it.categoryName) }
+            val sectionCategoryNameMap = if (isVodSection) {
+                sectionCats.associate { it.categoryId to it.categoryName }
+            } else {
+                emptyMap()
+            }
 
             if (sectionCats.isNotEmpty()) {
                 runInDbTransaction {
@@ -1481,7 +1889,8 @@ class IptvRepository(
                 action = streamAction,
                 streamType = streamType,
                 playlistId = playlist.id,
-                batchSize = 2000
+                batchSize = 2000,
+                categoryNameMap = sectionCategoryNameMap
             ) { batch, _ ->
                 val safeBatch = batch.filter { item ->
                     !SecurityManager.isAdultContent(item.name) &&
@@ -1497,11 +1906,25 @@ class IptvRepository(
                     }
                     insertedCount += safeBatch.size
                 }
-                _syncProgress.value = SyncProgress(
-                    isSyncing = true,
-                    phase = "Refreshing $sectionLabel ($insertedCount items)…",
-                    itemsProcessed = insertedCount
-                )
+                if (isVodSection) {
+                    val downloadPct = computeDownloadProgressPercent(insertedCount, expectedTotal)
+                    updateVodPipelineState(
+                        streamType,
+                        VodPipelineState(
+                            phase = VodPipelinePhase.DOWNLOADING,
+                            progressPercent = downloadPct,
+                            processedCount = insertedCount,
+                            totalCount = expectedTotal.coerceAtLeast(insertedCount),
+                            statusText = "Downloading $sectionLabel ($insertedCount items)…"
+                        )
+                    )
+                } else {
+                    _syncProgress.value = SyncProgress(
+                        isSyncing = true,
+                        phase = "Refreshing $sectionLabel ($insertedCount items)…",
+                        itemsProcessed = insertedCount
+                    )
+                }
             }
 
             if (favIds.isNotEmpty() || savedPositions.isNotEmpty()) {
@@ -1525,27 +1948,62 @@ class IptvRepository(
             }
             playlistDao.updatePlaylist(updatedPlaylist)
 
-            _syncProgress.value = SyncProgress(
-                isSyncing = false,
-                phase = "Complete! Refreshed $insertedCount $sectionLabel items.",
-                itemsProcessed = insertedCount
-            )
-
-            // Stage 2: Decoupled background deduplication & vod_catalog_groups materialization
-            if ((streamType == "movie" || streamType == "series") && insertedCount > 0) {
-                indexingScope.launch {
-                    rebuildVodCatalogGroups(playlist.id, streamType, emitSyncStatus = true)
+            if (isVodSection) {
+                if (insertedCount > 0 && vodGroupDao != null) {
+                    updateVodPipelineState(
+                        streamType,
+                        VodPipelineState(
+                            phase = VodPipelinePhase.ORGANIZING,
+                            progressPercent = 0,
+                            processedCount = 0,
+                            totalCount = insertedCount,
+                            statusText = "Organizing $sectionLabel…"
+                        )
+                    )
+                    // Stage 2: Decoupled read-only background materialization into vod_catalog_groups
+                    indexingScope.launch {
+                        rebuildVodCatalogGroups(playlist.id, streamType, emitSyncStatus = false)
+                    }
+                } else {
+                    updateVodPipelineState(
+                        streamType,
+                        VodPipelineState(
+                            phase = VodPipelinePhase.READY,
+                            progressPercent = 100,
+                            processedCount = insertedCount,
+                            totalCount = insertedCount,
+                            statusText = "$sectionLabel ready"
+                        )
+                    )
                 }
+            } else {
+                _syncProgress.value = SyncProgress(
+                    isSyncing = false,
+                    phase = "Complete! Refreshed $insertedCount $sectionLabel items.",
+                    itemsProcessed = insertedCount
+                )
             }
 
             Result.success(Unit)
         } catch (e: Exception) {
             val safeErr = SecurityManager.redactSensitiveText(e.message, playlist.username, plainPassword)
             Log.e("IptvRepository", "Section sync ($sectionType) failed: $safeErr")
-            _syncProgress.value = SyncProgress(isSyncing = false, error = safeErr)
+            if (isVodSection) {
+                updateVodPipelineState(
+                    streamType,
+                    VodPipelineState(
+                        phase = VodPipelinePhase.ERROR,
+                        progressPercent = 0,
+                        statusText = "$sectionLabel sync failed",
+                        error = safeErr
+                    )
+                )
+            } else {
+                _syncProgress.value = SyncProgress(isSyncing = false, error = safeErr)
+            }
             Result.failure(Exception(safeErr))
         } finally {
-            isSyncInProgress.set(false)
+            sectionLock.set(false)
         }
     }
 
@@ -1579,8 +2037,12 @@ class IptvRepository(
         @Volatile
         private var INSTANCE: IptvRepository? = null
 
+        @Volatile
+        private var cachedAppContext: Context? = null
+
         fun getInstance(context: Context): IptvRepository {
             val appContext = context.applicationContext
+            cachedAppContext = appContext
             initEpisodePreferences(appContext)
             return INSTANCE ?: synchronized(this) {
                 INSTANCE ?: run {
@@ -1593,7 +2055,8 @@ class IptvRepository(
                         parentalDao = db.parentalSettingsDao(),
                         xtreamClient = XtreamClient(sharedOkHttpClient),
                         vodGroupDao = db.vodGroupDao(),
-                        database = db
+                        database = db,
+                        appContext = appContext
                     ).also { INSTANCE = it }
                 }
             }
@@ -1605,6 +2068,7 @@ class IptvRepository(
         private val _episodeResumeStateFlow = MutableStateFlow<Map<String, EpisodeResumeInfo>>(emptyMap())
 
         fun initEpisodePreferences(context: Context) {
+            cachedAppContext = context.applicationContext
             if (episodePrefs == null) {
                 synchronized(this) {
                     if (episodePrefs == null) {

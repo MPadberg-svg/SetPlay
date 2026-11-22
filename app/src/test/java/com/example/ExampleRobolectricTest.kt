@@ -66,6 +66,7 @@ import com.example.ui.theme.TvPlumMagenta
 import com.example.ui.theme.TvTwilightIndigo
 import com.example.util.SecurityManager
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import org.junit.After
 import org.junit.Assert.assertEquals
@@ -6202,7 +6203,556 @@ class TvSyncDeviceSeparationComposeTest {
             db.close()
         }
     }
+
+    @Test
+    fun v14_5_stage2RebuildReadsStreamsWithoutRewriteAndEmitsDeterminateReadyState() = runBlocking {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val db = Room.inMemoryDatabaseBuilder(
+            context,
+            StreamVaultDatabase::class.java
+        ).allowMainThreadQueries().build()
+
+        try {
+            val repo = com.example.data.repository.IptvRepository(
+                playlistDao = db.playlistDao(),
+                categoryDao = db.categoryDao(),
+                streamDao = db.streamDao(),
+                epgDao = db.epgDao(),
+                parentalDao = db.parentalSettingsDao(),
+                vodGroupDao = db.vodGroupDao(),
+                database = db,
+                appContext = context
+            )
+
+            val playlistId = db.playlistDao().insertPlaylist(
+                PlaylistEntity(
+                    name = "V14.5 Stage2 Test",
+                    serverUrl = "http://stage2.example.com",
+                    username = "u",
+                    password = "p",
+                    isActive = true
+                )
+            )
+            db.categoryDao().insertCategories(
+                listOf(
+                    CategoryEntity(
+                        playlistId = playlistId,
+                        categoryId = "cat_en",
+                        categoryName = "[EN] 4K MOVIES",
+                        type = "MOVIE"
+                    ),
+                    CategoryEntity(
+                        playlistId = playlistId,
+                        categoryId = "cat_fr",
+                        categoryName = "[FR] FILMS",
+                        type = "MOVIE"
+                    )
+                )
+            )
+
+            // Legacy pre-V14.5 rows with intentionally blank canonicalGroupKey & versionTag
+            val legacyRows = listOf(
+                StreamEntity(
+                    playlistId = playlistId,
+                    streamId = 5001L,
+                    name = "[EN] Dune: Part Two (2024) 4K",
+                    streamType = "movie",
+                    streamIcon = "https://image.tmdb.org/t/p/w500/dune2poster12345.jpg",
+                    categoryId = "cat_en",
+                    rating = "8.4",
+                    ratingNumeric = 8.4,
+                    releaseYear = 2024,
+                    addedEpoch = 1710000100L,
+                    genres = "Sci-Fi, Action",
+                    tmdbId = "693134",
+                    canonicalGroupKey = "",
+                    versionTag = ""
+                ),
+                StreamEntity(
+                    playlistId = playlistId,
+                    streamId = 5002L,
+                    name = "[FR] Dune: Deuxieme Partie (2024)",
+                    streamType = "movie",
+                    streamIcon = "https://image.tmdb.org/t/p/w500/dune2poster12345.jpg",
+                    categoryId = "cat_fr",
+                    rating = "8.4",
+                    ratingNumeric = 8.4,
+                    releaseYear = 2024,
+                    addedEpoch = 1710000050L,
+                    genres = "Sci-Fi, Action",
+                    tmdbId = "693134",
+                    canonicalGroupKey = "",
+                    versionTag = ""
+                ),
+                StreamEntity(
+                    playlistId = playlistId,
+                    streamId = 5003L,
+                    name = "Interstellar (2014)",
+                    streamType = "movie",
+                    streamIcon = "https://image.tmdb.org/t/p/w500/interstellar123.jpg",
+                    categoryId = "cat_en",
+                    rating = "8.7",
+                    ratingNumeric = 8.7,
+                    releaseYear = 2014,
+                    addedEpoch = 1710000000L,
+                    genres = "Sci-Fi, Drama",
+                    tmdbId = "157336",
+                    canonicalGroupKey = "",
+                    versionTag = ""
+                )
+            )
+            db.streamDao().insertStreamsBatch(legacyRows)
+
+            repo.rebuildVodCatalogGroups(playlistId, "movie")
+
+            // 1. Materialized vod_catalog_groups populated and deduplicated (3 rows -> 2 groups)
+            val groups = db.vodGroupDao().getTopPopularGroups(playlistId, "movie", limit = 20).first()
+            assertEquals(2, groups.size)
+            val duneGroup = groups.first { it.groupKey.contains("693134") }
+            assertEquals(2, duneGroup.versionCount)
+            assertEquals("Dune: Part Two", duneGroup.cleanTitle)
+
+            // 2. Zero write-backs to streams table (canonicalGroupKey and versionTag remain untouched)
+            val rawStreamsAfter = db.streamDao().getStreamsInitial(playlistId, "movie", limit = 20).first()
+            assertEquals(3, rawStreamsAfter.size)
+            for (row in rawStreamsAfter) {
+                assertEquals(
+                    "Expected Stage 2 read-only projection to NOT rewrite streams.canonicalGroupKey",
+                    "",
+                    row.canonicalGroupKey
+                )
+                assertEquals(
+                    "Expected Stage 2 read-only projection to NOT rewrite streams.versionTag",
+                    "",
+                    row.versionTag
+                )
+            }
+
+            // 3. Determinate progress ended in READY with 100%
+            val finalState = repo.moviesPipelineState.value
+            assertEquals(com.example.data.repository.VodPipelinePhase.READY, finalState.phase)
+            assertEquals(100, finalState.progressPercent)
+            assertEquals(3, finalState.processedCount)
+            assertEquals(3, finalState.totalCount)
+        } finally {
+            db.close()
+        }
+    }
+
+    @Test
+    fun v14_5_moviesAndSeriesPipelinesAreCompletelyIndependent() = runBlocking {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val db = Room.inMemoryDatabaseBuilder(
+            context,
+            StreamVaultDatabase::class.java
+        ).allowMainThreadQueries().build()
+
+        try {
+            val repo = com.example.data.repository.IptvRepository(
+                playlistDao = db.playlistDao(),
+                categoryDao = db.categoryDao(),
+                streamDao = db.streamDao(),
+                epgDao = db.epgDao(),
+                parentalDao = db.parentalSettingsDao(),
+                vodGroupDao = db.vodGroupDao(),
+                database = db,
+                appContext = context
+            )
+
+            val playlistId = db.playlistDao().insertPlaylist(
+                PlaylistEntity(
+                    name = "V14.5 Pipeline Isolation Test",
+                    serverUrl = "http://isolation.example.com",
+                    username = "u",
+                    password = "p",
+                    isActive = true
+                )
+            )
+
+            db.streamDao().insertStreamsBatch(
+                listOf(
+                    StreamEntity(
+                        playlistId = playlistId,
+                        streamId = 6001L,
+                        name = "Inception (2010)",
+                        streamType = "movie",
+                        streamIcon = "https://image.tmdb.org/t/p/w500/inception.jpg",
+                        categoryId = "m1",
+                        rating = "8.8",
+                        ratingNumeric = 8.8,
+                        releaseYear = 2010,
+                        addedEpoch = 1710000100L
+                    ),
+                    StreamEntity(
+                        playlistId = playlistId,
+                        streamId = 7001L,
+                        name = "Severance (2022)",
+                        streamType = "series",
+                        streamIcon = "https://image.tmdb.org/t/p/w500/severance.jpg",
+                        categoryId = "s1",
+                        rating = "8.7",
+                        ratingNumeric = 8.7,
+                        releaseYear = 2022,
+                        addedEpoch = 1710000200L
+                    ),
+                    StreamEntity(
+                        playlistId = playlistId,
+                        streamId = 7002L,
+                        name = "Dark (2017)",
+                        streamType = "series",
+                        streamIcon = "https://image.tmdb.org/t/p/w500/dark.jpg",
+                        categoryId = "s1",
+                        rating = "8.8",
+                        ratingNumeric = 8.8,
+                        releaseYear = 2017,
+                        addedEpoch = 1710000150L
+                    )
+                )
+            )
+
+            assertEquals(com.example.data.repository.VodPipelinePhase.IDLE, repo.moviesPipelineState.value.phase)
+            assertEquals(com.example.data.repository.VodPipelinePhase.IDLE, repo.seriesPipelineState.value.phase)
+
+            // Rebuild Series only -> Movies pipeline MUST stay IDLE
+            repo.rebuildVodCatalogGroups(playlistId, "series")
+            val seriesAfterSeriesRebuild = repo.seriesPipelineState.value
+            assertEquals(com.example.data.repository.VodPipelinePhase.READY, seriesAfterSeriesRebuild.phase)
+            assertEquals(100, seriesAfterSeriesRebuild.progressPercent)
+            assertEquals(2, seriesAfterSeriesRebuild.totalCount)
+            assertEquals(
+                "Series finishing READY must not mutate moviesPipelineState",
+                com.example.data.repository.VodPipelinePhase.IDLE,
+                repo.moviesPipelineState.value.phase
+            )
+
+            // Rebuild Movies only -> Series pipeline MUST stay unchanged
+            repo.rebuildVodCatalogGroups(playlistId, "movie")
+            val moviesAfterMovieRebuild = repo.moviesPipelineState.value
+            assertEquals(com.example.data.repository.VodPipelinePhase.READY, moviesAfterMovieRebuild.phase)
+            assertEquals(100, moviesAfterMovieRebuild.progressPercent)
+            assertEquals(1, moviesAfterMovieRebuild.totalCount)
+            assertEquals(
+                "Movies finishing READY must not overwrite seriesPipelineState",
+                seriesAfterSeriesRebuild,
+                repo.seriesPipelineState.value
+            )
+        } finally {
+            db.close()
+        }
+    }
+
+    @Test
+    fun v14_5_migration5To6CreatesFts4AndSearchGroupsFtsMatchesUnder50ms() = runBlocking {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+
+        // 1. Verify MIGRATION_5_6 upgrades a v5 vod_catalog_groups table & rebuilds FTS4 index
+        val dbName = "v14_5_mig56_test_${System.nanoTime()}.db"
+        val helperConfig = androidx.sqlite.db.SupportSQLiteOpenHelper.Configuration.builder(context)
+            .name(dbName)
+            .callback(object : androidx.sqlite.db.SupportSQLiteOpenHelper.Callback(5) {
+                override fun onCreate(db: androidx.sqlite.db.SupportSQLiteDatabase) {
+                    StreamVaultDatabase.MIGRATION_4_5.migrate(db)
+                    db.execSQL(
+                        """
+                        INSERT INTO vod_catalog_groups (
+                            playlistId, streamType, groupKey, representativeStreamDbId, representativeStreamId,
+                            cleanTitle, posterUrl, rating, ratingNumeric, releaseYear, addedEpoch, genres,
+                            primaryCategoryId, categoryIdsCsv, versionCount, defaultVersionTag,
+                            containerExtension, popularityScore
+                        ) VALUES
+                        (1, 'series', 'tmdb_series_1', 10, 100, 'Dune: Prophecy', 'https://p/1.jpg', '8.2', 8.2, 2024, 1710000200, 'Sci-Fi, Drama', 'c1', ',c1,', 4, 'English', 'mp4', 18.5),
+                        (1, 'series', 'tmdb_series_2', 11, 101, 'The Bear', 'https://p/2.jpg', '8.6', 8.6, 2022, 1710000100, 'Comedy, Drama', 'c2', ',c2,', 3, 'English', 'mp4', 17.2)
+                        """.trimIndent()
+                    )
+                }
+
+                override fun onUpgrade(
+                    db: androidx.sqlite.db.SupportSQLiteDatabase,
+                    oldVersion: Int,
+                    newVersion: Int
+                ) = Unit
+            })
+            .build()
+        val helper = androidx.sqlite.db.framework.FrameworkSQLiteOpenHelperFactory().create(helperConfig)
+        try {
+            val sqliteDb = helper.writableDatabase
+            StreamVaultDatabase.MIGRATION_5_6.migrate(sqliteDb)
+
+            sqliteDb.query(
+                """
+                SELECT g.cleanTitle
+                FROM vod_catalog_groups g
+                JOIN vod_catalog_groups_fts fts ON g.rowid = fts.rowid
+                WHERE vod_catalog_groups_fts MATCH 'dune* proph*'
+                """.trimIndent()
+            ).use { cursor ->
+                assertTrue("Expected MIGRATION_5_6 FTS4 rebuild to match 'Dune: Prophecy'", cursor.moveToFirst())
+                assertEquals("Dune: Prophecy", cursor.getString(0))
+                assertEquals(1, cursor.count)
+            }
+        } finally {
+            helper.close()
+            context.deleteDatabase(dbName)
+        }
+
+        // 2. Verify Room v6 searchGroupsFts returns matching titles in < 50ms
+        val roomDb = Room.inMemoryDatabaseBuilder(
+            context,
+            StreamVaultDatabase::class.java
+        ).allowMainThreadQueries().build()
+
+        try {
+            val playlistId = 88L
+            val seedGroups = mutableListOf<com.example.data.model.VodCatalogGroupEntity>()
+            seedGroups.add(
+                com.example.data.model.VodCatalogGroupEntity(
+                    playlistId = playlistId,
+                    streamType = "movie",
+                    groupKey = "tmdb_movie_9001",
+                    representativeStreamDbId = 9001L,
+                    representativeStreamId = 9001L,
+                    cleanTitle = "Dune: Prophecy Extended",
+                    posterUrl = "https://image.tmdb.org/t/p/w500/dune_proph.jpg",
+                    rating = "8.5",
+                    ratingNumeric = 8.5,
+                    releaseYear = 2025,
+                    addedEpoch = 1710009001L,
+                    genres = "Sci-Fi, Adventure",
+                    primaryCategoryId = "cat_scifi",
+                    categoryIdsCsv = ",cat_scifi,",
+                    versionCount = 6,
+                    defaultVersionTag = "English • 4K",
+                    containerExtension = "mkv",
+                    popularityScore = 24.5
+                )
+            )
+            for (i in 1..60) {
+                seedGroups.add(
+                    com.example.data.model.VodCatalogGroupEntity(
+                        playlistId = playlistId,
+                        streamType = "movie",
+                        groupKey = "tmdb_movie_seed_$i",
+                        representativeStreamDbId = 9100L + i,
+                        representativeStreamId = 9100L + i,
+                        cleanTitle = "Catalog Feature Film $i",
+                        posterUrl = "https://image.tmdb.org/t/p/w500/film_$i.jpg",
+                        rating = "7.4",
+                        ratingNumeric = 7.4,
+                        releaseYear = 2020 + (i % 6),
+                        addedEpoch = 1710000000L + i,
+                        genres = "Action, Thriller",
+                        primaryCategoryId = "cat_action",
+                        categoryIdsCsv = ",cat_action,",
+                        versionCount = 2,
+                        defaultVersionTag = "English",
+                        containerExtension = "mp4",
+                        popularityScore = 10.0 + (i % 5)
+                    )
+                )
+            }
+            roomDb.vodGroupDao().insertGroupsBatch(seedGroups)
+
+            // Warm up Room Flow dispatcher once, then time the FTS4 query
+            roomDb.vodGroupDao().searchGroupsFts(playlistId, "movie", null, "catalog*", 10).first()
+
+            val startNs = System.nanoTime()
+            val matches = roomDb.vodGroupDao().searchGroupsFts(
+                playlistId = playlistId,
+                streamType = "movie",
+                categoryId = null,
+                ftsQuery = "dune* proph*",
+                limit = 20
+            ).first()
+            val elapsedMs = (System.nanoTime() - startNs) / 1_000_000L
+
+            assertEquals(1, matches.size)
+            assertEquals("Dune: Prophecy Extended", matches.first().cleanTitle)
+            assertTrue("Expected searchGroupsFts to finish in < 50ms, took ${elapsedMs}ms", elapsedMs < 50L)
+        } finally {
+            roomDb.close()
+        }
+    }
+
+    @Test
+    fun v14_5_globalPopularityIndexBoostsBlockbustersAboveUnverifiedPlaceholderTen() {
+        try {
+            val sampleIndexJson = """
+                {
+                  "v": 1,
+                  "m": {
+                    "693134": 94.5
+                  },
+                  "s": {
+                    "1396": 98.2
+                  },
+                  "t": {
+                    "m:dune part two_2024": 94.5,
+                    "s:breaking bad_2008": 98.2
+                  }
+                }
+            """.trimIndent()
+            com.example.data.remote.GlobalPopularityIndexManager.loadFromJsonStringForTest(sampleIndexJson)
+
+            val byTmdb = com.example.data.remote.GlobalPopularityIndexManager.lookupGlobalScore(
+                streamType = "movie",
+                tmdbId = "693134",
+                cleanTitle = "Dune: Part Two",
+                releaseYear = 2024
+            )
+            assertEquals(94.5, byTmdb, 0.001)
+
+            val byTitleFallback = com.example.data.remote.GlobalPopularityIndexManager.lookupGlobalScore(
+                streamType = "movie",
+                tmdbId = "",
+                cleanTitle = "Dune: Part Two",
+                releaseYear = 2024
+            )
+            assertEquals(94.5, byTitleFallback, 0.001)
+
+            val blockbusterScore = com.example.data.model.VodGroupingNormalizer.computePopularityQualityScore(
+                ratingNumeric = 8.3,
+                versionCount = 3,
+                releaseYear = 2024,
+                hasPoster = true,
+                isPreferredLang = true,
+                globalTmdbScore = byTmdb
+            )
+            val unverifiedTenJunkScore = com.example.data.model.VodGroupingNormalizer.computePopularityQualityScore(
+                ratingNumeric = 10.0,
+                versionCount = 1,
+                releaseYear = 2026,
+                hasPoster = true,
+                isPreferredLang = true,
+                globalTmdbScore = 0.0
+            )
+            assertTrue(
+                "Expected Global Popularity Index blockbuster ($blockbusterScore) to strongly outrank 1-version 10.0 junk ($unverifiedTenJunkScore)",
+                blockbusterScore > unverifiedTenJunkScore + 5.0
+            )
+
+            // Verify unverified 10.0 rating badge suppression + 5+ version TRENDING badge rule
+            assertTrue(com.example.data.model.VodGroupingNormalizer.isPlaceholderPerfectRating(10.0, 1))
+            val placeholderOneVersion = StreamEntity(
+                playlistId = 1L,
+                streamId = 1L,
+                name = "Obscure Upload",
+                streamType = "movie",
+                categoryId = "cat_obscure",
+                rating = "10.0",
+                ratingNumeric = 10.0
+            )
+            assertEquals(
+                null,
+                com.example.ui.vod.formatNormalizedRating(placeholderOneVersion, versionCount = 1)
+            )
+            assertEquals(
+                false,
+                com.example.ui.vod.isTrendingPlaceholderRating(placeholderOneVersion, versionCount = 1)
+            )
+            assertEquals(
+                true,
+                com.example.ui.vod.isTrendingPlaceholderRating(placeholderOneVersion, versionCount = 6)
+            )
+        } finally {
+            com.example.data.remote.GlobalPopularityIndexManager.clearForTest()
+        }
+    }
+
+    @Test
+    fun v14_5_vodViewModelShelfPaginationBreaks20ItemCeiling() = runBlocking {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val application = context.applicationContext as Application
+        val db = StreamVaultDatabase.getInstance(context)
+        val viewModel = com.example.ui.vod.VodViewModel(application)
+        var seededPlaylistId = -1L
+
+        try {
+            // 1. Horizontal shelf expansion steps: 24 -> 48 -> 72 -> 120 (capped at 120)
+            val shelfId = "movie_top_rated"
+            viewModel.loadMoreForShelf(shelfId)
+            assertEquals(48, viewModel.shelfLimits.value[shelfId])
+            viewModel.loadMoreForShelf(shelfId)
+            assertEquals(72, viewModel.shelfLimits.value[shelfId])
+            viewModel.loadMoreForShelf(shelfId)
+            assertEquals(120, viewModel.shelfLimits.value[shelfId])
+            viewModel.loadMoreForShelf(shelfId)
+            assertEquals(120, viewModel.shelfLimits.value[shelfId])
+
+            // 2. Seed an active playlist + 75 high-rated movies in vod_catalog_groups
+            seededPlaylistId = db.playlistDao().insertPlaylist(
+                PlaylistEntity(
+                    name = "V14.5 Shelf Pagination Test",
+                    serverUrl = "http://pagination.example.com",
+                    username = "u",
+                    password = "p",
+                    isActive = true
+                )
+            )
+            db.playlistDao().setActivePlaylist(seededPlaylistId)
+            val groups = (1..75).map { idx ->
+                com.example.data.model.VodCatalogGroupEntity(
+                    playlistId = seededPlaylistId,
+                    streamType = "movie",
+                    groupKey = "tmdb_movie_page_$idx",
+                    representativeStreamDbId = 80000L + idx,
+                    representativeStreamId = 80000L + idx,
+                    cleanTitle = "Acclaimed Feature $idx",
+                    posterUrl = "https://image.tmdb.org/t/p/w500/acclaimed_$idx.jpg",
+                    rating = "8.6",
+                    ratingNumeric = 8.6,
+                    releaseYear = 2024,
+                    addedEpoch = 1710000000L + idx,
+                    genres = "Drama, Thriller",
+                    primaryCategoryId = "cat_top",
+                    categoryIdsCsv = ",cat_top,",
+                    versionCount = 4,
+                    defaultVersionTag = "English • 4K",
+                    containerExtension = "mp4",
+                    popularityScore = 25.0 - (idx * 0.05)
+                )
+            }
+            db.vodGroupDao().insertGroupsBatch(groups)
+
+            // 3. Open See All grid -> first page emits 60 items (breaks the old 20-item ceiling)
+            viewModel.openShelfSeeAll(com.example.ui.vod.VodTab.MOVIES, com.example.ui.vod.VodShelfFilter.TopRated)
+            assertEquals(com.example.ui.vod.VodShelfFilter.TopRated, viewModel.selectedMovieShelfFilter.value)
+
+            val collectorScope = kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.Default)
+            val collectorJob = collectorScope.launch {
+                viewModel.movieShelfGridItems.collect { /* keep WhileSubscribed active */ }
+            }
+            try {
+                val awaitGridCount: (Int) -> Int = { expectedCount ->
+                    val deadlineMs = System.currentTimeMillis() + 5_000L
+                    while (System.currentTimeMillis() < deadlineMs && viewModel.movieShelfGridItems.value.size < expectedCount) {
+                        org.robolectric.Shadows.shadowOf(android.os.Looper.getMainLooper()).idle()
+                        Thread.sleep(20L)
+                    }
+                    org.robolectric.Shadows.shadowOf(android.os.Looper.getMainLooper()).idle()
+                    viewModel.movieShelfGridItems.value.size
+                }
+
+                assertEquals(60, awaitGridCount(60))
+
+                // 4. Load next page (+60) -> emits all 75 seeded items
+                viewModel.loadMoreShelfGrid(com.example.ui.vod.VodTab.MOVIES)
+                assertEquals(75, awaitGridCount(75))
+
+                // 5. Close See All grid clears filter cleanly
+                viewModel.closeShelfSeeAll(com.example.ui.vod.VodTab.MOVIES)
+                assertEquals(null, viewModel.selectedMovieShelfFilter.value)
+            } finally {
+                collectorJob.cancel()
+            }
+        } finally {
+            if (seededPlaylistId > 0L) {
+                db.vodGroupDao().deleteGroupsByType(seededPlaylistId, "movie")
+                db.playlistDao().deletePlaylist(seededPlaylistId)
+            }
+        }
+    }
 }
+
 
 
 

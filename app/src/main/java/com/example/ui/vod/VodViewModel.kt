@@ -11,6 +11,8 @@ import com.example.data.remote.SeriesDetails
 import com.example.data.remote.VodMovieDetails
 import com.example.data.repository.EpisodeResumeInfo
 import com.example.data.repository.IptvRepository
+import com.example.data.repository.VodPipelinePhase
+import com.example.data.repository.VodPipelineState
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.FlowPreview
 import kotlinx.coroutines.Job
@@ -52,18 +54,29 @@ data class CategorizedVodItem(
     val bucket: VodCategoryBucket
 )
 
+sealed class VodShelfFilter {
+    data object RecentlyAdded : VodShelfFilter()
+    data object TopRated : VodShelfFilter()
+    data object Recommended : VodShelfFilter()
+    data class Genre(val keyword: String) : VodShelfFilter()
+    data class Platform(val keyword: String) : VodShelfFilter()
+}
+
 data class VodDiscoveryShelf(
     val id: String,
     val title: String,
     val subtitle: String = "",
-    val items: List<GroupedVodStream>
+    val items: List<GroupedVodStream>,
+    val shelfFilter: VodShelfFilter = VodShelfFilter.RecentlyAdded,
+    val canLoadMore: Boolean = false
 )
 
 data class VodSyncBannerState(
     val isSyncing: Boolean = false,
     val statusText: String = "",
     val isError: Boolean = false,
-    val isCompleted: Boolean = false
+    val isCompleted: Boolean = false,
+    val progressPercent: Int = 0
 )
 
 @OptIn(ExperimentalCoroutinesApi::class, FlowPreview::class)
@@ -227,7 +240,33 @@ class VodViewModel(application: Application) : AndroidViewModel(application) {
         }
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000L), emptyList())
 
-    // Materialized <5ms Discovery Shelves (LIMIT 20 per shelf; paused during active sync to prevent stutter)
+    // Unlimited Shelf "See All" Filter & Paginated Grid Flows (60 initial, +60 per page)
+    private val _selectedMovieShelfFilter = MutableStateFlow<VodShelfFilter?>(null)
+    val selectedMovieShelfFilter: StateFlow<VodShelfFilter?> = _selectedMovieShelfFilter.asStateFlow()
+
+    private val _selectedSeriesShelfFilter = MutableStateFlow<VodShelfFilter?>(null)
+    val selectedSeriesShelfFilter: StateFlow<VodShelfFilter?> = _selectedSeriesShelfFilter.asStateFlow()
+
+    private val _movieShelfGridLimit = MutableStateFlow(SHELF_GRID_PAGE_SIZE)
+    private val _seriesShelfGridLimit = MutableStateFlow(SHELF_GRID_PAGE_SIZE)
+
+    val movieShelfGridItems: StateFlow<List<GroupedVodStream>> = buildShelfGridFlow(
+        streamType = "movie",
+        filterFlow = _selectedMovieShelfFilter,
+        limitFlow = _movieShelfGridLimit
+    ).stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000L), emptyList())
+
+    val seriesShelfGridItems: StateFlow<List<GroupedVodStream>> = buildShelfGridFlow(
+        streamType = "series",
+        filterFlow = _selectedSeriesShelfFilter,
+        limitFlow = _seriesShelfGridLimit
+    ).stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000L), emptyList())
+
+    // Per-shelf horizontal expansion (default 24 -> 48 -> 72 -> 120)
+    private val _shelfLimits = MutableStateFlow<Map<String, Int>>(emptyMap())
+    val shelfLimits: StateFlow<Map<String, Int>> = _shelfLimits.asStateFlow()
+
+    // Materialized <5ms Discovery Shelves (section-isolated pipeline observation + dynamic platform shelves)
     val movieDiscoveryShelves: StateFlow<List<VodDiscoveryShelf>> =
         buildDiscoveryShelvesFlow(streamType = "movie")
             .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000L), emptyList())
@@ -271,69 +310,194 @@ class VodViewModel(application: Application) : AndroidViewModel(application) {
     private val _similarMovies = MutableStateFlow<List<GroupedVodStream>>(emptyList())
     val similarMovies: StateFlow<List<GroupedVodStream>> = _similarMovies.asStateFlow()
 
-    // Pull-to-Refresh & Sync Banner Telemetry
+    // Pull-to-Refresh & Isolated Per-Section Sync Banner Telemetry
     private val _isRefreshingMovies = MutableStateFlow(false)
     val isRefreshingMovies: StateFlow<Boolean> = _isRefreshingMovies.asStateFlow()
 
     private val _isRefreshingSeries = MutableStateFlow(false)
     val isRefreshingSeries: StateFlow<Boolean> = _isRefreshingSeries.asStateFlow()
 
-    private val _vodSyncBannerState = MutableStateFlow(VodSyncBannerState())
-    val vodSyncBannerState: StateFlow<VodSyncBannerState> = _vodSyncBannerState.asStateFlow()
+    private val _movieBannerState = MutableStateFlow(VodSyncBannerState())
+    val movieBannerState: StateFlow<VodSyncBannerState> = _movieBannerState.asStateFlow()
+
+    private val _seriesBannerState = MutableStateFlow(VodSyncBannerState())
+    val seriesBannerState: StateFlow<VodSyncBannerState> = _seriesBannerState.asStateFlow()
+
+    // Compatibility alias pointing to movieBannerState
+    val vodSyncBannerState: StateFlow<VodSyncBannerState> = movieBannerState
 
     private var lastMoviesRefreshMs: Long = 0L
     private var lastSeriesRefreshMs: Long = 0L
-    private var bannerAutoClearJob: Job? = null
+    private var movieBannerAutoClearJob: Job? = null
+    private var seriesBannerAutoClearJob: Job? = null
 
     init {
         viewModelScope.launch {
-            repository.syncProgress.collect { progress ->
-                when {
-                    progress.isSyncing -> {
-                        bannerAutoClearJob?.cancel()
-                        _vodSyncBannerState.value = VodSyncBannerState(
-                            isSyncing = true,
-                            statusText = progress.phase.ifBlank { "Syncing catalog…" },
-                            isError = false,
-                            isCompleted = false
-                        )
-                    }
-                    !progress.error.isNullOrBlank() -> {
-                        bannerAutoClearJob?.cancel()
-                        _vodSyncBannerState.value = VodSyncBannerState(
-                            isSyncing = false,
-                            statusText = progress.error,
-                            isError = true,
-                            isCompleted = false
-                        )
-                    }
-                    progress.phase.startsWith("Complete", ignoreCase = true) -> {
-                        showTransientCompletionBanner("Catalog updated")
-                    }
-                }
+            repository.moviesPipelineState.collect { state ->
+                applyPipelineStateToBanner(
+                    state = state,
+                    targetBanner = _movieBannerState,
+                    cancelExistingAutoClear = { movieBannerAutoClearJob?.cancel() },
+                    setAutoClearJob = { job -> movieBannerAutoClearJob = job }
+                )
+            }
+        }
+        viewModelScope.launch {
+            repository.seriesPipelineState.collect { state ->
+                applyPipelineStateToBanner(
+                    state = state,
+                    targetBanner = _seriesBannerState,
+                    cancelExistingAutoClear = { seriesBannerAutoClearJob?.cancel() },
+                    setAutoClearJob = { job -> seriesBannerAutoClearJob = job }
+                )
             }
         }
     }
 
-    private fun showTransientCompletionBanner(message: String, durationMs: Long = 3_000L) {
-        bannerAutoClearJob?.cancel()
-        _vodSyncBannerState.value = VodSyncBannerState(
+    private fun applyPipelineStateToBanner(
+        state: VodPipelineState,
+        targetBanner: MutableStateFlow<VodSyncBannerState>,
+        cancelExistingAutoClear: () -> Unit,
+        setAutoClearJob: (Job?) -> Unit
+    ) {
+        when (state.phase) {
+            VodPipelinePhase.IDLE -> {
+                cancelExistingAutoClear()
+                setAutoClearJob(null)
+                targetBanner.value = VodSyncBannerState()
+            }
+            VodPipelinePhase.DOWNLOADING, VodPipelinePhase.ORGANIZING -> {
+                cancelExistingAutoClear()
+                setAutoClearJob(null)
+                targetBanner.value = VodSyncBannerState(
+                    isSyncing = true,
+                    statusText = state.statusText.ifBlank {
+                        if (state.phase == VodPipelinePhase.DOWNLOADING) "Downloading catalog…" else "Organizing catalog…"
+                    },
+                    isError = false,
+                    isCompleted = false,
+                    progressPercent = state.progressPercent.coerceIn(0, 100)
+                )
+            }
+            VodPipelinePhase.ERROR -> {
+                cancelExistingAutoClear()
+                setAutoClearJob(null)
+                targetBanner.value = VodSyncBannerState(
+                    isSyncing = false,
+                    statusText = state.error?.takeIf { it.isNotBlank() }
+                        ?: state.statusText.ifBlank { "Sync failed" },
+                    isError = true,
+                    isCompleted = false,
+                    progressPercent = 0
+                )
+            }
+            VodPipelinePhase.READY -> {
+                cancelExistingAutoClear()
+                targetBanner.value = VodSyncBannerState(
+                    isSyncing = false,
+                    statusText = state.statusText.ifBlank { "Catalog updated" },
+                    isError = false,
+                    isCompleted = true,
+                    progressPercent = 100
+                )
+                val job = viewModelScope.launch {
+                    delay(READY_BANNER_AUTO_DISMISS_MS)
+                    if (targetBanner.value.isCompleted && !targetBanner.value.isSyncing) {
+                        targetBanner.value = VodSyncBannerState()
+                    }
+                }
+                setAutoClearJob(job)
+            }
+        }
+    }
+
+    private fun showTransientCompletionBanner(
+        tab: VodTab,
+        message: String,
+        durationMs: Long = READY_BANNER_AUTO_DISMISS_MS
+    ) {
+        val targetBanner = if (tab == VodTab.MOVIES) _movieBannerState else _seriesBannerState
+        if (tab == VodTab.MOVIES) {
+            movieBannerAutoClearJob?.cancel()
+        } else {
+            seriesBannerAutoClearJob?.cancel()
+        }
+        targetBanner.value = VodSyncBannerState(
             isSyncing = false,
             statusText = message,
             isError = false,
-            isCompleted = true
+            isCompleted = true,
+            progressPercent = 100
         )
-        bannerAutoClearJob = viewModelScope.launch {
+        val job = viewModelScope.launch {
             delay(durationMs)
-            if (_vodSyncBannerState.value.isCompleted && !_vodSyncBannerState.value.isSyncing) {
-                _vodSyncBannerState.value = VodSyncBannerState()
+            if (targetBanner.value.isCompleted && !targetBanner.value.isSyncing) {
+                targetBanner.value = VodSyncBannerState()
             }
+        }
+        if (tab == VodTab.MOVIES) {
+            movieBannerAutoClearJob = job
+        } else {
+            seriesBannerAutoClearJob = job
         }
     }
 
-    fun dismissSyncBanner() {
-        bannerAutoClearJob?.cancel()
-        _vodSyncBannerState.value = VodSyncBannerState()
+    fun dismissSyncBanner(tab: VodTab? = null) {
+        if (tab == null || tab == VodTab.MOVIES) {
+            movieBannerAutoClearJob?.cancel()
+            movieBannerAutoClearJob = null
+            _movieBannerState.value = VodSyncBannerState()
+        }
+        if (tab == null || tab == VodTab.SERIES) {
+            seriesBannerAutoClearJob?.cancel()
+            seriesBannerAutoClearJob = null
+            _seriesBannerState.value = VodSyncBannerState()
+        }
+    }
+
+    fun openShelfSeeAll(tab: VodTab, filter: VodShelfFilter) {
+        if (tab == VodTab.MOVIES) {
+            _selectedMovieShelfFilter.value = filter
+            _movieShelfGridLimit.value = SHELF_GRID_PAGE_SIZE
+        } else {
+            _selectedSeriesShelfFilter.value = filter
+            _seriesShelfGridLimit.value = SHELF_GRID_PAGE_SIZE
+        }
+    }
+
+    fun closeShelfSeeAll(tab: VodTab) {
+        if (tab == VodTab.MOVIES) {
+            _selectedMovieShelfFilter.value = null
+            _movieShelfGridLimit.value = SHELF_GRID_PAGE_SIZE
+        } else {
+            _selectedSeriesShelfFilter.value = null
+            _seriesShelfGridLimit.value = SHELF_GRID_PAGE_SIZE
+        }
+    }
+
+    fun loadMoreShelfGrid(tab: VodTab) {
+        if (tab == VodTab.MOVIES) {
+            _movieShelfGridLimit.value += SHELF_GRID_PAGE_SIZE
+        } else {
+            _seriesShelfGridLimit.value += SHELF_GRID_PAGE_SIZE
+        }
+    }
+
+    fun loadMoreForShelf(shelfId: String) {
+        if (shelfId.isBlank()) return
+        val currentMap = _shelfLimits.value
+        val currentLimit = currentMap[shelfId] ?: DEFAULT_SHELF_LIMIT
+        val nextLimit = when {
+            currentLimit < 48 -> 48
+            currentLimit < 72 -> 72
+            currentLimit < MAX_HORIZONTAL_SHELF_LIMIT -> MAX_HORIZONTAL_SHELF_LIMIT
+            else -> MAX_HORIZONTAL_SHELF_LIMIT
+        }
+        if (nextLimit != currentLimit) {
+            val updated = LinkedHashMap<String, Int>(currentMap)
+            updated[shelfId] = nextLimit
+            _shelfLimits.value = updated
+        }
     }
 
     private fun triggerLazyIndexIfNeeded(playlistId: Long, streamType: String) {
@@ -363,7 +527,14 @@ class VodViewModel(application: Application) : AndroidViewModel(application) {
             groupedSeriesItems.value.isEmpty() && seriesDiscoveryShelves.value.isEmpty()
         }
         if (!currentlyEmpty) return
-        if (repository.syncProgress.value.isSyncing) return
+        val sectionPhase = if (isMovies) {
+            repository.moviesPipelineState.value.phase
+        } else {
+            repository.seriesPipelineState.value.phase
+        }
+        val sectionPipelineBusy = sectionPhase == VodPipelinePhase.DOWNLOADING ||
+            sectionPhase == VodPipelinePhase.ORGANIZING
+        if (sectionPipelineBusy) return
         if (isMovies && _isRefreshingMovies.value) return
         if (!isMovies && _isRefreshingSeries.value) return
 
@@ -374,7 +545,14 @@ class VodViewModel(application: Application) : AndroidViewModel(application) {
             try {
                 repository.ensureVodCatalogIndexed(targetPlaylist.id, streamType)
                 val rawCount = repository.countStreamsByType(targetPlaylist.id, streamType)
-                if (rawCount == 0 && !repository.syncProgress.value.isSyncing) {
+                val latestPhase = if (isMovies) {
+                    repository.moviesPipelineState.value.phase
+                } else {
+                    repository.seriesPipelineState.value.phase
+                }
+                val stillBusy = latestPhase == VodPipelinePhase.DOWNLOADING ||
+                    latestPhase == VodPipelinePhase.ORGANIZING
+                if (rawCount == 0 && !stillBusy) {
                     if (isMovies) {
                         refreshMovies(targetPlaylist, force = true)
                     } else {
@@ -399,71 +577,175 @@ class VodViewModel(application: Application) : AndroidViewModel(application) {
         return organizeVodCategoriesStatic(categories, counts)
     }
 
+    private fun buildShelfGridFlow(
+        streamType: String,
+        filterFlow: StateFlow<VodShelfFilter?>,
+        limitFlow: StateFlow<Int>
+    ): Flow<List<GroupedVodStream>> {
+        return combine(repository.activePlaylist, filterFlow, limitFlow) { playlist, filter, limit ->
+            Triple(playlist?.id, filter, limit)
+        }.flatMapLatest { (playlistId, filter, limit) ->
+            if (playlistId == null || filter == null) {
+                flowOf(emptyList())
+            } else {
+                triggerLazyIndexIfNeeded(playlistId, streamType)
+                when (filter) {
+                    VodShelfFilter.RecentlyAdded -> repository.getRecentlyAddedVod(playlistId, streamType, limit = limit)
+                    VodShelfFilter.TopRated -> repository.getTopRatedVod(playlistId, streamType, limit = limit)
+                    VodShelfFilter.Recommended -> repository.getRecommendedVodForUser(playlistId, streamType, limit = limit)
+                    is VodShelfFilter.Genre -> repository.getGenreShelfVod(playlistId, streamType, filter.keyword, limit = limit)
+                    is VodShelfFilter.Platform -> repository.getPlatformShelfVod(playlistId, streamType, filter.keyword, limit = limit)
+                }
+            }
+        }
+    }
+
+    private data class ShelfPageResult(
+        val items: List<GroupedVodStream>,
+        val canLoadMore: Boolean
+    )
+
+    private fun shelfQueryWithLimit(
+        shelfId: String,
+        queryByLimit: (Int) -> Flow<List<GroupedVodStream>>
+    ): Flow<ShelfPageResult> {
+        return _shelfLimits
+            .map { limits -> limits[shelfId] ?: DEFAULT_SHELF_LIMIT }
+            .distinctUntilChanged()
+            .flatMapLatest { limit ->
+                queryByLimit(limit + 1).map { fetched ->
+                    val hasMore = fetched.size > limit && limit < MAX_HORIZONTAL_SHELF_LIMIT
+                    ShelfPageResult(
+                        items = if (fetched.size > limit) fetched.take(limit) else fetched,
+                        canLoadMore = hasMore
+                    )
+                }
+            }
+    }
+
     private fun buildDiscoveryShelvesFlow(streamType: String): Flow<List<VodDiscoveryShelf>> {
         val isMovie = streamType == "movie"
-        val isSyncingFlow = repository.syncProgress
-            .map { it.isSyncing }
+        val sectionPipelineFlow = if (isMovie) {
+            repository.moviesPipelineState
+        } else {
+            repository.seriesPipelineState
+        }
+        val isSectionBusyFlow = sectionPipelineFlow
+            .map { it.phase == VodPipelinePhase.DOWNLOADING || it.phase == VodPipelinePhase.ORGANIZING }
             .distinctUntilChanged()
 
-        return combine(repository.activePlaylist, isSyncingFlow) { playlist, isSyncing ->
-            playlist to isSyncing
-        }.flatMapLatest { (playlist, isSyncing) ->
+        return combine(repository.activePlaylist, isSectionBusyFlow) { playlist, isBusy ->
+            playlist to isBusy
+        }.flatMapLatest { (playlist, isBusy) ->
             when {
                 playlist == null -> flowOf(emptyList())
-                isSyncing -> emptyFlow()
+                isBusy -> emptyFlow()
                 else -> {
                     triggerLazyIndexIfNeeded(playlist.id, streamType)
-                    val recentFlow = repository.getRecentlyAddedVod(playlist.id, streamType, limit = DISCOVERY_SHELF_LIMIT)
-                    val topRatedFlow = repository.getTopRatedVod(playlist.id, streamType, limit = DISCOVERY_SHELF_LIMIT)
-                    val recommendedFlow = repository.getRecommendedVodForUser(playlist.id, streamType, limit = DISCOVERY_SHELF_LIMIT)
-                    val genreFlows: List<Flow<Pair<String, List<GroupedVodStream>>>> = CURATED_GENRE_KEYWORDS.map { keyword ->
-                        repository.getGenreShelfVod(playlist.id, streamType, keyword, limit = DISCOVERY_SHELF_LIMIT)
-                            .map { items -> keyword to items }
+
+                    val recentId = "${streamType}_recently_added"
+                    val topRatedId = "${streamType}_top_rated"
+                    val recommendedId = "${streamType}_recommended"
+
+                    val recentFlow = shelfQueryWithLimit(recentId) { fetchLimit ->
+                        repository.getRecentlyAddedVod(playlist.id, streamType, limit = fetchLimit)
                     }
-                    val combinedGenresFlow: Flow<List<Pair<String, List<GroupedVodStream>>>> = combine(genreFlows) { array ->
+                    val topRatedFlow = shelfQueryWithLimit(topRatedId) { fetchLimit ->
+                        repository.getTopRatedVod(playlist.id, streamType, limit = fetchLimit)
+                    }
+                    val recommendedFlow = shelfQueryWithLimit(recommendedId) { fetchLimit ->
+                        repository.getRecommendedVodForUser(playlist.id, streamType, limit = fetchLimit)
+                    }
+
+                    val platformFlows: List<Flow<Pair<String, ShelfPageResult>>> = CURATED_PLATFORM_KEYWORDS.map { platform ->
+                        val shelfId = "${streamType}_platform_${platform.lowercase(Locale.US).replace(Regex("[^a-z0-9]+"), "_")}"
+                        shelfQueryWithLimit(shelfId) { fetchLimit ->
+                            repository.getPlatformShelfVod(playlist.id, streamType, platform, limit = fetchLimit)
+                        }.map { page -> platform to page }
+                    }
+                    val combinedPlatformsFlow: Flow<List<Pair<String, ShelfPageResult>>> = combine(platformFlows) { array ->
                         array.toList()
                     }
 
-                    combine(recentFlow, topRatedFlow, recommendedFlow, combinedGenresFlow) { recent, topRated, recommended, genrePairs ->
+                    val genreFlows: List<Flow<Pair<String, ShelfPageResult>>> = CURATED_GENRE_KEYWORDS.map { keyword ->
+                        val shelfId = "${streamType}_genre_${keyword.lowercase(Locale.US)}"
+                        shelfQueryWithLimit(shelfId) { fetchLimit ->
+                            repository.getGenreShelfVod(playlist.id, streamType, keyword, limit = fetchLimit)
+                        }.map { page -> keyword to page }
+                    }
+                    val combinedGenresFlow: Flow<List<Pair<String, ShelfPageResult>>> = combine(genreFlows) { array ->
+                        array.toList()
+                    }
+
+                    combine(
+                        recentFlow,
+                        topRatedFlow,
+                        recommendedFlow,
+                        combinedPlatformsFlow,
+                        combinedGenresFlow
+                    ) { recent, topRated, recommended, platformPairs, genrePairs ->
                         buildList {
-                            if (recent.isNotEmpty()) {
+                            if (recent.items.isNotEmpty()) {
                                 add(
                                     VodDiscoveryShelf(
-                                        id = "${streamType}_recently_added",
+                                        id = recentId,
                                         title = "Recently Added",
                                         subtitle = if (isMovie) "Newest arrivals in your library" else "Latest series additions",
-                                        items = recent
+                                        items = recent.items,
+                                        shelfFilter = VodShelfFilter.RecentlyAdded,
+                                        canLoadMore = recent.canLoadMore
                                     )
                                 )
                             }
-                            if (topRated.isNotEmpty()) {
+                            if (topRated.items.isNotEmpty()) {
                                 add(
                                     VodDiscoveryShelf(
-                                        id = "${streamType}_top_rated",
+                                        id = topRatedId,
                                         title = if (isMovie) "Top Rated Cinema" else "Acclaimed Series",
                                         subtitle = "Most popular & highest rated",
-                                        items = topRated
+                                        items = topRated.items,
+                                        shelfFilter = VodShelfFilter.TopRated,
+                                        canLoadMore = topRated.canLoadMore
                                     )
                                 )
                             }
-                            if (recommended.isNotEmpty()) {
+                            if (recommended.items.isNotEmpty()) {
                                 add(
                                     VodDiscoveryShelf(
-                                        id = "${streamType}_recommended",
+                                        id = recommendedId,
                                         title = "Recommended for You",
                                         subtitle = "Based on your favorites & watch history",
-                                        items = recommended
+                                        items = recommended.items,
+                                        shelfFilter = VodShelfFilter.Recommended,
+                                        canLoadMore = recommended.canLoadMore
                                     )
                                 )
                             }
-                            for ((keyword, items) in genrePairs) {
-                                if (items.size >= MIN_GENRE_SHELF_ITEMS) {
+                            for ((platform, page) in platformPairs) {
+                                if (page.items.size >= MIN_PLATFORM_SHELF_ITEMS) {
+                                    val shelfId = "${streamType}_platform_${platform.lowercase(Locale.US).replace(Regex("[^a-z0-9]+"), "_")}"
                                     add(
                                         VodDiscoveryShelf(
-                                            id = "${streamType}_genre_${keyword.lowercase()}",
+                                            id = shelfId,
+                                            title = platform,
+                                            subtitle = if (isMovie) "Popular on $platform" else "$platform Originals & Series",
+                                            items = page.items,
+                                            shelfFilter = VodShelfFilter.Platform(platform),
+                                            canLoadMore = page.canLoadMore
+                                        )
+                                    )
+                                }
+                            }
+                            for ((keyword, page) in genrePairs) {
+                                if (page.items.size >= MIN_GENRE_SHELF_ITEMS) {
+                                    add(
+                                        VodDiscoveryShelf(
+                                            id = "${streamType}_genre_${keyword.lowercase(Locale.US)}",
                                             title = keyword,
                                             subtitle = if (isMovie) "$keyword Cinema" else "$keyword Series",
-                                            items = items
+                                            items = page.items,
+                                            shelfFilter = VodShelfFilter.Genre(keyword),
+                                            canLoadMore = page.canLoadMore
                                         )
                                     )
                                 }
@@ -703,7 +985,7 @@ class VodViewModel(application: Application) : AndroidViewModel(application) {
         if (_isRefreshingMovies.value) return
         val now = System.currentTimeMillis()
         if (!force && lastMoviesRefreshMs > 0L && (now - lastMoviesRefreshMs) < REFRESH_COOLDOWN_MS) {
-            showTransientCompletionBanner("Catalog is up to date", durationMs = 2_000L)
+            showTransientCompletionBanner(VodTab.MOVIES, "Catalog is up to date", durationMs = 2_000L)
             return
         }
         viewModelScope.launch {
@@ -724,7 +1006,7 @@ class VodViewModel(application: Application) : AndroidViewModel(application) {
         if (_isRefreshingSeries.value) return
         val now = System.currentTimeMillis()
         if (!force && lastSeriesRefreshMs > 0L && (now - lastSeriesRefreshMs) < REFRESH_COOLDOWN_MS) {
-            showTransientCompletionBanner("Catalog is up to date", durationMs = 2_000L)
+            showTransientCompletionBanner(VodTab.SERIES, "Catalog is up to date", durationMs = 2_000L)
             return
         }
         viewModelScope.launch {
@@ -775,10 +1057,21 @@ class VodViewModel(application: Application) : AndroidViewModel(application) {
 
     companion object {
         const val PAGE_SIZE = 180
+        const val SHELF_GRID_PAGE_SIZE = 60
+        const val DEFAULT_SHELF_LIMIT = 24
+        const val MAX_HORIZONTAL_SHELF_LIMIT = 120
         const val REFRESH_COOLDOWN_MS = 30_000L
-        private const val DISCOVERY_SHELF_LIMIT = 20
+        private const val READY_BANNER_AUTO_DISMISS_MS = 2_500L
         private const val SIMILAR_TITLES_LIMIT = 15
         private const val MIN_GENRE_SHELF_ITEMS = 3
+        private const val MIN_PLATFORM_SHELF_ITEMS = 6
+        private val CURATED_PLATFORM_KEYWORDS = listOf(
+            "Netflix",
+            "Prime Video",
+            "Apple TV+",
+            "Disney+",
+            "HBO"
+        )
         private val CURATED_GENRE_KEYWORDS = listOf(
             "Action",
             "Crime",

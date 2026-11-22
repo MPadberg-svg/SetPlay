@@ -73,11 +73,13 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
@@ -288,11 +290,17 @@ fun VodScreen(
     val selectedCatId by (if (isMovies) viewModel.selectedMovieCategoryId else viewModel.selectedSeriesCategoryId).collectAsStateWithLifecycle()
     val searchQuery by (if (isMovies) viewModel.movieSearchQuery else viewModel.seriesSearchQuery).collectAsStateWithLifecycle()
     val isRefreshing by (if (isMovies) viewModel.isRefreshingMovies else viewModel.isRefreshingSeries).collectAsStateWithLifecycle()
-    val syncBannerState by viewModel.vodSyncBannerState.collectAsStateWithLifecycle()
+    val syncBannerState by (if (isMovies) viewModel.movieBannerState else viewModel.seriesBannerState).collectAsStateWithLifecycle()
+    val selectedShelfFilter by (if (isMovies) viewModel.selectedMovieShelfFilter else viewModel.selectedSeriesShelfFilter).collectAsStateWithLifecycle()
+    val shelfGridItems by (if (isMovies) viewModel.movieShelfGridItems else viewModel.seriesShelfGridItems).collectAsStateWithLifecycle()
 
     var showCategoryDrawer by remember(sectionTab) { mutableStateOf(false) }
     var isSearchExpanded by remember(sectionTab) { mutableStateOf(false) }
     var forceGridMode by remember(sectionTab) { mutableStateOf(false) }
+
+    BackHandler(enabled = selectedShelfFilter != null) {
+        viewModel.closeShelfSeeAll(sectionTab)
+    }
 
     val resolvedRecentlyWatched = recentlyWatched ?: fallbackRecentlyWatched
     val targetStreamType = if (isMovies) "movie" else "series"
@@ -301,9 +309,11 @@ fun VodScreen(
     }
 
     val onSelectCategory: (String?) -> Unit = { catId ->
+        viewModel.closeShelfSeeAll(sectionTab)
         if (isMovies) viewModel.selectMovieCategory(catId) else viewModel.selectSeriesCategory(catId)
     }
     val onSearchChange: (String) -> Unit = { q ->
+        if (q.isNotBlank()) viewModel.closeShelfSeeAll(sectionTab)
         if (isMovies) viewModel.onMovieSearchQueryChanged(q) else viewModel.onSeriesSearchQueryChanged(q)
     }
 
@@ -440,10 +450,10 @@ fun VodScreen(
                             viewModel.refreshSeries(activePlaylist, force = true)
                         }
                     },
-                    onDismiss = { viewModel.dismissSyncBanner() }
+                    onDismiss = { viewModel.dismissSyncBanner(sectionTab) }
                 )
 
-                val isDiscoveryHomeMode = selectedCatId == null && searchQuery.isBlank() && !forceGridMode
+                val isDiscoveryHomeMode = selectedShelfFilter == null && selectedCatId == null && searchQuery.isBlank() && !forceGridMode
                 val hasCatalogContent = groupedItems.isNotEmpty() || discoveryShelves.isNotEmpty() || continueWatchingItems.isNotEmpty()
 
                 PullToRefreshBox(
@@ -459,7 +469,130 @@ fun VodScreen(
                         .fillMaxWidth()
                         .weight(1f)
                 ) {
-                    if (!hasCatalogContent) {
+                    if (selectedShelfFilter != null) {
+                        val activeFilter = selectedShelfFilter!!
+                        val shelfTitle = remember(activeFilter, isMovies) {
+                            vodShelfFilterTitle(activeFilter, isMovies)
+                        }
+                        val shelfGridState = rememberLazyGridState()
+                        var lastShelfGridLoadSize by remember(activeFilter) { mutableIntStateOf(0) }
+                        val shouldLoadMoreShelfGrid by remember(shelfGridItems.size) {
+                            derivedStateOf {
+                                val lastVisible = shelfGridState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: 0
+                                shelfGridItems.size >= VodViewModel.SHELF_GRID_PAGE_SIZE &&
+                                    shelfGridItems.size > lastShelfGridLoadSize &&
+                                    lastVisible >= (shelfGridItems.size - 12).coerceAtLeast(0)
+                            }
+                        }
+                        LaunchedEffect(shouldLoadMoreShelfGrid) {
+                            if (shouldLoadMoreShelfGrid) {
+                                lastShelfGridLoadSize = shelfGridItems.size
+                                viewModel.loadMoreShelfGrid(sectionTab)
+                            }
+                        }
+
+                        Column(
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .testTag("vod_shelf_see_all_screen")
+                        ) {
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(horizontal = 12.dp, vertical = 6.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.SpaceBetween
+                            ) {
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                    modifier = Modifier.weight(1f)
+                                ) {
+                                    IconButton(
+                                        onClick = { viewModel.closeShelfSeeAll(sectionTab) },
+                                        modifier = Modifier
+                                            .size(48.dp)
+                                            .testTag("vod_shelf_see_all_back_btn")
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.AutoMirrored.Filled.ArrowBack,
+                                            contentDescription = "Back to Discover",
+                                            tint = sectionHighlight
+                                        )
+                                    }
+                                    Text(
+                                        text = shelfTitle,
+                                        color = Color.White,
+                                        fontSize = 17.sp,
+                                        fontWeight = FontWeight.ExtraBold,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                }
+
+                                Surface(
+                                    color = sectionSurface.copy(alpha = 0.86f),
+                                    shape = RoundedCornerShape(50),
+                                    border = BorderStroke(0.7.dp, sectionHighlight.copy(alpha = 0.50f))
+                                ) {
+                                    Text(
+                                        text = "${shelfGridItems.size} titles",
+                                        color = sectionHighlight,
+                                        fontSize = 11.sp,
+                                        fontWeight = FontWeight.ExtraBold,
+                                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp)
+                                    )
+                                }
+                            }
+
+                            BoxWithConstraints(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .weight(1f)
+                            ) {
+                                val columns = if (maxWidth < 600.dp) {
+                                    GridCells.Fixed(3)
+                                } else {
+                                    GridCells.Adaptive(minSize = calculateVodPosterMinCellDp(maxWidth.value.toInt()).dp)
+                                }
+                                LazyVerticalGrid(
+                                    state = shelfGridState,
+                                    columns = columns,
+                                    modifier = Modifier
+                                        .fillMaxSize()
+                                        .testTag("vod_grid"),
+                                    contentPadding = PaddingValues(
+                                        start = 12.dp,
+                                        end = 12.dp,
+                                        top = 6.dp,
+                                        bottom = 104.dp
+                                    ),
+                                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                                    verticalArrangement = Arrangement.spacedBy(12.dp)
+                                ) {
+                                    items(shelfGridItems, key = { "shelf_grid_${it.stream.id}" }) { grouped ->
+                                        val item = grouped.stream
+                                        if (isMovies) {
+                                            MoviePosterCard(
+                                                item = item,
+                                                versionCount = grouped.versionCount,
+                                                onClick = { viewModel.openMovieDetails(item, activePlaylist) },
+                                                onPlayImmediately = { onItemClick(item) },
+                                                onToggleFavorite = { viewModel.toggleFavorite(item.id, item.isFavorite) }
+                                            )
+                                        } else {
+                                            SeriesVaultCard(
+                                                item = item,
+                                                versionCount = grouped.versionCount,
+                                                onClick = { viewModel.openSeriesDetails(item, activePlaylist) },
+                                                onToggleFavorite = { viewModel.toggleFavorite(item.id, item.isFavorite) }
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    } else if (!hasCatalogContent) {
                         Box(
                             modifier = Modifier
                                 .fillMaxSize()
@@ -527,7 +660,9 @@ fun VodScreen(
                                     viewModel.openSeriesDetails(item, activePlaylist)
                                 }
                             },
-                            onBrowseAllGrid = { forceGridMode = true }
+                            onBrowseAllGrid = { forceGridMode = true },
+                            onSeeAllShelf = { filter -> viewModel.openShelfSeeAll(sectionTab, filter) },
+                            onLoadMoreShelf = { shelfId -> viewModel.loadMoreForShelf(shelfId) }
                         )
                     } else {
                         // 3-Column Deduplicated Poster Grid (Category, Search, or All Grid)
@@ -606,6 +741,8 @@ fun VodScreen(
                     groupedItems = groupedItems,
                     fallbackItems = items,
                     continueWatchingItems = continueWatchingItems,
+                    selectedShelfFilter = selectedShelfFilter,
+                    shelfGridItems = shelfGridItems,
                     isParentalUnlocked = isParentalUnlocked,
                     sectionBaseBg = sectionBaseBg,
                     sectionSurface = sectionSurface,
@@ -622,6 +759,10 @@ fun VodScreen(
                         }
                     },
                     onLoadMore = { viewModel.loadMore() },
+                    onOpenShelfSeeAll = { filter -> viewModel.openShelfSeeAll(sectionTab, filter) },
+                    onCloseShelfSeeAll = { viewModel.closeShelfSeeAll(sectionTab) },
+                    onLoadMoreShelf = { shelfId -> viewModel.loadMoreForShelf(shelfId) },
+                    onLoadMoreShelfGrid = { viewModel.loadMoreShelfGrid(sectionTab) },
                     onOpenDetails = { stream ->
                         if (isMovies) {
                             viewModel.openMovieDetails(stream, activePlaylist)
@@ -669,6 +810,8 @@ private fun TvVodCinemaScreen(
     groupedItems: List<GroupedVodStream>,
     fallbackItems: List<StreamEntity>,
     continueWatchingItems: List<StreamEntity>,
+    selectedShelfFilter: VodShelfFilter?,
+    shelfGridItems: List<GroupedVodStream>,
     isParentalUnlocked: Boolean,
     sectionBaseBg: Color,
     sectionSurface: Color,
@@ -679,6 +822,10 @@ private fun TvVodCinemaScreen(
     onSearchQueryChange: (String) -> Unit,
     onSyncCatalog: () -> Unit,
     onLoadMore: () -> Unit,
+    onOpenShelfSeeAll: (VodShelfFilter) -> Unit,
+    onCloseShelfSeeAll: () -> Unit,
+    onLoadMoreShelf: (String) -> Unit,
+    onLoadMoreShelfGrid: () -> Unit,
     onOpenDetails: (StreamEntity) -> Unit,
     onPlayImmediately: (StreamEntity) -> Unit,
     onToggleFavorite: (StreamEntity) -> Unit
@@ -712,7 +859,7 @@ private fun TvVodCinemaScreen(
             ?: tvDisplayItems.firstOrNull()
     }
 
-    val isDiscoveryHomeMode = selectedCategoryId == null && searchQuery.isBlank() && !forceGridMode
+    val isDiscoveryHomeMode = selectedShelfFilter == null && selectedCategoryId == null && searchQuery.isBlank() && !forceGridMode
     val hasCatalogContent = tvDisplayItems.isNotEmpty() || discoveryShelves.isNotEmpty() || continueWatchingItems.isNotEmpty()
 
     if (showTvCategoriesDialog) {
@@ -728,6 +875,7 @@ private fun TvVodCinemaScreen(
             sectionHighlight = sectionHighlight,
             onSelectDiscoverHome = {
                 forceGridMode = false
+                onCloseShelfSeeAll()
                 onSelectCategory(null)
             },
             onSelectCategory = { cat ->
@@ -773,13 +921,137 @@ private fun TvVodCinemaScreen(
                 }
             },
             onSearchQueryChange = onSearchQueryChange,
-            onToggleViewMode = { forceGridMode = !forceGridMode },
+            onToggleViewMode = {
+                onCloseShelfSeeAll()
+                forceGridMode = !forceGridMode
+            },
             onSyncCatalog = onSyncCatalog
         )
 
         Spacer(modifier = Modifier.height(6.dp))
 
-        if (!hasCatalogContent) {
+        if (selectedShelfFilter != null) {
+            // Dedicated 10-Foot 5-Column D-Pad Paginated Shelf "See All" Grid
+            val shelfTitle = remember(selectedShelfFilter, isMovies) {
+                vodShelfFilterTitle(selectedShelfFilter, isMovies)
+            }
+            val tvShelfGridState = rememberLazyGridState()
+            var lastTvShelfLoadSize by remember(selectedShelfFilter) { mutableIntStateOf(0) }
+            val shouldLoadMoreTvShelf by remember(shelfGridItems.size) {
+                derivedStateOf {
+                    val lastVisible = tvShelfGridState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: 0
+                    shelfGridItems.size >= VodViewModel.SHELF_GRID_PAGE_SIZE &&
+                        shelfGridItems.size > lastTvShelfLoadSize &&
+                        lastVisible >= (shelfGridItems.size - 15).coerceAtLeast(0)
+                }
+            }
+            LaunchedEffect(shouldLoadMoreTvShelf) {
+                if (shouldLoadMoreTvShelf) {
+                    lastTvShelfLoadSize = shelfGridItems.size
+                    onLoadMoreShelfGrid()
+                }
+            }
+
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 20.dp, vertical = 6.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(14.dp)
+                ) {
+                    Surface(
+                        color = sectionSurface.copy(alpha = 0.88f),
+                        shape = RoundedCornerShape(50),
+                        border = BorderStroke(1.dp, sectionHighlight.copy(alpha = 0.65f)),
+                        modifier = Modifier
+                            .tvFocusablePill(
+                                accentColor = sectionHighlight,
+                                focusedScale = 1.06f,
+                                onClick = onCloseShelfSeeAll
+                            )
+                            .testTag("tv_shelf_see_all_back_btn")
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(horizontal = 14.dp, vertical = 8.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.AutoMirrored.Filled.ArrowBack,
+                                contentDescription = "Back to Discovery",
+                                tint = sectionHighlight,
+                                modifier = Modifier.size(18.dp)
+                            )
+                            Text(
+                                text = "Back",
+                                color = Color.White,
+                                fontSize = 13.sp,
+                                fontWeight = FontWeight.ExtraBold
+                            )
+                        }
+                    }
+
+                    Text(
+                        text = shelfTitle,
+                        color = Color.White,
+                        fontSize = 20.sp,
+                        fontWeight = FontWeight.ExtraBold,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+
+                Surface(
+                    color = sectionSurface.copy(alpha = 0.85f),
+                    shape = RoundedCornerShape(50),
+                    border = BorderStroke(0.8.dp, sectionHighlight.copy(alpha = 0.55f))
+                ) {
+                    Text(
+                        text = "${shelfGridItems.size} titles",
+                        color = sectionHighlight,
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.ExtraBold,
+                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 5.dp)
+                    )
+                }
+            }
+
+            LazyVerticalGrid(
+                state = tvShelfGridState,
+                columns = GridCells.Fixed(5),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .weight(1f)
+                    .testTag("vod_grid"),
+                contentPadding = PaddingValues(horizontal = 20.dp, vertical = 10.dp),
+                horizontalArrangement = Arrangement.spacedBy(14.dp),
+                verticalArrangement = Arrangement.spacedBy(16.dp)
+            ) {
+                items(shelfGridItems, key = { "tv_shelf_grid_${it.stream.id}" }) { grouped ->
+                    val item = grouped.stream
+                    if (isMovies) {
+                        MoviePosterCard(
+                            item = item,
+                            versionCount = grouped.versionCount,
+                            onClick = { onOpenDetails(item) },
+                            onPlayImmediately = { onPlayImmediately(item) },
+                            onToggleFavorite = { onToggleFavorite(item) }
+                        )
+                    } else {
+                        SeriesVaultCard(
+                            item = item,
+                            versionCount = grouped.versionCount,
+                            onClick = { onOpenDetails(item) },
+                            onToggleFavorite = { onToggleFavorite(item) }
+                        )
+                    }
+                }
+            }
+        } else if (!hasCatalogContent) {
             Box(
                 modifier = Modifier
                     .fillMaxSize()
@@ -863,7 +1135,9 @@ private fun TvVodCinemaScreen(
                         sectionPrimaryAccent = sectionPrimaryAccent,
                         sectionHighlight = sectionHighlight,
                         onItemFocused = { focusedTvItem = it },
-                        onItemClick = { onOpenDetails(it.stream) }
+                        onItemClick = { onOpenDetails(it.stream) },
+                        onSeeAllShelf = onOpenShelfSeeAll,
+                        onLoadMoreShelf = onLoadMoreShelf
                     )
                 }
 
@@ -874,7 +1148,9 @@ private fun TvVodCinemaScreen(
                                 id = "tv_featured_catalog",
                                 title = if (isMovies) "Featured Cinema" else "Featured Series",
                                 subtitle = "From your active library",
-                                items = tvDisplayItems.take(20)
+                                items = tvDisplayItems.take(24),
+                                shelfFilter = VodShelfFilter.RecentlyAdded,
+                                canLoadMore = false
                             ),
                             isMovies = isMovies,
                             sectionBaseBg = sectionBaseBg,
@@ -882,7 +1158,9 @@ private fun TvVodCinemaScreen(
                             sectionPrimaryAccent = sectionPrimaryAccent,
                             sectionHighlight = sectionHighlight,
                             onItemFocused = { focusedTvItem = it },
-                            onItemClick = { onOpenDetails(it.stream) }
+                            onItemClick = { onOpenDetails(it.stream) },
+                            onSeeAllShelf = { forceGridMode = true },
+                            onLoadMoreShelf = {}
                         )
                     }
                 }
@@ -1295,8 +1573,11 @@ fun MovieCinemaPosterCard(
                         .align(Alignment.TopStart)
                         .padding(start = 8.dp, top = 8.dp, end = 36.dp)
                 ) {
-                    val normalizedMovieRating = remember(item.ratingNumeric) {
-                        formatNormalizedRating(item)
+                    val normalizedMovieRating = remember(item.ratingNumeric, versionCount) {
+                        formatNormalizedRating(item, versionCount)
+                    }
+                    val showMovieTrending = remember(item.ratingNumeric, versionCount) {
+                        isTrendingPlaceholderRating(item, versionCount)
                     }
                     if (normalizedMovieRating != null) {
                         Surface(
@@ -1322,6 +1603,21 @@ fun MovieCinemaPosterCard(
                                     fontWeight = FontWeight.ExtraBold
                                 )
                             }
+                        }
+                    } else if (showMovieTrending) {
+                        Surface(
+                            color = MoviesSapphireNavy.copy(alpha = 0.86f),
+                            shape = RoundedCornerShape(50),
+                            border = BorderStroke(0.6.dp, MoviesMintSpring.copy(alpha = 0.65f))
+                        ) {
+                            Text(
+                                text = "TRENDING",
+                                color = MoviesMintSpring,
+                                fontSize = 8.sp,
+                                fontWeight = FontWeight.ExtraBold,
+                                letterSpacing = 0.4.sp,
+                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                            )
                         }
                     }
 
@@ -2056,8 +2352,11 @@ fun SeriesVaultCard(
                             .align(Alignment.TopStart)
                             .padding(start = 8.dp, top = 8.dp, end = 36.dp)
                     ) {
-                        val normalizedSeriesRating = remember(item.ratingNumeric) {
-                            formatNormalizedRating(item)
+                        val normalizedSeriesRating = remember(item.ratingNumeric, versionCount) {
+                            formatNormalizedRating(item, versionCount)
+                        }
+                        val showSeriesTrending = remember(item.ratingNumeric, versionCount) {
+                            isTrendingPlaceholderRating(item, versionCount)
                         }
                         if (normalizedSeriesRating != null) {
                             Surface(
@@ -2083,6 +2382,21 @@ fun SeriesVaultCard(
                                         fontWeight = FontWeight.ExtraBold
                                     )
                                 }
+                            }
+                        } else if (showSeriesTrending) {
+                            Surface(
+                                color = SeriesPineBase.copy(alpha = 0.86f),
+                                shape = RoundedCornerShape(50),
+                                border = BorderStroke(0.6.dp, SeriesIceAqua.copy(alpha = 0.65f))
+                            ) {
+                                Text(
+                                    text = "TRENDING",
+                                    color = SeriesIceAqua,
+                                    fontSize = 8.sp,
+                                    fontWeight = FontWeight.ExtraBold,
+                                    letterSpacing = 0.4.sp,
+                                    modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                                )
                             }
                         }
 
@@ -2670,7 +2984,7 @@ fun SeriesEpisodeCard(
                     .padding(12.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                // Episode Artwork or Number Emblem
+                // Episode Artwork or Parent Poster Backdrop with Centered Watermark Overlay
                 Box(
                     modifier = Modifier
                         .width(104.dp)
@@ -2680,10 +2994,10 @@ fun SeriesEpisodeCard(
                         .border(0.8.dp, Color.White.copy(alpha = 0.10f), RoundedCornerShape(10.dp)),
                     contentAlignment = Alignment.Center
                 ) {
-                    val thumbUrl = episode.thumbnail.ifBlank { fallbackCover }
-                    if (thumbUrl.isNotEmpty()) {
+                    val hasEpisodeStill = episode.thumbnail.isNotBlank()
+                    if (hasEpisodeStill) {
                         AsyncImage(
-                            model = thumbUrl,
+                            model = episode.thumbnail,
                             contentDescription = episode.title,
                             contentScale = ContentScale.Crop,
                             modifier = Modifier.fillMaxSize()
@@ -2700,29 +3014,52 @@ fun SeriesEpisodeCard(
                                     )
                                 )
                         )
+                        // Episode Number Frosted Badge on actual still
+                        Surface(
+                            color = SeriesPineBase.copy(alpha = 0.82f),
+                            shape = RoundedCornerShape(4.dp),
+                            modifier = Modifier
+                                .align(Alignment.BottomStart)
+                                .padding(4.dp)
+                        ) {
+                            Text(
+                                text = "EP ${episode.episodeNumber}",
+                                color = SeriesIceAqua,
+                                fontSize = 9.sp,
+                                fontWeight = FontWeight.Bold,
+                                modifier = Modifier.padding(horizontal = 5.dp, vertical = 2.dp)
+                            )
+                        }
                     } else {
-                        Icon(
-                            imageVector = Icons.Default.Tv,
-                            contentDescription = null,
-                            tint = SeriesIceAqua,
-                            modifier = Modifier.size(22.dp)
+                        if (fallbackCover.isNotBlank()) {
+                            AsyncImage(
+                                model = fallbackCover,
+                                contentDescription = episode.title,
+                                contentScale = ContentScale.Crop,
+                                modifier = Modifier
+                                    .fillMaxSize()
+                                    .alpha(0.36f)
+                            )
+                        }
+                        Box(
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .background(
+                                    Brush.verticalGradient(
+                                        listOf(
+                                            SeriesPineBase.copy(alpha = 0.42f),
+                                            SeriesForestSurface.copy(alpha = 0.72f)
+                                        )
+                                    )
+                                )
                         )
-                    }
-
-                    // Episode Number Frosted Badge
-                    Surface(
-                        color = SeriesPineBase.copy(alpha = 0.82f),
-                        shape = RoundedCornerShape(4.dp),
-                        modifier = Modifier
-                            .align(Alignment.BottomStart)
-                            .padding(4.dp)
-                    ) {
+                        // Clean centered "EP N" watermark overlay
                         Text(
                             text = "EP ${episode.episodeNumber}",
-                            color = SeriesIceAqua,
-                            fontSize = 9.sp,
-                            fontWeight = FontWeight.Bold,
-                            modifier = Modifier.padding(horizontal = 5.dp, vertical = 2.dp)
+                            color = SeriesIceAqua.copy(alpha = 0.92f),
+                            fontSize = 14.sp,
+                            fontWeight = FontWeight.ExtraBold,
+                            letterSpacing = 1.sp
                         )
                     }
                 }

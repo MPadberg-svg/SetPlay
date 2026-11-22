@@ -2,6 +2,7 @@ package com.example.data.model
 
 import androidx.room.Embedded
 import androidx.room.Entity
+import androidx.room.Fts4
 import androidx.room.Index
 import androidx.room.PrimaryKey
 import java.text.Normalizer
@@ -130,6 +131,13 @@ data class VodCatalogGroupEntity(
     val defaultVersionTag: String = "",
     val containerExtension: String = "mp4",
     val popularityScore: Double = 0.0
+)
+
+@Fts4(contentEntity = VodCatalogGroupEntity::class)
+@Entity(tableName = "vod_catalog_groups_fts")
+data class VodCatalogGroupFtsEntity(
+    val cleanTitle: String,
+    val genres: String
 )
 
 object VodGroupingNormalizer {
@@ -478,19 +486,27 @@ object VodGroupingNormalizer {
         return combined.joinToString(" • ")
     }
 
+    fun isPlaceholderPerfectRating(ratingNumeric: Double, versionCount: Int): Boolean {
+        return ratingNumeric >= 9.95 && versionCount <= 3
+    }
+
     fun computePopularityQualityScore(
         ratingNumeric: Double,
         versionCount: Int,
         releaseYear: Int,
         hasPoster: Boolean,
-        isPreferredLang: Boolean
+        isPreferredLang: Boolean,
+        globalTmdbScore: Double = 0.0
     ): Double {
-        val effectiveRating = when {
-            ratingNumeric >= 9.8 && versionCount <= 1 -> 5.8
+        val safeVersions = versionCount.coerceAtLeast(1)
+        val sanitizedRating = when {
+            isPlaceholderPerfectRating(ratingNumeric, safeVersions) -> 5.4
+            ratingNumeric >= 9.8 && safeVersions <= 2 -> 5.6
+            ratingNumeric in 4.95..5.05 && safeVersions <= 1 -> 4.9
             ratingNumeric <= 0.0 -> 5.2
             else -> ratingNumeric.coerceIn(1.0, 9.6)
         }
-        val multiRegionBoost = ln(versionCount.coerceAtLeast(1).toDouble() + 1.0) * 1.9
+        val multiRegionBoost = ln(safeVersions.toDouble() + 1.0) * 1.9
         val recencyBonus = when {
             releaseYear >= 2024 -> 0.85
             releaseYear >= 2021 -> 0.45
@@ -498,7 +514,14 @@ object VodGroupingNormalizer {
         }
         val posterBonus = if (hasPoster) 0.5 else -2.0
         val langBonus = if (isPreferredLang) 0.65 else 0.0
-        return effectiveRating + multiRegionBoost + recencyBonus + posterBonus + langBonus
+        val localBayesianScore = sanitizedRating + multiRegionBoost + recencyBonus + posterBonus + langBonus
+
+        val clampedGlobal = globalTmdbScore.coerceIn(0.0, 100.0)
+        return if (clampedGlobal > 0.0) {
+            (clampedGlobal * 0.65) + localBayesianScore
+        } else {
+            localBayesianScore
+        }
     }
 
     fun scoreVersionPreference(

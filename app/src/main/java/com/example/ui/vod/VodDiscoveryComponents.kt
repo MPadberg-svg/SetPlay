@@ -30,9 +30,11 @@ import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowForward
 import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.CheckCircle
@@ -59,13 +61,17 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -106,18 +112,34 @@ import com.example.ui.theme.luxuryFocusableCard
 import com.example.ui.theme.tvFocusableControl
 import java.util.Locale
 
-internal fun formatNormalizedRating(stream: StreamEntity): String? {
+internal fun formatNormalizedRating(stream: StreamEntity, versionCount: Int = 1): String? {
     if (stream.ratingNumeric <= 0.0) return null
+    if (VodGroupingNormalizer.isPlaceholderPerfectRating(stream.ratingNumeric, versionCount)) return null
+    if (stream.ratingNumeric >= 9.95) return null
     return String.format(Locale.US, "%.1f", stream.ratingNumeric.coerceAtMost(10.0))
 }
 
-internal fun formatDetailNormalizedRating(detailsRating: String?, stream: StreamEntity): String? {
+internal fun isTrendingPlaceholderRating(stream: StreamEntity, versionCount: Int): Boolean {
+    return stream.ratingNumeric >= 9.95 && versionCount >= 5
+}
+
+internal fun vodShelfFilterTitle(filter: VodShelfFilter, isMovies: Boolean): String {
+    return when (filter) {
+        VodShelfFilter.RecentlyAdded -> "Recently Added"
+        VodShelfFilter.TopRated -> if (isMovies) "Top Rated Cinema" else "Acclaimed Series"
+        VodShelfFilter.Recommended -> "Recommended for You"
+        is VodShelfFilter.Genre -> filter.keyword
+        is VodShelfFilter.Platform -> filter.keyword
+    }
+}
+
+internal fun formatDetailNormalizedRating(detailsRating: String?, stream: StreamEntity, versionCount: Int = 1): String? {
     val parsed = detailsRating?.trim()?.replace(',', '.')?.toDoubleOrNull()
         ?.takeIf { it > 0.0 && it <= 10.0 }
-    if (parsed != null) {
+    if (parsed != null && !VodGroupingNormalizer.isPlaceholderPerfectRating(parsed, versionCount) && parsed < 9.95) {
         return String.format(Locale.US, "%.1f", parsed)
     }
-    return formatNormalizedRating(stream)
+    return formatNormalizedRating(stream, versionCount)
 }
 
 /**
@@ -370,35 +392,54 @@ internal fun VodSyncStatusPill(
     modifier: Modifier = Modifier
 ) {
     val isVisible = bannerState.isSyncing || bannerState.isCompleted || bannerState.isError
-    AnimatedVisibility(
-        visible = isVisible,
-        enter = fadeIn() + expandVertically(),
-        exit = fadeOut() + shrinkVertically(),
-        modifier = modifier
-    ) {
-        val borderColor = when {
-            bannerState.isError -> LiveRed.copy(alpha = 0.65f)
-            bannerState.isCompleted -> sectionHighlight.copy(alpha = 0.65f)
-            else -> sectionHighlight.copy(alpha = 0.45f)
-        }
-        val bgColor = when {
-            bannerState.isError -> Color(0xFF2B1018).copy(alpha = 0.92f)
-            else -> sectionSurface.copy(alpha = 0.92f)
-        }
+    if (!isVisible) return
 
-        Surface(
-            color = bgColor,
-            shape = RoundedCornerShape(14.dp),
-            border = BorderStroke(0.9.dp, borderColor),
+    val emeraldAccent = Color(0xFF10B981)
+    val hasDeterminateProgress = bannerState.isSyncing && bannerState.progressPercent in 1..99
+    val borderColor = when {
+        bannerState.isError -> LiveRed.copy(alpha = 0.65f)
+        bannerState.isCompleted -> emeraldAccent.copy(alpha = 0.72f)
+        else -> sectionHighlight.copy(alpha = 0.48f)
+    }
+    val bgColor = when {
+        bannerState.isError -> Color(0xFF2B1018).copy(alpha = 0.92f)
+        bannerState.isCompleted -> Color(0xFF0A2A22).copy(alpha = 0.94f)
+        else -> sectionSurface.copy(alpha = 0.94f)
+    }
+
+    val statusLabel = when {
+        bannerState.isError -> {
+            "Sync failed • ${bannerState.statusText.ifBlank { "Check connection" }}"
+        }
+        hasDeterminateProgress -> {
+            val base = bannerState.statusText.ifBlank { "Organizing catalog…" }
+            if (base.contains("%")) base else "$base ${bannerState.progressPercent}%"
+        }
+        bannerState.isSyncing -> {
+            bannerState.statusText.ifBlank { "Syncing catalog…" }
+        }
+        else -> {
+            bannerState.statusText.ifBlank { "Catalog ready" }
+        }
+    }
+
+    Surface(
+        color = bgColor,
+        shape = RoundedCornerShape(14.dp),
+        border = BorderStroke(0.9.dp, borderColor),
+        modifier = modifier
+            .fillMaxWidth()
+            .padding(horizontal = 14.dp, vertical = 4.dp)
+            .testTag("vod_sync_status_pill")
+    ) {
+        Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 14.dp, vertical = 4.dp)
-                .testTag("vod_sync_status_pill")
+                .padding(horizontal = 12.dp, vertical = 8.dp),
+            verticalArrangement = Arrangement.spacedBy(6.dp)
         ) {
             Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 12.dp, vertical = 8.dp),
+                modifier = Modifier.fillMaxWidth(),
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.SpaceBetween
             ) {
@@ -408,7 +449,7 @@ internal fun VodSyncStatusPill(
                     modifier = Modifier.weight(1f)
                 ) {
                     when {
-                        bannerState.isSyncing -> {
+                        bannerState.isSyncing && !hasDeterminateProgress -> {
                             CircularProgressIndicator(
                                 color = sectionHighlight,
                                 strokeWidth = 2.dp,
@@ -423,27 +464,33 @@ internal fun VodSyncStatusPill(
                                 modifier = Modifier.size(16.dp)
                             )
                         }
-                        else -> {
+                        bannerState.isCompleted -> {
                             Icon(
                                 imageVector = Icons.Default.CheckCircle,
-                                contentDescription = "Sync Complete",
-                                tint = sectionHighlight,
+                                contentDescription = "Catalog Ready",
+                                tint = emeraldAccent,
                                 modifier = Modifier.size(16.dp)
                             )
                         }
+                        else -> Unit
                     }
 
                     Text(
-                        text = if (bannerState.isError) {
-                            "Sync failed • ${bannerState.statusText.ifBlank { "Check connection" }}"
-                        } else {
-                            bannerState.statusText.ifBlank { "Syncing catalog…" }
-                        },
+                        text = statusLabel,
                         color = Color.White,
                         fontSize = 11.5.sp,
                         fontWeight = FontWeight.SemiBold,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis
+                    )
+                }
+
+                if (hasDeterminateProgress) {
+                    Text(
+                        text = "${bannerState.progressPercent}%",
+                        color = sectionHighlight,
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.ExtraBold
                     )
                 }
 
@@ -479,6 +526,18 @@ internal fun VodSyncStatusPill(
                         )
                     }
                 }
+            }
+
+            if (hasDeterminateProgress) {
+                LinearProgressIndicator(
+                    progress = { bannerState.progressPercent / 100f },
+                    color = sectionHighlight,
+                    trackColor = Color.White.copy(alpha = 0.14f),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(3.dp)
+                        .clip(RoundedCornerShape(50))
+                )
             }
         }
     }
@@ -892,6 +951,8 @@ internal fun VodMobileDiscoveryHome(
     onOpenDetails: (StreamEntity) -> Unit,
     onContinueWatchingClick: (StreamEntity) -> Unit,
     onBrowseAllGrid: () -> Unit,
+    onSeeAllShelf: (VodShelfFilter) -> Unit = {},
+    onLoadMoreShelf: (String) -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     val spotlightItem = remember(discoveryShelves, fallbackGroupedItems) {
@@ -948,7 +1009,7 @@ internal fun VodMobileDiscoveryHome(
             }
         }
 
-        // c) Curated Discovery Shelves
+        // c) Curated Discovery Shelves with "See All →" & inline horizontal expansion
         items(discoveryShelves, key = { it.id }) { shelf ->
             VodDiscoveryShelfRow(
                 shelf = shelf,
@@ -957,7 +1018,9 @@ internal fun VodMobileDiscoveryHome(
                 sectionSurface = sectionSurface,
                 sectionPrimaryAccent = sectionPrimaryAccent,
                 sectionHighlight = sectionHighlight,
-                onItemClick = { onOpenDetails(it.stream) }
+                onItemClick = { onOpenDetails(it.stream) },
+                onSeeAllClick = { onSeeAllShelf(shelf.shelfFilter) },
+                onLoadMoreShelf = { onLoadMoreShelf(shelf.id) }
             )
         }
 
@@ -969,14 +1032,18 @@ internal fun VodMobileDiscoveryHome(
                         id = "fallback_catalog",
                         title = if (isMovies) "Featured Cinema" else "Featured Series",
                         subtitle = "From your active library",
-                        items = fallbackGroupedItems.take(20)
+                        items = fallbackGroupedItems.take(24),
+                        shelfFilter = VodShelfFilter.RecentlyAdded,
+                        canLoadMore = false
                     ),
                     isMovies = isMovies,
                     sectionBaseBg = sectionBaseBg,
                     sectionSurface = sectionSurface,
                     sectionPrimaryAccent = sectionPrimaryAccent,
                     sectionHighlight = sectionHighlight,
-                    onItemClick = { onOpenDetails(it.stream) }
+                    onItemClick = { onOpenDetails(it.stream) },
+                    onSeeAllClick = onBrowseAllGrid,
+                    onLoadMoreShelf = {}
                 )
             }
         }
@@ -1037,7 +1104,12 @@ private fun VodFeaturedHeroSpotlightCard(
 ) {
     val stream = grouped.stream
     val cleanTitle = remember(stream.name) { VodGroupingNormalizer.extractCleanDisplayTitle(stream.name) }
-    val ratingLabel = remember(stream.rating, stream.ratingNumeric) { formatNormalizedRating(stream) }
+    val ratingLabel = remember(stream.rating, stream.ratingNumeric, grouped.versionCount) {
+        formatNormalizedRating(stream, grouped.versionCount)
+    }
+    val showTrendingBadge = remember(stream.ratingNumeric, grouped.versionCount) {
+        isTrendingPlaceholderRating(stream, grouped.versionCount)
+    }
     val yearLabel = stream.releaseYear.takeIf { it > 0 }?.toString()
     val metaSubtitle = remember(stream.genres, stream.versionTag, yearLabel) {
         buildList {
@@ -1160,6 +1232,21 @@ private fun VodFeaturedHeroSpotlightCard(
                                 fontWeight = FontWeight.ExtraBold
                             )
                         }
+                    }
+                } else if (showTrendingBadge) {
+                    Surface(
+                        color = sectionBaseBg.copy(alpha = 0.84f),
+                        shape = RoundedCornerShape(50),
+                        border = BorderStroke(0.7.dp, sectionHighlight.copy(alpha = 0.72f))
+                    ) {
+                        Text(
+                            text = "TRENDING",
+                            color = sectionHighlight,
+                            fontSize = 9.sp,
+                            fontWeight = FontWeight.ExtraBold,
+                            letterSpacing = 0.5.sp,
+                            modifier = Modifier.padding(horizontal = 7.dp, vertical = 3.dp)
+                        )
                     }
                 }
 
@@ -1448,8 +1535,27 @@ private fun VodDiscoveryShelfRow(
     sectionSurface: Color,
     sectionPrimaryAccent: Color,
     sectionHighlight: Color,
-    onItemClick: (GroupedVodStream) -> Unit
+    onItemClick: (GroupedVodStream) -> Unit,
+    onSeeAllClick: () -> Unit = {},
+    onLoadMoreShelf: () -> Unit = {}
 ) {
+    val rowState = rememberLazyListState()
+    var lastExpandedAtSize by remember(shelf.id) { mutableIntStateOf(0) }
+    val shouldExpandInline by remember(shelf.items.size, shelf.canLoadMore) {
+        derivedStateOf {
+            val lastVisible = rowState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: 0
+            shelf.canLoadMore &&
+                shelf.items.size > lastExpandedAtSize &&
+                lastVisible >= (shelf.items.size - 4).coerceAtLeast(0)
+        }
+    }
+    LaunchedEffect(shouldExpandInline) {
+        if (shouldExpandInline) {
+            lastExpandedAtSize = shelf.items.size
+            onLoadMoreShelf()
+        }
+    }
+
     Column(
         modifier = Modifier
             .fillMaxWidth()
@@ -1460,7 +1566,7 @@ private fun VodDiscoveryShelfRow(
                 .fillMaxWidth()
                 .padding(horizontal = 14.dp),
             horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.Bottom
+            verticalAlignment = Alignment.CenterVertically
         ) {
             Column(modifier = Modifier.weight(1f)) {
                 Text(
@@ -1482,11 +1588,38 @@ private fun VodDiscoveryShelfRow(
                     )
                 }
             }
+
+            Spacer(modifier = Modifier.width(8.dp))
+
+            Surface(
+                color = sectionSurface.copy(alpha = 0.80f),
+                shape = RoundedCornerShape(50),
+                border = BorderStroke(0.7.dp, sectionHighlight.copy(alpha = 0.45f)),
+                modifier = Modifier
+                    .clip(RoundedCornerShape(50))
+                    .clickable(onClick = onSeeAllClick)
+                    .testTag("vod_shelf_see_all_${shelf.id}")
+            ) {
+                Row(
+                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(3.dp)
+                ) {
+                    Text(
+                        text = "See All →",
+                        color = sectionHighlight,
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.ExtraBold,
+                        maxLines = 1
+                    )
+                }
+            }
         }
 
         Spacer(modifier = Modifier.height(8.dp))
 
         LazyRow(
+            state = rowState,
             contentPadding = PaddingValues(horizontal = 14.dp),
             horizontalArrangement = Arrangement.spacedBy(10.dp)
         ) {
@@ -1500,6 +1633,64 @@ private fun VodDiscoveryShelfRow(
                     sectionHighlight = sectionHighlight,
                     onClick = { onItemClick(grouped) }
                 )
+            }
+
+            // Compact "See All" end-cap card at the tail of the row
+            item(key = "${shelf.id}_see_all_end_cap") {
+                Box(
+                    modifier = Modifier
+                        .width(108.dp)
+                        .aspectRatio(2f / 3f)
+                        .clip(RoundedCornerShape(12.dp))
+                        .background(
+                            Brush.verticalGradient(
+                                listOf(
+                                    sectionSurface.copy(alpha = 0.85f),
+                                    sectionBaseBg.copy(alpha = 0.92f)
+                                )
+                            )
+                        )
+                        .border(0.9.dp, sectionHighlight.copy(alpha = 0.42f), RoundedCornerShape(12.dp))
+                        .clickable(onClick = onSeeAllClick)
+                        .testTag("vod_shelf_end_see_all_${shelf.id}"),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Column(
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.spacedBy(8.dp),
+                        modifier = Modifier.padding(10.dp)
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .size(38.dp)
+                                .clip(CircleShape)
+                                .background(sectionPrimaryAccent.copy(alpha = 0.24f))
+                                .border(1.dp, sectionHighlight.copy(alpha = 0.7f), CircleShape),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Icon(
+                                imageVector = Icons.AutoMirrored.Filled.ArrowForward,
+                                contentDescription = "See All ${shelf.title}",
+                                tint = sectionHighlight,
+                                modifier = Modifier.size(18.dp)
+                            )
+                        }
+                        Text(
+                            text = "See All",
+                            color = Color.White,
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.ExtraBold
+                        )
+                        Text(
+                            text = shelf.title,
+                            color = sectionHighlight.copy(alpha = 0.78f),
+                            fontSize = 9.5.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+                }
             }
         }
     }
@@ -1517,7 +1708,12 @@ private fun DiscoveryShelfPosterCard(
 ) {
     val stream = grouped.stream
     val cleanTitle = remember(stream.name) { VodGroupingNormalizer.extractCleanDisplayTitle(stream.name) }
-    val ratingLabel = remember(stream.rating, stream.ratingNumeric) { formatNormalizedRating(stream) }
+    val ratingLabel = remember(stream.rating, stream.ratingNumeric, grouped.versionCount) {
+        formatNormalizedRating(stream, grouped.versionCount)
+    }
+    val showTrendingBadge = remember(stream.ratingNumeric, grouped.versionCount) {
+        isTrendingPlaceholderRating(stream, grouped.versionCount)
+    }
 
     Column(
         modifier = Modifier
@@ -1568,7 +1764,7 @@ private fun DiscoveryShelfPosterCard(
                     )
             )
 
-            // Top-Start Normalized Rating Pill
+            // Top-Start Normalized Rating Pill or TRENDING badge for high-version placeholder 10.0
             if (ratingLabel != null) {
                 Surface(
                     color = sectionBaseBg.copy(alpha = 0.84f),
@@ -1596,6 +1792,24 @@ private fun DiscoveryShelfPosterCard(
                             fontWeight = FontWeight.ExtraBold
                         )
                     }
+                }
+            } else if (showTrendingBadge) {
+                Surface(
+                    color = sectionBaseBg.copy(alpha = 0.86f),
+                    shape = RoundedCornerShape(50),
+                    border = BorderStroke(0.6.dp, sectionHighlight.copy(alpha = 0.65f)),
+                    modifier = Modifier
+                        .align(Alignment.TopStart)
+                        .padding(6.dp)
+                ) {
+                    Text(
+                        text = "TRENDING",
+                        color = sectionHighlight,
+                        fontSize = 8.sp,
+                        fontWeight = FontWeight.ExtraBold,
+                        letterSpacing = 0.4.sp,
+                        modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                    )
                 }
             }
 
@@ -1934,7 +2148,12 @@ internal fun VodSimilarTitlesRow(
             items(items, key = { "similar_${it.stream.id}_${it.stream.streamId}" }) { grouped ->
                 val stream = grouped.stream
                 val cleanTitle = remember(stream.name) { VodGroupingNormalizer.extractCleanDisplayTitle(stream.name) }
-                val ratingLabel = remember(stream.ratingNumeric) { formatNormalizedRating(stream) }
+                val ratingLabel = remember(stream.ratingNumeric, grouped.versionCount) {
+                    formatNormalizedRating(stream, grouped.versionCount)
+                }
+                val showTrendingBadge = remember(stream.ratingNumeric, grouped.versionCount) {
+                    isTrendingPlaceholderRating(stream, grouped.versionCount)
+                }
 
                 Column(
                     modifier = Modifier
@@ -2016,6 +2235,24 @@ internal fun VodSimilarTitlesRow(
                                         fontWeight = FontWeight.ExtraBold
                                     )
                                 }
+                            }
+                        } else if (showTrendingBadge) {
+                            Surface(
+                                color = sectionBaseBg.copy(alpha = 0.86f),
+                                shape = RoundedCornerShape(50),
+                                border = BorderStroke(0.6.dp, sectionHighlight.copy(alpha = 0.65f)),
+                                modifier = Modifier
+                                    .align(Alignment.TopStart)
+                                    .padding(5.dp)
+                            ) {
+                                Text(
+                                    text = "TRENDING",
+                                    color = sectionHighlight,
+                                    fontSize = 7.5.sp,
+                                    fontWeight = FontWeight.ExtraBold,
+                                    letterSpacing = 0.4.sp,
+                                    modifier = Modifier.padding(horizontal = 5.dp, vertical = 1.5.dp)
+                                )
                             }
                         }
 

@@ -1,0 +1,47 @@
+name: Update Global Popularity Index
+
+on:
+  schedule:
+    - cron: "0 4 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: update-popularity-index
+  cancel-in-progress: false
+
+jobs:
+  build-index:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          ref: main
+
+      - name: Set up Python 3
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Build static global popularity index
+        env:
+          TMDB_API_KEY: ${{ secrets.TMDB_API_KEY }}
+        run: python3 scripts/build_popularity_index.py
+
+      - name: Commit and push updated popularity index
+        run: |
+          if [ -z "$(git status --porcelain docs/popularity_index.json)" ]; then
+            echo "No changes to docs/popularity_index.json; skipping commit."
+            exit 0
+          fi
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git add docs/popularity_index.json
+          git commit -m "chore(index): update global popularity index"
+          git push origin HEAD:main

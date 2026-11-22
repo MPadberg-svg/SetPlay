@@ -32,9 +32,12 @@ import androidx.compose.foundation.lazy.grid.GridItemSpan
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowForward
 import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Clear
@@ -55,12 +58,16 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -199,61 +206,92 @@ internal fun TvVodTopControlStrip(
                 }
             }
 
-            // Compact inline sync status pill (when syncing / completed / error)
+            // Compact inline sync status pill (only when syncing / completed / error — renders NOTHING when idle)
             if (showInlineSyncPill) {
+                val emeraldAccent = Color(0xFF10B981)
+                val hasDeterminateProgress = syncBannerState.isSyncing && syncBannerState.progressPercent in 1..99
+                val pillLabel = when {
+                    syncBannerState.isError -> syncBannerState.statusText.ifBlank { "Sync failed" }
+                    hasDeterminateProgress -> {
+                        val base = syncBannerState.statusText.ifBlank { "Organizing catalog…" }
+                        if (base.contains("%")) base else "$base ${syncBannerState.progressPercent}%"
+                    }
+                    syncBannerState.isSyncing -> syncBannerState.statusText.ifBlank { "Syncing catalog…" }
+                    else -> syncBannerState.statusText.ifBlank { "Catalog ready" }
+                }
+
                 Surface(
-                    color = if (syncBannerState.isError) {
-                        Color(0xFF2B1018).copy(alpha = 0.92f)
-                    } else {
-                        sectionSurface.copy(alpha = 0.90f)
+                    color = when {
+                        syncBannerState.isError -> Color(0xFF2B1018).copy(alpha = 0.92f)
+                        syncBannerState.isCompleted -> Color(0xFF0A2A22).copy(alpha = 0.94f)
+                        else -> sectionSurface.copy(alpha = 0.92f)
                     },
-                    shape = RoundedCornerShape(50),
+                    shape = RoundedCornerShape(14.dp),
                     border = BorderStroke(
-                        width = 0.8.dp,
-                        color = if (syncBannerState.isError) LiveRed.copy(alpha = 0.75f) else sectionHighlight.copy(alpha = 0.55f)
+                        width = 0.85.dp,
+                        color = when {
+                            syncBannerState.isError -> LiveRed.copy(alpha = 0.75f)
+                            syncBannerState.isCompleted -> emeraldAccent.copy(alpha = 0.75f)
+                            else -> sectionHighlight.copy(alpha = 0.55f)
+                        }
                     ),
                     modifier = Modifier
-                        .height(34.dp)
                         .testTag("vod_sync_status_pill")
                 ) {
-                    Row(
-                        modifier = Modifier.padding(horizontal = 12.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(7.dp)
+                    Column(
+                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
+                        verticalArrangement = Arrangement.spacedBy(4.dp)
                     ) {
-                        when {
-                            syncBannerState.isSyncing -> {
-                                CircularProgressIndicator(
-                                    color = sectionHighlight,
-                                    strokeWidth = 2.dp,
-                                    modifier = Modifier.size(13.dp)
-                                )
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(7.dp)
+                        ) {
+                            when {
+                                syncBannerState.isSyncing && !hasDeterminateProgress -> {
+                                    CircularProgressIndicator(
+                                        color = sectionHighlight,
+                                        strokeWidth = 2.dp,
+                                        modifier = Modifier.size(13.dp)
+                                    )
+                                }
+                                syncBannerState.isError -> {
+                                    Icon(
+                                        imageVector = Icons.Default.ErrorOutline,
+                                        contentDescription = "Sync Error",
+                                        tint = LiveRed,
+                                        modifier = Modifier.size(15.dp)
+                                    )
+                                }
+                                syncBannerState.isCompleted -> {
+                                    Icon(
+                                        imageVector = Icons.Default.CheckCircle,
+                                        contentDescription = "Catalog Ready",
+                                        tint = emeraldAccent,
+                                        modifier = Modifier.size(15.dp)
+                                    )
+                                }
+                                else -> Unit
                             }
-                            syncBannerState.isError -> {
-                                Icon(
-                                    imageVector = Icons.Default.ErrorOutline,
-                                    contentDescription = "Sync Error",
-                                    tint = LiveRed,
-                                    modifier = Modifier.size(15.dp)
-                                )
-                            }
-                            else -> {
-                                Icon(
-                                    imageVector = Icons.Default.CheckCircle,
-                                    contentDescription = "Sync Complete",
-                                    tint = sectionHighlight,
-                                    modifier = Modifier.size(15.dp)
-                                )
-                            }
+                            Text(
+                                text = pillLabel,
+                                color = Color.White,
+                                fontSize = 11.5.sp,
+                                fontWeight = FontWeight.SemiBold,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
                         }
-                        Text(
-                            text = syncBannerState.statusText.ifBlank { "Syncing catalog…" },
-                            color = Color.White,
-                            fontSize = 11.5.sp,
-                            fontWeight = FontWeight.SemiBold,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis
-                        )
+                        if (hasDeterminateProgress) {
+                            LinearProgressIndicator(
+                                progress = { syncBannerState.progressPercent / 100f },
+                                color = sectionHighlight,
+                                trackColor = Color.White.copy(alpha = 0.16f),
+                                modifier = Modifier
+                                    .width(160.dp)
+                                    .height(3.dp)
+                                    .clip(RoundedCornerShape(50))
+                            )
+                        }
                     }
                 }
             }
@@ -931,7 +969,9 @@ internal fun TvLiveBackdropBanner(
     ) { active ->
         val stream = active.stream
         val cleanTitle = remember(stream.name) { VodGroupingNormalizer.extractCleanDisplayTitle(stream.name) }
-        val ratingLabel = remember(stream.ratingNumeric) { formatNormalizedRating(stream) }
+        val ratingLabel = remember(stream.ratingNumeric, active.versionCount) {
+            formatNormalizedRating(stream, active.versionCount)
+        }
         val yearLabel = stream.releaseYear.takeIf { it > 0 }?.toString()
         val genreSummary = remember(stream.genres, stream.versionTag) {
             buildList {
@@ -1311,8 +1351,27 @@ internal fun TvDiscoveryShelfRow(
     sectionPrimaryAccent: Color,
     sectionHighlight: Color,
     onItemFocused: (GroupedVodStream) -> Unit,
-    onItemClick: (GroupedVodStream) -> Unit
+    onItemClick: (GroupedVodStream) -> Unit,
+    onSeeAllShelf: (VodShelfFilter) -> Unit = {},
+    onLoadMoreShelf: (String) -> Unit = {}
 ) {
+    val rowState = rememberLazyListState()
+    var lastExpandedAtSize by remember(shelf.id) { mutableIntStateOf(0) }
+    val shouldExpandOnScroll by remember(shelf.items.size, shelf.canLoadMore) {
+        derivedStateOf {
+            val lastVisible = rowState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: 0
+            shelf.canLoadMore &&
+                shelf.items.size > lastExpandedAtSize &&
+                lastVisible >= (shelf.items.size - 4).coerceAtLeast(0)
+        }
+    }
+    LaunchedEffect(shouldExpandOnScroll) {
+        if (shouldExpandOnScroll) {
+            lastExpandedAtSize = shelf.items.size
+            onLoadMoreShelf(shelf.id)
+        }
+    }
+
     Column(
         modifier = Modifier
             .fillMaxWidth()
@@ -1351,18 +1410,35 @@ internal fun TvDiscoveryShelfRow(
         Spacer(modifier = Modifier.height(6.dp))
 
         LazyRow(
+            state = rowState,
             contentPadding = PaddingValues(horizontal = 20.dp, vertical = 8.dp),
             horizontalArrangement = Arrangement.spacedBy(14.dp)
         ) {
-            items(shelf.items, key = { "tv_${shelf.id}_${it.stream.id}" }) { grouped ->
+            itemsIndexed(shelf.items, key = { _, g -> "tv_${shelf.id}_${g.stream.id}" }) { index, grouped ->
                 val stream = grouped.stream
                 val cleanTitle = remember(stream.name) { VodGroupingNormalizer.extractCleanDisplayTitle(stream.name) }
-                val ratingLabel = remember(stream.ratingNumeric) { formatNormalizedRating(stream) }
+                val ratingLabel = remember(stream.ratingNumeric, grouped.versionCount) {
+                    formatNormalizedRating(stream, grouped.versionCount)
+                }
+                val showTrendingBadge = remember(stream.ratingNumeric, grouped.versionCount) {
+                    isTrendingPlaceholderRating(stream, grouped.versionCount)
+                }
 
                 Column(
                     modifier = Modifier
                         .width(144.dp)
-                        .onFocusChanged { if (it.isFocused) onItemFocused(grouped) }
+                        .onFocusChanged { focusState ->
+                            if (focusState.isFocused) {
+                                onItemFocused(grouped)
+                                if (shelf.canLoadMore &&
+                                    shelf.items.size > lastExpandedAtSize &&
+                                    index >= (shelf.items.size - 4).coerceAtLeast(0)
+                                ) {
+                                    lastExpandedAtSize = shelf.items.size
+                                    onLoadMoreShelf(shelf.id)
+                                }
+                            }
+                        }
                         .luxuryFocusableCard(
                             accentColor = sectionHighlight,
                             shape = RoundedCornerShape(14.dp),
@@ -1441,6 +1517,24 @@ internal fun TvDiscoveryShelfRow(
                                     )
                                 }
                             }
+                        } else if (showTrendingBadge) {
+                            Surface(
+                                color = sectionBaseBg.copy(alpha = 0.88f),
+                                shape = RoundedCornerShape(50),
+                                border = BorderStroke(0.7.dp, sectionHighlight.copy(alpha = 0.68f)),
+                                modifier = Modifier
+                                    .align(Alignment.TopStart)
+                                    .padding(7.dp)
+                            ) {
+                                Text(
+                                    text = "TRENDING",
+                                    color = sectionHighlight,
+                                    fontSize = 8.5.sp,
+                                    fontWeight = FontWeight.ExtraBold,
+                                    letterSpacing = 0.5.sp,
+                                    modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                                )
+                            }
                         }
 
                         if (grouped.versionCount > 1) {
@@ -1490,6 +1584,87 @@ internal fun TvDiscoveryShelfRow(
                             modifier = Modifier.padding(horizontal = 8.dp)
                         )
                     }
+                }
+            }
+
+            // D-Pad Focusable 10-Foot Poster-Height "See All" End Card
+            item(key = "tv_${shelf.id}_see_all_end_card") {
+                Column(
+                    modifier = Modifier
+                        .width(144.dp)
+                        .luxuryFocusableCard(
+                            accentColor = sectionHighlight,
+                            shape = RoundedCornerShape(14.dp),
+                            focusedScale = 1.06f,
+                            onClick = { onSeeAllShelf(shelf.shelfFilter) }
+                        )
+                        .clip(RoundedCornerShape(14.dp))
+                        .background(
+                            Brush.verticalGradient(
+                                listOf(
+                                    sectionSurface.copy(alpha = 0.85f),
+                                    sectionBaseBg.copy(alpha = 0.94f)
+                                )
+                            )
+                        )
+                        .border(1.dp, sectionHighlight.copy(alpha = 0.45f), RoundedCornerShape(14.dp))
+                        .padding(bottom = 8.dp)
+                        .testTag("tv_shelf_see_all_${shelf.id}"),
+                    horizontalAlignment = Alignment.CenterHorizontally
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .aspectRatio(2f / 3f),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Column(
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            verticalArrangement = Arrangement.spacedBy(10.dp),
+                            modifier = Modifier.padding(12.dp)
+                        ) {
+                            Box(
+                                modifier = Modifier
+                                    .size(48.dp)
+                                    .clip(CircleShape)
+                                    .background(sectionPrimaryAccent.copy(alpha = 0.28f))
+                                    .border(1.2.dp, sectionHighlight.copy(alpha = 0.78f), CircleShape),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Icon(
+                                    imageVector = Icons.AutoMirrored.Filled.ArrowForward,
+                                    contentDescription = "See All ${shelf.title}",
+                                    tint = sectionHighlight,
+                                    modifier = Modifier.size(22.dp)
+                                )
+                            }
+                            Text(
+                                text = "See All",
+                                color = Color.White,
+                                fontSize = 14.sp,
+                                fontWeight = FontWeight.ExtraBold
+                            )
+                            Text(
+                                text = "Browse full shelf",
+                                color = sectionHighlight.copy(alpha = 0.82f),
+                                fontSize = 10.5.sp,
+                                fontWeight = FontWeight.SemiBold,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
+                    }
+
+                    Spacer(modifier = Modifier.height(6.dp))
+                    Text(
+                        text = shelf.title,
+                        color = Champagne.copy(alpha = 0.90f),
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.Bold,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.padding(horizontal = 8.dp)
+                    )
                 }
             }
         }
