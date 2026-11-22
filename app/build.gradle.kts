@@ -165,6 +165,4 @@ dependencies {
   debugImplementation(libs.androidx.compose.ui.tooling)
   "ksp"(libs.androidx.room.compiler)
   "ksp"(libs.moshi.kotlin.codegen)
-  implementation("androidx.work:work-runtime-ktx:2.10.0")
-  testImplementation("androidx.work:work-testing:2.10.0")
 }
