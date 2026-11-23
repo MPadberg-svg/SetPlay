@@ -182,7 +182,7 @@ object CatalogSyncScheduler {
         runCatching {
             WorkManager.getInstance(appContext).enqueueUniqueWork(
                 UNIQUE_QUEUE_NAME,
-                ExistingWorkPolicy.APPEND_OR_REPLACE,
+                ExistingWorkPolicy.KEEP,
                 requestBuilder.build()
             )
         }.onFailure { err ->
@@ -190,6 +190,36 @@ object CatalogSyncScheduler {
         }
 
         return UNIQUE_QUEUE_NAME
+    }
+
+    /**
+     * Race-free drain continuation: schedules a follow-up [CatalogSyncWorker] with empty
+     * [Data.EMPTY] (no fallbackRequest) using [ExistingWorkPolicy.APPEND_OR_REPLACE] so
+     * any request that arrived in the millisecond the previous worker exited its drain loop
+     * is guaranteed to execute without ever re-running an already-completed section.
+     */
+    internal fun ensureDrainWorkerScheduled(context: Context) {
+        val appContext = context.applicationContext
+        val constraints = Constraints.Builder()
+            .setRequiredNetworkType(NetworkType.CONNECTED)
+            .build()
+
+        val drainRequest = OneTimeWorkRequestBuilder<CatalogSyncWorker>()
+            .setInputData(Data.EMPTY)
+            .setConstraints(constraints)
+            .setBackoffCriteria(BackoffPolicy.EXPONENTIAL, 15L, TimeUnit.SECONDS)
+            .addTag(UNIQUE_QUEUE_NAME)
+            .build()
+
+        runCatching {
+            WorkManager.getInstance(appContext).enqueueUniqueWork(
+                UNIQUE_QUEUE_NAME,
+                ExistingWorkPolicy.APPEND_OR_REPLACE,
+                drainRequest
+            )
+        }.onFailure { err ->
+            Log.w(TAG, "Unable to schedule drain continuation worker: ${err.message}")
+        }
     }
 
     /**

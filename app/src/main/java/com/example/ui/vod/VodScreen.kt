@@ -125,6 +125,7 @@ import com.example.ui.theme.tvFocusablePill
 import com.example.util.EditionResolver
 import com.example.util.SetPlayEdition
 import com.example.util.StreamMetadataParser
+import kotlinx.coroutines.delay
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -484,9 +485,18 @@ fun VodScreen(
                 val isDiscoveryHomeMode = activeCollection == null && selectedShelfFilter == null && selectedCatId == null && searchQuery.isBlank() && !forceGridMode
                 val hasCatalogContent = groupedItems.isNotEmpty() || discoveryShelves.isNotEmpty() || continueWatchingItems.isNotEmpty() || (isMovies && movieCollections.isNotEmpty())
 
+                var pullGestureRefreshing by remember { mutableStateOf(false) }
+                LaunchedEffect(pullGestureRefreshing) {
+                    if (pullGestureRefreshing) {
+                        delay(350L)
+                        pullGestureRefreshing = false
+                    }
+                }
+
                 PullToRefreshBox(
-                    isRefreshing = isRefreshing,
+                    isRefreshing = pullGestureRefreshing,
                     onRefresh = {
+                        pullGestureRefreshing = true
                         val catId = selectedCatId
                         if (isMovies) {
                             if (catId != null) {

@@ -48,6 +48,10 @@ class CatalogSyncWorker(
             fallbackRequest = fallbackRequest
         )
         if (initialRequest == null) {
+            if (fallbackRequest == null) {
+                // Drain-only continuation worker woke up after pendingQueue was already drained
+                return Result.success()
+            }
             Log.w(TAG, "No valid sync request found: playlistId=$fallbackPlaylistId sectionType=$fallbackSection")
             return Result.failure(errorOutputData("Invalid playlist id or section type"))
         }
@@ -74,6 +78,12 @@ class CatalogSyncWorker(
             } else {
                 null
             }
+        }
+
+        // Race-free re-check: if a new request arrived in the millisecond the drain loop exited,
+        // schedule a fallback-free continuation worker so it drains cleanly without double-syncing.
+        if (CatalogSyncScheduler.hasPendingRequests()) {
+            CatalogSyncScheduler.ensureDrainWorkerScheduled(applicationContext)
         }
 
         return finalResult
