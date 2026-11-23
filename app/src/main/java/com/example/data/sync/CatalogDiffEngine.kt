@@ -2,19 +2,30 @@ package com.example.data.sync
 
 import com.example.data.local.StreamIndexProjection
 import com.example.data.model.VodCatalogGroupEntity
+import com.example.data.model.VodCollectionEntity
 import com.example.data.model.VodGroupMemberEntity
 import com.example.data.model.VodGroupingNormalizer
+import com.example.data.remote.CollectionMatch
+import com.example.data.remote.GlobalCollectionsIndexManager
 import com.example.data.remote.GlobalPopularityIndexManager
 import java.text.Normalizer
 import java.util.Locale
+import kotlin.math.ln
+
+data class LosslessGroupingResult(
+    val groups: List<VodCatalogGroupEntity>,
+    val members: List<VodGroupMemberEntity>,
+    val collections: List<VodCollectionEntity> = emptyList()
+)
 
 /**
  * Lossless multi-bridge Union-Find grouping engine, zero-allocation 64-bit FNV-1a
- * metadata hashing for Smart Diff sync, and streaming platform tag normalization.
- *
- * Grouping is strictly a presentation layer: every input [StreamIndexProjection]
- * produces exactly one [VodGroupMemberEntity] row and contributes to its component's
- * `versionCount`, guaranteeing `SUM(versionCount) == streams.size`.
+ * metadata hashing for Smart Diff sync, streaming platform tag normalization, and
+ * 3-level official TMDb Movie Collections organization:
+ * - Level 1: Duplicate versions of the same film -> 1 [VodCatalogGroupEntity] + `vod_group_members`.
+ * - Level 2: Distinct films in an official TMDb Collection (>= 2 movies in user's catalog) ->
+ *   independent [VodCatalogGroupEntity] rows linked via `collectionId` + `collectionOrder` to [VodCollectionEntity].
+ * - Level 3: Standalone movies (`collectionId == ""`) -> never grouped into 1-movie collections.
  */
 object CatalogDiffEngine {
     private const val FNV1A_64_OFFSET_BASIS: Long = -3750763034362895579L // 0xcbf29ce484222325
@@ -142,11 +153,16 @@ object CatalogDiffEngine {
         playlistId: Long,
         streamType: String,
         streams: List<StreamIndexProjection>,
-        categoryNameMap: Map<String, String>
-    ): Pair<List<VodCatalogGroupEntity>, List<VodGroupMemberEntity>> {
+        categoryNameMap: Map<String, String>,
+        onProgress: ((groupedCount: Int, totalCount: Int) -> Unit)? = null
+    ): LosslessGroupingResult {
         val count = streams.size
         if (count == 0) {
-            return emptyList<VodCatalogGroupEntity>() to emptyList<VodGroupMemberEntity>()
+            return LosslessGroupingResult(
+                groups = emptyList(),
+                members = emptyList(),
+                collections = emptyList()
+            )
         }
 
         val cleanType = streamType.trim().lowercase(Locale.US).ifBlank { "movie" }
@@ -235,6 +251,14 @@ object CatalogDiffEngine {
                     }
                 }
             }
+
+            if (onProgress != null && ((i + 1) % 10_000 == 0)) {
+                onProgress.invoke(((i + 1) / 2).coerceAtLeast(1), count)
+            }
+        }
+        val halfCount = (count / 2).coerceAtLeast(1)
+        if (onProgress != null && (count % 10_000 != 0)) {
+            onProgress.invoke(halfCount, count)
         }
 
         // Partition stream indices into connected components
@@ -252,6 +276,13 @@ object CatalogDiffEngine {
         val groups = ArrayList<VodCatalogGroupEntity>(components.size)
         val members = ArrayList<VodGroupMemberEntity>(count)
         val usedGroupKeys = HashSet<String>(components.size * 2)
+        val provisionalCollections = if (cleanType == "movie") {
+            HashMap<String, ArrayList<Pair<Int, CollectionMatch>>>()
+        } else {
+            null
+        }
+        var materializedStreamCount = 0
+        var lastReportedMaterialized = 0
 
         for (componentIndices in components.values) {
             var repIndex = componentIndices[0]
@@ -454,6 +485,22 @@ object CatalogDiffEngine {
                 )
             )
 
+            if (provisionalCollections != null) {
+                val colMatch = GlobalCollectionsIndexManager.lookupCollection(
+                    tmdbId = bestTmdbId,
+                    cleanTitle = cleanTitle,
+                    releaseYear = repYear
+                )
+                if (colMatch != null) {
+                    var bucket = provisionalCollections[colMatch.collectionId]
+                    if (bucket == null) {
+                        bucket = ArrayList(4)
+                        provisionalCollections[colMatch.collectionId] = bucket
+                    }
+                    bucket.add((groups.size - 1) to colMatch)
+                }
+            }
+
             for (j in 0 until componentIndices.size) {
                 val memberStream = streams[componentIndices[j]]
                 members.add(
@@ -465,9 +512,88 @@ object CatalogDiffEngine {
                     )
                 )
             }
+
+            materializedStreamCount += componentIndices.size
+            if (onProgress != null && (materializedStreamCount - lastReportedMaterialized) >= 10_000) {
+                lastReportedMaterialized = materializedStreamCount
+                val reported = (halfCount + (materializedStreamCount / 2)).coerceIn(halfCount, count)
+                onProgress.invoke(reported, count)
+            }
         }
 
-        return groups to members
+        // Level 2: Materialize official TMDb Movie Collections ONLY when >= 2 distinct movies exist
+        val collections = ArrayList<VodCollectionEntity>()
+        if (provisionalCollections != null && provisionalCollections.isNotEmpty()) {
+            for ((colId, entries) in provisionalCollections) {
+                if (entries.size < 2) continue
+
+                var colName = ""
+                var officialPoster = ""
+                var fallbackPoster = ""
+                var bestMemberScore = Double.NEGATIVE_INFINITY
+                val memberScores = ArrayList<Double>(entries.size)
+
+                for (entry in entries) {
+                    val groupIdx = entry.first
+                    val match = entry.second
+                    val group = groups[groupIdx]
+
+                    groups[groupIdx] = group.copy(
+                        collectionId = match.collectionId,
+                        collectionName = match.collectionName,
+                        collectionOrder = match.releaseOrder
+                    )
+
+                    if (colName.isEmpty() && match.collectionName.isNotBlank()) {
+                        colName = match.collectionName
+                    }
+                    if (officialPoster.isEmpty() && match.posterUrl.isNotBlank()) {
+                        officialPoster = match.posterUrl
+                    }
+                    if (group.popularityScore > bestMemberScore && group.posterUrl.isNotBlank()) {
+                        bestMemberScore = group.popularityScore
+                        fallbackPoster = group.posterUrl
+                    }
+                    memberScores.add(group.popularityScore)
+                }
+
+                if (colName.isNotEmpty()) {
+                    memberScores.sortDescending()
+                    val topSliceCount = memberScores.size.coerceAtMost(3)
+                    var topSum = 0.0
+                    for (k in 0 until topSliceCount) {
+                        topSum += memberScores[k]
+                    }
+                    val avgTopScore = if (topSliceCount > 0) topSum / topSliceCount else 0.0
+                    val franchiseDepthBonus = ln(entries.size.toDouble() + 1.0) * 2.5
+                    val collectionScore = avgTopScore + franchiseDepthBonus
+
+                    collections.add(
+                        VodCollectionEntity(
+                            playlistId = playlistId,
+                            collectionId = colId,
+                            name = colName,
+                            posterUrl = officialPoster.ifBlank { fallbackPoster },
+                            movieCount = entries.size,
+                            popularityScore = collectionScore
+                        )
+                    )
+                }
+            }
+
+            collections.sortWith(
+                compareByDescending<VodCollectionEntity> { it.popularityScore }
+                    .thenByDescending { it.movieCount }
+                    .thenBy { it.name }
+            )
+        }
+
+        onProgress?.invoke(count, count)
+        return LosslessGroupingResult(
+            groups = groups,
+            members = members,
+            collections = collections
+        )
     }
 
     private fun normalizeNumericTmdbId(raw: String): String {

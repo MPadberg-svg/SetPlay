@@ -3,16 +3,21 @@ package com.example.ui.vod
 import android.app.Application
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import com.example.data.local.StreamVaultDatabase
 import com.example.data.model.CategoryEntity
 import com.example.data.model.GroupedVodStream
 import com.example.data.model.PlaylistEntity
 import com.example.data.model.StreamEntity
+import com.example.data.model.VodCatalogGroupEntity
+import com.example.data.model.VodCollectionEntity
+import com.example.data.model.VodGroupingNormalizer
 import com.example.data.remote.SeriesDetails
 import com.example.data.remote.VodMovieDetails
 import com.example.data.repository.EpisodeResumeInfo
 import com.example.data.repository.IptvRepository
 import com.example.data.repository.VodPipelinePhase
 import com.example.data.repository.VodPipelineState
+import com.example.data.sync.CatalogSyncScheduler
 import com.example.data.sync.CatalogSyncWorker
 import com.example.data.sync.SyncStage
 import com.example.data.sync.SyncStatus
@@ -30,6 +35,7 @@ import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.debounce
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.emptyFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.map
@@ -41,6 +47,12 @@ import java.util.concurrent.ConcurrentHashMap
 enum class VodTab {
     MOVIES,
     SERIES
+}
+
+enum class CollectionSortMode(val label: String) {
+    RELEASE_ORDER("Release Order"),
+    NEWEST_FIRST("Newest First"),
+    TOP_RATED("Top Rated")
 }
 
 enum class VodCategoryBucket(val title: String) {
@@ -104,7 +116,11 @@ internal fun formatSyncStatsSubtitle(telemetry: SyncTelemetry): String {
             telemetry.errorMessage.ifBlank { "Check your connection and retry" }
         }
         telemetry.status == SyncStatus.PENDING -> {
-            "Queued for background sync…"
+            if (telemetry.pendingUpdateSummary.contains("waiting", ignoreCase = true)) {
+                "Single-queue sync • Starts automatically"
+            } else {
+                "Queued for background sync…"
+            }
         }
         telemetry.status == SyncStatus.RUNNING -> {
             when (telemetry.stage) {
@@ -229,6 +245,10 @@ class VodViewModel(application: Application) : AndroidViewModel(application) {
         }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000L), emptyMap())
 
+    val liveMovieCount: StateFlow<Int> = movieCategoryCounts
+        .map { counts -> counts.values.sum() }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000L), 0)
+
     val organizedMovieCategories: StateFlow<Map<VodCategoryBucket, List<CategorizedVodItem>>> = combine(
         movieCategories,
         movieCategoryCounts
@@ -297,6 +317,10 @@ class VodViewModel(application: Application) : AndroidViewModel(application) {
             if (playlist == null) flowOf(emptyMap()) else repository.getCategoryStreamCounts(playlist.id, "series")
         }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000L), emptyMap())
+
+    val liveSeriesCount: StateFlow<Int> = seriesCategoryCounts
+        .map { counts -> counts.values.sum() }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000L), 0)
 
     val organizedSeriesCategories: StateFlow<Map<VodCategoryBucket, List<CategorizedVodItem>>> = combine(
         seriesCategories,
@@ -402,7 +426,39 @@ class VodViewModel(application: Application) : AndroidViewModel(application) {
     private val _similarSeries = MutableStateFlow<List<GroupedVodStream>>(emptyList())
     val similarSeries: StateFlow<List<GroupedVodStream>> = _similarSeries.asStateFlow()
 
-    // IMAX Movie Dossier State (Xtream get_vod_info with instant fallback, Versions & Similar Movies)
+    // Official Movie Franchises & Collections State (Room v8 non-destructive Level 2 organization)
+    val movieCollections: StateFlow<List<VodCollectionEntity>> = repository.activePlaylist
+        .flatMapLatest { playlist ->
+            if (playlist == null) flowOf(emptyList()) else repository.observeMovieCollections(playlist.id)
+        }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000L), emptyList())
+
+    private val _selectedCollection = MutableStateFlow<VodCollectionEntity?>(null)
+    val selectedCollection: StateFlow<VodCollectionEntity?> = _selectedCollection.asStateFlow()
+
+    private val _collectionSortMode = MutableStateFlow(CollectionSortMode.RELEASE_ORDER)
+    val collectionSortMode: StateFlow<CollectionSortMode> = _collectionSortMode.asStateFlow()
+
+    val selectedCollectionMovies: StateFlow<List<GroupedVodStream>> = combine(
+        repository.activePlaylist,
+        _selectedCollection,
+        _collectionSortMode
+    ) { playlist, collection, sortMode ->
+        Triple(playlist?.id, collection?.collectionId, sortMode)
+    }.flatMapLatest { (playlistId, collectionId, sortMode) ->
+        if (playlistId == null || collectionId.isNullOrBlank()) {
+            flowOf(emptyList())
+        } else {
+            combine(
+                repository.getCollectionMovies(playlistId, collectionId),
+                repository.getCollectionMovieGroups(playlistId, collectionId)
+            ) { movies, groups ->
+                sortCollectionMovies(movies, groups, sortMode)
+            }
+        }
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000L), emptyList())
+
+    // IMAX Movie Dossier State (Xtream get_vod_info with instant fallback, Versions, Collection & Similar Movies)
     private val _selectedMovieStream = MutableStateFlow<StreamEntity?>(null)
     val selectedMovieStream: StateFlow<StreamEntity?> = _selectedMovieStream.asStateFlow()
 
@@ -417,6 +473,15 @@ class VodViewModel(application: Application) : AndroidViewModel(application) {
 
     private val _similarMovies = MutableStateFlow<List<GroupedVodStream>>(emptyList())
     val similarMovies: StateFlow<List<GroupedVodStream>> = _similarMovies.asStateFlow()
+
+    private val _activeMovieCollectionItems = MutableStateFlow<List<GroupedVodStream>>(emptyList())
+    val activeMovieCollectionItems: StateFlow<List<GroupedVodStream>> = _activeMovieCollectionItems.asStateFlow()
+
+    private val _activeMovieCollectionName = MutableStateFlow("")
+    val activeMovieCollectionName: StateFlow<String> = _activeMovieCollectionName.asStateFlow()
+
+    private val _activeMovieCollection = MutableStateFlow<VodCollectionEntity?>(null)
+    val activeMovieCollection: StateFlow<VodCollectionEntity?> = _activeMovieCollection.asStateFlow()
 
     // Persisted per-section SyncTelemetry (survives app restarts, backgrounding, and process death)
     val movieSyncTelemetry: StateFlow<SyncTelemetry> = repository.activePlaylist
@@ -536,7 +601,9 @@ class VodViewModel(application: Application) : AndroidViewModel(application) {
                 cancelExistingAutoClear()
                 setAutoClearJob(null)
                 val stageText = if (telemetry.status == SyncStatus.PENDING) {
-                    "Preparing sync…"
+                    telemetry.pendingUpdateSummary.takeIf { it.isNotBlank() }
+                        ?: pipeline.statusText.takeIf { it.contains("Queued", ignoreCase = true) }
+                        ?: CatalogSyncScheduler.STATUS_QUEUED
                 } else {
                     telemetry.stage.label
                 }
@@ -753,8 +820,21 @@ class VodViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    fun openCollection(collection: VodCollectionEntity) {
+        _selectedCollection.value = collection
+    }
+
+    fun closeCollection() {
+        _selectedCollection.value = null
+    }
+
+    fun setCollectionSortMode(mode: CollectionSortMode) {
+        _collectionSortMode.value = mode
+    }
+
     fun openShelfSeeAll(tab: VodTab, filter: VodShelfFilter) {
         if (tab == VodTab.MOVIES) {
+            _selectedCollection.value = null
             _selectedMovieShelfFilter.value = filter
             _movieShelfGridLimit.value = SHELF_GRID_PAGE_SIZE
         } else {
@@ -1094,6 +1174,9 @@ class VodViewModel(application: Application) : AndroidViewModel(application) {
         if (!isSameGroup) {
             _availableMovieVersions.value = listOf(movieStream)
             _similarMovies.value = emptyList()
+            _activeMovieCollectionItems.value = emptyList()
+            _activeMovieCollectionName.value = ""
+            _activeMovieCollection.value = null
         }
 
         // Provide instant fallback from StreamEntity metadata immediately
@@ -1125,6 +1208,56 @@ class VodViewModel(application: Application) : AndroidViewModel(application) {
                 if (autoSelectPreferred && !isSameGroup && topPreferred != null && topPreferred.id != movieStream.id) {
                     openMovieDetails(topPreferred, playlist, autoSelectPreferred = false)
                     return@launch
+                }
+            }
+        }
+
+        // 1b. Load sibling franchise / collection installments in Release Order when movie belongs to a collection
+        if (!isSameGroup) {
+            viewModelScope.launch {
+                val resolvedGroupKey = movieStream.canonicalGroupKey.ifBlank {
+                    VodGroupingNormalizer.computeCanonicalGroupKey(
+                        streamType = "movie",
+                        rawName = movieStream.name,
+                        tmdbId = movieStream.tmdbId,
+                        releaseYear = movieStream.releaseYear,
+                        streamId = movieStream.streamId,
+                        posterUrl = movieStream.streamIcon
+                    )
+                }
+                if (resolvedGroupKey.isNotBlank()) {
+                    val group = StreamVaultDatabase.getInstance(getApplication())
+                        .vodGroupDao()
+                        .getGroupByKey(movieStream.playlistId, "movie", resolvedGroupKey)
+                    if (group != null && group.collectionId.isNotBlank()) {
+                        val franchiseMovies = repository.getCollectionMovies(
+                            playlistId = movieStream.playlistId,
+                            collectionId = group.collectionId
+                        ).first()
+                        val currentSelected = _selectedMovieStream.value
+                        val stillViewingSameMovie = currentSelected != null && (
+                            currentSelected.id == movieStream.id ||
+                                (currentSelected.canonicalGroupKey.isNotBlank() &&
+                                    currentSelected.canonicalGroupKey == resolvedGroupKey)
+                            )
+                        if (stillViewingSameMovie && franchiseMovies.isNotEmpty()) {
+                            val matchingCollection = movieCollections.value
+                                .firstOrNull { it.collectionId == group.collectionId }
+                            val resolvedName = group.collectionName.ifBlank {
+                                matchingCollection?.name.orEmpty()
+                            }
+                            _activeMovieCollectionItems.value = franchiseMovies
+                            _activeMovieCollectionName.value = resolvedName
+                            _activeMovieCollection.value = matchingCollection ?: VodCollectionEntity(
+                                playlistId = movieStream.playlistId,
+                                collectionId = group.collectionId,
+                                name = resolvedName,
+                                posterUrl = movieStream.streamIcon,
+                                movieCount = franchiseMovies.size,
+                                popularityScore = group.popularityScore
+                            )
+                        }
+                    }
                 }
             }
         }
@@ -1183,6 +1316,9 @@ class VodViewModel(application: Application) : AndroidViewModel(application) {
         _isLoadingMovieDetails.value = false
         _availableMovieVersions.value = emptyList()
         _similarMovies.value = emptyList()
+        _activeMovieCollectionItems.value = emptyList()
+        _activeMovieCollectionName.value = ""
+        _activeMovieCollection.value = null
     }
 
     fun openSeriesDetails(
@@ -1420,6 +1556,58 @@ class VodViewModel(application: Application) : AndroidViewModel(application) {
             .map { it.trim() }
             .firstOrNull { it.length >= 3 }
             .orEmpty()
+    }
+
+    private fun sortCollectionMovies(
+        movies: List<GroupedVodStream>,
+        groups: List<VodCatalogGroupEntity>,
+        sortMode: CollectionSortMode
+    ): List<GroupedVodStream> {
+        if (movies.size <= 1) return movies
+        val groupByRepId = groups.associateBy { it.representativeStreamDbId }
+        val groupByKey = groups.associateBy { it.groupKey }
+        fun metaFor(item: GroupedVodStream): VodCatalogGroupEntity? {
+            return groupByRepId[item.stream.id] ?: groupByKey[item.stream.canonicalGroupKey]
+        }
+        return when (sortMode) {
+            CollectionSortMode.RELEASE_ORDER -> movies.sortedWith(
+                compareBy<GroupedVodStream>(
+                    { item ->
+                        val ord = metaFor(item)?.collectionOrder ?: 0
+                        if (ord > 0) ord else Int.MAX_VALUE
+                    },
+                    { item ->
+                        val yr = metaFor(item)?.releaseYear?.takeIf { it > 0 }
+                            ?: item.stream.releaseYear.takeIf { it > 0 }
+                            ?: Int.MAX_VALUE
+                        yr
+                    },
+                    { item ->
+                        metaFor(item)?.cleanTitle?.lowercase(Locale.US)
+                            ?: item.stream.name.lowercase(Locale.US)
+                    }
+                )
+            )
+            CollectionSortMode.NEWEST_FIRST -> movies.sortedWith(
+                compareByDescending<GroupedVodStream> { item ->
+                    metaFor(item)?.releaseYear?.takeIf { it > 0 } ?: item.stream.releaseYear
+                }.thenByDescending { item ->
+                    metaFor(item)?.popularityScore ?: item.stream.ratingNumeric
+                }.thenBy { item ->
+                    metaFor(item)?.cleanTitle?.lowercase(Locale.US)
+                        ?: item.stream.name.lowercase(Locale.US)
+                }
+            )
+            CollectionSortMode.TOP_RATED -> movies.sortedWith(
+                compareByDescending<GroupedVodStream> { item ->
+                    metaFor(item)?.popularityScore ?: item.stream.ratingNumeric
+                }.thenByDescending { item ->
+                    item.stream.ratingNumeric
+                }.thenByDescending { item ->
+                    metaFor(item)?.releaseYear?.takeIf { it > 0 } ?: item.stream.releaseYear
+                }
+            )
+        }
     }
 
     private data class VodQueryParams(

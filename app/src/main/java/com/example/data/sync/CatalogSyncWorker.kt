@@ -2,27 +2,20 @@ package com.example.data.sync
 
 import android.content.Context
 import android.util.Log
-import androidx.work.BackoffPolicy
-import androidx.work.Constraints
 import androidx.work.CoroutineWorker
 import androidx.work.Data
-import androidx.work.ExistingWorkPolicy
-import androidx.work.NetworkType
-import androidx.work.OneTimeWorkRequestBuilder
-import androidx.work.OutOfQuotaPolicy
-import androidx.work.WorkManager
 import androidx.work.WorkerParameters
 import com.example.data.repository.IptvRepository
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.withContext
 import java.io.IOException
-import java.util.concurrent.TimeUnit
 
 /**
- * Persistent WorkManager worker for granular per-section catalog synchronization
- * (`"LIVE"`, `"MOVIE"`, or `"SERIES"`). Survives app backgrounding, handles cancellation cleanly
- * by marking `sync_section_state` as `INTERRUPTED`, and retries transient network errors.
+ * Persistent WorkManager worker for serialized per-section catalog synchronization
+ * (`"LIVE"`, `"MOVIE"`, or `"SERIES"`). All enqueues route through [CatalogSyncScheduler]'s
+ * single unique WorkManager queue ([CatalogSyncScheduler.UNIQUE_QUEUE_NAME]) so Live TV,
+ * Series, and Movies never download or process concurrently against the same Xtream server.
  */
 class CatalogSyncWorker(
     appContext: Context,
@@ -30,31 +23,80 @@ class CatalogSyncWorker(
 ) : CoroutineWorker(appContext, params) {
 
     override suspend fun doWork(): Result {
-        val playlistId = inputData.getLong(KEY_PLAYLIST_ID, -1L)
-        val rawSectionType = inputData.getString(KEY_SECTION_TYPE).orEmpty().trim()
-        val categoryId = inputData.getString(KEY_CATEGORY_ID)?.trim()?.takeIf { it.isNotEmpty() }
-        val forceFull = inputData.getBoolean(KEY_FORCE_FULL, false)
+        val fallbackPlaylistId = inputData.getLong(KEY_PLAYLIST_ID, -1L)
+        val fallbackSection = inputData.getString(KEY_SECTION_TYPE).orEmpty().trim()
+        val fallbackCategoryId = inputData.getString(KEY_CATEGORY_ID)?.trim()?.takeIf { it.isNotEmpty() }
+        val fallbackForceFull = inputData.getBoolean(KEY_FORCE_FULL, false)
+        val fallbackPriorityRank = inputData.getInt(KEY_PRIORITY, SyncPriority.VOD_SYNC.rank)
+        val fallbackPriority = SyncPriority.entries.firstOrNull { it.rank == fallbackPriorityRank }
+            ?: CatalogSyncScheduler.defaultPriorityFor(fallbackSection, fallbackCategoryId)
 
-        if (playlistId <= 0L || rawSectionType.isEmpty()) {
-            Log.w(TAG, "Invalid inputs: playlistId=$playlistId sectionType=$rawSectionType")
+        val fallbackRequest = if (fallbackPlaylistId > 0L && fallbackSection.isNotEmpty()) {
+            QueuedSyncRequest(
+                playlistId = fallbackPlaylistId,
+                sectionType = SyncTelemetry.normalizeSyncSectionType(fallbackSection),
+                categoryId = fallbackCategoryId,
+                forceFull = fallbackForceFull,
+                priority = fallbackPriority
+            )
+        } else {
+            null
+        }
+
+        val initialRequest = CatalogSyncScheduler.pollNextPendingRequest(
+            context = applicationContext,
+            fallbackRequest = fallbackRequest
+        )
+        if (initialRequest == null) {
+            Log.w(TAG, "No valid sync request found: playlistId=$fallbackPlaylistId sectionType=$fallbackSection")
             return Result.failure(errorOutputData("Invalid playlist id or section type"))
         }
 
-        val normalizedSection = SyncTelemetry.normalizeSyncSectionType(rawSectionType)
-        val repository = IptvRepository.getInstance(applicationContext)
-        val playlist = repository.getPlaylistById(playlistId)
-        if (playlist == null) {
-            Log.w(TAG, "Playlist $playlistId not found for $normalizedSection sync")
-            return Result.failure(errorOutputData("Playlist $playlistId not found"))
+        var currentRequest: QueuedSyncRequest? = initialRequest
+        var finalResult: Result = Result.success()
+
+        while (currentRequest != null) {
+            val req = currentRequest
+            val stepResult = executeSingleRequest(req)
+            if (stepResult is Result.Retry) {
+                return stepResult
+            }
+            if (stepResult is Result.Failure) {
+                finalResult = stepResult
+            }
+
+            // Drain any additional pending requests in strict priority order while keeping single-queue serialization
+            currentRequest = if (CatalogSyncScheduler.hasPendingRequests()) {
+                CatalogSyncScheduler.pollNextPendingRequest(
+                    context = applicationContext,
+                    fallbackRequest = null
+                )
+            } else {
+                null
+            }
         }
 
+        return finalResult
+    }
+
+    private suspend fun executeSingleRequest(request: QueuedSyncRequest): Result {
+        val playlistId = request.playlistId
+        val normalizedSection = SyncTelemetry.normalizeSyncSectionType(request.sectionType)
+        val repository = IptvRepository.getInstance(applicationContext)
+
         return try {
+            val playlist = repository.getPlaylistById(playlistId)
+            if (playlist == null) {
+                Log.w(TAG, "Playlist $playlistId not found for $normalizedSection sync")
+                return Result.failure(errorOutputData("Playlist $playlistId not found"))
+            }
+
             val syncResult = withContext(PlaybackResourceGovernor.syncDispatcher) {
                 repository.syncPlaylistSection(
                     playlist = playlist,
                     sectionType = normalizedSection,
-                    categoryId = categoryId,
-                    forceFullReconcile = forceFull
+                    categoryId = request.categoryId,
+                    forceFullReconcile = request.forceFull
                 )
             }
 
@@ -90,6 +132,8 @@ class CatalogSyncWorker(
             val msg = e.message ?: "Unexpected error during $normalizedSection sync"
             Log.e(TAG, "Unexpected error during $normalizedSection sync: $msg")
             Result.failure(errorOutputData(msg))
+        } finally {
+            CatalogSyncScheduler.markRequestFinished(playlistId, normalizedSection)
         }
     }
 
@@ -129,6 +173,7 @@ class CatalogSyncWorker(
         const val KEY_SECTION_TYPE = "section_type"
         const val KEY_CATEGORY_ID = "category_id"
         const val KEY_FORCE_FULL = "force_full"
+        const val KEY_PRIORITY = "priority"
         const val KEY_ERROR = "error"
 
         fun uniqueWorkName(playlistId: Long, sectionType: String): String {
@@ -137,9 +182,8 @@ class CatalogSyncWorker(
         }
 
         /**
-         * Enqueues a unique background sync job for a single section (`LIVE`, `MOVIE`, or `SERIES`).
-         * Uses [ExistingWorkPolicy.KEEP] so Movies, Series, and Live TV run independently without
-         * cancelling or duplicating an already-active sync for the same section.
+         * Delegates all section sync requests to [CatalogSyncScheduler]'s centralized single
+         * serialized queue so Movies, Series, and Live TV never compete against the same host.
          */
         fun enqueueSectionSync(
             context: Context,
@@ -149,41 +193,15 @@ class CatalogSyncWorker(
             forceFull: Boolean = false,
             expedited: Boolean = false
         ): String {
-            val normalizedSection = SyncTelemetry.normalizeSyncSectionType(sectionType)
-            val workName = uniqueWorkName(playlistId, normalizedSection)
-            val inputBuilder = Data.Builder()
-                .putLong(KEY_PLAYLIST_ID, playlistId)
-                .putString(KEY_SECTION_TYPE, normalizedSection)
-                .putBoolean(KEY_FORCE_FULL, forceFull)
-            if (!categoryId.isNullOrBlank()) {
-                inputBuilder.putString(KEY_CATEGORY_ID, categoryId.trim())
-            }
-
-            val constraints = Constraints.Builder()
-                .setRequiredNetworkType(NetworkType.CONNECTED)
-                .build()
-
-            val requestBuilder = OneTimeWorkRequestBuilder<CatalogSyncWorker>()
-                .setInputData(inputBuilder.build())
-                .setConstraints(constraints)
-                .setBackoffCriteria(BackoffPolicy.EXPONENTIAL, 15L, TimeUnit.SECONDS)
-                .addTag(workName)
-
-            if (expedited) {
-                requestBuilder.setExpedited(OutOfQuotaPolicy.RUN_AS_NON_EXPEDITED_WORK_REQUEST)
-            }
-
-            runCatching {
-                WorkManager.getInstance(context.applicationContext).enqueueUniqueWork(
-                    workName,
-                    ExistingWorkPolicy.KEEP,
-                    requestBuilder.build()
-                )
-            }.onFailure { err ->
-                Log.w(TAG, "Unable to enqueue WorkManager job $workName: ${err.message}")
-            }
-
-            return workName
+            return CatalogSyncScheduler.enqueueSectionSync(
+                context = context,
+                playlistId = playlistId,
+                sectionType = sectionType,
+                categoryId = categoryId,
+                forceFull = forceFull,
+                priority = CatalogSyncScheduler.defaultPriorityFor(sectionType, categoryId),
+                expedited = expedited
+            )
         }
     }
 }

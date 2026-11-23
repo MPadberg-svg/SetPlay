@@ -38,6 +38,7 @@ import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.ArrowForward
 import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.Check
@@ -48,6 +49,7 @@ import androidx.compose.material.icons.filled.ErrorOutline
 import androidx.compose.material.icons.filled.GridView
 import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.KeyboardArrowDown
+import androidx.compose.material.icons.filled.LocalMovies
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material.icons.filled.Movie
@@ -92,6 +94,7 @@ import coil.compose.AsyncImage
 import com.example.data.model.CategoryEntity
 import com.example.data.model.GroupedVodStream
 import com.example.data.model.StreamEntity
+import com.example.data.model.VodCollectionEntity
 import com.example.data.model.VodGroupingNormalizer
 import com.example.ui.theme.AmberGold
 import com.example.ui.theme.Champagne
@@ -569,8 +572,10 @@ internal fun TvVodTopControlStrip(
                         Text(
                             text = when {
                                 selectedCategoryId != null -> "Search in $activeCategoryLabel…"
-                                isMovies -> "Search %,d+ cinema movies…".format(totalCount)
-                                else -> "Search %,d+ series & shows…".format(totalCount)
+                                isMovies && totalCount > 0 -> "Search %,d+ cinema movies…".format(Locale.US, totalCount)
+                                isMovies -> "Search cinema movies…"
+                                totalCount > 0 -> "Search %,d+ series & shows…".format(Locale.US, totalCount)
+                                else -> "Search series & shows…"
                             },
                             color = sectionHighlight.copy(alpha = 0.68f),
                             fontSize = 14.sp,
@@ -2042,3 +2047,363 @@ internal fun TvVersionSelectorDrawer(
         }
     }
 }
+
+/**
+ * 10-Foot Android TV "Franchises & Collections" Horizontal Shelf for Movies Discovery Home.
+ * D-Pad focusable stacked box-set cards (`luxuryFocusableCard`) with poster art, franchise title,
+ * and movie count pill.
+ */
+@Composable
+internal fun TvCollectionsShelfRow(
+    collections: List<VodCollectionEntity>,
+    sectionBaseBg: Color,
+    sectionSurface: Color,
+    sectionPrimaryAccent: Color,
+    sectionHighlight: Color,
+    onOpenCollection: (VodCollectionEntity) -> Unit,
+    modifier: Modifier = Modifier
+) {
+    if (collections.isEmpty()) return
+
+    Column(
+        modifier = modifier
+            .fillMaxWidth()
+            .testTag("vod_collections_shelf")
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 20.dp),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Icon(
+                    imageVector = Icons.Default.LocalMovies,
+                    contentDescription = null,
+                    tint = AmberGold,
+                    modifier = Modifier.size(19.dp)
+                )
+                Text(
+                    text = "Franchises & Collections",
+                    color = Color.White,
+                    fontSize = 17.sp,
+                    fontWeight = FontWeight.ExtraBold
+                )
+                Text(
+                    text = "Official cinema sagas",
+                    color = sectionHighlight.copy(alpha = 0.72f),
+                    fontSize = 11.5.sp,
+                    fontWeight = FontWeight.Medium
+                )
+            }
+            Text(
+                text = "${collections.size} Sagas",
+                color = PaleGold,
+                fontSize = 12.sp,
+                fontWeight = FontWeight.Bold
+            )
+        }
+
+        Spacer(modifier = Modifier.height(6.dp))
+
+        LazyRow(
+            contentPadding = PaddingValues(horizontal = 20.dp, vertical = 8.dp),
+            horizontalArrangement = Arrangement.spacedBy(14.dp)
+        ) {
+            items(collections, key = { "tv_col_${it.collectionId}" }) { collection ->
+                Column(
+                    modifier = Modifier
+                        .width(196.dp)
+                        .luxuryFocusableCard(
+                            accentColor = sectionHighlight,
+                            shape = RoundedCornerShape(14.dp),
+                            focusedScale = 1.06f,
+                            onClick = { onOpenCollection(collection) }
+                        )
+                        .testTag("vod_collection_card_${collection.collectionId}"),
+                    horizontalAlignment = Alignment.CenterHorizontally
+                ) {
+                    // Stacked saga box-set silhouette ledges
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth(0.76f)
+                            .height(4.dp)
+                            .clip(RoundedCornerShape(topStart = 6.dp, topEnd = 6.dp))
+                            .background(sectionPrimaryAccent.copy(alpha = 0.45f))
+                    )
+                    Spacer(modifier = Modifier.height(2.dp))
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth(0.88f)
+                            .height(4.dp)
+                            .clip(RoundedCornerShape(topStart = 6.dp, topEnd = 6.dp))
+                            .background(sectionHighlight.copy(alpha = 0.58f))
+                    )
+
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(142.dp)
+                            .clip(RoundedCornerShape(14.dp))
+                            .background(sectionSurface)
+                            .border(1.dp, sectionHighlight.copy(alpha = 0.45f), RoundedCornerShape(14.dp))
+                    ) {
+                        if (collection.posterUrl.isNotBlank()) {
+                            AsyncImage(
+                                model = collection.posterUrl,
+                                contentDescription = collection.name,
+                                contentScale = ContentScale.Crop,
+                                modifier = Modifier.fillMaxSize()
+                            )
+                        } else {
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxSize()
+                                    .background(
+                                        Brush.linearGradient(
+                                            listOf(sectionSurface, sectionBaseBg)
+                                        )
+                                    ),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.LocalMovies,
+                                    contentDescription = null,
+                                    tint = sectionHighlight.copy(alpha = 0.60f),
+                                    modifier = Modifier.size(38.dp)
+                                )
+                            }
+                        }
+
+                        Box(
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .background(
+                                    Brush.verticalGradient(
+                                        colorStops = arrayOf(
+                                            0.0f to sectionBaseBg.copy(alpha = 0.25f),
+                                            0.48f to sectionBaseBg.copy(alpha = 0.54f),
+                                            0.84f to sectionBaseBg.copy(alpha = 0.92f),
+                                            1.0f to sectionBaseBg.copy(alpha = 0.98f)
+                                        )
+                                    )
+                                )
+                        )
+
+                        Surface(
+                            color = sectionBaseBg.copy(alpha = 0.88f),
+                            shape = RoundedCornerShape(50),
+                            border = BorderStroke(0.7.dp, AmberGold.copy(alpha = 0.72f)),
+                            modifier = Modifier
+                                .align(Alignment.TopEnd)
+                                .padding(8.dp)
+                        ) {
+                            Text(
+                                text = "${collection.movieCount} Movies",
+                                color = PaleGold,
+                                fontSize = 10.sp,
+                                fontWeight = FontWeight.ExtraBold,
+                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.5.dp)
+                            )
+                        }
+
+                        Column(
+                            modifier = Modifier
+                                .align(Alignment.BottomStart)
+                                .fillMaxWidth()
+                                .padding(10.dp)
+                        ) {
+                            Text(
+                                text = collection.name,
+                                color = Color.White,
+                                fontSize = 14.sp,
+                                fontWeight = FontWeight.ExtraBold,
+                                maxLines = 2,
+                                overflow = TextOverflow.Ellipsis,
+                                lineHeight = 16.5.sp
+                            )
+                            Spacer(modifier = Modifier.height(2.dp))
+                            Text(
+                                text = "OK to Explore Saga ›",
+                                color = sectionHighlight,
+                                fontSize = 10.5.sp,
+                                fontWeight = FontWeight.SemiBold,
+                                maxLines = 1
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/**
+ * Purpose-built 10-Foot Android TV Collection / Franchise Detail Screen.
+ * Features D-Pad Back pill, Franchise header with movie count, D-Pad sort pills
+ * (Release Order / Newest First / Top Rated), and a 5-column poster grid.
+ */
+@Composable
+internal fun TvCollectionDetailScreen(
+    collection: VodCollectionEntity,
+    movies: List<GroupedVodStream>,
+    sortMode: CollectionSortMode,
+    sectionBaseBg: Color,
+    sectionSurface: Color,
+    sectionPrimaryAccent: Color,
+    sectionHighlight: Color,
+    onBack: () -> Unit,
+    onSelectSortMode: (CollectionSortMode) -> Unit,
+    onOpenDetails: (StreamEntity) -> Unit,
+    onPlayImmediately: (StreamEntity) -> Unit,
+    onToggleFavorite: (StreamEntity) -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val displayCount = movies.size.coerceAtLeast(collection.movieCount)
+
+    Column(
+        modifier = modifier
+            .fillMaxSize()
+            .testTag("vod_collection_detail_screen")
+    ) {
+        // Header Row: D-Pad Back + Franchise Title + Count + Sort Pills
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 20.dp, vertical = 8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween
+        ) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(14.dp),
+                modifier = Modifier.weight(1f)
+            ) {
+                Surface(
+                    color = sectionSurface.copy(alpha = 0.88f),
+                    shape = RoundedCornerShape(50),
+                    border = BorderStroke(1.dp, sectionHighlight.copy(alpha = 0.65f)),
+                    modifier = Modifier
+                        .tvFocusablePill(
+                            accentColor = sectionHighlight,
+                            focusedScale = 1.06f,
+                            onClick = onBack
+                        )
+                        .testTag("vod_collection_back_btn")
+                ) {
+                    Row(
+                        modifier = Modifier.padding(horizontal = 14.dp, vertical = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.AutoMirrored.Filled.ArrowBack,
+                            contentDescription = "Back to Movies",
+                            tint = sectionHighlight,
+                            modifier = Modifier.size(18.dp)
+                        )
+                        Text(
+                            text = "Back",
+                            color = Color.White,
+                            fontSize = 13.sp,
+                            fontWeight = FontWeight.ExtraBold
+                        )
+                    }
+                }
+
+                Column(modifier = Modifier.weight(1f)) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Text(
+                            text = collection.name,
+                            color = Color.White,
+                            fontSize = 20.sp,
+                            fontWeight = FontWeight.ExtraBold,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                        Surface(
+                            color = AmberGold.copy(alpha = 0.22f),
+                            shape = RoundedCornerShape(50),
+                            border = BorderStroke(0.8.dp, AmberGold.copy(alpha = 0.70f))
+                        ) {
+                            Text(
+                                text = "$displayCount Movies",
+                                color = PaleGold,
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.ExtraBold,
+                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 3.dp)
+                            )
+                        }
+                    }
+                }
+            }
+
+            // D-Pad Focusable Sort Pills
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                CollectionSortMode.entries.forEach { mode ->
+                    val isSelected = sortMode == mode
+                    Surface(
+                        color = if (isSelected) {
+                            sectionPrimaryAccent.copy(alpha = 0.44f)
+                        } else {
+                            sectionSurface.copy(alpha = 0.80f)
+                        },
+                        shape = RoundedCornerShape(50),
+                        border = BorderStroke(
+                            width = if (isSelected) 1.3.dp else 0.8.dp,
+                            color = if (isSelected) sectionHighlight else Color.White.copy(alpha = 0.18f)
+                        ),
+                        modifier = Modifier
+                            .tvFocusablePill(
+                                accentColor = sectionHighlight,
+                                focusedScale = 1.05f,
+                                onClick = { onSelectSortMode(mode) }
+                            )
+                            .testTag("vod_collection_sort_${mode.name.lowercase(Locale.US)}")
+                    ) {
+                        Text(
+                            text = mode.label,
+                            color = if (isSelected) Color.White else Champagne.copy(alpha = 0.85f),
+                            fontSize = 12.sp,
+                            fontWeight = if (isSelected) FontWeight.ExtraBold else FontWeight.SemiBold,
+                            modifier = Modifier.padding(horizontal = 14.dp, vertical = 7.dp)
+                        )
+                    }
+                }
+            }
+        }
+
+        LazyVerticalGrid(
+            columns = GridCells.Fixed(5),
+            modifier = Modifier
+                .fillMaxWidth()
+                .weight(1f)
+                .testTag("vod_collection_grid"),
+            contentPadding = PaddingValues(horizontal = 20.dp, vertical = 10.dp),
+            horizontalArrangement = Arrangement.spacedBy(14.dp),
+            verticalArrangement = Arrangement.spacedBy(16.dp)
+        ) {
+            items(movies, key = { "tv_col_movie_${it.stream.id}" }) { grouped ->
+                val item = grouped.stream
+                MoviePosterCard(
+                    item = item,
+                    versionCount = grouped.versionCount,
+                    onClick = { onOpenDetails(item) },
+                    onPlayImmediately = { onPlayImmediately(item) },
+                    onToggleFavorite = { onToggleFavorite(item) }
+                )
+            }
+        }
+    }
+}
+

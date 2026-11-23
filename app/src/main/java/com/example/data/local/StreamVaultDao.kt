@@ -18,6 +18,7 @@ import com.example.data.model.StreamEntity
 import com.example.data.model.SyncSectionStateEntity
 import com.example.data.model.TournamentPreferenceEntity
 import com.example.data.model.VodCatalogGroupEntity
+import com.example.data.model.VodCollectionEntity
 import com.example.data.model.VodGroupMemberEntity
 import kotlinx.coroutines.flow.Flow
 
@@ -996,6 +997,37 @@ interface VodCatalogGroupDao {
             )
             .take(limit)
     }
+
+    @Query("DELETE FROM vod_collections WHERE playlistId = :playlistId")
+    suspend fun deleteCollectionsForPlaylist(playlistId: Long)
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insertCollectionsBatch(collections: List<VodCollectionEntity>)
+
+    @Query("""
+        SELECT *
+        FROM vod_collections
+        WHERE playlistId = :playlistId
+        ORDER BY popularityScore DESC, movieCount DESC, name ASC
+        LIMIT :limit
+    """)
+    fun observeCollections(
+        playlistId: Long,
+        limit: Int = 40
+    ): Flow<List<VodCollectionEntity>>
+
+    @Query("""
+        SELECT *
+        FROM vod_catalog_groups
+        WHERE playlistId = :playlistId
+          AND streamType = 'movie'
+          AND collectionId = :collectionId
+        ORDER BY collectionOrder ASC, releaseYear ASC, cleanTitle ASC
+    """)
+    fun getGroupsByCollection(
+        playlistId: Long,
+        collectionId: String
+    ): Flow<List<VodCatalogGroupEntity>>
 }
 
 @Dao

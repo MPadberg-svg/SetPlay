@@ -96,6 +96,7 @@ import com.example.data.model.CategoryEntity
 import com.example.data.model.GroupedVodStream
 import com.example.data.model.PlaylistEntity
 import com.example.data.model.StreamEntity
+import com.example.data.model.VodCollectionEntity
 import com.example.data.model.VodGroupingNormalizer
 import com.example.data.remote.SeriesDetails
 import com.example.data.remote.SeriesEpisode
@@ -201,6 +202,15 @@ fun VodScreen(
     val isLoadingMovieDetails by viewModel.isLoadingMovieDetails.collectAsStateWithLifecycle()
     val availableMovieVersions by viewModel.availableMovieVersions.collectAsStateWithLifecycle()
     val similarMovies by viewModel.similarMovies.collectAsStateWithLifecycle()
+    val activeMovieCollectionItems by viewModel.activeMovieCollectionItems.collectAsStateWithLifecycle()
+    val activeMovieCollectionName by viewModel.activeMovieCollectionName.collectAsStateWithLifecycle()
+    val activeMovieCollection by viewModel.activeMovieCollection.collectAsStateWithLifecycle()
+    val movieCollections by viewModel.movieCollections.collectAsStateWithLifecycle()
+    val selectedCollection by viewModel.selectedCollection.collectAsStateWithLifecycle()
+    val collectionSortMode by viewModel.collectionSortMode.collectAsStateWithLifecycle()
+    val selectedCollectionMovies by viewModel.selectedCollectionMovies.collectAsStateWithLifecycle()
+    val liveMovieCount by viewModel.liveMovieCount.collectAsStateWithLifecycle()
+    val liveSeriesCount by viewModel.liveSeriesCount.collectAsStateWithLifecycle()
     val episodeResumeMap by viewModel.episodeResumeMap.collectAsStateWithLifecycle()
     val fallbackRecentlyWatched by viewModel.recentlyWatched.collectAsStateWithLifecycle()
     val currentLimit by viewModel.currentLimit.collectAsStateWithLifecycle()
@@ -298,7 +308,12 @@ fun VodScreen(
     var isSearchExpanded by remember(sectionTab) { mutableStateOf(false) }
     var forceGridMode by remember(sectionTab) { mutableStateOf(false) }
 
-    BackHandler(enabled = selectedShelfFilter != null) {
+    val activeCollection = if (isMovies) selectedCollection else null
+
+    BackHandler(enabled = activeCollection != null) {
+        viewModel.closeCollection()
+    }
+    BackHandler(enabled = activeCollection == null && selectedShelfFilter != null) {
         viewModel.closeShelfSeeAll(sectionTab)
     }
 
@@ -309,15 +324,19 @@ fun VodScreen(
     }
 
     val onSelectCategory: (String?) -> Unit = { catId ->
+        viewModel.closeCollection()
         viewModel.closeShelfSeeAll(sectionTab)
         if (isMovies) viewModel.selectMovieCategory(catId) else viewModel.selectSeriesCategory(catId)
     }
     val onSearchChange: (String) -> Unit = { q ->
-        if (q.isNotBlank()) viewModel.closeShelfSeeAll(sectionTab)
+        if (q.isNotBlank()) {
+            viewModel.closeCollection()
+            viewModel.closeShelfSeeAll(sectionTab)
+        }
         if (isMovies) viewModel.onMovieSearchQueryChanged(q) else viewModel.onSeriesSearchQueryChanged(q)
     }
 
-    val totalCount = if (isMovies) activePlaylist.vodCount else activePlaylist.seriesCount
+    val totalCount = if (isMovies) liveMovieCount else liveSeriesCount
 
     // IMAX Movie Pre-Play Details ModalBottomSheet
     if (isMovies && selectedMovieStream != null) {
@@ -327,6 +346,14 @@ fun VodScreen(
             isLoading = isLoadingMovieDetails,
             availableVersions = availableMovieVersions,
             similarMovies = similarMovies,
+            collectionName = activeMovieCollectionName,
+            collectionMovies = activeMovieCollectionItems,
+            onViewCollection = activeMovieCollection?.let { col ->
+                {
+                    viewModel.closeMovieDetails()
+                    viewModel.openCollection(col)
+                }
+            },
             categoryNameById = categoryNameById,
             onSwitchVersion = { versionStream ->
                 viewModel.switchMovieVersion(versionStream, activePlaylist)
@@ -454,8 +481,8 @@ fun VodScreen(
                     onDismissPendingUpdate = { viewModel.dismissPendingUpdate(sectionTab) }
                 )
 
-                val isDiscoveryHomeMode = selectedShelfFilter == null && selectedCatId == null && searchQuery.isBlank() && !forceGridMode
-                val hasCatalogContent = groupedItems.isNotEmpty() || discoveryShelves.isNotEmpty() || continueWatchingItems.isNotEmpty()
+                val isDiscoveryHomeMode = activeCollection == null && selectedShelfFilter == null && selectedCatId == null && searchQuery.isBlank() && !forceGridMode
+                val hasCatalogContent = groupedItems.isNotEmpty() || discoveryShelves.isNotEmpty() || continueWatchingItems.isNotEmpty() || (isMovies && movieCollections.isNotEmpty())
 
                 PullToRefreshBox(
                     isRefreshing = isRefreshing,
@@ -479,7 +506,22 @@ fun VodScreen(
                         .fillMaxWidth()
                         .weight(1f)
                 ) {
-                    if (selectedShelfFilter != null) {
+                    if (activeCollection != null) {
+                        VodMobileCollectionDetailScreen(
+                            collection = activeCollection,
+                            movies = selectedCollectionMovies,
+                            sortMode = collectionSortMode,
+                            sectionBaseBg = sectionBaseBg,
+                            sectionSurface = sectionSurface,
+                            sectionPrimaryAccent = sectionPrimaryAccent,
+                            sectionHighlight = sectionHighlight,
+                            onBack = { viewModel.closeCollection() },
+                            onSelectSortMode = { mode -> viewModel.setCollectionSortMode(mode) },
+                            onOpenMovieDetails = { stream -> viewModel.openMovieDetails(stream, activePlaylist) },
+                            onPlayImmediately = { stream -> onItemClick(stream) },
+                            onToggleFavorite = { stream -> viewModel.toggleFavorite(stream.id, stream.isFavorite) }
+                        )
+                    } else if (selectedShelfFilter != null) {
                         val activeFilter = selectedShelfFilter!!
                         val shelfTitle = remember(activeFilter, isMovies) {
                             vodShelfFilterTitle(activeFilter, isMovies)
@@ -672,7 +714,9 @@ fun VodScreen(
                             },
                             onBrowseAllGrid = { forceGridMode = true },
                             onSeeAllShelf = { filter -> viewModel.openShelfSeeAll(sectionTab, filter) },
-                            onLoadMoreShelf = { shelfId -> viewModel.loadMoreForShelf(shelfId) }
+                            onLoadMoreShelf = { shelfId -> viewModel.loadMoreForShelf(shelfId) },
+                            movieCollections = if (isMovies) movieCollections else emptyList(),
+                            onOpenCollection = { col -> viewModel.openCollection(col) }
                         )
                     } else {
                         // 3-Column Deduplicated Poster Grid (Category, Search, or All Grid)
@@ -753,6 +797,10 @@ fun VodScreen(
                     continueWatchingItems = continueWatchingItems,
                     selectedShelfFilter = selectedShelfFilter,
                     shelfGridItems = shelfGridItems,
+                    movieCollections = if (isMovies) movieCollections else emptyList(),
+                    selectedCollection = activeCollection,
+                    collectionSortMode = collectionSortMode,
+                    selectedCollectionMovies = selectedCollectionMovies,
                     isParentalUnlocked = isParentalUnlocked,
                     sectionBaseBg = sectionBaseBg,
                     sectionSurface = sectionSurface,
@@ -781,6 +829,9 @@ fun VodScreen(
                     onLoadMore = { viewModel.loadMore() },
                     onOpenShelfSeeAll = { filter -> viewModel.openShelfSeeAll(sectionTab, filter) },
                     onCloseShelfSeeAll = { viewModel.closeShelfSeeAll(sectionTab) },
+                    onOpenCollection = { col -> viewModel.openCollection(col) },
+                    onCloseCollection = { viewModel.closeCollection() },
+                    onSelectCollectionSortMode = { mode -> viewModel.setCollectionSortMode(mode) },
                     onLoadMoreShelf = { shelfId -> viewModel.loadMoreForShelf(shelfId) },
                     onLoadMoreShelfGrid = { viewModel.loadMoreShelfGrid(sectionTab) },
                     onOpenDetails = { stream ->
@@ -832,6 +883,10 @@ private fun TvVodCinemaScreen(
     continueWatchingItems: List<StreamEntity>,
     selectedShelfFilter: VodShelfFilter?,
     shelfGridItems: List<GroupedVodStream>,
+    movieCollections: List<VodCollectionEntity> = emptyList(),
+    selectedCollection: VodCollectionEntity? = null,
+    collectionSortMode: CollectionSortMode = CollectionSortMode.RELEASE_ORDER,
+    selectedCollectionMovies: List<GroupedVodStream> = emptyList(),
     isParentalUnlocked: Boolean,
     sectionBaseBg: Color,
     sectionSurface: Color,
@@ -845,6 +900,9 @@ private fun TvVodCinemaScreen(
     onLoadMore: () -> Unit,
     onOpenShelfSeeAll: (VodShelfFilter) -> Unit,
     onCloseShelfSeeAll: () -> Unit,
+    onOpenCollection: (VodCollectionEntity) -> Unit = {},
+    onCloseCollection: () -> Unit = {},
+    onSelectCollectionSortMode: (CollectionSortMode) -> Unit = {},
     onLoadMoreShelf: (String) -> Unit,
     onLoadMoreShelfGrid: () -> Unit,
     onOpenDetails: (StreamEntity) -> Unit,
@@ -880,8 +938,8 @@ private fun TvVodCinemaScreen(
             ?: tvDisplayItems.firstOrNull()
     }
 
-    val isDiscoveryHomeMode = selectedShelfFilter == null && selectedCategoryId == null && searchQuery.isBlank() && !forceGridMode
-    val hasCatalogContent = tvDisplayItems.isNotEmpty() || discoveryShelves.isNotEmpty() || continueWatchingItems.isNotEmpty()
+    val isDiscoveryHomeMode = selectedCollection == null && selectedShelfFilter == null && selectedCategoryId == null && searchQuery.isBlank() && !forceGridMode
+    val hasCatalogContent = tvDisplayItems.isNotEmpty() || discoveryShelves.isNotEmpty() || continueWatchingItems.isNotEmpty() || (isMovies && movieCollections.isNotEmpty())
 
     if (showTvCategoriesDialog) {
         TvVodCategoryOverlayDialog(
@@ -896,6 +954,7 @@ private fun TvVodCinemaScreen(
             sectionHighlight = sectionHighlight,
             onSelectDiscoverHome = {
                 forceGridMode = false
+                onCloseCollection()
                 onCloseShelfSeeAll()
                 onSelectCategory(null)
             },
@@ -943,6 +1002,7 @@ private fun TvVodCinemaScreen(
             },
             onSearchQueryChange = onSearchQueryChange,
             onToggleViewMode = {
+                onCloseCollection()
                 onCloseShelfSeeAll()
                 forceGridMode = !forceGridMode
             },
@@ -952,7 +1012,25 @@ private fun TvVodCinemaScreen(
 
         Spacer(modifier = Modifier.height(6.dp))
 
-        if (selectedShelfFilter != null) {
+        if (isMovies && selectedCollection != null) {
+            TvCollectionDetailScreen(
+                collection = selectedCollection,
+                movies = selectedCollectionMovies,
+                sortMode = collectionSortMode,
+                sectionBaseBg = sectionBaseBg,
+                sectionSurface = sectionSurface,
+                sectionPrimaryAccent = sectionPrimaryAccent,
+                sectionHighlight = sectionHighlight,
+                onBack = onCloseCollection,
+                onSelectSortMode = onSelectCollectionSortMode,
+                onOpenDetails = onOpenDetails,
+                onPlayImmediately = onPlayImmediately,
+                onToggleFavorite = onToggleFavorite,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .weight(1f)
+            )
+        } else if (selectedShelfFilter != null) {
             // Dedicated 10-Foot 5-Column D-Pad Paginated Shelf "See All" Grid
             val shelfTitle = remember(selectedShelfFilter, isMovies) {
                 vodShelfFilterTitle(selectedShelfFilter, isMovies)
@@ -1144,6 +1222,19 @@ private fun TvVodCinemaScreen(
                             sectionHighlight = sectionHighlight,
                             onItemFocused = { focusedTvItem = it },
                             onItemClick = onPlayImmediately
+                        )
+                    }
+                }
+
+                if (isMovies && movieCollections.isNotEmpty()) {
+                    item(key = "tv_movie_collections_shelf") {
+                        TvCollectionsShelfRow(
+                            collections = movieCollections,
+                            sectionBaseBg = sectionBaseBg,
+                            sectionSurface = sectionSurface,
+                            sectionPrimaryAccent = sectionPrimaryAccent,
+                            sectionHighlight = sectionHighlight,
+                            onOpenCollection = onOpenCollection
                         )
                     }
                 }
@@ -1807,6 +1898,9 @@ fun ImaxMovieDossierModalSheet(
     onToggleFavorite: () -> Unit,
     availableVersions: List<StreamEntity> = emptyList(),
     similarMovies: List<GroupedVodStream> = emptyList(),
+    collectionName: String = "",
+    collectionMovies: List<GroupedVodStream> = emptyList(),
+    onViewCollection: (() -> Unit)? = null,
     categoryNameById: Map<String, String> = emptyMap(),
     onSwitchVersion: (StreamEntity) -> Unit = {},
     onSelectSimilarMovie: (StreamEntity) -> Unit = {},
@@ -2211,6 +2305,28 @@ fun ImaxMovieDossierModalSheet(
                         )
                     }
                 }
+            }
+
+            // 3b. Official Franchise / Collection Shelf ("Part of <Collection Name>")
+            if (collectionName.isNotBlank() && collectionMovies.isNotEmpty()) {
+                Spacer(modifier = Modifier.height(14.dp))
+                HorizontalDivider(
+                    color = Color.White.copy(alpha = 0.08f),
+                    modifier = Modifier.padding(horizontal = 18.dp)
+                )
+                Spacer(modifier = Modifier.height(14.dp))
+                VodDossierCollectionRow(
+                    collectionName = collectionName,
+                    items = collectionMovies,
+                    activeStreamId = movieStream.id,
+                    activeCanonicalGroupKey = movieStream.canonicalGroupKey,
+                    sectionBaseBg = MoviesSapphireNavy,
+                    sectionSurface = MoviesAtlanticTeal,
+                    sectionPrimaryAccent = MoviesCyanTeal,
+                    sectionHighlight = MoviesMintSpring,
+                    onItemClick = onSelectSimilarMovie,
+                    onViewCollection = onViewCollection
+                )
             }
 
             // 4. "More Like This" Similar Movies Shelf

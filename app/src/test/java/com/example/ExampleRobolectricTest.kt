@@ -4,6 +4,7 @@ import android.app.Application
 import android.content.Context
 import android.view.KeyEvent
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.test.performClick
 import androidx.room.Room
 import androidx.test.core.app.ApplicationProvider
 import com.example.data.local.StreamVaultDatabase
@@ -7429,7 +7430,623 @@ class TvSyncDeviceSeparationComposeTest {
             metaFile.delete()
         }
     }
+
+    @Test
+    fun phase6c_parseVersionMetadataNeverDoublesSubOrMultiAndPreservesLanguageRanks() {
+        val catNames = mapOf(
+            "c_alb" to "ALB SUB | MOVIES",
+            "c_ar" to "ARABIC SUBTITLED MOVIES",
+            "c_fr" to "FRENCH VOSTFR",
+            "c_fa" to "PERSIAN SUB MOVIES",
+            "c_bg" to "BULGARIAN SUB MOVIES",
+            "c_ku" to "KURDISH SUB MOVIES",
+            "c_multi" to "MULTI-SUB 4K",
+            "c_en" to "ENGLISH 4K MOVIES"
+        )
+
+        val cases = listOf(
+            Triple(
+                StreamEntity(id = 1L, playlistId = 1L, streamId = 1L, name = "Dune Part Two (2024)", streamType = "movie", categoryId = "c_alb", versionTag = "Albanian (Sub)"),
+                "Albanian (Sub)",
+                4
+            ),
+            Triple(
+                StreamEntity(id = 2L, playlistId = 1L, streamId = 2L, name = "Dune Part Two (2024)", streamType = "movie", categoryId = "c_ar", versionTag = "Arabic (Sub)"),
+                "Arabic (Sub)",
+                1
+            ),
+            Triple(
+                StreamEntity(id = 3L, playlistId = 1L, streamId = 3L, name = "Dune Part Two (2024)", streamType = "movie", categoryId = "c_fr", versionTag = "French (VOSTFR)"),
+                "French (VOSTFR)",
+                2
+            ),
+            Triple(
+                StreamEntity(id = 4L, playlistId = 1L, streamId = 4L, name = "Dune Part Two (2024)", streamType = "movie", categoryId = "c_fa", versionTag = "Persian (Sub)"),
+                "Persian (Sub)",
+                4
+            ),
+            Triple(
+                StreamEntity(id = 5L, playlistId = 1L, streamId = 5L, name = "Dune Part Two (2024)", streamType = "movie", categoryId = "c_bg", versionTag = "Bulgarian (Sub)"),
+                "Bulgarian (Sub)",
+                4
+            ),
+            Triple(
+                StreamEntity(id = 6L, playlistId = 1L, streamId = 6L, name = "Dune Part Two (2024)", streamType = "movie", categoryId = "c_ku", versionTag = "Kurdish (Sub)"),
+                "Kurdish (Sub)",
+                4
+            ),
+            Triple(
+                StreamEntity(id = 7L, playlistId = 1L, streamId = 7L, name = "Dune Part Two (2024) 4K", streamType = "movie", categoryId = "c_multi", versionTag = "Multi-Sub"),
+                "Multi-Sub",
+                3
+            ),
+            Triple(
+                StreamEntity(id = 8L, playlistId = 1L, streamId = 8L, name = "EN - Dune Part Two (2024) 4K", streamType = "movie", categoryId = "c_en", versionTag = "EN • 4K"),
+                "English",
+                0
+            )
+        )
+
+        val parsedAll = cases.map { (stream, expectedGroup, expectedRank) ->
+            val meta = com.example.ui.vod.parseVersionMetadata(
+                version = stream,
+                categoryNameById = catNames,
+                includeContainer = true
+            )
+            assertFalse(
+                "Language group must NEVER contain doubled (Sub): ${meta.languageGroup}",
+                meta.languageGroup.contains("(Sub) (Sub)", ignoreCase = true)
+            )
+            assertFalse(
+                "Language group must NEVER contain Multi-Sub (Multi): ${meta.languageGroup}",
+                meta.languageGroup.contains("Multi-Sub (Multi)", ignoreCase = true)
+            )
+            assertEquals("Unexpected languageGroup for ${stream.versionTag}", expectedGroup, meta.languageGroup)
+            assertEquals("Unexpected priorityRank for ${stream.versionTag}", expectedRank, meta.priorityRank)
+            meta
+        }
+
+        val grouped = com.example.ui.vod.groupVersionsByLanguage(parsedAll)
+        assertEquals("English", grouped[0].first)
+        assertEquals("Arabic (Sub)", grouped[1].first)
+        assertEquals("French (VOSTFR)", grouped[2].first)
+    }
+
+    @Test
+    fun phase6c_catalogSyncSchedulerSerializesPrioritizesAndDeduplicatesQueue() = runBlocking {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val db = StreamVaultDatabase.getInstance(context)
+        val playlistId = 88991L
+        try {
+            com.example.data.sync.CatalogSyncScheduler.clearForTest()
+
+            // Enqueue VOD (P2 MOVIE), VOD (P2 SERIES), LIVE (P1), and Category-scoped MOVIE refresh (P0)
+            com.example.data.sync.CatalogSyncScheduler.enqueueSectionSync(
+                context = context,
+                playlistId = playlistId,
+                sectionType = "SERIES"
+            )
+            // Duplicate SERIES enqueue must be deduplicated cleanly
+            com.example.data.sync.CatalogSyncScheduler.enqueueSectionSync(
+                context = context,
+                playlistId = playlistId,
+                sectionType = "SERIES"
+            )
+            com.example.data.sync.CatalogSyncScheduler.enqueueSectionSync(
+                context = context,
+                playlistId = playlistId,
+                sectionType = "LIVE"
+            )
+            com.example.data.sync.CatalogSyncScheduler.enqueueSectionSync(
+                context = context,
+                playlistId = playlistId,
+                sectionType = "MOVIE",
+                categoryId = "cat_42"
+            )
+
+            assertTrue(com.example.data.sync.CatalogSyncScheduler.isSectionQueuedOrRunning(playlistId, "LIVE"))
+            assertTrue(com.example.data.sync.CatalogSyncScheduler.isSectionQueuedOrRunning(playlistId, "SERIES"))
+            assertTrue(com.example.data.sync.CatalogSyncScheduler.isSectionQueuedOrRunning(playlistId, "MOVIE"))
+
+            // Priority drain order: P0 category-scoped MOVIE -> P1 LIVE -> P2 SERIES
+            val first = com.example.data.sync.CatalogSyncScheduler.pollNextPendingRequest(context, null)
+            assertNotNull(first)
+            assertEquals("MOVIE", first!!.sectionType)
+            assertEquals("cat_42", first.categoryId)
+            assertEquals(com.example.data.sync.SyncPriority.CATEGORY_REFRESH, first.priority)
+            com.example.data.sync.CatalogSyncScheduler.markRequestFinished(playlistId, first.sectionType)
+
+            val second = com.example.data.sync.CatalogSyncScheduler.pollNextPendingRequest(context, null)
+            assertNotNull(second)
+            assertEquals("LIVE", second!!.sectionType)
+            assertEquals(com.example.data.sync.SyncPriority.LIVE_SYNC, second.priority)
+            com.example.data.sync.CatalogSyncScheduler.markRequestFinished(playlistId, second.sectionType)
+
+            val third = com.example.data.sync.CatalogSyncScheduler.pollNextPendingRequest(context, null)
+            assertNotNull(third)
+            assertEquals("SERIES", third!!.sectionType)
+            assertEquals(com.example.data.sync.SyncPriority.VOD_SYNC, third.priority)
+            com.example.data.sync.CatalogSyncScheduler.markRequestFinished(playlistId, third.sectionType)
+
+            assertFalse(com.example.data.sync.CatalogSyncScheduler.hasPendingRequests())
+
+            // Verify waiting status telemetry formatting
+            val waitingTelemetry = com.example.data.sync.SyncTelemetry(
+                sectionType = "MOVIE",
+                status = com.example.data.sync.SyncStatus.PENDING,
+                pendingUpdateSummary = com.example.data.sync.CatalogSyncScheduler.STATUS_QUEUED_WAITING
+            )
+            val subtitle = com.example.ui.vod.formatSyncStatsSubtitle(waitingTelemetry)
+            assertTrue("Expected single-queue waiting subtitle, got: $subtitle", subtitle.contains("Starts automatically"))
+        } finally {
+            com.example.data.sync.CatalogSyncScheduler.clearForTest()
+            db.openHelper.writableDatabase.execSQL(
+                "DELETE FROM sync_section_state WHERE playlistId = ?",
+                arrayOf(playlistId)
+            )
+        }
+    }
+
+    @Test
+    fun phase6c_threeLevelMovieOrganizationSeparatesDuplicatesFranchisesAndStandalone() {
+        val collectionsJson = """
+            {
+              "v": 1,
+              "c": {
+                "645": {"n": "James Bond Collection", "p": "/bond_poster.jpg"},
+                "726871": {"n": "Dune Collection", "p": "/dune_poster.jpg"}
+              },
+              "m": {
+                "36557": ["645", 21],
+                "37724": ["645", 23],
+                "438631": ["726871", 1]
+              },
+              "t": {
+                "casino royale_2006": ["645", 21],
+                "skyfall_2012": ["645", 23],
+                "dune_2021": ["726871", 1]
+              }
+            }
+        """.trimIndent()
+        try {
+            com.example.data.remote.GlobalCollectionsIndexManager.loadFromJsonStringForTest(collectionsJson)
+
+            val streams = listOf(
+                // Level 1: Two duplicate versions of Casino Royale (same TMDb ID 36557) -> MUST merge into 1 group
+                com.example.data.local.StreamIndexProjection(
+                    id = 101L, streamId = 101L, categoryId = "cat_en",
+                    name = "EN - Casino Royale (2006) 4K",
+                    streamIcon = "https://image.tmdb.org/t/p/w500/casino.jpg",
+                    rating = "8.1", ratingNumeric = 8.1, containerExtension = "mp4",
+                    tmdbId = "36557", canonicalGroupKey = "tmdb_movie_36557",
+                    versionTag = "EN • 4K", addedEpoch = 100L, releaseYear = 2006, genres = "Action"
+                ),
+                com.example.data.local.StreamIndexProjection(
+                    id = 102L, streamId = 102L, categoryId = "cat_ar",
+                    name = "AR - Casino Royale (2006) SUB",
+                    streamIcon = "https://image.tmdb.org/t/p/w500/casino.jpg",
+                    rating = "8.1", ratingNumeric = 8.1, containerExtension = "mp4",
+                    tmdbId = "36557", canonicalGroupKey = "tmdb_movie_36557",
+                    versionTag = "Arabic (Sub)", addedEpoch = 101L, releaseYear = 2006, genres = "Action"
+                ),
+                // Level 2: Second James Bond installment -> MUST remain independent group linked to collectionId 645
+                com.example.data.local.StreamIndexProjection(
+                    id = 103L, streamId = 103L, categoryId = "cat_en",
+                    name = "EN - Skyfall (2012) 4K",
+                    streamIcon = "https://image.tmdb.org/t/p/w500/skyfall.jpg",
+                    rating = "8.8", ratingNumeric = 8.8, containerExtension = "mp4",
+                    tmdbId = "37724", canonicalGroupKey = "tmdb_movie_37724",
+                    versionTag = "EN • 4K", addedEpoch = 102L, releaseYear = 2012, genres = "Action"
+                ),
+                // Level 3a: Only 1 movie from Dune Collection in library -> MUST NOT emit a 1-movie collection
+                com.example.data.local.StreamIndexProjection(
+                    id = 104L, streamId = 104L, categoryId = "cat_en",
+                    name = "EN - Dune (2021) 4K",
+                    streamIcon = "https://image.tmdb.org/t/p/w500/dune.jpg",
+                    rating = "8.4", ratingNumeric = 8.4, containerExtension = "mp4",
+                    tmdbId = "438631", canonicalGroupKey = "tmdb_movie_438631",
+                    versionTag = "EN • 4K", addedEpoch = 103L, releaseYear = 2021, genres = "Sci-Fi"
+                ),
+                // Level 3b: Standalone movie -> collectionId == ""
+                com.example.data.local.StreamIndexProjection(
+                    id = 105L, streamId = 105L, categoryId = "cat_en",
+                    name = "EN - Inception (2010) 4K",
+                    streamIcon = "https://image.tmdb.org/t/p/w500/inception.jpg",
+                    rating = "8.9", ratingNumeric = 8.9, containerExtension = "mp4",
+                    tmdbId = "27205", canonicalGroupKey = "tmdb_movie_27205",
+                    versionTag = "EN • 4K", addedEpoch = 104L, releaseYear = 2010, genres = "Sci-Fi"
+                )
+            )
+
+            val output = com.example.data.sync.CatalogDiffEngine.buildLosslessGroups(
+                playlistId = 7L,
+                streamType = "movie",
+                streams = streams,
+                categoryNameMap = mapOf("cat_en" to "EN | MOVIES", "cat_ar" to "AR | SUB MOVIES")
+            )
+
+            // 5 raw streams -> 4 independent groups (2 Casino Royale versions collapsed into 1)
+            assertEquals(4, output.groups.size)
+            assertEquals(5, output.members.size)
+
+            val casinoGroup = output.groups.first { it.cleanTitle.contains("Casino Royale", ignoreCase = true) }
+            val skyfallGroup = output.groups.first { it.cleanTitle.contains("Skyfall", ignoreCase = true) }
+            val duneGroup = output.groups.first { it.cleanTitle.contains("Dune", ignoreCase = true) }
+            val inceptionGroup = output.groups.first { it.cleanTitle.contains("Inception", ignoreCase = true) }
+
+            // Level 1 check
+            assertEquals(2, casinoGroup.versionCount)
+            assertEquals(1, skyfallGroup.versionCount)
+
+            // Level 2 check: Independent groups both linked to James Bond Collection with order
+            assertEquals("645", casinoGroup.collectionId)
+            assertEquals("James Bond Collection", casinoGroup.collectionName)
+            assertEquals(21, casinoGroup.collectionOrder)
+            assertEquals("645", skyfallGroup.collectionId)
+            assertEquals("James Bond Collection", skyfallGroup.collectionName)
+            assertEquals(23, skyfallGroup.collectionOrder)
+
+            assertEquals(1, output.collections.size)
+            assertEquals("645", output.collections[0].collectionId)
+            assertEquals("James Bond Collection", output.collections[0].name)
+            assertEquals(2, output.collections[0].movieCount)
+
+            // Level 3 check: 1-movie match (Dune) and standalone (Inception) have empty collectionId
+            assertEquals("", duneGroup.collectionId)
+            assertEquals("", inceptionGroup.collectionId)
+        } finally {
+            com.example.data.remote.GlobalCollectionsIndexManager.clearForTest()
+        }
+    }
+
+    @Test
+    fun phase6c_vodViewModelCollectionsSortingDossierSiblingsAndLiveCounts() = runBlocking {
+        val app = ApplicationProvider.getApplicationContext<Application>()
+        val db = StreamVaultDatabase.getInstance(app)
+        var seededPlaylistId = -1L
+
+        try {
+            // Seed playlist with stale huge vodCount (108,046) to confirm liveMovieCount uses Room count (3)
+            seededPlaylistId = db.playlistDao().insertPlaylist(
+                PlaylistEntity(
+                    name = "Phase 6C Collections Test",
+                    serverUrl = "http://127.0.0.1:9",
+                    username = "u",
+                    password = "p",
+                    isActive = true,
+                    vodCount = 108_046,
+                    seriesCount = 12_345
+                )
+            )
+            db.playlistDao().setActivePlaylist(seededPlaylistId)
+
+            val s1 = StreamEntity(
+                playlistId = seededPlaylistId, streamId = 1001L, name = "Casino Royale (2006)",
+                streamType = "movie", categoryId = "cat_act", releaseYear = 2006, ratingNumeric = 8.1,
+                canonicalGroupKey = "casino_royale_2006"
+            )
+            val s2 = StreamEntity(
+                playlistId = seededPlaylistId, streamId = 1002L, name = "Skyfall (2012)",
+                streamType = "movie", categoryId = "cat_act", releaseYear = 2012, ratingNumeric = 9.2,
+                canonicalGroupKey = "skyfall_2012"
+            )
+            val s3 = StreamEntity(
+                playlistId = seededPlaylistId, streamId = 1003L, name = "Inception (2010)",
+                streamType = "movie", categoryId = "cat_sci", releaseYear = 2010, ratingNumeric = 8.9,
+                canonicalGroupKey = "inception_2010"
+            )
+            db.streamDao().insertStreamsBatch(listOf(s1, s2, s3))
+            val inserted = db.streamDao().getStreamsChunkByType(seededPlaylistId, "movie", 50, 0).associateBy { it.streamId }
+            val b1 = inserted[1001L]!!
+            val b2 = inserted[1002L]!!
+            val m3 = inserted[1003L]!!
+
+            db.vodGroupDao().deleteGroupsByType(seededPlaylistId, "movie")
+            db.vodGroupDao().deleteGroupMembersByType(seededPlaylistId, "movie")
+            db.vodGroupDao().insertGroupsBatch(
+                listOf(
+                    com.example.data.model.VodCatalogGroupEntity(
+                        playlistId = seededPlaylistId, streamType = "movie", groupKey = "casino_royale_2006",
+                        cleanTitle = "Casino Royale", releaseYear = 2006, ratingNumeric = 8.1,
+                        representativeStreamDbId = b1.id, representativeStreamId = b1.streamId,
+                        versionCount = 1, popularityScore = 82.0,
+                        collectionId = "645", collectionName = "James Bond Collection", collectionOrder = 21
+                    ),
+                    com.example.data.model.VodCatalogGroupEntity(
+                        playlistId = seededPlaylistId, streamType = "movie", groupKey = "skyfall_2012",
+                        cleanTitle = "Skyfall", releaseYear = 2012, ratingNumeric = 9.2,
+                        representativeStreamDbId = b2.id, representativeStreamId = b2.streamId,
+                        versionCount = 1, popularityScore = 96.0,
+                        collectionId = "645", collectionName = "James Bond Collection", collectionOrder = 23
+                    ),
+                    com.example.data.model.VodCatalogGroupEntity(
+                        playlistId = seededPlaylistId, streamType = "movie", groupKey = "inception_2010",
+                        cleanTitle = "Inception", releaseYear = 2010, ratingNumeric = 8.9,
+                        representativeStreamDbId = m3.id, representativeStreamId = m3.streamId,
+                        versionCount = 1, popularityScore = 91.0
+                    )
+                )
+            )
+            db.vodGroupDao().insertGroupMembersBatch(
+                listOf(
+                    com.example.data.model.VodGroupMemberEntity(seededPlaylistId, "movie", "casino_royale_2006", b1.id),
+                    com.example.data.model.VodGroupMemberEntity(seededPlaylistId, "movie", "skyfall_2012", b2.id),
+                    com.example.data.model.VodGroupMemberEntity(seededPlaylistId, "movie", "inception_2010", m3.id)
+                )
+            )
+            db.vodGroupDao().deleteCollectionsForPlaylist(seededPlaylistId)
+            db.vodGroupDao().insertCollectionsBatch(
+                listOf(
+                    com.example.data.model.VodCollectionEntity(
+                        playlistId = seededPlaylistId,
+                        collectionId = "645",
+                        name = "James Bond Collection",
+                        posterUrl = "https://image.tmdb.org/t/p/w500/bond.jpg",
+                        movieCount = 2,
+                        popularityScore = 96.0
+                    )
+                )
+            )
+
+            val vm = com.example.ui.vod.VodViewModel(app)
+            val collectorScope = kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.Default)
+            val collectors = listOf(
+                collectorScope.launch { vm.liveMovieCount.collect {} },
+                collectorScope.launch { vm.movieCollections.collect {} },
+                collectorScope.launch { vm.selectedCollectionMovies.collect {} },
+                collectorScope.launch { vm.activeMovieCollectionItems.collect {} }
+            )
+            val awaitUntil: (Long, () -> Boolean) -> Unit = { timeoutMs, predicate ->
+                val deadline = System.currentTimeMillis() + timeoutMs
+                while (System.currentTimeMillis() < deadline && !predicate()) {
+                    org.robolectric.Shadows.shadowOf(android.os.Looper.getMainLooper()).idle()
+                    Thread.sleep(20L)
+                }
+                org.robolectric.Shadows.shadowOf(android.os.Looper.getMainLooper()).idle()
+            }
+            try {
+                // Wait for Room flows to hydrate
+                awaitUntil(5_000L) { vm.liveMovieCount.value == 3 && vm.movieCollections.value.isNotEmpty() }
+
+                assertEquals("liveMovieCount must reflect actual Room count, not stale 108,046", 3, vm.liveMovieCount.value)
+                assertEquals(1, vm.movieCollections.value.size)
+                val bondCol = vm.movieCollections.value.first()
+                assertEquals("James Bond Collection", bondCol.name)
+
+                // Open collection & verify RELEASE_ORDER (Casino Royale 2006 -> Skyfall 2012)
+                vm.openCollection(bondCol)
+                awaitUntil(5_000L) { vm.selectedCollectionMovies.value.size >= 2 }
+                assertEquals(listOf(1001L, 1002L), vm.selectedCollectionMovies.value.map { it.stream.streamId })
+
+                // Switch to NEWEST_FIRST (Skyfall 2012 -> Casino Royale 2006)
+                vm.setCollectionSortMode(com.example.ui.vod.CollectionSortMode.NEWEST_FIRST)
+                awaitUntil(5_000L) { vm.selectedCollectionMovies.value.firstOrNull()?.stream?.streamId == 1002L }
+                assertEquals(listOf(1002L, 1001L), vm.selectedCollectionMovies.value.map { it.stream.streamId })
+
+                // Switch to TOP_RATED (Skyfall 96.0 -> Casino Royale 82.0)
+                vm.setCollectionSortMode(com.example.ui.vod.CollectionSortMode.TOP_RATED)
+                awaitUntil(2_000L) { vm.selectedCollectionMovies.value.firstOrNull()?.stream?.streamId == 1002L }
+                assertEquals(listOf(1002L, 1001L), vm.selectedCollectionMovies.value.map { it.stream.streamId })
+
+                vm.closeCollection()
+                assertNull(vm.selectedCollection.value)
+
+                // Open Movie Dossier for Casino Royale -> loads sibling franchise installments in Release Order
+                val playlist = db.playlistDao().getActivePlaylistOnce()!!
+                vm.openMovieDetails(b1, playlist, autoSelectPreferred = false)
+                awaitUntil(5_000L) { vm.activeMovieCollectionItems.value.size >= 2 }
+                assertEquals("James Bond Collection", vm.activeMovieCollectionName.value)
+                assertEquals(listOf(1001L, 1002L), vm.activeMovieCollectionItems.value.map { it.stream.streamId })
+
+                vm.closeMovieDetails()
+                assertTrue(vm.activeMovieCollectionItems.value.isEmpty())
+                assertEquals("", vm.activeMovieCollectionName.value)
+            } finally {
+                collectors.forEach { it.cancel() }
+            }
+        } finally {
+            if (seededPlaylistId > 0L) {
+                db.vodGroupDao().deleteCollectionsForPlaylist(seededPlaylistId)
+                db.vodGroupDao().deleteGroupsByType(seededPlaylistId, "movie")
+                db.vodGroupDao().deleteGroupMembersByType(seededPlaylistId, "movie")
+                db.streamDao().deleteStreamsByType(seededPlaylistId, "movie")
+                db.playlistDao().deletePlaylist(seededPlaylistId)
+            }
+        }
+    }
+
+    @Test
+    fun phase6c_dualPlatformCollectionsUiAndQueuedStatusRendering() {
+        val sampleCollection = com.example.data.model.VodCollectionEntity(
+            playlistId = 1L,
+            collectionId = "645",
+            name = "James Bond Collection",
+            posterUrl = "",
+            movieCount = 2,
+            popularityScore = 95.0
+        )
+        val bond1 = com.example.data.model.GroupedVodStream(
+            stream = StreamEntity(
+                id = 1L, playlistId = 1L, streamId = 1001L, categoryId = "cat_act",
+                name = "Casino Royale (2006)", streamType = "movie",
+                releaseYear = 2006, canonicalGroupKey = "casino_royale_2006"
+            ),
+            versionCount = 2
+        )
+        val bond2 = com.example.data.model.GroupedVodStream(
+            stream = StreamEntity(
+                id = 2L, playlistId = 1L, streamId = 1002L, categoryId = "cat_act",
+                name = "Skyfall (2012)", streamType = "movie",
+                releaseYear = 2012, canonicalGroupKey = "skyfall_2012"
+            ),
+            versionCount = 1
+        )
+        val sortModeState = androidx.compose.runtime.mutableStateOf(com.example.ui.vod.CollectionSortMode.RELEASE_ORDER)
+        val openedCollection = androidx.compose.runtime.mutableStateOf<String?>(null)
+        val viewMode = androidx.compose.runtime.mutableStateOf("MOBILE_SHELF")
+
+        composeTestRule.setContent {
+            when (viewMode.value) {
+                "MOBILE_SHELF" -> {
+                    androidx.compose.foundation.layout.Column {
+                        com.example.ui.vod.VodSyncStatusPill(
+                            bannerState = com.example.ui.vod.VodSyncBannerState(
+                                isSyncing = true,
+                                statusText = com.example.data.sync.CatalogSyncScheduler.STATUS_QUEUED_WAITING,
+                                stageLabel = com.example.data.sync.CatalogSyncScheduler.STATUS_QUEUED_WAITING,
+                                statsSubtitle = "Single-queue sync • Starts automatically",
+                                isIndeterminate = true
+                            ),
+                            sectionSurface = MoviesAtlanticTeal,
+                            sectionHighlight = MoviesMintSpring,
+                            onRetry = {},
+                            onDismiss = {}
+                        )
+                        com.example.ui.vod.VodMobileCollectionsShelfRow(
+                            collections = listOf(sampleCollection),
+                            sectionBaseBg = MoviesSapphireNavy,
+                            sectionSurface = MoviesAtlanticTeal,
+                            sectionPrimaryAccent = MoviesCyanTeal,
+                            sectionHighlight = MoviesMintSpring,
+                            onOpenCollection = { openedCollection.value = it.collectionId }
+                        )
+                        com.example.ui.vod.VodDossierCollectionRow(
+                            collectionName = sampleCollection.name,
+                            items = listOf(bond1, bond2),
+                            activeStreamId = bond1.stream.id,
+                            activeCanonicalGroupKey = bond1.stream.canonicalGroupKey,
+                            sectionBaseBg = MoviesSapphireNavy,
+                            sectionSurface = MoviesAtlanticTeal,
+                            sectionPrimaryAccent = MoviesCyanTeal,
+                            sectionHighlight = MoviesMintSpring,
+                            onItemClick = {},
+                            onViewCollection = {}
+                        )
+                    }
+                }
+                "MOBILE_DETAIL" -> {
+                    com.example.ui.vod.VodMobileCollectionDetailScreen(
+                        collection = sampleCollection,
+                        movies = listOf(bond1, bond2),
+                        sortMode = sortModeState.value,
+                        sectionBaseBg = MoviesSapphireNavy,
+                        sectionSurface = MoviesAtlanticTeal,
+                        sectionPrimaryAccent = MoviesCyanTeal,
+                        sectionHighlight = MoviesMintSpring,
+                        onBack = {},
+                        onSelectSortMode = { sortModeState.value = it },
+                        onOpenMovieDetails = {},
+                        onPlayImmediately = {},
+                        onToggleFavorite = {}
+                    )
+                }
+                "TV_SHELF_AND_LIVE" -> {
+                    androidx.compose.foundation.layout.Column {
+                        com.example.ui.vod.TvVodTopControlStrip(
+                            isMovies = true,
+                            activeCategoryLabel = "All Movies",
+                            selectedCategoryId = null,
+                            searchQuery = "",
+                            isSearchExpanded = true,
+                            forceGridMode = false,
+                            totalCount = 0,
+                            isRefreshing = true,
+                            syncBannerState = com.example.ui.vod.VodSyncBannerState(
+                                isSyncing = true,
+                                statusText = com.example.data.sync.CatalogSyncScheduler.STATUS_QUEUED_WAITING,
+                                stageLabel = com.example.data.sync.CatalogSyncScheduler.STATUS_QUEUED_WAITING,
+                                statsSubtitle = "Single-queue sync • Starts automatically",
+                                isIndeterminate = true
+                            ),
+                            sectionBaseBg = MoviesSapphireNavy,
+                            sectionSurface = MoviesAtlanticTeal,
+                            sectionPrimaryAccent = MoviesCyanTeal,
+                            sectionHighlight = MoviesMintSpring,
+                            onOpenCategories = {},
+                            onToggleSearch = {},
+                            onSearchQueryChange = {},
+                            onToggleViewMode = {},
+                            onSyncCatalog = {}
+                        )
+                        com.example.ui.vod.TvCollectionsShelfRow(
+                            collections = listOf(sampleCollection),
+                            sectionBaseBg = MoviesSapphireNavy,
+                            sectionSurface = MoviesAtlanticTeal,
+                            sectionPrimaryAccent = MoviesCyanTeal,
+                            sectionHighlight = MoviesMintSpring,
+                            onOpenCollection = { openedCollection.value = it.collectionId }
+                        )
+                        com.example.ui.livetv.LiveTvSyncStatusBanner(
+                            telemetry = com.example.data.sync.SyncTelemetry(
+                                sectionType = "LIVE",
+                                status = com.example.data.sync.SyncStatus.PENDING,
+                                pendingUpdateSummary = com.example.data.sync.CatalogSyncScheduler.STATUS_QUEUED_WAITING
+                            ),
+                            onRefresh = {},
+                            onDismissPendingUpdate = {}
+                        )
+                    }
+                }
+                "TV_DETAIL" -> {
+                    com.example.ui.vod.TvCollectionDetailScreen(
+                        collection = sampleCollection,
+                        movies = listOf(bond1, bond2),
+                        sortMode = sortModeState.value,
+                        sectionBaseBg = MoviesSapphireNavy,
+                        sectionSurface = MoviesAtlanticTeal,
+                        sectionPrimaryAccent = MoviesCyanTeal,
+                        sectionHighlight = MoviesMintSpring,
+                        onBack = {},
+                        onSelectSortMode = { sortModeState.value = it },
+                        onOpenDetails = {},
+                        onPlayImmediately = {},
+                        onToggleFavorite = {}
+                    )
+                }
+            }
+        }
+
+        // 1. Mobile Shelf + Queued Status Pill + Movie Dossier Franchise Row
+        composeTestRule.waitForIdle()
+        composeTestRule.onNode(androidx.compose.ui.test.hasTestTag("vod_sync_status_pill")).assertExists()
+        composeTestRule.onNode(androidx.compose.ui.test.hasText("Queued (waiting for active sync…)")).assertExists()
+        composeTestRule.onNode(androidx.compose.ui.test.hasTestTag("vod_collections_shelf")).assertExists()
+        composeTestRule.onNode(androidx.compose.ui.test.hasTestTag("vod_collection_card_645")).assertExists()
+        composeTestRule.onNode(androidx.compose.ui.test.hasTestTag("movie_dossier_collection_shelf")).assertExists()
+        composeTestRule.onNode(androidx.compose.ui.test.hasText("Part of James Bond Collection")).assertExists()
+        composeTestRule.onNode(androidx.compose.ui.test.hasTestTag("vod_collection_card_645")).performClick()
+        assertEquals("645", openedCollection.value)
+
+        // 2. Mobile Collection Detail Screen & Sort Pills
+        viewMode.value = "MOBILE_DETAIL"
+        composeTestRule.waitForIdle()
+        composeTestRule.onNode(androidx.compose.ui.test.hasTestTag("vod_collection_detail_screen")).assertExists()
+        composeTestRule.onNode(androidx.compose.ui.test.hasTestTag("vod_collection_back_btn")).assertExists()
+        composeTestRule.onNode(androidx.compose.ui.test.hasTestTag("vod_collection_sort_newest_first")).performClick()
+        assertEquals(com.example.ui.vod.CollectionSortMode.NEWEST_FIRST, sortModeState.value)
+
+        // 3. Android TV Shelf + Queued Top Control Strip + Live TV Queued Banner + Zero-Count Placeholder
+        viewMode.value = "TV_SHELF_AND_LIVE"
+        composeTestRule.waitForIdle()
+        composeTestRule.onNode(androidx.compose.ui.test.hasTestTag("vod_collections_shelf")).assertExists()
+        composeTestRule.onNode(androidx.compose.ui.test.hasTestTag("vod_collection_card_645")).assertExists()
+        composeTestRule.onNode(androidx.compose.ui.test.hasTestTag("live_sync_status_banner")).assertExists()
+        composeTestRule.onNode(androidx.compose.ui.test.hasText("Search cinema movies…")).assertExists()
+        assertEquals(
+            2,
+            composeTestRule.onAllNodes(androidx.compose.ui.test.hasText("Queued (waiting for active sync…)")).fetchSemanticsNodes().size
+        )
+
+        // 4. Android TV Collection Detail Screen & Sort Pills
+        viewMode.value = "TV_DETAIL"
+        composeTestRule.waitForIdle()
+        composeTestRule.onNode(androidx.compose.ui.test.hasTestTag("vod_collection_detail_screen")).assertExists()
+        composeTestRule.onNode(androidx.compose.ui.test.hasTestTag("vod_collection_back_btn")).assertExists()
+        composeTestRule.onNode(androidx.compose.ui.test.hasTestTag("vod_collection_sort_top_rated")).performClick()
+        assertEquals(com.example.ui.vod.CollectionSortMode.TOP_RATED, sortModeState.value)
+    }
 }
+
 
 
 

@@ -30,22 +30,22 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Build static global popularity index
+      - name: Build static global popularity and collections indexes
         env:
           TMDB_API_KEY: ${{ secrets.TMDB_API_KEY }}
         run: python3 scripts/build_popularity_index.py
 
-      - name: Commit and push updated popularity index
+      - name: Commit and push updated cloud indexes
         run: |
-          if [ -z "$(git status --porcelain -- docs/popularity_index.json)" ]; then
-            echo "No changes to docs/popularity_index.json; skipping commit."
+          if [ -z "$(git status --porcelain -- docs/popularity_index.json docs/collections_index.json)" ]; then
+            echo "No changes to docs/popularity_index.json or docs/collections_index.json; skipping commit."
             exit 0
           fi
 
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
-          git add docs/popularity_index.json
-          git commit -m "chore(index): update global popularity index"
+          git add docs/popularity_index.json docs/collections_index.json
+          git commit -m "chore(index): update global popularity and collections indexes"
           git pull --rebase --autostash origin main
           git push origin HEAD:main

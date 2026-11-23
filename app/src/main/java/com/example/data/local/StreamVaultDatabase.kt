@@ -16,6 +16,7 @@ import com.example.data.model.SyncSectionStateEntity
 import com.example.data.model.TournamentPreferenceEntity
 import com.example.data.model.VodCatalogGroupEntity
 import com.example.data.model.VodCatalogGroupFtsEntity
+import com.example.data.model.VodCollectionEntity
 import com.example.data.model.VodGroupMemberEntity
 
 @Database(
@@ -30,9 +31,10 @@ import com.example.data.model.VodGroupMemberEntity
         VodCatalogGroupEntity::class,
         VodCatalogGroupFtsEntity::class,
         VodGroupMemberEntity::class,
-        SyncSectionStateEntity::class
+        SyncSectionStateEntity::class,
+        VodCollectionEntity::class
     ],
-    version = 7,
+    version = 8,
     exportSchema = false
 )
 abstract class StreamVaultDatabase : RoomDatabase() {
@@ -199,6 +201,33 @@ abstract class StreamVaultDatabase : RoomDatabase() {
             }
         }
 
+        val MIGRATION_7_8: Migration = object : Migration(7, 8) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE vod_catalog_groups ADD COLUMN collectionId TEXT NOT NULL DEFAULT ''")
+                db.execSQL("ALTER TABLE vod_catalog_groups ADD COLUMN collectionName TEXT NOT NULL DEFAULT ''")
+                db.execSQL("ALTER TABLE vod_catalog_groups ADD COLUMN collectionOrder INTEGER NOT NULL DEFAULT 0")
+                db.execSQL(
+                    "CREATE INDEX IF NOT EXISTS `index_vod_catalog_groups_playlistId_streamType_collectionId` ON `vod_catalog_groups` (`playlistId`, `streamType`, `collectionId`)"
+                )
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS `vod_collections` (
+                        `playlistId` INTEGER NOT NULL,
+                        `collectionId` TEXT NOT NULL,
+                        `name` TEXT NOT NULL,
+                        `posterUrl` TEXT NOT NULL,
+                        `movieCount` INTEGER NOT NULL,
+                        `popularityScore` REAL NOT NULL,
+                        PRIMARY KEY(`playlistId`, `collectionId`)
+                    )
+                    """.trimIndent()
+                )
+                db.execSQL(
+                    "CREATE INDEX IF NOT EXISTS `index_vod_collections_playlistId_popularityScore` ON `vod_collections` (`playlistId`, `popularityScore`)"
+                )
+            }
+        }
+
         private val walHardeningCallback = object : RoomDatabase.Callback() {
             override fun onOpen(db: SupportSQLiteDatabase) {
                 super.onOpen(db)
@@ -217,7 +246,13 @@ abstract class StreamVaultDatabase : RoomDatabase() {
                 )
                     .setJournalMode(RoomDatabase.JournalMode.WRITE_AHEAD_LOGGING)
                     .addCallback(walHardeningCallback)
-                    .addMigrations(MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7)
+                    .addMigrations(
+                        MIGRATION_3_4,
+                        MIGRATION_4_5,
+                        MIGRATION_5_6,
+                        MIGRATION_6_7,
+                        MIGRATION_7_8
+                    )
                     .fallbackToDestructiveMigration()
                     .build()
                 INSTANCE = instance

@@ -226,6 +226,8 @@ class XtreamClient(
         lastModified: String? = null,
         onHttpMeta: ((contentLength: Long, etag: String?, lastModified: String?, notModified: Boolean) -> Unit)? = null,
         onBytesRead: ((Long) -> Unit)? = null,
+        existingHashes: Map<Long, Long> = emptyMap(),
+        onUnchangedBatch: (suspend (seenIds: List<Long>) -> Unit)? = null,
         onBatchReady: suspend (List<StreamEntity>, Int) -> Unit
     ): StreamCatalogResult = withContext(Dispatchers.IO) {
         val plainPassword = SecurityManager.decryptCredential(password)
@@ -247,6 +249,8 @@ class XtreamClient(
         var notModified = false
         val effectiveBatchSize = batchSize.coerceAtLeast(100)
         val currentBatch = ArrayList<StreamEntity>(effectiveBatchSize)
+        val unchangedBatch = ArrayList<Long>(2_000)
+        val hasExistingHashes = existingHashes.isNotEmpty()
         val defaultExt = if (streamType == "live") "ts" else "mp4"
 
         try {
@@ -393,32 +397,7 @@ class XtreamClient(
                                             rawRating10 = rating10Raw,
                                             rawRating5 = rating5Raw
                                         )
-                                        val isLive = streamType == "live"
-                                        val yearInt = if (isLive) {
-                                            0
-                                        } else {
-                                            extractFastReleaseYear(name, rawYear)
-                                        }
-                                        val computedGroupKey = if (isLive) {
-                                            "live_$streamId"
-                                        } else {
-                                            VodGroupingNormalizer.computeCanonicalGroupKey(
-                                                streamType = streamType,
-                                                rawName = name,
-                                                tmdbId = cleanTmdbId,
-                                                releaseYear = yearInt,
-                                                streamId = streamId,
-                                                posterUrl = streamIcon
-                                            )
-                                        }
-                                        val computedVersionTag = if (isLive) {
-                                            ""
-                                        } else {
-                                            VodGroupingNormalizer.extractVersionTagWithCategory(
-                                                rawName = name,
-                                                categoryName = categoryNameMap[itemCategoryId].orEmpty()
-                                            )
-                                        }
+                                        // Zero-regex hash-first short-circuit on raw primitive fields
                                         val metadataHash = CatalogDiffEngine.computeMetadataHash(
                                             name = name,
                                             categoryId = itemCategoryId,
@@ -430,34 +409,70 @@ class XtreamClient(
                                             containerExtension = containerExt
                                         )
 
-                                        currentBatch.add(
-                                            StreamEntity(
-                                                playlistId = playlistId,
-                                                streamId = streamId,
-                                                categoryId = itemCategoryId,
-                                                name = name,
-                                                streamType = streamType,
-                                                streamIcon = streamIcon,
-                                                epgChannelId = epgChannelId,
-                                                rating = normalizedRatingStr,
-                                                tvArchive = tvArchive,
-                                                tvArchiveDuration = tvArchiveDuration,
-                                                containerExtension = containerExt,
-                                                tmdbId = cleanTmdbId,
-                                                canonicalGroupKey = computedGroupKey,
-                                                versionTag = computedVersionTag,
-                                                addedEpoch = addedEpoch,
-                                                ratingNumeric = ratingNum,
-                                                releaseYear = yearInt,
-                                                genres = genres,
-                                                metadataHash = metadataHash
-                                            )
-                                        )
-                                        totalProcessed++
+                                        if (hasExistingHashes && existingHashes[streamId] == metadataHash) {
+                                            unchangedBatch.add(streamId)
+                                            totalProcessed++
+                                            if (unchangedBatch.size >= 2_000) {
+                                                onUnchangedBatch?.invoke(ArrayList(unchangedBatch))
+                                                unchangedBatch.clear()
+                                            }
+                                        } else {
+                                            val isLive = streamType == "live"
+                                            val yearInt = if (isLive) {
+                                                0
+                                            } else {
+                                                extractFastReleaseYear(name, rawYear)
+                                            }
+                                            val computedGroupKey = if (isLive) {
+                                                "live_$streamId"
+                                            } else {
+                                                VodGroupingNormalizer.computeCanonicalGroupKey(
+                                                    streamType = streamType,
+                                                    rawName = name,
+                                                    tmdbId = cleanTmdbId,
+                                                    releaseYear = yearInt,
+                                                    streamId = streamId,
+                                                    posterUrl = streamIcon
+                                                )
+                                            }
+                                            val computedVersionTag = if (isLive) {
+                                                ""
+                                            } else {
+                                                VodGroupingNormalizer.extractVersionTagWithCategory(
+                                                    rawName = name,
+                                                    categoryName = categoryNameMap[itemCategoryId].orEmpty()
+                                                )
+                                            }
 
-                                        if (currentBatch.size >= effectiveBatchSize) {
-                                            onBatchReady(ArrayList(currentBatch), totalProcessed)
-                                            currentBatch.clear()
+                                            currentBatch.add(
+                                                StreamEntity(
+                                                    playlistId = playlistId,
+                                                    streamId = streamId,
+                                                    categoryId = itemCategoryId,
+                                                    name = name,
+                                                    streamType = streamType,
+                                                    streamIcon = streamIcon,
+                                                    epgChannelId = epgChannelId,
+                                                    rating = normalizedRatingStr,
+                                                    tvArchive = tvArchive,
+                                                    tvArchiveDuration = tvArchiveDuration,
+                                                    containerExtension = containerExt,
+                                                    tmdbId = cleanTmdbId,
+                                                    canonicalGroupKey = computedGroupKey,
+                                                    versionTag = computedVersionTag,
+                                                    addedEpoch = addedEpoch,
+                                                    ratingNumeric = ratingNum,
+                                                    releaseYear = yearInt,
+                                                    genres = genres,
+                                                    metadataHash = metadataHash
+                                                )
+                                            )
+                                            totalProcessed++
+
+                                            if (currentBatch.size >= effectiveBatchSize) {
+                                                onBatchReady(ArrayList(currentBatch), totalProcessed)
+                                                currentBatch.clear()
+                                            }
                                         }
                                     }
                                 }
@@ -470,6 +485,10 @@ class XtreamClient(
                     }
                     reader.endArray()
 
+                    if (unchangedBatch.isNotEmpty()) {
+                        onUnchangedBatch?.invoke(ArrayList(unchangedBatch))
+                        unchangedBatch.clear()
+                    }
                     if (currentBatch.isNotEmpty()) {
                         onBatchReady(ArrayList(currentBatch), totalProcessed)
                         currentBatch.clear()
@@ -481,6 +500,10 @@ class XtreamClient(
             completedCleanly = false
             val safeMsg = SecurityManager.redactSensitiveText(e.message, username, plainPassword)
             Log.e("XtreamClient", "Error streaming catalog ($action): $safeMsg")
+            if (unchangedBatch.isNotEmpty()) {
+                runCatching { onUnchangedBatch?.invoke(ArrayList(unchangedBatch)) }
+                unchangedBatch.clear()
+            }
             if (currentBatch.isNotEmpty()) {
                 runCatching { onBatchReady(ArrayList(currentBatch), totalProcessed) }
                 currentBatch.clear()

@@ -12,6 +12,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
@@ -29,11 +30,16 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
+import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.ArrowForward
 import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.Check
@@ -46,6 +52,7 @@ import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.Layers
+import androidx.compose.material.icons.filled.LocalMovies
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.Movie
 import androidx.compose.material.icons.filled.PlayArrow
@@ -96,6 +103,7 @@ import coil.compose.AsyncImage
 import com.example.data.model.CategoryEntity
 import com.example.data.model.GroupedVodStream
 import com.example.data.model.StreamEntity
+import com.example.data.model.VodCollectionEntity
 import com.example.data.model.VodGroupingNormalizer
 import com.example.ui.theme.AmberGold
 import com.example.ui.theme.Champagne
@@ -112,6 +120,7 @@ import com.example.ui.theme.SeriesIceAqua
 import com.example.ui.theme.SeriesMistTeal
 import com.example.ui.theme.SeriesPineBase
 import com.example.ui.theme.SeriesSeaJade
+import com.example.ui.theme.calculateVodPosterMinCellDp
 import com.example.ui.theme.luxuryFocusableCard
 import com.example.ui.theme.tvFocusableControl
 import com.example.util.StreamMetadataParser
@@ -345,8 +354,10 @@ internal fun VodMobileTopCommandBar(
                         Text(
                             text = when {
                                 selectedCategoryId != null -> "Search in $activeCategoryLabel…"
-                                isMovies -> "Search %,d+ movies…".format(totalCount)
-                                else -> "Search %,d+ series…".format(totalCount)
+                                isMovies && totalCount > 0 -> "Search %,d+ movies…".format(Locale.US, totalCount)
+                                isMovies -> "Search movies…"
+                                totalCount > 0 -> "Search %,d+ series…".format(Locale.US, totalCount)
+                                else -> "Search series…"
                             },
                             color = sectionHighlight.copy(alpha = 0.65f),
                             fontSize = 13.sp,
@@ -1097,6 +1108,8 @@ internal fun VodMobileDiscoveryHome(
     onBrowseAllGrid: () -> Unit,
     onSeeAllShelf: (VodShelfFilter) -> Unit = {},
     onLoadMoreShelf: (String) -> Unit = {},
+    movieCollections: List<VodCollectionEntity> = emptyList(),
+    onOpenCollection: (VodCollectionEntity) -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     val spotlightItem = remember(discoveryShelves, fallbackGroupedItems) {
@@ -1149,6 +1162,20 @@ internal fun VodMobileDiscoveryHome(
                     sectionSurface = sectionSurface,
                     sectionHighlight = sectionHighlight,
                     onItemClick = onContinueWatchingClick
+                )
+            }
+        }
+
+        // b2) Official Movie Franchises & Collections Horizontal Shelf (Movies tab only)
+        if (isMovies && movieCollections.isNotEmpty()) {
+            item(key = "vod_movie_collections_mobile") {
+                VodMobileCollectionsShelfRow(
+                    collections = movieCollections,
+                    sectionBaseBg = sectionBaseBg,
+                    sectionSurface = sectionSurface,
+                    sectionPrimaryAccent = sectionPrimaryAccent,
+                    sectionHighlight = sectionHighlight,
+                    onOpenCollection = onOpenCollection
                 )
             }
         }
@@ -2192,39 +2219,55 @@ internal fun parseVersionMetadata(
         .map { token -> VERSION_TOKEN_LABELS[token.uppercase(Locale.US)] ?: token }
         .distinct()
 
-    val primaryLang = langTokens.firstOrNull {
+    val trailingQualifierRegex = Regex("(?i)\\s*\\((sub|subbed|vostfr|vost|multi|dub|dubbed)\\)\\s*$")
+    val rawPrimaryLang = langTokens.firstOrNull {
         !it.equals("Subbed", ignoreCase = true) &&
             !it.equals("Dubbed", ignoreCase = true) &&
             !it.equals("VOSTFR", ignoreCase = true) &&
             !it.equals("Multi", ignoreCase = true)
     }
+    val baseLang = rawPrimaryLang
+        ?.replace(trailingQualifierRegex, "")
+        ?.trim()
+        ?.takeIf { it.isNotEmpty() }
+    val isMultiSubToken = baseLang.equals("Multi-Sub", ignoreCase = true) ||
+        baseLang.equals("Multi Sub", ignoreCase = true) ||
+        baseLang.equals("MultiSub", ignoreCase = true)
+    val hasSubQualifier = isSub || (rawPrimaryLang?.contains("(Sub)", ignoreCase = true) == true)
+    val hasVostfrQualifier = isVostfr || (rawPrimaryLang?.contains("VOSTFR", ignoreCase = true) == true)
+    val hasMultiQualifier = isMulti || (rawPrimaryLang?.contains("(Multi)", ignoreCase = true) == true)
 
     val (languageGroup, priorityRank) = when {
-        primaryLang.equals("English", ignoreCase = true) ||
-            primaryLang.equals("US", ignoreCase = true) ||
-            primaryLang.equals("UK", ignoreCase = true) ||
-            primaryLang.equals("Canada", ignoreCase = true) ||
-            primaryLang.equals("Australia", ignoreCase = true) -> {
-            if (isMulti) "English (Multi)" to 0 else "English" to 0
+        isMultiSubToken -> "Multi-Sub" to 3
+        baseLang.equals("English", ignoreCase = true) ||
+            baseLang.equals("US", ignoreCase = true) ||
+            baseLang.equals("UK", ignoreCase = true) ||
+            baseLang.equals("Canada", ignoreCase = true) ||
+            baseLang.equals("Australia", ignoreCase = true) -> {
+            if (hasMultiQualifier) "English (Multi)" to 0 else "English" to 0
         }
-        primaryLang.equals("Arabic", ignoreCase = true) -> {
-            (if (isSub) "Arabic (Sub)" else "Arabic") to 1
+        baseLang.equals("Arabic", ignoreCase = true) -> {
+            (if (hasSubQualifier) "Arabic (Sub)" else "Arabic") to 1
         }
-        primaryLang.equals("French", ignoreCase = true) || isVostfr -> {
-            (if (isVostfr) "French (VOSTFR)" else "French") to 2
+        baseLang.equals("French", ignoreCase = true) || hasVostfrQualifier -> {
+            (if (hasVostfrQualifier) "French (VOSTFR)" else "French") to 2
         }
-        primaryLang.equals("Spanish", ignoreCase = true) || primaryLang.equals("Latino", ignoreCase = true) -> {
-            "Spanish" to 3
+        baseLang.equals("Spanish", ignoreCase = true) || baseLang.equals("Latino", ignoreCase = true) -> {
+            (if (hasSubQualifier) "Spanish (Sub)" else "Spanish") to 3
         }
-        primaryLang != null -> {
+        baseLang != null -> {
+            val alreadyQualified = baseLang.contains("sub", ignoreCase = true) ||
+                baseLang.contains("multi", ignoreCase = true) ||
+                baseLang.contains("vostfr", ignoreCase = true)
             val suffix = when {
-                isSub -> " (Sub)"
-                isMulti -> " (Multi)"
+                alreadyQualified -> ""
+                hasSubQualifier -> " (Sub)"
+                hasMultiQualifier -> " (Multi)"
                 else -> ""
             }
-            "$primaryLang$suffix" to 4
+            "$baseLang$suffix" to 4
         }
-        isMulti -> "Multi-Audio" to 3
+        hasMultiQualifier -> "Multi-Audio" to 3
         else -> "Other" to 5
     }
 
@@ -2935,4 +2978,651 @@ internal fun VodSimilarTitlesRow(
         }
     }
 }
+
+/**
+ * Mobile Horizontal "Franchises & Collections" Shelf rendered on Movies Discovery Home.
+ * Uses a distinctive stacked box-set card silhouette so official film franchises stand out
+ * clearly from individual movie posters.
+ */
+@Composable
+internal fun VodMobileCollectionsShelfRow(
+    collections: List<VodCollectionEntity>,
+    sectionBaseBg: Color,
+    sectionSurface: Color,
+    sectionPrimaryAccent: Color,
+    sectionHighlight: Color,
+    onOpenCollection: (VodCollectionEntity) -> Unit,
+    modifier: Modifier = Modifier
+) {
+    if (collections.isEmpty()) return
+
+    Column(
+        modifier = modifier
+            .fillMaxWidth()
+            .testTag("vod_collections_shelf")
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 14.dp),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(7.dp),
+                modifier = Modifier.weight(1f)
+            ) {
+                Icon(
+                    imageVector = Icons.Default.LocalMovies,
+                    contentDescription = null,
+                    tint = sectionHighlight,
+                    modifier = Modifier.size(17.dp)
+                )
+                Column {
+                    Text(
+                        text = "Franchises & Collections",
+                        color = Color.White,
+                        fontSize = 15.5.sp,
+                        fontWeight = FontWeight.ExtraBold,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                    Text(
+                        text = "Official cinema sagas in your library",
+                        color = sectionHighlight.copy(alpha = 0.72f),
+                        fontSize = 10.5.sp,
+                        fontWeight = FontWeight.Medium,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+            }
+
+            Surface(
+                color = sectionSurface.copy(alpha = 0.85f),
+                shape = RoundedCornerShape(50),
+                border = BorderStroke(0.7.dp, sectionHighlight.copy(alpha = 0.45f))
+            ) {
+                Text(
+                    text = "${collections.size} Sagas",
+                    color = sectionHighlight,
+                    fontSize = 10.sp,
+                    fontWeight = FontWeight.ExtraBold,
+                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
+                )
+            }
+        }
+
+        Spacer(modifier = Modifier.height(10.dp))
+
+        LazyRow(
+            contentPadding = PaddingValues(horizontal = 14.dp),
+            horizontalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            items(collections, key = { "mobile_col_${it.collectionId}" }) { collection ->
+                Column(
+                    modifier = Modifier
+                        .width(156.dp)
+                        .clip(RoundedCornerShape(14.dp))
+                        .clickable { onOpenCollection(collection) }
+                        .testTag("vod_collection_card_${collection.collectionId}"),
+                    horizontalAlignment = Alignment.CenterHorizontally
+                ) {
+                    // Stacked box-set depth ledges above poster card
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth(0.78f)
+                            .height(4.dp)
+                            .clip(RoundedCornerShape(topStart = 6.dp, topEnd = 6.dp))
+                            .background(sectionPrimaryAccent.copy(alpha = 0.42f))
+                    )
+                    Spacer(modifier = Modifier.height(2.dp))
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth(0.88f)
+                            .height(4.dp)
+                            .clip(RoundedCornerShape(topStart = 6.dp, topEnd = 6.dp))
+                            .background(sectionHighlight.copy(alpha = 0.55f))
+                    )
+
+                    Card(
+                        shape = RoundedCornerShape(14.dp),
+                        colors = CardDefaults.cardColors(containerColor = sectionSurface),
+                        border = BorderStroke(1.dp, sectionHighlight.copy(alpha = 0.42f)),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(168.dp)
+                    ) {
+                        Box(modifier = Modifier.fillMaxSize()) {
+                            if (collection.posterUrl.isNotBlank()) {
+                                AsyncImage(
+                                    model = collection.posterUrl,
+                                    contentDescription = collection.name,
+                                    contentScale = ContentScale.Crop,
+                                    modifier = Modifier.fillMaxSize()
+                                )
+                            } else {
+                                Box(
+                                    modifier = Modifier
+                                        .fillMaxSize()
+                                        .background(
+                                            Brush.linearGradient(
+                                                listOf(sectionSurface, sectionBaseBg)
+                                            )
+                                        ),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.LocalMovies,
+                                        contentDescription = null,
+                                        tint = sectionHighlight.copy(alpha = 0.55f),
+                                        modifier = Modifier.size(36.dp)
+                                    )
+                                }
+                            }
+
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxSize()
+                                    .background(
+                                        Brush.verticalGradient(
+                                            colorStops = arrayOf(
+                                                0.0f to sectionBaseBg.copy(alpha = 0.25f),
+                                                0.45f to sectionBaseBg.copy(alpha = 0.50f),
+                                                0.82f to sectionBaseBg.copy(alpha = 0.92f),
+                                                1.0f to sectionBaseBg.copy(alpha = 0.98f)
+                                            )
+                                        )
+                                    )
+                            )
+
+                            // Top-End Movie Count Pill
+                            Surface(
+                                color = sectionBaseBg.copy(alpha = 0.86f),
+                                shape = RoundedCornerShape(50),
+                                border = BorderStroke(0.7.dp, AmberGold.copy(alpha = 0.65f)),
+                                modifier = Modifier
+                                    .align(Alignment.TopEnd)
+                                    .padding(8.dp)
+                            ) {
+                                Text(
+                                    text = "${collection.movieCount} Movies",
+                                    color = PaleGold,
+                                    fontSize = 9.5.sp,
+                                    fontWeight = FontWeight.ExtraBold,
+                                    modifier = Modifier.padding(horizontal = 7.dp, vertical = 2.5.dp)
+                                )
+                            }
+
+                            // Bottom Franchise Title + Prompt
+                            Column(
+                                modifier = Modifier
+                                    .align(Alignment.BottomStart)
+                                    .fillMaxWidth()
+                                    .padding(10.dp)
+                            ) {
+                                Text(
+                                    text = collection.name,
+                                    color = Color.White,
+                                    fontSize = 13.sp,
+                                    fontWeight = FontWeight.ExtraBold,
+                                    lineHeight = 15.5.sp,
+                                    maxLines = 2,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                                Spacer(modifier = Modifier.height(3.dp))
+                                Text(
+                                    text = "Explore Collection ›",
+                                    color = sectionHighlight,
+                                    fontSize = 10.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    maxLines = 1
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/**
+ * Purpose-built Mobile Movie Collection / Franchise Detail Screen with hero banner,
+ * Release Order / Newest First / Top Rated sort pills, and responsive poster grid.
+ */
+@Composable
+internal fun VodMobileCollectionDetailScreen(
+    collection: VodCollectionEntity,
+    movies: List<GroupedVodStream>,
+    sortMode: CollectionSortMode,
+    sectionBaseBg: Color,
+    sectionSurface: Color,
+    sectionPrimaryAccent: Color,
+    sectionHighlight: Color,
+    onBack: () -> Unit,
+    onSelectSortMode: (CollectionSortMode) -> Unit,
+    onOpenMovieDetails: (StreamEntity) -> Unit,
+    onPlayImmediately: (StreamEntity) -> Unit,
+    onToggleFavorite: (StreamEntity) -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val displayCount = movies.size.coerceAtLeast(collection.movieCount)
+    val heroArtUrl = collection.posterUrl.ifBlank {
+        movies.firstOrNull { it.stream.streamIcon.isNotBlank() }?.stream?.streamIcon.orEmpty()
+    }
+
+    Column(
+        modifier = modifier
+            .fillMaxSize()
+            .testTag("vod_collection_detail_screen")
+    ) {
+        // Collection Hero Header Banner
+        Card(
+            shape = RoundedCornerShape(18.dp),
+            colors = CardDefaults.cardColors(containerColor = sectionSurface),
+            border = BorderStroke(0.9.dp, sectionHighlight.copy(alpha = 0.42f)),
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 14.dp, vertical = 6.dp)
+        ) {
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(144.dp)
+            ) {
+                if (heroArtUrl.isNotBlank()) {
+                    AsyncImage(
+                        model = heroArtUrl,
+                        contentDescription = collection.name,
+                        contentScale = ContentScale.Crop,
+                        modifier = Modifier.fillMaxSize()
+                    )
+                }
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .background(
+                            Brush.horizontalGradient(
+                                listOf(
+                                    sectionBaseBg.copy(alpha = 0.96f),
+                                    sectionBaseBg.copy(alpha = 0.80f),
+                                    sectionBaseBg.copy(alpha = 0.45f)
+                                )
+                            )
+                        )
+                )
+
+                Row(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .padding(horizontal = 10.dp, vertical = 10.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    IconButton(
+                        onClick = onBack,
+                        modifier = Modifier
+                            .size(48.dp)
+                            .clip(CircleShape)
+                            .background(sectionBaseBg.copy(alpha = 0.78f))
+                            .border(0.9.dp, sectionHighlight.copy(alpha = 0.55f), CircleShape)
+                            .testTag("vod_collection_back_btn")
+                    ) {
+                        Icon(
+                            imageVector = Icons.AutoMirrored.Filled.ArrowBack,
+                            contentDescription = "Back to Movies",
+                            tint = sectionHighlight
+                        )
+                    }
+
+                    Column(
+                        modifier = Modifier.weight(1f),
+                        verticalArrangement = Arrangement.spacedBy(4.dp)
+                    ) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            Surface(
+                                color = sectionPrimaryAccent.copy(alpha = 0.30f),
+                                shape = RoundedCornerShape(50),
+                                border = BorderStroke(0.7.dp, sectionHighlight.copy(alpha = 0.65f))
+                            ) {
+                                Text(
+                                    text = "FRANCHISE",
+                                    color = sectionHighlight,
+                                    fontSize = 8.5.sp,
+                                    fontWeight = FontWeight.ExtraBold,
+                                    letterSpacing = 0.7.sp,
+                                    modifier = Modifier.padding(horizontal = 7.dp, vertical = 2.dp)
+                                )
+                            }
+                            Surface(
+                                color = AmberGold.copy(alpha = 0.22f),
+                                shape = RoundedCornerShape(50),
+                                border = BorderStroke(0.7.dp, AmberGold.copy(alpha = 0.65f))
+                            ) {
+                                Text(
+                                    text = "$displayCount Movies",
+                                    color = PaleGold,
+                                    fontSize = 9.5.sp,
+                                    fontWeight = FontWeight.ExtraBold,
+                                    modifier = Modifier.padding(horizontal = 7.dp, vertical = 2.dp)
+                                )
+                            }
+                        }
+
+                        Text(
+                            text = collection.name,
+                            color = Color.White,
+                            fontSize = 18.sp,
+                            fontWeight = FontWeight.ExtraBold,
+                            maxLines = 2,
+                            overflow = TextOverflow.Ellipsis,
+                            lineHeight = 21.sp
+                        )
+                    }
+                }
+            }
+        }
+
+        // Sort Selector Strip: Release Order / Newest First / Top Rated
+        LazyRow(
+            contentPadding = PaddingValues(horizontal = 14.dp, vertical = 4.dp),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            items(CollectionSortMode.entries) { mode ->
+                val isSelected = sortMode == mode
+                Surface(
+                    color = if (isSelected) {
+                        sectionPrimaryAccent.copy(alpha = 0.38f)
+                    } else {
+                        sectionSurface.copy(alpha = 0.80f)
+                    },
+                    shape = RoundedCornerShape(50),
+                    border = BorderStroke(
+                        width = if (isSelected) 1.2.dp else 0.7.dp,
+                        color = if (isSelected) sectionHighlight else Color.White.copy(alpha = 0.16f)
+                    ),
+                    modifier = Modifier
+                        .height(38.dp)
+                        .clip(RoundedCornerShape(50))
+                        .clickable { onSelectSortMode(mode) }
+                        .testTag("vod_collection_sort_${mode.name.lowercase(Locale.US)}")
+                ) {
+                    Box(
+                        contentAlignment = Alignment.Center,
+                        modifier = Modifier.padding(horizontal = 14.dp)
+                    ) {
+                        Text(
+                            text = mode.label,
+                            color = if (isSelected) Color.White else Champagne.copy(alpha = 0.84f),
+                            fontSize = 12.sp,
+                            fontWeight = if (isSelected) FontWeight.ExtraBold else FontWeight.SemiBold
+                        )
+                    }
+                }
+            }
+        }
+
+        Spacer(modifier = Modifier.height(6.dp))
+
+        BoxWithConstraints(
+            modifier = Modifier
+                .fillMaxWidth()
+                .weight(1f)
+        ) {
+            val columns = if (maxWidth < 600.dp) {
+                GridCells.Fixed(3)
+            } else {
+                GridCells.Adaptive(minSize = calculateVodPosterMinCellDp(maxWidth.value.toInt()).dp)
+            }
+            LazyVerticalGrid(
+                columns = columns,
+                modifier = Modifier
+                    .fillMaxSize()
+                    .testTag("vod_collection_grid"),
+                contentPadding = PaddingValues(
+                    start = 12.dp,
+                    end = 12.dp,
+                    top = 4.dp,
+                    bottom = 104.dp
+                ),
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                items(movies, key = { "col_movie_${it.stream.id}" }) { grouped ->
+                    val item = grouped.stream
+                    MoviePosterCard(
+                        item = item,
+                        versionCount = grouped.versionCount,
+                        onClick = { onOpenMovieDetails(item) },
+                        onPlayImmediately = { onPlayImmediately(item) },
+                        onToggleFavorite = { onToggleFavorite(item) }
+                    )
+                }
+            }
+        }
+    }
+}
+
+/**
+ * Horizontal Franchise Shelf rendered inside `ImaxMovieDossierModalSheet` when the active movie
+ * belongs to an official TMDb Collection (ordered in Release Order).
+ */
+@Composable
+internal fun VodDossierCollectionRow(
+    collectionName: String,
+    items: List<GroupedVodStream>,
+    activeStreamId: Long,
+    activeCanonicalGroupKey: String,
+    sectionBaseBg: Color,
+    sectionSurface: Color,
+    sectionPrimaryAccent: Color,
+    sectionHighlight: Color,
+    onItemClick: (StreamEntity) -> Unit,
+    onViewCollection: (() -> Unit)? = null,
+    modifier: Modifier = Modifier
+) {
+    if (collectionName.isBlank() || items.isEmpty()) return
+
+    Column(
+        modifier = modifier
+            .fillMaxWidth()
+            .testTag("movie_dossier_collection_shelf")
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 18.dp),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                modifier = Modifier.weight(1f)
+            ) {
+                Icon(
+                    imageVector = Icons.Default.LocalMovies,
+                    contentDescription = null,
+                    tint = AmberGold,
+                    modifier = Modifier.size(16.dp)
+                )
+                Text(
+                    text = "Part of $collectionName",
+                    color = Color.White,
+                    fontSize = 14.5.sp,
+                    fontWeight = FontWeight.ExtraBold,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+
+            if (onViewCollection != null) {
+                Spacer(modifier = Modifier.width(8.dp))
+                Surface(
+                    color = sectionPrimaryAccent.copy(alpha = 0.24f),
+                    shape = RoundedCornerShape(50),
+                    border = BorderStroke(0.7.dp, sectionHighlight.copy(alpha = 0.65f)),
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(50))
+                        .clickable(onClick = onViewCollection)
+                        .testTag("movie_dossier_view_collection_btn")
+                ) {
+                    Text(
+                        text = "${items.size} Movies ›",
+                        color = sectionHighlight,
+                        fontSize = 10.5.sp,
+                        fontWeight = FontWeight.ExtraBold,
+                        modifier = Modifier.padding(horizontal = 9.dp, vertical = 4.dp)
+                    )
+                }
+            }
+        }
+
+        Spacer(modifier = Modifier.height(8.dp))
+
+        LazyRow(
+            contentPadding = PaddingValues(horizontal = 18.dp),
+            horizontalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            itemsIndexed(items, key = { _, g -> "dossier_col_${g.stream.id}_${g.stream.streamId}" }) { idx, grouped ->
+                val stream = grouped.stream
+                val isCurrentMovie = stream.id == activeStreamId ||
+                    (activeCanonicalGroupKey.isNotBlank() && stream.canonicalGroupKey == activeCanonicalGroupKey)
+                val cleanTitle = remember(stream.name) { VodGroupingNormalizer.extractCleanDisplayTitle(stream.name) }
+                val yearLabel = stream.releaseYear.takeIf { it > 0 }?.toString()
+
+                Column(
+                    modifier = Modifier
+                        .width(106.dp)
+                        .luxuryFocusableCard(
+                            accentColor = if (isCurrentMovie) AmberGold else sectionHighlight,
+                            shape = RoundedCornerShape(10.dp),
+                            focusedScale = 1.05f,
+                            onClick = { if (!isCurrentMovie) onItemClick(stream) }
+                        )
+                        .clip(RoundedCornerShape(10.dp))
+                        .testTag("movie_dossier_collection_card_${stream.streamId}")
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .aspectRatio(2f / 3f)
+                            .clip(RoundedCornerShape(10.dp))
+                            .background(sectionSurface)
+                            .border(
+                                width = if (isCurrentMovie) 1.6.dp else 0.8.dp,
+                                color = if (isCurrentMovie) AmberGold else Color.White.copy(alpha = 0.16f),
+                                shape = RoundedCornerShape(10.dp)
+                            )
+                    ) {
+                        if (stream.streamIcon.isNotBlank()) {
+                            AsyncImage(
+                                model = stream.streamIcon,
+                                contentDescription = cleanTitle,
+                                contentScale = ContentScale.Crop,
+                                modifier = Modifier.fillMaxSize()
+                            )
+                        } else {
+                            Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                                Icon(
+                                    imageVector = Icons.Default.Movie,
+                                    contentDescription = null,
+                                    tint = sectionHighlight.copy(alpha = 0.65f),
+                                    modifier = Modifier.size(26.dp)
+                                )
+                            }
+                        }
+
+                        Box(
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .background(
+                                    Brush.verticalGradient(
+                                        listOf(
+                                            sectionBaseBg.copy(alpha = 0.28f),
+                                            Color.Transparent,
+                                            sectionBaseBg.copy(alpha = 0.80f)
+                                        )
+                                    )
+                                )
+                        )
+
+                        // Installment Order Pill (#1, #2, ...)
+                        Surface(
+                            color = if (isCurrentMovie) AmberGold else sectionBaseBg.copy(alpha = 0.86f),
+                            shape = RoundedCornerShape(6.dp),
+                            border = BorderStroke(
+                                0.6.dp,
+                                if (isCurrentMovie) PaleGold else sectionHighlight.copy(alpha = 0.60f)
+                            ),
+                            modifier = Modifier
+                                .align(Alignment.TopStart)
+                                .padding(5.dp)
+                        ) {
+                            Text(
+                                text = "#${idx + 1}",
+                                color = if (isCurrentMovie) sectionBaseBg else PaleGold,
+                                fontSize = 8.5.sp,
+                                fontWeight = FontWeight.ExtraBold,
+                                modifier = Modifier.padding(horizontal = 5.dp, vertical = 1.5.dp)
+                            )
+                        }
+
+                        if (isCurrentMovie) {
+                            Surface(
+                                color = sectionBaseBg.copy(alpha = 0.88f),
+                                shape = RoundedCornerShape(6.dp),
+                                border = BorderStroke(0.6.dp, AmberGold),
+                                modifier = Modifier
+                                    .align(Alignment.BottomStart)
+                                    .padding(5.dp)
+                            ) {
+                                Text(
+                                    text = "CURRENT",
+                                    color = PaleGold,
+                                    fontSize = 7.5.sp,
+                                    fontWeight = FontWeight.ExtraBold,
+                                    modifier = Modifier.padding(horizontal = 5.dp, vertical = 1.5.dp)
+                                )
+                            }
+                        } else if (yearLabel != null) {
+                            Surface(
+                                color = sectionBaseBg.copy(alpha = 0.84f),
+                                shape = RoundedCornerShape(6.dp),
+                                modifier = Modifier
+                                    .align(Alignment.BottomStart)
+                                    .padding(5.dp)
+                            ) {
+                                Text(
+                                    text = yearLabel,
+                                    color = Champagne,
+                                    fontSize = 8.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    modifier = Modifier.padding(horizontal = 5.dp, vertical = 1.5.dp)
+                                )
+                            }
+                        }
+                    }
+
+                    Spacer(modifier = Modifier.height(5.dp))
+                    Text(
+                        text = cleanTitle,
+                        color = if (isCurrentMovie) PaleGold else Color.White,
+                        fontSize = 11.sp,
+                        fontWeight = if (isCurrentMovie) FontWeight.ExtraBold else FontWeight.SemiBold,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+            }
+        }
+    }
+}
+
 

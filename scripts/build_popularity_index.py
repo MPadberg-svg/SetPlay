@@ -28,11 +28,98 @@ from typing import Any
 
 TMDB_API_BASE = "https://api.themoviedb.org/3"
 OUTPUT_PATH = os.path.join("docs", "popularity_index.json")
+COLLECTIONS_OUTPUT_PATH = os.path.join("docs", "collections_index.json")
 
 REQUEST_SLEEP_SECONDS = 0.05  # 50ms polite pacing between requests
 REQUEST_TIMEOUT_SECONDS = 25
 MAX_RETRIES = 4
 BAYESIAN_PRIOR_M = 200.0
+DYNAMIC_DISCOVERY_MOVIE_LIMIT = 250
+MAX_COLLECTIONS = 350
+
+# Top 80 iconic global TMDb movie franchise/collection IDs
+CURATED_COLLECTION_IDS: list[int] = [
+    645,      # James Bond
+    87359,    # Mission: Impossible
+    9485,     # The Fast and the Furious
+    404609,   # John Wick
+    295,      # Pirates of the Caribbean
+    1241,     # Harry Potter
+    10,       # Star Wars
+    119,      # The Lord of the Rings
+    121938,   # The Hobbit
+    86311,    # The Avengers
+    531241,   # Spider-Man (MCU)
+    263,      # The Dark Knight
+    328,      # Jurassic Park
+    10194,    # Toy Story
+    31562,    # The Bourne
+    84,       # Indiana Jones
+    2344,     # The Matrix
+    8091,     # Alien
+    528,      # The Terminator
+    1575,     # Rocky
+    1570,     # Die Hard
+    8650,     # Transformers
+    748,      # X-Men
+    131635,   # The Hunger Games
+    173710,   # Planet of the Apes (Reboot)
+    313086,   # The Conjuring
+    726871,   # Dune
+    448150,   # Deadpool
+    87096,    # Avatar
+    230,      # The Godfather
+    264,      # Back to the Future
+    8945,     # Mad Max
+    2150,     # Shrek
+    86066,    # Despicable Me
+    8354,     # Ice Age
+    77816,    # Kung Fu Panda
+    89137,    # How to Train Your Dragon
+    386382,   # Frozen
+    137697,   # Finding Nemo
+    87118,    # Cars
+    137696,   # Monsters, Inc.
+    468222,   # The Incredibles
+    14740,    # Madagascar
+    573436,   # Spider-Man: Spider-Verse
+    131292,   # Iron Man
+    131295,   # Captain America
+    131296,   # Thor
+    284433,   # Guardians of the Galaxy
+    422834,   # Ant-Man
+    529892,   # Black Panther
+    618529,   # Doctor Strange
+    556,      # Spider-Man (Raimi)
+    125574,   # The Amazing Spider-Man
+    558216,   # Venom
+    120794,   # Batman (1989)
+    720879,   # Sonic the Hedgehog
+    1022790,  # Inside Out
+    399,      # Predator
+    656,      # Saw
+    2602,     # Scream
+    91361,    # Halloween
+    525634,   # A Quiet Place
+    228446,   # Insidious
+    256322,   # The Purge
+    8864,     # Final Destination
+    17255,    # Resident Evil
+    2326,     # Underworld
+    5039,     # Rambo
+    126125,   # The Expendables
+    90863,    # Rush Hour
+    14890,    # Bad Boys
+    86055,    # Men in Black
+    2980,     # Ghostbusters
+    304,      # Ocean's
+    722971,   # Knives Out
+    435259,   # Fantastic Beasts
+    420,      # The Chronicles of Narnia
+    33514,    # The Twilight
+    295130,   # The Maze Runner
+    523855,   # The Equalizer
+]
 
 # Endpoints, page ranges, bucket names, and optional query params for global Movies & TV Series
 MOVIE_SOURCES: list[tuple[str, int, str, dict[str, str]]] = [
@@ -158,6 +245,63 @@ def fetch_tmdb_page(
             raise
 
     raise RuntimeError(f"Failed fetching {endpoint} page={page}: {last_error}")
+
+
+def fetch_tmdb_object(
+    endpoint: str,
+    api_key: str,
+) -> dict[str, Any] | None:
+    params: dict[str, str] = {"language": "en-US"}
+    headers: dict[str, str] = {
+        "Accept": "application/json",
+        "User-Agent": "SetPlay-PopularityIndexBuilder/1.0",
+    }
+
+    if is_bearer_token(api_key):
+        headers["Authorization"] = f"Bearer {api_key}"
+    else:
+        params["api_key"] = api_key
+
+    url = f"{TMDB_API_BASE}{endpoint}?{urllib.parse.urlencode(params)}"
+
+    for attempt in range(1, MAX_RETRIES + 1):
+        req = urllib.request.Request(url, headers=headers, method="GET")
+        try:
+            with urllib.request.urlopen(req, timeout=REQUEST_TIMEOUT_SECONDS) as resp:
+                raw_bytes = resp.read()
+                parsed = json.loads(raw_bytes.decode("utf-8"))
+                return parsed if isinstance(parsed, dict) else None
+        except urllib.error.HTTPError as err:
+            status = err.code
+            if status == 429:
+                retry_after = err.headers.get("Retry-After")
+                wait_s = float(retry_after) if retry_after and retry_after.isdigit() else (1.5 * attempt)
+                wait_s = max(0.5, min(wait_s, 30.0))
+                time.sleep(wait_s)
+                continue
+            if 500 <= status < 600 and attempt < MAX_RETRIES:
+                time.sleep(1.0 * attempt)
+                continue
+            if status in (401, 403):
+                print(
+                    f"ERROR: TMDb rejected credentials with HTTP {status} on {endpoint}. "
+                    "Verify TMDB_API_KEY secret.",
+                    file=sys.stderr,
+                )
+                sys.exit(1)
+            if status in (400, 404, 422):
+                return None
+            if attempt < MAX_RETRIES:
+                time.sleep(1.0 * attempt)
+                continue
+            return None
+        except (urllib.error.URLError, TimeoutError, json.JSONDecodeError):
+            if attempt < MAX_RETRIES:
+                time.sleep(1.0 * attempt)
+                continue
+            return None
+
+    return None
 
 
 def extract_year(date_str: Any) -> int:
@@ -433,6 +577,130 @@ def build_index() -> dict[str, Any]:
     }
 
 
+def normalize_release_date_sort_key(date_str: Any, movie_id: int) -> tuple[int, str, int]:
+    if isinstance(date_str, str):
+        cleaned = date_str.strip()
+        if re.match(r"^\d{4}-\d{2}-\d{2}$", cleaned):
+            return (0, cleaned, movie_id)
+        year = extract_year(cleaned)
+        if year > 0:
+            return (0, f"{year:04d}-12-31", movie_id)
+    return (1, "9999-99-99", movie_id)
+
+
+def build_collections_index(
+    movie_id_map: dict[str, float],
+    api_key: str,
+) -> dict[str, Any]:
+    collection_ids: list[int] = []
+    seen_collections: set[int] = set()
+
+    for seed_id in CURATED_COLLECTION_IDS:
+        if seed_id > 0 and seed_id not in seen_collections:
+            seen_collections.add(seed_id)
+            collection_ids.append(seed_id)
+
+    top_movie_ids = list(movie_id_map.keys())[:DYNAMIC_DISCOVERY_MOVIE_LIMIT]
+    print(
+        f"Discovering dynamic movie collections from top {len(top_movie_ids)} movies "
+        f"(seeded with {len(collection_ids)} curated franchises)..."
+    )
+    for movie_id_str in top_movie_ids:
+        if len(collection_ids) >= MAX_COLLECTIONS:
+            break
+        details = fetch_tmdb_object(f"/movie/{movie_id_str}", api_key)
+        time.sleep(REQUEST_SLEEP_SECONDS)
+        if not details:
+            continue
+        btc = details.get("belongs_to_collection")
+        if isinstance(btc, dict):
+            col_id = btc.get("id")
+            if isinstance(col_id, int) and col_id > 0 and col_id not in seen_collections:
+                seen_collections.add(col_id)
+                collection_ids.append(col_id)
+
+    collection_ids = collection_ids[:MAX_COLLECTIONS]
+    print(f"Fetching official TMDb metadata for {len(collection_ids)} unique collections...")
+
+    collections_meta: dict[str, dict[str, str]] = {}
+    movie_to_collection: dict[str, list[Any]] = {}
+    title_to_collection: dict[str, list[Any]] = {}
+
+    for col_id in collection_ids:
+        payload = fetch_tmdb_object(f"/collection/{col_id}", api_key)
+        time.sleep(REQUEST_SLEEP_SECONDS)
+        if not payload:
+            continue
+
+        col_name = str(payload.get("name") or "").strip()
+        parts_raw = payload.get("parts") or []
+        if not col_name or not isinstance(parts_raw, list):
+            continue
+
+        valid_parts: list[dict[str, Any]] = []
+        for part in parts_raw:
+            if not isinstance(part, dict):
+                continue
+            if part.get("adult") is True:
+                continue
+            part_id = part.get("id")
+            if not isinstance(part_id, int) or part_id <= 0:
+                continue
+            valid_parts.append(part)
+
+        if not valid_parts:
+            continue
+
+        valid_parts.sort(
+            key=lambda p: normalize_release_date_sort_key(p.get("release_date"), int(p["id"]))
+        )
+
+        col_id_str = str(col_id)
+        poster_path = str(payload.get("poster_path") or "").strip()
+        collections_meta[col_id_str] = {
+            "n": col_name,
+            "p": poster_path,
+        }
+
+        for order_idx, part in enumerate(valid_parts, start=1):
+            part_id_str = str(int(part["id"]))
+            entry = [col_id_str, order_idx]
+            movie_to_collection[part_id_str] = entry
+
+            year = extract_year(part.get("release_date"))
+            if year <= 0:
+                continue
+
+            candidates: set[str] = set()
+            for field in ("title", "original_title"):
+                raw_t = str(part.get(field) or "").strip()
+                if not raw_t:
+                    continue
+                norm = normalize_alnum_title(raw_t)
+                if norm:
+                    candidates.add(norm)
+                    folded = ascii_fold_title(norm)
+                    if folded and folded != norm:
+                        candidates.add(folded)
+
+            for norm_title in candidates:
+                t_key = f"{norm_title}_{year}"
+                if t_key not in title_to_collection:
+                    title_to_collection[t_key] = entry
+
+    sorted_collections_meta = dict(sorted(collections_meta.items(), key=lambda kv: int(kv[0])))
+    sorted_movie_map = dict(sorted(movie_to_collection.items(), key=lambda kv: int(kv[0])))
+    sorted_title_map = dict(sorted(title_to_collection.items(), key=lambda kv: kv[0]))
+
+    return {
+        "v": 1,
+        "generatedAt": int(time.time()),
+        "c": sorted_collections_meta,
+        "m": sorted_movie_map,
+        "t": sorted_title_map,
+    }
+
+
 def write_output(payload: dict[str, Any], output_path: str = OUTPUT_PATH) -> tuple[int, int]:
     parent_dir = os.path.dirname(output_path)
     if parent_dir:
@@ -452,16 +720,30 @@ def write_output(payload: dict[str, Any], output_path: str = OUTPUT_PATH) -> tup
 
 def main() -> None:
     started = time.time()
+    api_key = get_tmdb_api_key()
     payload = build_index()
     raw_size, gz_size = write_output(payload, OUTPUT_PATH)
-    elapsed = time.time() - started
+    pop_elapsed = time.time() - started
 
     print(
-        f"Wrote {OUTPUT_PATH} in {elapsed:.1f}s | "
+        f"Wrote {OUTPUT_PATH} in {pop_elapsed:.1f}s | "
         f"unique movies: {len(payload['m'])}, "
         f"unique series: {len(payload['s'])}, "
         f"title keys: {len(payload['t'])}, "
         f"size: {raw_size / 1024.0:.1f} KB raw ({gz_size / 1024.0:.1f} KB gzip)"
+    )
+
+    col_started = time.time()
+    collections_payload = build_collections_index(payload["m"], api_key)
+    col_raw_size, col_gz_size = write_output(collections_payload, COLLECTIONS_OUTPUT_PATH)
+    col_elapsed = time.time() - col_started
+
+    print(
+        f"Wrote {COLLECTIONS_OUTPUT_PATH} in {col_elapsed:.1f}s | "
+        f"collections: {len(collections_payload['c'])}, "
+        f"movie mappings: {len(collections_payload['m'])}, "
+        f"title_year keys: {len(collections_payload['t'])}, "
+        f"size: {col_raw_size / 1024.0:.1f} KB raw ({col_gz_size / 1024.0:.1f} KB gzip)"
     )
 
 

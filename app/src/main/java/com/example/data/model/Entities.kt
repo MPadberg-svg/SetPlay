@@ -110,7 +110,8 @@ data class GroupedVodStream(
         Index(value = ["playlistId", "streamType", "popularityScore"]),
         Index(value = ["playlistId", "streamType", "addedEpoch"]),
         Index(value = ["playlistId", "streamType", "primaryCategoryId"]),
-        Index(value = ["playlistId", "streamType", "cleanTitle"])
+        Index(value = ["playlistId", "streamType", "cleanTitle"]),
+        Index(value = ["playlistId", "streamType", "collectionId"])
     ]
 )
 data class VodCatalogGroupEntity(
@@ -133,7 +134,10 @@ data class VodCatalogGroupEntity(
     val defaultVersionTag: String = "",
     val containerExtension: String = "mp4",
     val popularityScore: Double = 0.0,
-    val platformTags: String = ""
+    val platformTags: String = "",
+    val collectionId: String = "",
+    val collectionName: String = "",
+    val collectionOrder: Int = 0
 )
 
 @Fts4(contentEntity = VodCatalogGroupEntity::class)
@@ -156,6 +160,22 @@ data class VodGroupMemberEntity(
     val streamType: String,
     val groupKey: String,
     val streamDbId: Long
+)
+
+@Entity(
+    tableName = "vod_collections",
+    primaryKeys = ["playlistId", "collectionId"],
+    indices = [
+        Index(value = ["playlistId", "popularityScore"])
+    ]
+)
+data class VodCollectionEntity(
+    val playlistId: Long,
+    val collectionId: String,
+    val name: String,
+    val posterUrl: String = "",
+    val movieCount: Int = 0,
+    val popularityScore: Double = 0.0
 )
 
 @Entity(

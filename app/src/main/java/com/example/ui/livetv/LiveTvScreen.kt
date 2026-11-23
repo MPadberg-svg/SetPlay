@@ -664,7 +664,7 @@ fun LiveTvScreen(
 }
 
 @Composable
-private fun LiveTvSyncStatusBanner(
+internal fun LiveTvSyncStatusBanner(
     telemetry: SyncTelemetry,
     onRefresh: () -> Unit,
     onDismissPendingUpdate: () -> Unit
@@ -756,7 +756,8 @@ private fun LiveTvSyncStatusBanner(
     val stageTitle = when {
         isFailed -> "Sync failed • ${telemetry.errorMessage.ifBlank { "Check connection" }}"
         isInterrupted -> "Sync interrupted — Resume"
-        telemetry.status == SyncStatus.PENDING -> "Preparing Live TV sync…"
+        telemetry.status == SyncStatus.PENDING -> telemetry.pendingUpdateSummary.takeIf { it.isNotBlank() }
+            ?: "Queued for Live TV sync…"
         else -> telemetry.stage.label
     }
     val statsSubtitle = remember(telemetry) { formatSyncStatsSubtitle(telemetry) }
