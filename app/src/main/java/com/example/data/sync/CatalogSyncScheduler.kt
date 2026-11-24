@@ -96,7 +96,8 @@ object CatalogSyncScheduler {
         categoryId: String? = null,
         forceFull: Boolean = false,
         priority: SyncPriority = defaultPriorityFor(sectionType, categoryId),
-        expedited: Boolean = false
+        expedited: Boolean = false,
+        userInitiated: Boolean = false
     ): String {
         if (playlistId <= 0L) return UNIQUE_QUEUE_NAME
         val appContext = context.applicationContext
@@ -106,12 +107,15 @@ object CatalogSyncScheduler {
 
         var shouldEnqueueWork = false
         var waitingForActiveSync = false
+        var shouldReplaceIdleBackoff = false
 
         synchronized(queueLock) {
             if (activeRequestKey == key) {
                 // Exact (playlistId, sectionType) is already RUNNING — deduplicate
                 return UNIQUE_QUEUE_NAME
             }
+            shouldReplaceIdleBackoff = userInitiated && activeRequestKey == null
+
             val existingPending = pendingQueue[key]
             if (existingPending != null) {
                 // Deduplicate; only upgrade metadata in-place if higher priority or forceFull requested
@@ -127,20 +131,24 @@ object CatalogSyncScheduler {
                     forceFull = upgradedForce,
                     priority = upgradedPriority
                 )
-                return UNIQUE_QUEUE_NAME
+                if (!shouldReplaceIdleBackoff) {
+                    return UNIQUE_QUEUE_NAME
+                }
+                waitingForActiveSync = false
+                shouldEnqueueWork = true
+            } else {
+                waitingForActiveSync = activeRequestKey != null || pendingQueue.isNotEmpty()
+                val seq = sequenceGenerator.incrementAndGet()
+                pendingQueue[key] = QueuedSyncRequest(
+                    playlistId = playlistId,
+                    sectionType = normalizedSection,
+                    categoryId = cleanCategoryId,
+                    forceFull = forceFull,
+                    priority = priority,
+                    enqueuedSeq = seq
+                )
+                shouldEnqueueWork = true
             }
-
-            waitingForActiveSync = activeRequestKey != null || pendingQueue.isNotEmpty()
-            val seq = sequenceGenerator.incrementAndGet()
-            pendingQueue[key] = QueuedSyncRequest(
-                playlistId = playlistId,
-                sectionType = normalizedSection,
-                categoryId = cleanCategoryId,
-                forceFull = forceFull,
-                priority = priority,
-                enqueuedSeq = seq
-            )
-            shouldEnqueueWork = true
         }
 
         if (!shouldEnqueueWork) return UNIQUE_QUEUE_NAME
@@ -179,10 +187,16 @@ object CatalogSyncScheduler {
             requestBuilder.setExpedited(OutOfQuotaPolicy.RUN_AS_NON_EXPEDITED_WORK_REQUEST)
         }
 
+        val workPolicy = if (shouldReplaceIdleBackoff) {
+            ExistingWorkPolicy.REPLACE
+        } else {
+            ExistingWorkPolicy.KEEP
+        }
+
         runCatching {
             WorkManager.getInstance(appContext).enqueueUniqueWork(
                 UNIQUE_QUEUE_NAME,
-                ExistingWorkPolicy.KEEP,
+                workPolicy,
                 requestBuilder.build()
             )
         }.onFailure { err ->

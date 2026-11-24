@@ -28,8 +28,10 @@ import com.example.data.remote.GlobalPopularityIndexManager
 import com.example.data.remote.XtreamAuthResponse
 import com.example.data.remote.XtreamClient
 import com.example.data.sync.CatalogDiffEngine
+import com.example.data.sync.CatalogSyncScheduler
 import com.example.data.sync.CatalogUpdateCheckWorker
 import com.example.data.sync.PlaybackResourceGovernor
+import com.example.data.sync.SyncPriority
 import com.example.data.sync.SyncStage
 import com.example.data.sync.SyncStatus
 import com.example.data.sync.SyncTelemetry
@@ -53,6 +55,8 @@ import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.onStart
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import okhttp3.ConnectionPool
 import okhttp3.Dispatcher
@@ -120,6 +124,7 @@ class IptvRepository(
     private val liveSyncLock = AtomicBoolean(false)
     private val moviesSyncLock = AtomicBoolean(false)
     private val seriesSyncLock = AtomicBoolean(false)
+    private val catalogProcessingMutex = Mutex()
     private val indexingScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private val activeIndexJobs = ConcurrentHashMap<String, AtomicBoolean>()
 
@@ -431,6 +436,7 @@ class IptvRepository(
             var processed = 0
             var totalCount = 0
             try {
+                catalogProcessingMutex.withLock {
                 totalCount = streamDao.countStreams(playlistId, normalizedType)
                 if (totalCount <= 0) {
                     runInDbTransaction {
@@ -486,20 +492,20 @@ class IptvRepository(
 
                 val allProjections = ArrayList<StreamIndexProjection>(totalCount)
                 val chunkSize = 10_000
-                var offset = 0
+                var lastSeenId = 0L
 
                 while (true) {
-                    val chunk = streamDao.getStreamIndexProjectionsChunk(
+                    val chunk = streamDao.getStreamIndexProjectionsAfterId(
                         playlistId = playlistId,
                         streamType = normalizedType,
-                        limit = chunkSize,
-                        offset = offset
+                        lastId = lastSeenId,
+                        limit = chunkSize
                     )
                     if (chunk.isEmpty()) break
 
                     allProjections.addAll(chunk)
                     processed += chunk.size
-                    offset += chunk.size
+                    lastSeenId = chunk.last().id
 
                     val progressPct = ((processed.toLong() * 65L) / totalCount.coerceAtLeast(1).toLong())
                         .toInt()
@@ -594,35 +600,22 @@ class IptvRepository(
                     )
                 )
 
-                val groupBatchSize = PlaybackResourceGovernor.recommendedDbBatchSize()
-                val memberBatchSize = (groupBatchSize * 2).coerceAtMost(2_000)
                 runInDbTransaction {
                     dao.deleteGroupsByType(playlistId, normalizedType)
                     dao.deleteGroupMembersByType(playlistId, normalizedType)
                     if (normalizedType == "movie") {
                         dao.deleteCollectionsForPlaylist(playlistId)
                     }
-                }
-                PlaybackResourceGovernor.throttleIfPlaybackActive()
-
-                for (batch in materializedGroups.chunked(groupBatchSize)) {
-                    runInDbTransaction {
+                    for (batch in materializedGroups.chunked(2_000)) {
                         dao.insertGroupsBatch(batch)
                     }
-                    PlaybackResourceGovernor.throttleIfPlaybackActive()
-                }
-                for (batch in materializedMembers.chunked(memberBatchSize)) {
-                    runInDbTransaction {
+                    for (batch in materializedMembers.chunked(2_000)) {
                         dao.insertGroupMembersBatch(batch)
                     }
-                    PlaybackResourceGovernor.throttleIfPlaybackActive()
-                }
-                if (normalizedType == "movie" && materializedCollections.isNotEmpty()) {
-                    for (batch in materializedCollections.chunked(groupBatchSize)) {
-                        runInDbTransaction {
+                    if (normalizedType == "movie" && materializedCollections.isNotEmpty()) {
+                        for (batch in materializedCollections.chunked(500)) {
                             dao.insertCollectionsBatch(batch)
                         }
-                        PlaybackResourceGovernor.throttleIfPlaybackActive()
                     }
                 }
 
@@ -649,6 +642,7 @@ class IptvRepository(
                         statusText = "${materializedGroups.size} $sectionLabel ready"
                     )
                 )
+                }
             } catch (e: Exception) {
                 val safeErr = SecurityManager.redactSensitiveText(e.message ?: "Indexing failed")
                 Log.e("IptvRepository", "Stage 2 VOD indexing failed for $normalizedType: $safeErr")
@@ -699,7 +693,14 @@ class IptvRepository(
 
         // Also include any surviving member streams previously attached to these group keys
         for (groupKey in dirtyGroupKeys) {
-            val existingMembers = dao.getMemberStreamsForGroup(playlistId, normalizedType, groupKey)
+            var existingMembers = dao.getMemberStreamsForGroup(playlistId, normalizedType, groupKey)
+            if (existingMembers.isEmpty()) {
+                val repId = dao.getGroupByKey(playlistId, normalizedType, groupKey)?.representativeStreamDbId ?: 0L
+                val repStream = if (repId > 0L) streamDao.getStreamByDbId(repId) else null
+                if (repStream != null) {
+                    existingMembers = listOf(repStream)
+                }
+            }
             for (member in existingMembers) {
                 if (!projectionsById.containsKey(member.id)) {
                     projectionsById[member.id] = StreamIndexProjection(
@@ -846,6 +847,23 @@ class IptvRepository(
             dao.countGroupsByType(playlistId, normalizedType) to streamDao.countStreams(playlistId, normalizedType)
         }
         if (groupCount == 0 && rawCount > 0) {
+            val anotherSyncActive = catalogProcessingMutex.isLocked ||
+                liveSyncLock.get() ||
+                moviesSyncLock.get() ||
+                seriesSyncLock.get() ||
+                isSyncInProgress.get()
+            val ctx = appContext ?: cachedAppContext
+            if (anotherSyncActive && ctx != null) {
+                val sectionType = if (normalizedType == "movie") "MOVIE" else "SERIES"
+                CatalogSyncScheduler.enqueueSectionSync(
+                    context = ctx,
+                    playlistId = playlistId,
+                    sectionType = sectionType,
+                    priority = SyncPriority.VOD_SYNC,
+                    userInitiated = false
+                )
+                return
+            }
             rebuildVodCatalogGroups(playlistId, normalizedType, emitSyncStatus = false)
         }
     }
@@ -976,10 +994,18 @@ class IptvRepository(
             return@withContext listOf(enrichVersionTag(dbRep ?: fallbackStream))
         }
 
-        // Lossless Phase 5B lookup: resolve exact Union-Find members via vod_group_members FIRST
+        // Lossless Phase 5B/7A lookup: resolve exact Union-Find members via vod_group_members FIRST
         var versions = vodGroupDao?.getMemberStreamsForGroup(playlistId, streamType, canonicalGroupKey).orEmpty()
 
         if (versions.isEmpty()) {
+            // Phase 7A O(1) singleton fast-path: singleton groups omit vod_group_members rows
+            val groupRow = vodGroupDao?.getGroupByKey(playlistId, streamType, canonicalGroupKey)
+            if (groupRow != null && groupRow.versionCount <= 1 && groupRow.representativeStreamDbId > 0L) {
+                val repRow = streamDao.getStreamByDbId(groupRow.representativeStreamDbId)
+                if (repRow != null) {
+                    return@withContext listOf(enrichVersionTag(repRow))
+                }
+            }
             versions = streamDao.getVersionsByGroupKey(playlistId, streamType, canonicalGroupKey)
         }
 
@@ -1058,7 +1084,8 @@ class IptvRepository(
                         versionTag = it.versionTag,
                         hasPoster = it.streamIcon.isNotBlank(),
                         containerExt = it.containerExtension,
-                        ratingNumeric = it.ratingNumeric
+                        ratingNumeric = it.ratingNumeric,
+                        rawName = it.name
                     )
                 }.thenBy { it.id }
             )
@@ -1802,6 +1829,8 @@ class IptvRepository(
             return@withContext Result.failure(IllegalStateException("A $sectionLabel synchronization job is already running"))
         }
 
+        try {
+        catalogProcessingMutex.withLock {
         val cleanCategoryId = categoryId?.trim()?.takeIf { it.isNotEmpty() }
         val isCategoryScoped = cleanCategoryId != null
         val existingSyncState = syncSectionStateDao?.getSectionOnce(playlist.id, catType)
@@ -2408,17 +2437,17 @@ class IptvRepository(
                     } else {
                         val allProjections = ArrayList<StreamIndexProjection>(totalStreamRows)
                         val chunkSize = 10_000
-                        var offset = 0
+                        var lastSeenId = 0L
                         while (true) {
-                            val chunk = streamDao.getStreamIndexProjectionsChunk(
+                            val chunk = streamDao.getStreamIndexProjectionsAfterId(
                                 playlistId = playlist.id,
                                 streamType = streamType,
-                                limit = chunkSize,
-                                offset = offset
+                                lastId = lastSeenId,
+                                limit = chunkSize
                             )
                             if (chunk.isEmpty()) break
                             allProjections.addAll(chunk)
-                            offset += chunk.size
+                            lastSeenId = chunk.last().id
 
                             // Reading projections stays within 65..67% so progress never jumps to 80% while itemsGrouped == 0
                             val readPct = (SyncStage.GROUPING_AND_ORGANIZING.startPct +
@@ -2489,35 +2518,22 @@ class IptvRepository(
                             forceDbWrite = true
                         )
 
-                        val groupBatchSize = PlaybackResourceGovernor.recommendedDbBatchSize()
-                        val memberBatchSize = (groupBatchSize * 2).coerceAtMost(2_000)
                         runInDbTransaction {
                             vodGroupDao.deleteGroupsByType(playlist.id, streamType)
                             vodGroupDao.deleteGroupMembersByType(playlist.id, streamType)
                             if (streamType == "movie") {
                                 vodGroupDao.deleteCollectionsForPlaylist(playlist.id)
                             }
-                        }
-                        PlaybackResourceGovernor.throttleIfPlaybackActive()
-
-                        for (batch in materializedGroups.chunked(groupBatchSize)) {
-                            runInDbTransaction {
+                            for (batch in materializedGroups.chunked(2_000)) {
                                 vodGroupDao.insertGroupsBatch(batch)
                             }
-                            PlaybackResourceGovernor.throttleIfPlaybackActive()
-                        }
-                        for (batch in materializedMembers.chunked(memberBatchSize)) {
-                            runInDbTransaction {
+                            for (batch in materializedMembers.chunked(2_000)) {
                                 vodGroupDao.insertGroupMembersBatch(batch)
                             }
-                            PlaybackResourceGovernor.throttleIfPlaybackActive()
-                        }
-                        if (streamType == "movie" && materializedCollections.isNotEmpty()) {
-                            for (batch in materializedCollections.chunked(groupBatchSize)) {
-                                runInDbTransaction {
+                            if (streamType == "movie" && materializedCollections.isNotEmpty()) {
+                                for (batch in materializedCollections.chunked(500)) {
                                     vodGroupDao.insertCollectionsBatch(batch)
                                 }
-                                PlaybackResourceGovernor.throttleIfPlaybackActive()
                             }
                         }
                         itemsPersisted += materializedGroups.size
@@ -2642,6 +2658,8 @@ class IptvRepository(
                 forceDbWrite = true
             )
             Result.failure(Exception(safeErr))
+        }
+        }
         } finally {
             sectionLock.set(false)
         }

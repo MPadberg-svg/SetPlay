@@ -1485,21 +1485,50 @@ internal fun TvDiscoveryShelfRow(
     onItemFocused: (GroupedVodStream) -> Unit,
     onItemClick: (GroupedVodStream) -> Unit,
     onSeeAllShelf: (VodShelfFilter) -> Unit = {},
-    onLoadMoreShelf: (String) -> Unit = {}
+    onLoadMoreShelf: (String) -> Unit = {},
+    excludeHeroKey: String? = null
 ) {
+    val displayItems = remember(shelf.id, shelf.items, shelf.heroDedupKey, excludeHeroKey) {
+        if (shelf.items.size < 4) {
+            shelf.items
+        } else {
+            val resolvedHeroKey = excludeHeroKey?.takeIf { it.isNotBlank() }
+                ?: shelf.heroDedupKey?.takeIf { it.isNotBlank() }
+                ?: if (shelf.id.endsWith("top_rated") || shelf.id == "tv_featured_catalog") {
+                    val inferredHero = shelf.items.firstOrNull { it.stream.streamIcon.isNotBlank() }
+                        ?: shelf.items.firstOrNull()
+                    inferredHero?.let { hero ->
+                        hero.stream.canonicalGroupKey.ifBlank { "id_${hero.stream.id}" }
+                    }
+                } else {
+                    null
+                }
+            if (resolvedHeroKey == null) {
+                shelf.items
+            } else {
+                shelf.items.filterNot { candidate ->
+                    val candidateKey = candidate.stream.canonicalGroupKey.ifBlank { "id_${candidate.stream.id}" }
+                    candidateKey == resolvedHeroKey ||
+                        candidate.stream.canonicalGroupKey == resolvedHeroKey ||
+                        candidate.stream.id.toString() == resolvedHeroKey
+                }
+            }
+        }
+    }
+
     val rowState = rememberLazyListState()
     var lastExpandedAtSize by remember(shelf.id) { mutableIntStateOf(0) }
-    val shouldExpandOnScroll by remember(shelf.items.size, shelf.canLoadMore) {
+    val shouldExpandOnScroll by remember(displayItems.size, shelf.canLoadMore) {
         derivedStateOf {
             val lastVisible = rowState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: 0
             shelf.canLoadMore &&
-                shelf.items.size > lastExpandedAtSize &&
-                lastVisible >= (shelf.items.size - 4).coerceAtLeast(0)
+                displayItems.size > lastExpandedAtSize &&
+                lastVisible >= (displayItems.size - 4).coerceAtLeast(0)
         }
     }
     LaunchedEffect(shouldExpandOnScroll) {
         if (shouldExpandOnScroll) {
-            lastExpandedAtSize = shelf.items.size
+            lastExpandedAtSize = displayItems.size
             onLoadMoreShelf(shelf.id)
         }
     }
@@ -1546,7 +1575,7 @@ internal fun TvDiscoveryShelfRow(
             contentPadding = PaddingValues(horizontal = 20.dp, vertical = 8.dp),
             horizontalArrangement = Arrangement.spacedBy(14.dp)
         ) {
-            itemsIndexed(shelf.items, key = { _, g -> "tv_${shelf.id}_${g.stream.id}" }) { index, grouped ->
+            itemsIndexed(displayItems, key = { _, g -> "tv_${shelf.id}_${g.stream.id}" }) { index, grouped ->
                 val stream = grouped.stream
                 val cleanTitle = remember(stream.name) { VodGroupingNormalizer.extractCleanDisplayTitle(stream.name) }
                 val ratingLabel = remember(stream.ratingNumeric, grouped.versionCount) {
@@ -1563,10 +1592,10 @@ internal fun TvDiscoveryShelfRow(
                             if (focusState.isFocused) {
                                 onItemFocused(grouped)
                                 if (shelf.canLoadMore &&
-                                    shelf.items.size > lastExpandedAtSize &&
-                                    index >= (shelf.items.size - 4).coerceAtLeast(0)
+                                    displayItems.size > lastExpandedAtSize &&
+                                    index >= (displayItems.size - 4).coerceAtLeast(0)
                                 ) {
-                                    lastExpandedAtSize = shelf.items.size
+                                    lastExpandedAtSize = displayItems.size
                                     onLoadMoreShelf(shelf.id)
                                 }
                             }

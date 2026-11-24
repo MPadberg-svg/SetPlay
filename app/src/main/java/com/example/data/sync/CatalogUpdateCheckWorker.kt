@@ -143,7 +143,8 @@ class CatalogUpdateCheckWorker(
             }
         }
 
-        // Refresh V15 Global Popularity Index at most once per 24h; silently re-rank local groups when idle
+        // Refresh V15 Global Popularity Index at most once per 24h; route re-rank/refresh through
+        // the single serialized CatalogSyncScheduler instead of launching parallel rebuilds.
         val cloudIndexUpdated = runCatching {
             GlobalPopularityIndexManager.ensureLoaded(applicationContext, IptvRepository.syncOkHttpClient)
         }.getOrDefault(false)
@@ -153,12 +154,24 @@ class CatalogUpdateCheckWorker(
                 if (repository.countStreamsByType(playlist.id, "movie") > 0 &&
                     !PlaybackResourceGovernor.isPlaybackActive.value
                 ) {
-                    repository.rebuildVodCatalogGroups(playlist.id, "movie", emitSyncStatus = false)
+                    CatalogSyncScheduler.enqueueSectionSync(
+                        context = applicationContext,
+                        playlistId = playlist.id,
+                        sectionType = "MOVIE",
+                        priority = SyncPriority.BACKGROUND_CHECK,
+                        userInitiated = false
+                    )
                 }
                 if (repository.countStreamsByType(playlist.id, "series") > 0 &&
                     !PlaybackResourceGovernor.isPlaybackActive.value
                 ) {
-                    repository.rebuildVodCatalogGroups(playlist.id, "series", emitSyncStatus = false)
+                    CatalogSyncScheduler.enqueueSectionSync(
+                        context = applicationContext,
+                        playlistId = playlist.id,
+                        sectionType = "SERIES",
+                        priority = SyncPriority.BACKGROUND_CHECK,
+                        userInitiated = false
+                    )
                 }
             }
         }

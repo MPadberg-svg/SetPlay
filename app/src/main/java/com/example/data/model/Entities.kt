@@ -392,7 +392,7 @@ object VodGroupingNormalizer {
         return 0
     }
 
-    private val TMDB_POSTER_PATH_REGEX = Regex("(?i)image\\.tmdb\\.org/t/p/[^/]+/([^/?#]+)")
+    private const val TMDB_POSTER_MARKER = "image.tmdb.org/t/p/"
     private val ONLY_FOUR_DIGITS_REGEX = Regex("^\\d{4}$")
     private val MULTI_WHITESPACE_REGEX = Regex("\\s+")
     private val TRAILING_SUB_BRACKET_REGEX = Regex(
@@ -400,6 +400,13 @@ object VodGroupingNormalizer {
     )
     private val TRAILING_SEP_YEAR_REGEX = Regex("\\s*[-|│┃:]\\s*(?:19[2-9]\\d|20[0-3]\\d)\\s*$")
     private val TRAILING_BRACKET_YEAR_REGEX = Regex("\\s*[\\(\\[]\\s*(?:19[2-9]\\d|20[0-3]\\d)\\s*[\\)\\]]\\s*$")
+
+    private val PREF_ENGLISH_REGEX = Regex("(?<![A-Z])(EN|UK|US)(?![A-Z])")
+    private val PREF_ARABIC_REGEX = Regex("(?<![A-Z])AR(?![A-Z])")
+    private val PREF_FRENCH_REGEX = Regex("(?<![A-Z])FR(?![A-Z])")
+    private val QUALITY_ONLY_TAG_TOKENS = setOf(
+        "4K", "UHD", "FHD", "HD", "SD", "HDR", "HDR10", "HEVC", "H265", "X265", "3D", "60FPS", "STANDARD"
+    )
 
     private val CATEGORY_LANG_RULES: List<Pair<Regex, String>> = listOf(
         Regex("(?i)(?<![A-Za-z])(EN|ENG|ENGLISH)(?![A-Za-z])") to "English",
@@ -421,13 +428,28 @@ object VodGroupingNormalizer {
 
     fun extractTmdbPosterHash(posterUrl: String): String {
         if (posterUrl.isBlank()) return ""
-        val match = TMDB_POSTER_PATH_REGEX.find(posterUrl.trim()) ?: return ""
-        val filename = match.groupValues.getOrNull(1)?.trim().orEmpty()
-        if (filename.isEmpty()) return ""
-        val dotIndex = filename.lastIndexOf('.')
-        val stem = if (dotIndex > 0) filename.substring(0, dotIndex) else filename
-        if (stem.length < 12) return ""
-        return stem
+        val markerIdx = posterUrl.indexOf(TMDB_POSTER_MARKER, ignoreCase = true)
+        if (markerIdx < 0) return ""
+        val afterMarker = markerIdx + TMDB_POSTER_MARKER.length
+
+        var endIdx = posterUrl.length
+        val qIdx = posterUrl.indexOf('?', afterMarker)
+        if (qIdx in 0 until endIdx) endIdx = qIdx
+        val hashIdx = posterUrl.indexOf('#', afterMarker)
+        if (hashIdx in 0 until endIdx) endIdx = hashIdx
+        while (endIdx > afterMarker && posterUrl[endIdx - 1].isWhitespace()) {
+            endIdx--
+        }
+
+        val slashIdx = posterUrl.lastIndexOf('/', endIdx - 1)
+        if (slashIdx <= afterMarker) return ""
+        val fileStart = slashIdx + 1
+        if (fileStart >= endIdx) return ""
+
+        val dotIdx = posterUrl.lastIndexOf('.', endIdx - 1)
+        val stemEnd = if (dotIdx > fileStart) dotIdx else endIdx
+        if (stemEnd - fileStart < 12) return ""
+        return posterUrl.substring(fileStart, stemEnd)
     }
 
     fun extractCleanDisplayTitle(rawName: String): String {
@@ -594,32 +616,66 @@ object VodGroupingNormalizer {
         }
     }
 
+    private fun hasNonLatinScript(text: String): Boolean {
+        for (i in 0 until text.length) {
+            val ch = text[i]
+            if (ch.code > 0x024F && Character.isLetter(ch)) {
+                return true
+            }
+        }
+        return false
+    }
+
+    private fun isUnmarkedOrQualityOnlyTag(upperTag: String): Boolean {
+        val trimmed = upperTag.trim()
+        if (trimmed.isEmpty() || trimmed == "STANDARD") return true
+        var start = 0
+        var hasAnyToken = false
+        val len = trimmed.length
+        while (start < len) {
+            val sep = trimmed.indexOf('•', start)
+            val end = if (sep >= 0) sep else len
+            val token = trimmed.substring(start, end).trim()
+            if (token.isNotEmpty()) {
+                hasAnyToken = true
+                if (token !in QUALITY_ONLY_TAG_TOKENS) {
+                    return false
+                }
+            }
+            if (sep < 0) break
+            start = sep + 1
+        }
+        return hasAnyToken
+    }
+
     fun scoreVersionPreference(
         versionTag: String,
         hasPoster: Boolean,
         containerExt: String,
-        ratingNumeric: Double
+        ratingNumeric: Double,
+        rawName: String = ""
     ): Int {
         val upper = versionTag.uppercase(Locale.US)
         var score = when {
-            upper.contains("ENGLISH") || Regex("(?<![A-Z])(EN|UK|US)(?![A-Z])").containsMatchIn(upper) -> 100
-            upper.contains("ARABIC") || Regex("(?<![A-Z])AR(?![A-Z])").containsMatchIn(upper) -> 95
-            upper.contains("FRENCH") || upper.contains("VOSTFR") || Regex("(?<![A-Z])FR(?![A-Z])").containsMatchIn(upper) -> 85
-            upper.contains("MULTI") -> 70
+            upper.contains("ENGLISH") || PREF_ENGLISH_REGEX.containsMatchIn(upper) -> 150
+            upper.contains("ARABIC") || PREF_ARABIC_REGEX.containsMatchIn(upper) -> 125
+            upper.contains("FRENCH") || upper.contains("VOSTFR") || PREF_FRENCH_REGEX.containsMatchIn(upper) -> 105
+            upper.contains("MULTI") -> 90
+            isUnmarkedOrQualityOnlyTag(upper) && !hasNonLatinScript(rawName) -> 80
             else -> 20
         }
         if (upper.contains("4K") || upper.contains("UHD")) {
-            score += 15
+            score += 12
         }
         if (hasPoster) {
-            score += 25
+            score += 20
         }
         val extLower = containerExt.trim().lowercase(Locale.US)
         if (extLower == "mp4" || extLower == "mkv") {
             score += 5
         }
         if (ratingNumeric > 0.0) {
-            score += ratingNumeric.coerceIn(0.0, 10.0).toInt()
+            score += ratingNumeric.toInt().coerceIn(0, 10)
         }
         return score
     }

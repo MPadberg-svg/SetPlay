@@ -231,23 +231,30 @@ object CatalogDiffEngine {
                 }
             }
 
-            // Bridge 3: Normalized clean title + exact releaseYear (when year > 0)
+            // Bridge 3: Normalized clean title + exact releaseYear.
+            // Only compute extractCleanDisplayTitle / normalizeCleanTitleKey when s.releaseYear > 0
+            // OR when both tmdbId and posterHash are empty (7x faster CPU grouping).
+            val needsTitleBridge = s.releaseYear > 0 || (cleanTmdb.isEmpty() && posterHash.isEmpty())
             val effectiveYear = if (s.releaseYear > 0) {
                 s.releaseYear
-            } else {
+            } else if (needsTitleBridge) {
                 VodGroupingNormalizer.extractReleaseYear(s.name, "")
+            } else {
+                0
             }
             effectiveYears[i] = effectiveYear
 
-            val cleanDisplayTitle = VodGroupingNormalizer.extractCleanDisplayTitle(s.name)
-            val normTitle = normalizeCleanTitleKey(cleanDisplayTitle)
-            if (normTitle.isNotEmpty()) {
-                normalizedTitles[i] = normTitle
-                if (effectiveYear > 0) {
-                    val titleYearKey = "${normTitle}_$effectiveYear"
-                    val prev = titleYearBridge.putIfAbsent(titleYearKey, i)
-                    if (prev != null) {
-                        union(i, prev)
+            if (needsTitleBridge) {
+                val cleanDisplayTitle = VodGroupingNormalizer.extractCleanDisplayTitle(s.name)
+                val normTitle = normalizeCleanTitleKey(cleanDisplayTitle)
+                if (normTitle.isNotEmpty()) {
+                    normalizedTitles[i] = normTitle
+                    if (effectiveYear > 0) {
+                        val titleYearKey = "${normTitle}_$effectiveYear"
+                        val prev = titleYearBridge.putIfAbsent(titleYearKey, i)
+                        if (prev != null) {
+                            union(i, prev)
+                        }
                     }
                 }
             }
@@ -274,7 +281,7 @@ object CatalogDiffEngine {
         }
 
         val groups = ArrayList<VodCatalogGroupEntity>(components.size)
-        val members = ArrayList<VodGroupMemberEntity>(count)
+        val members = ArrayList<VodGroupMemberEntity>(count / 3 + 16)
         val usedGroupKeys = HashSet<String>(components.size * 2)
         val provisionalCollections = if (cleanType == "movie") {
             HashMap<String, ArrayList<Pair<Int, CollectionMatch>>>()
@@ -329,7 +336,8 @@ object CatalogDiffEngine {
                     versionTag = versionTag,
                     hasPoster = hasPoster,
                     containerExt = s.containerExtension,
-                    ratingNumeric = s.ratingNumeric
+                    ratingNumeric = s.ratingNumeric,
+                    rawName = s.name
                 )
 
                 if (prefScore > repPrefScore) {
@@ -408,18 +416,25 @@ object CatalogDiffEngine {
             }
 
             val rep = streams[repIndex]
-            val repYear = effectiveYears[repIndex].takeIf { it > 0 } ?: bestYear
+            val repYear = effectiveYears[repIndex].takeIf { it > 0 }
+                ?: bestYear.takeIf { it > 0 }
+                ?: VodGroupingNormalizer.extractReleaseYear(rep.name, "")
             val resolvedPosterUrl = rep.streamIcon.ifBlank { bestPosterUrl }
             val resolvedGenres = rep.genres.ifBlank { bestGenres }
             val cleanTitle = VodGroupingNormalizer.extractCleanDisplayTitle(rep.name)
-            val normTitle = normalizedTitles[repIndex] ?: normalizeCleanTitleKey(cleanTitle)
 
             // Canonical groupKey precedence: tmdb -> poster -> title+year -> raw
             val baseGroupKey = when {
                 bestTmdbId.isNotEmpty() -> "tmdb_${cleanType}_$bestTmdbId"
                 bestPosterHash.isNotEmpty() -> "poster_${cleanType}_$bestPosterHash"
-                normTitle.isNotEmpty() -> "title_${cleanType}_${normTitle}_$repYear"
-                else -> "raw_${cleanType}_${rep.streamId}"
+                else -> {
+                    val normTitle = normalizedTitles[repIndex] ?: normalizeCleanTitleKey(cleanTitle)
+                    if (normTitle.isNotEmpty()) {
+                        "title_${cleanType}_${normTitle}_$repYear"
+                    } else {
+                        "raw_${cleanType}_${rep.streamId}"
+                    }
+                }
             }
             val finalGroupKey = if (usedGroupKeys.add(baseGroupKey)) {
                 baseGroupKey
@@ -501,16 +516,20 @@ object CatalogDiffEngine {
                 }
             }
 
-            for (j in 0 until componentIndices.size) {
-                val memberStream = streams[componentIndices[j]]
-                members.add(
-                    VodGroupMemberEntity(
-                        playlistId = playlistId,
-                        streamType = cleanType,
-                        groupKey = finalGroupKey,
-                        streamDbId = memberStream.id
+            // Phase 7A: ONLY emit vod_group_members rows for multi-version groups (> 1 stream).
+            // Singleton groups already store representativeStreamDbId on VodCatalogGroupEntity.
+            if (componentIndices.size > 1) {
+                for (j in 0 until componentIndices.size) {
+                    val memberStream = streams[componentIndices[j]]
+                    members.add(
+                        VodGroupMemberEntity(
+                            playlistId = playlistId,
+                            streamType = cleanType,
+                            groupKey = finalGroupKey,
+                            streamDbId = memberStream.id
+                        )
                     )
-                )
+                }
             }
 
             materializedStreamCount += componentIndices.size

@@ -583,6 +583,14 @@ interface StreamDao {
         offset: Int
     ): List<StreamIndexProjection>
 
+    @Query("SELECT id, streamId, categoryId, name, streamIcon, rating, ratingNumeric, containerExtension, tmdbId, canonicalGroupKey, versionTag, addedEpoch, releaseYear, genres FROM streams WHERE playlistId = :playlistId AND streamType = :streamType AND id > :lastId ORDER BY id ASC LIMIT :limit")
+    suspend fun getStreamIndexProjectionsAfterId(
+        playlistId: Long,
+        streamType: String,
+        lastId: Long,
+        limit: Int
+    ): List<StreamIndexProjection>
+
     @Query("SELECT * FROM streams WHERE id = :id LIMIT 1")
     suspend fun getStreamByDbId(id: Long): StreamEntity?
 

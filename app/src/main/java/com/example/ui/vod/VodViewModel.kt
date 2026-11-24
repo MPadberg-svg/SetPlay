@@ -18,7 +18,6 @@ import com.example.data.repository.IptvRepository
 import com.example.data.repository.VodPipelinePhase
 import com.example.data.repository.VodPipelineState
 import com.example.data.sync.CatalogSyncScheduler
-import com.example.data.sync.CatalogSyncWorker
 import com.example.data.sync.SyncStage
 import com.example.data.sync.SyncStatus
 import com.example.data.sync.SyncTelemetry
@@ -84,7 +83,8 @@ data class VodDiscoveryShelf(
     val subtitle: String = "",
     val items: List<GroupedVodStream>,
     val shelfFilter: VodShelfFilter = VodShelfFilter.RecentlyAdded,
-    val canLoadMore: Boolean = false
+    val canLoadMore: Boolean = false,
+    val heroDedupKey: String? = null
 )
 
 data class VodSyncBannerState(
@@ -1062,6 +1062,13 @@ class VodViewModel(application: Application) : AndroidViewModel(application) {
                         combinedPlatformsFlow,
                         combinedGenresFlow
                     ) { recent, topRated, recommended, platformPairs, genrePairs ->
+                        val heroCandidate = topRated.items.firstOrNull { it.stream.streamIcon.isNotBlank() }
+                            ?: recent.items.firstOrNull { it.stream.streamIcon.isNotBlank() }
+                            ?: topRated.items.firstOrNull()
+                            ?: recent.items.firstOrNull()
+                        val resolvedHeroKey = heroCandidate?.let { item ->
+                            item.stream.canonicalGroupKey.ifBlank { "id_${item.stream.id}" }
+                        }
                         buildList {
                             if (recent.items.isNotEmpty()) {
                                 add(
@@ -1071,7 +1078,8 @@ class VodViewModel(application: Application) : AndroidViewModel(application) {
                                         subtitle = if (isMovie) "Newest arrivals in your library" else "Latest series additions",
                                         items = recent.items,
                                         shelfFilter = VodShelfFilter.RecentlyAdded,
-                                        canLoadMore = recent.canLoadMore
+                                        canLoadMore = recent.canLoadMore,
+                                        heroDedupKey = resolvedHeroKey
                                     )
                                 )
                             }
@@ -1083,7 +1091,8 @@ class VodViewModel(application: Application) : AndroidViewModel(application) {
                                         subtitle = "Most popular & highest rated",
                                         items = topRated.items,
                                         shelfFilter = VodShelfFilter.TopRated,
-                                        canLoadMore = topRated.canLoadMore
+                                        canLoadMore = topRated.canLoadMore,
+                                        heroDedupKey = resolvedHeroKey
                                     )
                                 )
                             }
@@ -1417,14 +1426,20 @@ class VodViewModel(application: Application) : AndroidViewModel(application) {
 
     fun refreshMovies(playlist: PlaylistEntity? = null, force: Boolean = false) {
         val telemetry = movieSyncTelemetry.value
-        if (telemetry.isActive || _isRefreshingMoviesTrigger.value) return
-        val selectedCat = _selectedMovieCategoryId.value?.takeIf { it.isNotBlank() }
+        if (telemetry.status == SyncStatus.RUNNING || _isRefreshingMoviesTrigger.value) return
+        val isResumingInterruptedOrFailed =
+            telemetry.status == SyncStatus.INTERRUPTED || telemetry.status == SyncStatus.FAILED
+        val selectedCat = if (isResumingInterruptedOrFailed) {
+            null
+        } else {
+            _selectedMovieCategoryId.value?.takeIf { it.isNotBlank() }
+        }
         val now = System.currentTimeMillis()
         val canCooldownSkip = !force &&
             selectedCat == null &&
             !telemetry.pendingUpdateAvailable &&
-            telemetry.status != SyncStatus.INTERRUPTED &&
-            telemetry.status != SyncStatus.FAILED &&
+            !isResumingInterruptedOrFailed &&
+            telemetry.status != SyncStatus.PENDING &&
             telemetry.lastSuccessfulSyncMs > 0L &&
             (now - telemetry.lastSuccessfulSyncMs) < REFRESH_COOLDOWN_MS
         if (canCooldownSkip) {
@@ -1435,13 +1450,14 @@ class VodViewModel(application: Application) : AndroidViewModel(application) {
             val target = playlist ?: repository.getActivePlaylistOnce() ?: return@launch
             _isRefreshingMoviesTrigger.value = true
             try {
-                CatalogSyncWorker.enqueueSectionSync(
+                CatalogSyncScheduler.enqueueSectionSync(
                     context = getApplication(),
                     playlistId = target.id,
                     sectionType = "MOVIE",
                     categoryId = selectedCat,
                     forceFull = force,
-                    expedited = true
+                    expedited = true,
+                    userInitiated = true
                 )
             } finally {
                 _isRefreshingMoviesTrigger.value = false
@@ -1455,18 +1471,19 @@ class VodViewModel(application: Application) : AndroidViewModel(application) {
             refreshMovies(playlist = playlist, force = false)
             return
         }
-        if (movieSyncTelemetry.value.isActive || _isRefreshingMoviesTrigger.value) return
+        if (movieSyncTelemetry.value.status == SyncStatus.RUNNING || _isRefreshingMoviesTrigger.value) return
         viewModelScope.launch {
             val target = playlist ?: repository.getActivePlaylistOnce() ?: return@launch
             _isRefreshingMoviesTrigger.value = true
             try {
-                CatalogSyncWorker.enqueueSectionSync(
+                CatalogSyncScheduler.enqueueSectionSync(
                     context = getApplication(),
                     playlistId = target.id,
                     sectionType = "MOVIE",
                     categoryId = cleanCatId,
                     forceFull = false,
-                    expedited = true
+                    expedited = true,
+                    userInitiated = true
                 )
             } finally {
                 _isRefreshingMoviesTrigger.value = false
@@ -1476,14 +1493,20 @@ class VodViewModel(application: Application) : AndroidViewModel(application) {
 
     fun refreshSeries(playlist: PlaylistEntity? = null, force: Boolean = false) {
         val telemetry = seriesSyncTelemetry.value
-        if (telemetry.isActive || _isRefreshingSeriesTrigger.value) return
-        val selectedCat = _selectedSeriesCategoryId.value?.takeIf { it.isNotBlank() }
+        if (telemetry.status == SyncStatus.RUNNING || _isRefreshingSeriesTrigger.value) return
+        val isResumingInterruptedOrFailed =
+            telemetry.status == SyncStatus.INTERRUPTED || telemetry.status == SyncStatus.FAILED
+        val selectedCat = if (isResumingInterruptedOrFailed) {
+            null
+        } else {
+            _selectedSeriesCategoryId.value?.takeIf { it.isNotBlank() }
+        }
         val now = System.currentTimeMillis()
         val canCooldownSkip = !force &&
             selectedCat == null &&
             !telemetry.pendingUpdateAvailable &&
-            telemetry.status != SyncStatus.INTERRUPTED &&
-            telemetry.status != SyncStatus.FAILED &&
+            !isResumingInterruptedOrFailed &&
+            telemetry.status != SyncStatus.PENDING &&
             telemetry.lastSuccessfulSyncMs > 0L &&
             (now - telemetry.lastSuccessfulSyncMs) < REFRESH_COOLDOWN_MS
         if (canCooldownSkip) {
@@ -1494,13 +1517,14 @@ class VodViewModel(application: Application) : AndroidViewModel(application) {
             val target = playlist ?: repository.getActivePlaylistOnce() ?: return@launch
             _isRefreshingSeriesTrigger.value = true
             try {
-                CatalogSyncWorker.enqueueSectionSync(
+                CatalogSyncScheduler.enqueueSectionSync(
                     context = getApplication(),
                     playlistId = target.id,
                     sectionType = "SERIES",
                     categoryId = selectedCat,
                     forceFull = force,
-                    expedited = true
+                    expedited = true,
+                    userInitiated = true
                 )
             } finally {
                 _isRefreshingSeriesTrigger.value = false
@@ -1514,18 +1538,19 @@ class VodViewModel(application: Application) : AndroidViewModel(application) {
             refreshSeries(playlist = playlist, force = false)
             return
         }
-        if (seriesSyncTelemetry.value.isActive || _isRefreshingSeriesTrigger.value) return
+        if (seriesSyncTelemetry.value.status == SyncStatus.RUNNING || _isRefreshingSeriesTrigger.value) return
         viewModelScope.launch {
             val target = playlist ?: repository.getActivePlaylistOnce() ?: return@launch
             _isRefreshingSeriesTrigger.value = true
             try {
-                CatalogSyncWorker.enqueueSectionSync(
+                CatalogSyncScheduler.enqueueSectionSync(
                     context = getApplication(),
                     playlistId = target.id,
                     sectionType = "SERIES",
                     categoryId = cleanCatId,
                     forceFull = false,
-                    expedited = true
+                    expedited = true,
+                    userInitiated = true
                 )
             } finally {
                 _isRefreshingSeriesTrigger.value = false

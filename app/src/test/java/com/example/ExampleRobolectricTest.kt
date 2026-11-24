@@ -7665,9 +7665,10 @@ class TvSyncDeviceSeparationComposeTest {
                 categoryNameMap = mapOf("cat_en" to "EN | MOVIES", "cat_ar" to "AR | SUB MOVIES")
             )
 
-            // 5 raw streams -> 4 independent groups (2 Casino Royale versions collapsed into 1)
+            // 5 raw streams -> 4 independent groups (2 Casino Royale versions collapsed into 1;
+            // Phase 7A emits vod_group_members only for multi-version groups -> 2 member rows)
             assertEquals(4, output.groups.size)
-            assertEquals(5, output.members.size)
+            assertEquals(2, output.members.size)
 
             val casinoGroup = output.groups.first { it.cleanTitle.contains("Casino Royale", ignoreCase = true) }
             val skyfallGroup = output.groups.first { it.cleanTitle.contains("Skyfall", ignoreCase = true) }
@@ -8045,7 +8046,441 @@ class TvSyncDeviceSeparationComposeTest {
         composeTestRule.onNode(androidx.compose.ui.test.hasTestTag("vod_collection_sort_top_rated")).performClick()
         assertEquals(com.example.ui.vod.CollectionSortMode.TOP_RATED, sortModeState.value)
     }
+
+    @Test
+    fun v17Phase7b_scoreVersionPreferenceRanksLanguagesAndFrench4KDoesNotBeatEnglish() {
+        val englishFhd = com.example.data.model.VodGroupingNormalizer.scoreVersionPreference(
+            versionTag = "English • FHD",
+            hasPoster = true,
+            containerExt = "mp4",
+            ratingNumeric = 8.5,
+            rawName = "EN - Inception (2010)"
+        )
+        val arabicFhd = com.example.data.model.VodGroupingNormalizer.scoreVersionPreference(
+            versionTag = "Arabic • FHD",
+            hasPoster = true,
+            containerExt = "mp4",
+            ratingNumeric = 8.5,
+            rawName = "AR - Inception (2010)"
+        )
+        val frenchFhd = com.example.data.model.VodGroupingNormalizer.scoreVersionPreference(
+            versionTag = "French • FHD",
+            hasPoster = true,
+            containerExt = "mp4",
+            ratingNumeric = 8.5,
+            rawName = "FR - Inception (2010)"
+        )
+        val french4kMkv = com.example.data.model.VodGroupingNormalizer.scoreVersionPreference(
+            versionTag = "French • 4K",
+            hasPoster = true,
+            containerExt = "mkv",
+            ratingNumeric = 8.5,
+            rawName = "FR - Inception (2010) 4K"
+        )
+        val multiSubFhd = com.example.data.model.VodGroupingNormalizer.scoreVersionPreference(
+            versionTag = "Multi-Sub • FHD",
+            hasPoster = true,
+            containerExt = "mp4",
+            ratingNumeric = 8.5,
+            rawName = "MULTI - Inception (2010)"
+        )
+        val unmarkedLatin = com.example.data.model.VodGroupingNormalizer.scoreVersionPreference(
+            versionTag = "FHD",
+            hasPoster = true,
+            containerExt = "mp4",
+            ratingNumeric = 8.5,
+            rawName = "Inception (2010)"
+        )
+        val italianFhd = com.example.data.model.VodGroupingNormalizer.scoreVersionPreference(
+            versionTag = "Italian • FHD",
+            hasPoster = true,
+            containerExt = "mp4",
+            ratingNumeric = 8.5,
+            rawName = "IT - Inception (2010)"
+        )
+        val hindiFhd = com.example.data.model.VodGroupingNormalizer.scoreVersionPreference(
+            versionTag = "Hindi • FHD",
+            hasPoster = true,
+            containerExt = "mp4",
+            ratingNumeric = 8.5,
+            rawName = "HI - Inception (2010)"
+        )
+        val turkishFhd = com.example.data.model.VodGroupingNormalizer.scoreVersionPreference(
+            versionTag = "Turkish • FHD",
+            hasPoster = true,
+            containerExt = "mp4",
+            ratingNumeric = 8.5,
+            rawName = "TR - Inception (2010)"
+        )
+
+        assertTrue("English ($englishFhd) must beat Arabic ($arabicFhd)", englishFhd > arabicFhd)
+        assertTrue("Arabic ($arabicFhd) must beat French ($frenchFhd)", arabicFhd > frenchFhd)
+        assertTrue("French ($frenchFhd) must beat Multi-Sub ($multiSubFhd)", frenchFhd > multiSubFhd)
+        assertTrue("Multi-Sub ($multiSubFhd) must beat unmarked Latin ASCII ($unmarkedLatin)", multiSubFhd > unmarkedLatin)
+        assertTrue("Unmarked Latin ASCII ($unmarkedLatin) must beat Italian ($italianFhd)", unmarkedLatin > italianFhd)
+        assertTrue("Unmarked Latin ASCII ($unmarkedLatin) must beat Hindi ($hindiFhd)", unmarkedLatin > hindiFhd)
+        assertTrue("Unmarked Latin ASCII ($unmarkedLatin) must beat Turkish ($turkishFhd)", unmarkedLatin > turkishFhd)
+        assertTrue(
+            "French 4K ($french4kMkv) must NEVER beat English ($englishFhd)",
+            englishFhd > french4kMkv
+        )
+    }
+
+    @Test
+    fun v17Phase7b_extractTmdbPosterHashZeroRegexMatchesSizesAndRejectsNonTmdb() {
+        assertEquals(
+            "9gk7adHYeLzLq5T6O7H4N8P9Q1R",
+            com.example.data.model.VodGroupingNormalizer.extractTmdbPosterHash("https://image.tmdb.org/t/p/w500/9gk7adHYeLzLq5T6O7H4N8P9Q1R.jpg")
+        )
+        assertEquals(
+            "9gk7adHYeLzLq5T6O7H4N8P9Q1R",
+            com.example.data.model.VodGroupingNormalizer.extractTmdbPosterHash("https://image.tmdb.org/t/p/w780/9gk7adHYeLzLq5T6O7H4N8P9Q1R.jpg?v=2")
+        )
+        assertEquals(
+            "9gk7adHYeLzLq5T6O7H4N8P9Q1R",
+            com.example.data.model.VodGroupingNormalizer.extractTmdbPosterHash("https://IMAGE.TMDB.ORG/t/p/original/9gk7adHYeLzLq5T6O7H4N8P9Q1R.webp#hero")
+        )
+        assertEquals(
+            "aBcDeFgHiJkL1234",
+            com.example.data.model.VodGroupingNormalizer.extractTmdbPosterHash("http://image.tmdb.org/t/p/w342/aBcDeFgHiJkL1234.png")
+        )
+
+        // Reject non-TMDb URLs, blank strings, and short stems (< 12 chars)
+        assertEquals("", com.example.data.model.VodGroupingNormalizer.extractTmdbPosterHash(""))
+        assertEquals("", com.example.data.model.VodGroupingNormalizer.extractTmdbPosterHash("https://cdn.example.com/posters/9gk7adHYeLzLq5T6O7H4N8P9Q1R.jpg"))
+        assertEquals("", com.example.data.model.VodGroupingNormalizer.extractTmdbPosterHash("https://image.tmdb.org/t/p/w500/short123.jpg"))
+        assertEquals("", com.example.data.model.VodGroupingNormalizer.extractTmdbPosterHash("https://image.tmdb.org/t/p/"))
+    }
+
+    @Test
+    fun v17Phase7b_buildLosslessGroupsEmitsMembersOnlyForMultiVersionAndResolvesSingletons() = runBlocking {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val db = Room.inMemoryDatabaseBuilder(context, StreamVaultDatabase::class.java)
+            .allowMainThreadQueries()
+            .build()
+        try {
+            val repository = IptvRepository(
+                playlistDao = db.playlistDao(),
+                categoryDao = db.categoryDao(),
+                streamDao = db.streamDao(),
+                epgDao = db.epgDao(),
+                parentalDao = db.parentalSettingsDao(),
+                vodGroupDao = db.vodGroupDao(),
+                database = db
+            )
+            val playlistId = repository.addOrUpdatePlaylist(
+                PlaylistEntity(
+                    name = "V17 Grouping Vault",
+                    serverUrl = "http://vod.example.com:8080",
+                    username = "u",
+                    password = "p",
+                    isActive = true
+                )
+            )
+            db.categoryDao().insertCategories(
+                listOf(
+                    CategoryEntity(playlistId = playlistId, categoryId = "cat_en", categoryName = "EN | Cinema", type = "MOVIE"),
+                    CategoryEntity(playlistId = playlistId, categoryId = "cat_fr", categoryName = "FR | Cinema 4K", type = "MOVIE")
+                )
+            )
+
+            val multiEn = StreamEntity(
+                playlistId = playlistId,
+                streamId = 71001L,
+                name = "EN - Interstellar (2014) 1080p",
+                streamType = "movie",
+                streamIcon = "https://image.tmdb.org/t/p/w500/gEU2QniE6E77NI6lCU6MxlNBvIx.jpg",
+                categoryId = "cat_en",
+                containerExtension = "mp4",
+                tmdbId = "157336",
+                releaseYear = 2014,
+                ratingNumeric = 8.6,
+                versionTag = "English • 1080p",
+                canonicalGroupKey = "movie_tmdb_157336"
+            )
+            val multiFr = StreamEntity(
+                playlistId = playlistId,
+                streamId = 71002L,
+                name = "FR - Interstellar (2014) 4K",
+                streamType = "movie",
+                streamIcon = "https://image.tmdb.org/t/p/w780/gEU2QniE6E77NI6lCU6MxlNBvIx.jpg",
+                categoryId = "cat_fr",
+                containerExtension = "mkv",
+                tmdbId = "157336",
+                releaseYear = 2014,
+                ratingNumeric = 8.6,
+                versionTag = "French • 4K",
+                canonicalGroupKey = "movie_tmdb_157336"
+            )
+            val singletonMovie = StreamEntity(
+                playlistId = playlistId,
+                streamId = 71003L,
+                name = "EN - Whiplash (2014) 1080p",
+                streamType = "movie",
+                streamIcon = "https://image.tmdb.org/t/p/w500/7fn624j5lj3xTme2SgiLCeuedmO.jpg",
+                categoryId = "cat_en",
+                containerExtension = "mp4",
+                tmdbId = "244786",
+                releaseYear = 2014,
+                ratingNumeric = 8.5,
+                versionTag = "English • 1080p",
+                canonicalGroupKey = "movie_tmdb_244786"
+            )
+
+            db.streamDao().insertStreamsBatch(listOf(multiEn, multiFr, singletonMovie))
+            val insertedProjections = db.streamDao().getStreamIndexProjectionsAfterId(
+                playlistId = playlistId,
+                streamType = "movie",
+                lastId = 0L,
+                limit = 50
+            )
+            assertEquals(3, insertedProjections.size)
+
+            val grouping = com.example.data.sync.CatalogDiffEngine.buildLosslessGroups(
+                playlistId = playlistId,
+                streamType = "movie",
+                streams = insertedProjections,
+                categoryNameMap = mapOf("cat_en" to "EN | Cinema", "cat_fr" to "FR | Cinema 4K")
+            )
+
+            assertEquals("Expected 2 groups (1 multi-version + 1 singleton)", 2, grouping.groups.size)
+            val multiGroup = grouping.groups.first { it.versionCount == 2 }
+            val singletonGroup = grouping.groups.first { it.versionCount == 1 }
+
+            // vod_group_members MUST ONLY contain multi-version group rows (zero rows for singletons)
+            assertEquals(2, grouping.members.size)
+            assertTrue(grouping.members.all { it.groupKey == multiGroup.groupKey })
+            assertTrue(grouping.members.none { it.groupKey == singletonGroup.groupKey })
+
+            // Persist groups and members and verify lossless resolution via getVodVersionsForGroup
+            db.vodGroupDao().insertGroupsBatch(grouping.groups)
+            db.vodGroupDao().insertGroupMembersBatch(grouping.members)
+
+            val persistedStreams = db.streamDao().getStreamsInitial(playlistId, "movie", limit = 10).first()
+            val persistedMultiFr = persistedStreams.first { it.streamId == 71002L }
+            val persistedSingleton = persistedStreams.first { it.streamId == 71003L }
+
+            val resolvedMultiVersions = repository.getVodVersionsForGroup(
+                playlistId = playlistId,
+                streamType = "movie",
+                canonicalGroupKey = multiGroup.groupKey,
+                fallbackStream = persistedMultiFr
+            )
+            assertEquals(2, resolvedMultiVersions.size)
+            assertEquals(
+                "English version must rank first ahead of French 4K",
+                71001L,
+                resolvedMultiVersions.first().streamId
+            )
+
+            val resolvedSingletonVersions = repository.getVodVersionsForGroup(
+                playlistId = playlistId,
+                streamType = "movie",
+                canonicalGroupKey = singletonGroup.groupKey,
+                fallbackStream = persistedSingleton
+            )
+            assertEquals(1, resolvedSingletonVersions.size)
+            assertEquals(71003L, resolvedSingletonVersions.first().streamId)
+        } finally {
+            db.close()
+        }
+    }
+
+    @Test
+    fun v17Phase7b_keysetCursorQueryIteratesDeterministicallyWithoutDuplicatesOrSkips() = runBlocking {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val db = Room.inMemoryDatabaseBuilder(context, StreamVaultDatabase::class.java)
+            .allowMainThreadQueries()
+            .build()
+        try {
+            val playlistId = db.playlistDao().insertPlaylist(
+                PlaylistEntity(
+                    name = "Keyset Cursor Vault",
+                    serverUrl = "http://vod.example.com:8080",
+                    username = "u",
+                    password = "p",
+                    isActive = true
+                )
+            )
+            val movieEntities = (1..25).map { idx ->
+                StreamEntity(
+                    playlistId = playlistId,
+                    streamId = 80000L + idx,
+                    name = "Movie $idx (2024)",
+                    streamType = "movie",
+                    categoryId = "cat_movies"
+                )
+            }
+            val liveNoise = (1..3).map { idx ->
+                StreamEntity(
+                    playlistId = playlistId,
+                    streamId = 90000L + idx,
+                    name = "Live Channel $idx",
+                    streamType = "live",
+                    categoryId = "cat_live"
+                )
+            }
+            db.streamDao().insertStreamsBatch(movieEntities + liveNoise)
+
+            val collectedIds = mutableListOf<Long>()
+            val collectedStreamIds = mutableListOf<Long>()
+            val pageSizes = mutableListOf<Int>()
+            var lastId = 0L
+            while (true) {
+                val page = db.streamDao().getStreamIndexProjectionsAfterId(
+                    playlistId = playlistId,
+                    streamType = "movie",
+                    lastId = lastId,
+                    limit = 6
+                )
+                if (page.isEmpty()) break
+                pageSizes.add(page.size)
+                for (row in page) {
+                    assertTrue("Each row id (${row.id}) must strictly advance past lastId ($lastId)", row.id > lastId)
+                    collectedIds.add(row.id)
+                    collectedStreamIds.add(row.streamId)
+                    lastId = row.id
+                }
+            }
+
+            assertEquals(listOf(6, 6, 6, 6, 1), pageSizes)
+            assertEquals(25, collectedIds.size)
+            assertEquals("Zero duplicate DB IDs", 25, collectedIds.toSet().size)
+            assertEquals("Strictly ascending DB ID order", collectedIds.sorted(), collectedIds)
+            assertEquals((80001L..80025L).toSet(), collectedStreamIds.toSet())
+        } finally {
+            db.close()
+        }
+    }
+
+    @Test
+    fun v17Phase7b_globalCollectionsBuiltinSeedResolvesIconicFranchisesOfflineInReleaseOrder() {
+        try {
+            // Clear any cached cloud snapshot to simulate 100% offline / fresh install state
+            com.example.data.remote.GlobalCollectionsIndexManager.clearForTest()
+
+            // 1. John Wick 1..4 in official release order
+            val jw1 = com.example.data.remote.GlobalCollectionsIndexManager.lookupCollection("245891", "John Wick", 2014)
+            val jw2 = com.example.data.remote.GlobalCollectionsIndexManager.lookupCollection("324552", "John Wick: Chapter 2", 2017)
+            val jw3 = com.example.data.remote.GlobalCollectionsIndexManager.lookupCollection("458156", "John Wick: Chapter 3 - Parabellum", 2019)
+            val jw4 = com.example.data.remote.GlobalCollectionsIndexManager.lookupCollection("603692", "John Wick: Chapter 4", 2023)
+            assertNotNull(jw1)
+            assertNotNull(jw2)
+            assertNotNull(jw3)
+            assertNotNull(jw4)
+            assertEquals("404609", jw1!!.collectionId)
+            assertEquals(listOf(1, 2, 3, 4), listOf(jw1.releaseOrder, jw2!!.releaseOrder, jw3!!.releaseOrder, jw4!!.releaseOrder))
+
+            // Title + year fallback when IPTV stream lacks TMDb ID
+            val jw2ByTitle = com.example.data.remote.GlobalCollectionsIndexManager.lookupCollection("", "John Wick: Chapter 2", 2017)
+            assertNotNull(jw2ByTitle)
+            assertEquals("404609", jw2ByTitle!!.collectionId)
+            assertEquals(2, jw2ByTitle.releaseOrder)
+
+            // 2. Mission: Impossible installments in official release order
+            val mi1 = com.example.data.remote.GlobalCollectionsIndexManager.lookupCollection("954", "Mission: Impossible", 1996)
+            val mi4 = com.example.data.remote.GlobalCollectionsIndexManager.lookupCollection("56292", "Mission: Impossible - Ghost Protocol", 2011)
+            val mi6 = com.example.data.remote.GlobalCollectionsIndexManager.lookupCollection("353081", "Mission: Impossible - Fallout", 2018)
+            val mi7 = com.example.data.remote.GlobalCollectionsIndexManager.lookupCollection("575264", "Mission: Impossible - Dead Reckoning Part One", 2023)
+            assertNotNull(mi1)
+            assertNotNull(mi4)
+            assertNotNull(mi6)
+            assertNotNull(mi7)
+            assertEquals("87359", mi1!!.collectionId)
+            assertEquals(listOf(1, 4, 6, 7), listOf(mi1.releaseOrder, mi4!!.releaseOrder, mi6!!.releaseOrder, mi7!!.releaseOrder))
+
+            // 3. James Bond installments in official release order
+            val jb1 = com.example.data.remote.GlobalCollectionsIndexManager.lookupCollection("646", "Dr. No", 1962)
+            val jb21 = com.example.data.remote.GlobalCollectionsIndexManager.lookupCollection("36557", "Casino Royale", 2006)
+            val jb23 = com.example.data.remote.GlobalCollectionsIndexManager.lookupCollection("37724", "Skyfall", 2012)
+            val jb25 = com.example.data.remote.GlobalCollectionsIndexManager.lookupCollection("370172", "No Time to Die", 2021)
+            assertNotNull(jb1)
+            assertNotNull(jb21)
+            assertNotNull(jb23)
+            assertNotNull(jb25)
+            assertEquals("645", jb1!!.collectionId)
+            assertEquals(listOf(1, 21, 23, 25), listOf(jb1.releaseOrder, jb21!!.releaseOrder, jb23!!.releaseOrder, jb25!!.releaseOrder))
+
+            // 4. Standalone movie must NOT falsely match any built-in franchise
+            assertNull(com.example.data.remote.GlobalCollectionsIndexManager.lookupCollection("27205", "Inception", 2010))
+        } finally {
+            com.example.data.remote.GlobalCollectionsIndexManager.clearForTest()
+        }
+    }
+
+    @Test
+    fun v17Phase7b_catalogSyncSchedulerUserInitiatedBypassesBackoffAndPreservesSingleLane() = runBlocking {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val db = StreamVaultDatabase.getInstance(context)
+        val playlistId = 99441L
+        try {
+            com.example.data.sync.CatalogSyncScheduler.clearForTest()
+
+            // 1. Idle queue (no active worker): userInitiated=true on an already-pending MOVIE job
+            // upgrades metadata in-place (forceFull=true) and triggers REPLACE policy without duplicating queue rows
+            com.example.data.sync.CatalogSyncScheduler.enqueueSectionSync(
+                context = context,
+                playlistId = playlistId,
+                sectionType = "MOVIE",
+                forceFull = false,
+                userInitiated = false
+            )
+            com.example.data.sync.CatalogSyncScheduler.enqueueSectionSync(
+                context = context,
+                playlistId = playlistId,
+                sectionType = "MOVIE",
+                forceFull = true,
+                expedited = true,
+                userInitiated = true
+            )
+
+            assertTrue(com.example.data.sync.CatalogSyncScheduler.isSectionQueuedOrRunning(playlistId, "MOVIE"))
+            val poppedMovie = com.example.data.sync.CatalogSyncScheduler.pollNextPendingRequest(context, null)
+            assertNotNull(poppedMovie)
+            assertEquals("MOVIE", poppedMovie!!.sectionType)
+            assertTrue("userInitiated re-enqueue must upgrade forceFull in-place", poppedMovie.forceFull)
+            assertFalse("Single pending MOVIE entry must not be duplicated", com.example.data.sync.CatalogSyncScheduler.hasPendingRequests())
+
+            // 2. While MOVIE is actively running, userInitiated=true for SERIES MUST NOT interrupt MOVIE
+            // and MUST queue cleanly in strict single-lane serialization
+            com.example.data.sync.CatalogSyncScheduler.enqueueSectionSync(
+                context = context,
+                playlistId = playlistId,
+                sectionType = "MOVIE",
+                forceFull = true,
+                userInitiated = true
+            )
+            assertFalse("Duplicate enqueue for currently active MOVIE must be ignored", com.example.data.sync.CatalogSyncScheduler.hasPendingRequests())
+
+            com.example.data.sync.CatalogSyncScheduler.enqueueSectionSync(
+                context = context,
+                playlistId = playlistId,
+                sectionType = "SERIES",
+                forceFull = false,
+                expedited = true,
+                userInitiated = true
+            )
+            assertTrue(com.example.data.sync.CatalogSyncScheduler.isSectionQueuedOrRunning(playlistId, "MOVIE"))
+            assertTrue(com.example.data.sync.CatalogSyncScheduler.isSectionQueuedOrRunning(playlistId, "SERIES"))
+            assertTrue(com.example.data.sync.CatalogSyncScheduler.hasPendingRequests())
+
+            // Finish MOVIE -> SERIES drains next in strict single-lane order
+            com.example.data.sync.CatalogSyncScheduler.markRequestFinished(playlistId, "MOVIE")
+            val poppedSeries = com.example.data.sync.CatalogSyncScheduler.pollNextPendingRequest(context, null)
+            assertNotNull(poppedSeries)
+            assertEquals("SERIES", poppedSeries!!.sectionType)
+            com.example.data.sync.CatalogSyncScheduler.markRequestFinished(playlistId, "SERIES")
+            assertFalse(com.example.data.sync.CatalogSyncScheduler.hasPendingRequests())
+        } finally {
+            com.example.data.sync.CatalogSyncScheduler.clearForTest()
+            db.openHelper.writableDatabase.execSQL(
+                "DELETE FROM sync_section_state WHERE playlistId = ?",
+                arrayOf(playlistId)
+            )
+        }
+    }
 }
+
 
 
 

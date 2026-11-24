@@ -1128,6 +1128,43 @@ internal fun VodMobileDiscoveryHome(
             ?: fallbackGroupedItems.firstOrNull()
     }
 
+    val spotlightHeroKey = remember(spotlightItem) {
+        spotlightItem?.let { item ->
+            item.stream.canonicalGroupKey.ifBlank { "id_${item.stream.id}" }
+        }
+    }
+
+    val dedupedDiscoveryShelves = remember(discoveryShelves, spotlightHeroKey) {
+        if (spotlightHeroKey == null || discoveryShelves.isEmpty()) {
+            discoveryShelves
+        } else {
+            discoveryShelves.mapIndexed { index, shelf ->
+                val shouldDeduplicate = index == 0 ||
+                    shelf.id.endsWith("top_rated") ||
+                    shelf.heroDedupKey == spotlightHeroKey
+                if (shouldDeduplicate && shelf.items.size >= 4) {
+                    val filtered = shelf.items.filterNot { candidate ->
+                        candidate.stream.canonicalGroupKey.ifBlank { "id_${candidate.stream.id}" } == spotlightHeroKey
+                    }
+                    if (filtered.size != shelf.items.size) shelf.copy(items = filtered) else shelf
+                } else {
+                    shelf
+                }
+            }
+        }
+    }
+
+    val dedupedFallbackItems = remember(fallbackGroupedItems, spotlightHeroKey) {
+        val bounded = fallbackGroupedItems.take(24)
+        if (spotlightHeroKey != null && bounded.size >= 4) {
+            bounded.filterNot { candidate ->
+                candidate.stream.canonicalGroupKey.ifBlank { "id_${candidate.stream.id}" } == spotlightHeroKey
+            }
+        } else {
+            bounded
+        }
+    }
+
     LazyColumn(
         modifier = modifier
             .fillMaxSize()
@@ -1181,7 +1218,7 @@ internal fun VodMobileDiscoveryHome(
         }
 
         // c) Curated Discovery Shelves with "See All →" & inline horizontal expansion
-        items(discoveryShelves, key = { it.id }) { shelf ->
+        items(dedupedDiscoveryShelves, key = { it.id }) { shelf ->
             VodDiscoveryShelfRow(
                 shelf = shelf,
                 isMovies = isMovies,
@@ -1196,14 +1233,14 @@ internal fun VodMobileDiscoveryHome(
         }
 
         // Fallback shelf if discovery shelves haven't populated yet (e.g., legacy DB before re-sync)
-        if (discoveryShelves.isEmpty() && fallbackGroupedItems.isNotEmpty()) {
+        if (dedupedDiscoveryShelves.isEmpty() && dedupedFallbackItems.isNotEmpty()) {
             item(key = "vod_fallback_library_shelf") {
                 VodDiscoveryShelfRow(
                     shelf = VodDiscoveryShelf(
                         id = "fallback_catalog",
                         title = if (isMovies) "Featured Cinema" else "Featured Series",
                         subtitle = "From your active library",
-                        items = fallbackGroupedItems.take(24),
+                        items = dedupedFallbackItems,
                         shelfFilter = VodShelfFilter.RecentlyAdded,
                         canLoadMore = false
                     ),
