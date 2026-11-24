@@ -1,121 +1,165 @@
-<div align="center">
+# SetPlay
 
-# ⚽ Set `▶` **Play** 🎬
-### *The Luxury Dual-APK (Phone + Android TV 10-Foot) MENA Sports Match Center & High-Scale Xtream IPTV Cinema Suite*
+Dual-Edition Android Phone & Android TV IPTV Cinema & Live Football Companion engineered for 250K+ Xtream catalogs.
 
-[![Build & Release SetPlay APK](https://img.shields.io/github/actions/workflow/status/MPadberg-svg/SetPlay/android-apk-release.yml?style=for-the-badge&logo=githubactions&logoColor=white&label=Dual-APK%20Release)](https://github.com/MPadberg-svg/SetPlay/actions/workflows/android-apk-release.yml)
-[![Download SetPlay-Phone.apk](https://img.shields.io/badge/📱_Phone_APK-SetPlay--Phone.apk-14919B?style=for-the-badge&logo=android&logoColor=white)](https://github.com/MPadberg-svg/SetPlay/releases/latest/download/SetPlay-Phone.apk)
-[![Download SetPlay-TV.apk](https://img.shields.io/badge/📺_Android_TV_APK-SetPlay--TV.apk-FFB800?style=for-the-badge&logo=androidtv&logoColor=06131C)](https://github.com/MPadberg-svg/SetPlay/releases/latest/download/SetPlay-TV.apk)
-[![Kotlin & Jetpack Compose](https://img.shields.io/badge/Kotlin_2.0-Jetpack_Compose_M3-F07167?style=for-the-badge&logo=jetpackcompose&logoColor=white)](#)
+[![Dual-APK Release](https://img.shields.io/github/actions/workflow/status/MPadberg-svg/SetPlay/android-apk-release.yml?label=Dual-APK%20Release&logo=githubactions&logoColor=white)](https://github.com/MPadberg-svg/SetPlay/actions/workflows/android-apk-release.yml)
+[![Daily Cloud Index](https://img.shields.io/github/actions/workflow/status/MPadberg-svg/SetPlay/update-popularity-index.yml?label=Daily%20Cloud%20Index&logo=githubactions&logoColor=white)](https://github.com/MPadberg-svg/SetPlay/actions/workflows/update-popularity-index.yml)
+[![Download SetPlay-Phone.apk](https://img.shields.io/badge/Download-SetPlay--Phone.apk-14919B?logo=android&logoColor=white)](https://github.com/MPadberg-svg/SetPlay/releases/latest/download/SetPlay-Phone.apk)
+[![Download SetPlay-TV.apk](https://img.shields.io/badge/Download-SetPlay--TV.apk-FFB800?logo=androidtv&logoColor=black)](https://github.com/MPadberg-svg/SetPlay/releases/latest/download/SetPlay-TV.apk)
 
----
-
-**Set ▶ Play** is a next-generation Android & Android TV streaming and live football companion engineered for extreme catalog scale (**~289,000+ Live TV, Movies & Series entries**) and **real-time MENA & Global Football Broadcast Intelligence**. Crafted with a 5-atmosphere dark luxury design system inspired by **Apple Sports**, **FotMob**, and **DAZN**, and published as two specialized editions sharing 100% of the core engine: **`SetPlay-Phone.apk`** and **`SetPlay-TV.apk`**.
-
-[**📲 Download Phone & TV APKs**](#-download--install-setplay-phone--tv-apks) • [**📺 SetPlay-TV 10-Foot Edition & Wi-Fi Sync**](#-setplay-tv-10-foot-living-room-edition--wi-fi-sync) • [**⚽ KickOff Arena & Match Center 3.0**](#-kickoff-arena--match-center-30) • [**🎬 Cinema, Triple-Engine Subtitles & HUD**](#-cinema-triple-engine-subtitles--media3-hud) • [**⚙️ CI/CD & Manual Builds**](#️-github-actions-cicd--on-demand-builds)
-
-</div>
+![Kotlin 2.2.10](https://img.shields.io/badge/Kotlin-2.2.10-7F52FF?logo=kotlin&logoColor=white)
+![Jetpack Compose](https://img.shields.io/badge/Jetpack%20Compose-BOM%202024.09.00-4285F4?logo=jetpackcompose&logoColor=white)
+![Room 2.7.0](https://img.shields.io/badge/Room-2.7.0%20(v8)-3DDC84?logo=android&logoColor=black)
+![Media3 1.5.1](https://img.shields.io/badge/Media3-1.5.1-0F9D58?logo=googleplay&logoColor=white)
+![WorkManager 2.10.0](https://img.shields.io/badge/WorkManager-2.10.0-4285F4?logo=android&logoColor=white)
+![Android SDK](https://img.shields.io/badge/Android%20SDK-Min%2024%20%7C%20Target%2036-34A853?logo=android&logoColor=white)
 
 ---
 
-## 📲 Download & Install SetPlay Phone & TV APKs
+## Download & Dual-Edition Architecture
 
-Download the specialized **Set ▶ Play** APK built for your device (**Android 7.0+ / API 24+**):
+SetPlay compiles from a single codebase into two target-specific APKs selected at build time via `-PSETPLAY_TARGET` and exposed to runtime UI shells through `BuildConfig.DEVICE_EDITION` (`EditionResolver`).
 
-<div align="center">
-
-| Edition | Target Devices & UX Shell | 🚀 Direct 1-Click Release Download | 📦 GitHub Actions Artifact |
-| :--- | :--- | :---: | :---: |
-| 📱 **`SetPlay-Phone.apk`**<br>*(Touch & Companion Edition)* | **Android Phones, Tablets & Foldables**<br>Top/Bottom Sculpted Glass Nav • Draggable Floating PiP • `52.dp` Wi-Fi TV Companion Bar | [**⬇️ Download `SetPlay-Phone.apk`**](https://github.com/MPadberg-svg/SetPlay/releases/latest/download/SetPlay-Phone.apk) | `SetPlay-Phone-APK` |
-| 📺 **`SetPlay-TV.apk`**<br>*(10-Foot Living Room Edition)* | **Android TV, Google TV & Fire TV**<br>`sensorLandscape` • Left Glass Navigation Rail • In-Player Channel Zapper Sidebar • 2-Stage Back Guard | [**⬇️ Download `SetPlay-TV.apk`**](https://github.com/MPadberg-svg/SetPlay/releases/latest/download/SetPlay-TV.apk) | `SetPlay-TV-APK` |
-
-</div>
-
-### 🛠️ Quick Installation Steps
-1. **On Android Phones & Tablets**: Download **[`SetPlay-Phone.apk`](https://github.com/MPadberg-svg/SetPlay/releases/latest/download/SetPlay-Phone.apk)**, open the `.apk` file, allow installation from your browser/file manager if prompted, and tap **Install**.
-2. **On Android TV / Google TV / Fire TV**: Download **[`SetPlay-TV.apk`](https://github.com/MPadberg-svg/SetPlay/releases/latest/download/SetPlay-TV.apk)** using *Downloader*, *Send Files to TV*, or your TV browser, install it, and launch **SetPlay TV** directly from your TV home screen!
-
----
-
-## 📺 SetPlay-TV 10-Foot Living Room Edition & Wi-Fi Sync
-
-- **🧭 Widescreen Left Glass Navigation Rail (`TvLeftNavigationRail`)**
-  - Replaces mobile top/bottom bars on `SetPlay-TV.apk` with a permanent `216.dp` left navigation rail featuring high-contrast D-Pad focus rings (`AmberGold` border + `1.04f` spring scale lift).
-  - Provides instant remote access to **KickOff**, **Live TV**, **Movies**, **Series**, **Favorites**, **Search**, **Phone ↔ TV Sync**, **Playlists**, and **Parental Lock**.
-- **📋 In-Player Live TV Channel Zapper Sidebar (`TvLiveChannelZapperOverlay`)**
-  - Press **`D-Pad Left`** while watching any Live TV stream (or click the **`📋 Channels`** pill in the player HUD) to slide out a translucent `310.dp` channel switcher right over the live video—complete with instant search filtering, quality badges, and 1-click channel zapping without interrupting playback.
-- **🛡️ 2-Stage TV Back-Button Exit Guard**
-  - Pressing `Back` on your TV remote from a non-home tab returns to **KickOff**; pressing `Back` on the root screen displays a non-intrusive `"Press Back again to exit SetPlay TV"` toast banner (`2.5s` window) so accidental remote presses never close your session.
-- **📱⇄📺 Local Wi-Fi Phone ↔ TV QR Companion & Sync Mode (`TvSyncManager`)**
-  - **Auto-Ready on TV Boot**: `SetPlay-TV.apk` automatically starts the local Wi-Fi Sync Host (`ServerSocket` on port `8765` + `NsdManager` `_setplay._tcp` discovery) and displays its live **6-Digit Pairing PIN** right in the bottom pod of the TV Left Navigation Rail.
-  - **1-Tap `Phone ⇄ TV` Handover (`max_connections = 1` Safe)**: Scan the TV QR code or enter the 6-digit PIN from `SetPlay-Phone.apk`. Browse 289,000+ channels/movies on your phone while the TV plays fullscreen undisturbed (*Silent Browse Mode*), beam any stream via **`[ 📺 Send to TV ]`**, zap Live TV channels with **`[ ⏮ ]` / `[ ⏭ ]`**, or pull the stream back to your phone with **`[ 📱 Watch Here ]`** (enforcing a `300ms` single-connection handover guard).
-
----
-
-## ⚽ KickOff Arena & Match Center 3.0
-
-- **🔄 Multi-Source Real-Time Live Score Engine (`API-Football` + `Football-Data.org` + `SportAPI.ai` + `TheSportsDB` + `ESPN`)**
-  Smart quota-managed live polling (`80/100` daily cap with `15` calls reserved for 1-call Match Center Dossiers on `API-Football`, `10 req/min` sliding window for `Football-Data.org`, and `30 req/min` shared limiter for `TheSportsDB`) keeps live scores, match minutes (`HT`, `90+4'`), and red cards accurate with zero fabricated events.
-- **🌍 User Country Zone & Seasonal Timezone Engine**
-  Select your broadcast zone (`Morocco MA`, `Qatar QA`, `Saudi Arabia SA`, `UAE AE`, `Egypt EG`, `Algeria DZ`, `Tunisia TN`, `France FR`, `Spain ES`, `UK GB`, `Germany DE`, `Italy IT`, `USA US`) with automatic kickoff time conversion.
-- **📡 Official TV Channel Resolution (`Sofascore` + `TheSportsDB` + Live Playlist Match Scanner)**
-  Resolves official regional broadcasters (`beIN Sports HD 1..7`, `beIN 4K`, `Arryadia TNT HD`, `SSC 1 HD`, `AD Sports Premium 1`, `Canal+ Foot`, `Movistar Liga de Campeones`, `TNT Sports`) and cross-references your synced Live TV playlist for 1-tap `▶ Watch` launch.
-- **📋 Match Center Dossier 3.0 & 2D Tactical Pitch**
-  Tap any match card to open a 5-tab interactive dossier (**Summary**, **Lineups**, **Stats**, **H2H & Table**, **TV Guide**) featuring official 1-call `API-Football` lineups, real player cutout photos (`media.api-sports.io`, `TheSportsDB`, and header-authenticated `Sofascore`), and interactive **Home XI / Away XI / Full Pitch** views.
-
----
-
-## 🎬 Cinema, Triple-Engine Subtitles & Media3 HUD
-
-- **🗣️ Triple-Engine Multi-Language Subtitle Studio (`Wyzie` + `SubDL` + `OpenSubtitles v3`)**
-  - Resolves Movie & Series `imdb_id` (`tt...`) and `tmdb_id` via Xtream metadata → **`TMDB API`** (`/3/search/{movie|tv}` + `/external_ids`) → **IMDb Instant Suggestion** fallback.
-  - Queries **Wyzie Subs**, **SubDL** (with automatic in-memory `.zip` → `.srt` extraction), and **OpenSubtitles v3** in parallel across `🇸🇦 Arabic`, `🇬🇧 English`, `🇫🇷 Français`, `🇪🇸 Español`, and `🇹🇷 Türkçe`.
-  - Auto-displays the **Subtitle Language Prompt** on VOD start with remembered **`★ Preferred`** language highlight, 12-second auto-hide countdown, live sync offset (`-0.5s` / `+0.5s`), and font scaling (`80%`–`150%`).
-- **🎛️ 3-Zone Media3 Player HUD & Sports Broadcast Tools**
-  - **Zone 1 (Top Glass Bar)**: Back, clean stream title, resolution badge (`4K UHD` / `1080p FHD` / `HD`), audio codec badge, Favorite star, and PiP trigger.
-  - **Zone 2 (Center Canvas)**: Play/Pause, `-10s` / `+10s` seek, double-tap ripple seek, and vertical brightness/volume (up to **200% VLC Audio Boost**) swipe pills.
-  - **Zone 3 (Bottom Dock)**: Scrubber bar (`VOD`) or **1-Tap Multi-Feed Quality Switcher** (`4K UHD` • `FHD` • `HD` • `SD`), **📋 Channels Zapper Drawer**, **15-Minute Halftime Explorer Timer** (`⏱ 15m HT`), and **In-Player Live Goal Alerts**.
-
----
-
-## 🎨 Five Bespoke Luxury Design Worlds
-
-| Section | Signature Atmosphere | Visual Highlights |
+| Capability | `SetPlay-Phone.apk` (`-PSETPLAY_TARGET=PHONE`) | `SetPlay-TV.apk` (`-PSETPLAY_TARGET=TV`) |
 | :--- | :--- | :--- |
-| **⚽ KickOff** | **Deep Ocean & Tropical Teal**<br>`#06141D` • `#14919B` • `#F07167` | Sticky Matchday Scrubber Deck, Featured Clash spotlight, 2-Zone Flashscore Match Cards |
-| **📺 Live TV** | **Broadcast Control Room**<br>`#1F313B` • `#383852` • `#BE4039` | `36.dp` glass telemetry bar, progressive infinite-scroll (`+180` on scroll), instant channel zapper |
-| **🎬 Movies** | **Sapphire & Mint Cinema 4K**<br>`#00385A` • `#01929F` • `#6AECE1` | Edge-lit IMAX poster cards, authentic parsed quality/language badges, TMDB-enriched IMAX Movie Dossier |
-| **🎞️ Series** | **Cypress & Ice-Aqua Vault**<br>`#071412` • `#2EC4B6` • `#80FFDB` | Multi-season hierarchy explorer, per-episode resume progress bars, Continue Watching rail |
-| **⭐ Favorites** | **Botanical Emerald & Sage Vault**<br>`#051F20` • `#163832` • `#8EB69B` | Instant filtering across saved Live TV channels, Movies, and Series |
+| **Target Devices** | Android Phones, Tablets & Foldables (API 24+) | Android TV, Google TV & Fire TV (API 24+) |
+| **Manifest Config** | Launcher label `SetPlay`, orientation `unspecified` | Launcher label `SetPlay TV`, orientation `sensorLandscape` |
+| **Navigation Shell** | Touch-first UI with floating "Liquid Prism Beam" morphing pill dock | 10-foot Collapsible Prism Glass Rail (`74dp <-> 236dp` expand-on-focus) with D-Pad focus rings |
+| **Version Picker** | Modal bottom sheet for switching audio/language/quality editions | Right-side D-Pad-navigable Version Drawer |
+| **Playback UX** | Draggable Picture-in-Picture (PiP) & touch swipe gestures | In-player Live TV Channel Zapper overlay & 2-stage Back exit guard |
+| **Phone ↔ TV Sync** | Wi-Fi TV Companion controller (browse, cast, zap, pull back to phone) | Auto-started local Wi-Fi Sync Host (`ServerSocket` port `8765`, NSD `_setplay._tcp`) |
+| **Direct Release** | [Download `SetPlay-Phone.apk`](https://github.com/MPadberg-svg/SetPlay/releases/latest/download/SetPlay-Phone.apk) | [Download `SetPlay-TV.apk`](https://github.com/MPadberg-svg/SetPlay/releases/latest/download/SetPlay-TV.apk) |
+
+### Installation
+
+- **Phone & Tablet**: Download [`SetPlay-Phone.apk`](https://github.com/MPadberg-svg/SetPlay/releases/latest/download/SetPlay-Phone.apk), enable installation from your browser or file manager if prompted, and install.
+- **Android TV / Google TV / Fire TV**: Transfer [`SetPlay-TV.apk`](https://github.com/MPadberg-svg/SetPlay/releases/latest/download/SetPlay-TV.apk) via *Downloader*, *Send Files to TV*, or `adb install SetPlay-TV.apk`, then launch **SetPlay TV** from the TV home screen.
 
 ---
 
-## ⚙️ GitHub Actions CI/CD & On-Demand Builds
+## Enterprise Catalog Engine, Sorting & Smart Sync (V17)
 
-The workflow in [`.github/workflows/android-apk-release.yml`](.github/workflows/android-apk-release.yml) uses Gradle build caching (`actions/setup-java@v4` with `cache: 'gradle'`) to build and publish both **`SetPlay-Phone.apk`** (`-PSETPLAY_TARGET=PHONE`) and **`SetPlay-TV.apk`** (`-PSETPLAY_TARGET=TV`) to **GitHub Releases** on every push.
+### 3-Level Movie Organization
 
-### 🚀 Running a Manual Build (`both`, `phone`, or `tv`)
-You can trigger a fast on-demand build for a single edition or both editions at any time:
-1. Open the repository on GitHub and click the **[Actions](https://github.com/MPadberg-svg/SetPlay/actions/workflows/android-apk-release.yml)** tab.
-2. Select **Build & Release SetPlay APK** in the left sidebar.
-3. Click **Run workflow** on the right and choose your target from the **`Which APK edition to build`** dropdown:
-   - **`both`** *(default)* — Builds and publishes both `SetPlay-Phone.apk` and `SetPlay-TV.apk`.
-   - **`phone`** — Builds only `SetPlay-Phone.apk` (`-PSETPLAY_TARGET=PHONE`) for rapid mobile testing.
-   - **`tv`** — Builds only `SetPlay-TV.apk` (`-PSETPLAY_TARGET=TV`) for rapid Android TV testing.
+1. **Level 1 — Lossless Duplicate Versions**: An O(N) Union-Find grouping pass bridges duplicate provider feeds using TMDb ID, a zero-regex TMDb poster hash parser, and normalized `(cleanTitle, year)` keys. 100% of provider `streamId` entries are preserved; only multi-version groups are materialized into the `vod_group_members` join table. Representative selection uses pre-compiled language regexes with deterministic priority (`English > Arabic > French > Multi-Sub > Unmarked Latin`), while the Version Picker organizes all editions by Language, Quality, and Container.
+2. **Level 2 — Official Movie Franchises & Collections**: Independent installments (e.g., *James Bond*, *Mission: Impossible*, *Harry Potter*, *Lord of the Rings*) remain distinct catalog titles linked via `vod_collections`. Collections support **Release Order**, **Newest**, and **Top Rated** sorting plus an in-dossier franchise rail backed by a built-in offline seed of 25 iconic franchises and daily cloud collections from `docs/collections_index.json`.
+3. **Level 3 — Standalone Movies**: Unmatched single-edition movies stay ungrouped with zero false-positive merging.
 
-### 🔑 Optional GitHub Repository Secrets
-Both APKs compile cleanly out-of-the-box even with **zero secrets configured** (falling back to safe `YOUR_*` placeholders for Secrets Gradle Plugin 2.0.1 and free zero-key APIs like `TheSportsDB`, `Sofascore`, `ESPN`, `IMDb Suggestion`, and `OpenSubtitles v3`). To enable optional API keys in CI builds, go to **Settings → Secrets and variables → Actions** and add any of:
-- `API_FOOTBALL_KEY` — `v3.football.api-sports.io` key for 1-call official lineups, `media.api-sports.io` player cutouts, and match stats.
-- `FOOTBALL_DATA_KEY` — `api.football-data.org/v4` key for European & international fixtures and standings.
-- `TMDB_API_KEY` — `api.themoviedb.org/3` key for instant `imdb_id` / `tmdb_id` resolution and 4K IMAX Movie Dossier enrichment.
-- `WYZIE_API_KEY` — `sub.wyzie.ru` API key for multi-source subtitles.
-- `SUBDL_API_KEY` — `api.subdl.com` API key for high-coverage Arabic/English/French/Spanish/Turkish `.zip` subtitle archives.
-- `SPORT_API_KEY` / `SPORTAPI_AI_KEY` — Optional `SportAPI.ai` key.
+### Inverted Cloud Ranking ($0/month, Privacy-First)
+
+- A daily GitHub Actions job runs `scripts/build_popularity_index.py` to publish `docs/popularity_index.json` and `docs/collections_index.json` via GitHub Pages.
+- `GlobalPopularityIndexManager` and `GlobalCollectionsIndexManager` fetch these static indices with 24-hour ETag conditional caching and match them locally on-device against the user's synced catalog.
+- No user playlists, M3U URLs, or Xtream credentials ever leave the device.
+
+### Playback-Safe Single-Queue Smart Sync
+
+- **Serialized Execution**: `CatalogSyncScheduler` coordinates all `LIVE`, `SERIES`, and `MOVIE` refreshes through a single serialized WorkManager queue (`CatalogSyncWorker`) and a global `catalogProcessingMutex`, preventing overlapping syncs from competing for CPU or SQLite locks.
+- **Zero-Regex Fast Path**: `XtreamClient` computes a streaming FNV-1a `metadataHash` for every catalog entry. Unchanged items short-circuit before regex normalization or SQLite writes.
+- **Non-Destructive Incremental Diffs**: `CatalogDiffEngine` applies in-place metadata updates so user favorites, watch history, and playback resume positions remain intact, enforces a 50% safe-removal guard against truncated upstream payloads, and persists checkpoint progress in `SyncSectionStateEntity` for crash recovery.
+- **Background Update Checks**: `CatalogUpdateCheckWorker` runs a configurable 12-hour lightweight check before scheduling full diffs.
+- **Network & Resource Isolation**: Dedicated `playbackOkHttpClient` and `syncOkHttpClient` pools paired with `PlaybackResourceGovernor` throttle background sync work whenever ExoPlayer is actively streaming.
+
+### High-Scale Storage (Room v8)
+
+- SQLite runs in WAL mode with `PRAGMA busy_timeout` configured and non-destructive schema migrations (`v3 → v8`).
+- Full-text search uses Room FTS4 virtual tables; catalog shelves and "See All →" views use keyset cursor pagination for constant-time deep scrolling across 250K+ entries.
+- Stage 2 catalog diffs commit atomically in a single Room transaction to prevent partial UI states.
 
 ---
 
-<div align="center">
+## Core Product Modules
 
-Crafted with precision for football fans & home cinema enthusiasts • **[📱 Download `SetPlay-Phone.apk`](https://github.com/MPadberg-svg/SetPlay/releases/latest/download/SetPlay-Phone.apk)** • **[📺 Download `SetPlay-TV.apk`](https://github.com/MPadberg-svg/SetPlay/releases/latest/download/SetPlay-TV.apk)**
+- **KickOff Arena & Match Center**: Multi-source live fixture and score aggregation (`API-Football`, `Football-Data.org`, `SportAPI.ai`, `TheSportsDB`, `ESPN`) with quota guards (`KickoffSourceMonitor`), regional broadcast zone and timezone mapping (`UserCountryZone`), automatic Live TV playlist channel matching, and a 2D tactical pitch for lineups and match stats.
+- **Media3 Player HUD & Triple-Engine Subtitles**: ExoPlayer (`Media3 1.5.1`) HUD with 1-tap multi-feed quality switching (`4K UHD`, `FHD`, `HD`, `SD`), 15-minute halftime timer, audio boost, and parallel subtitle resolution across **Wyzie**, **SubDL** (in-memory `.zip` → `.srt`), and **OpenSubtitles v3** with live offset and font-scale controls.
+- **Security & Privacy**: AES-GCM encryption at rest for saved Xtream credentials (`SecurityManager`), sensitive credential/token redaction in diagnostic logs, multi-layer adult content filtering, and Parental PIN lock.
 
-</div>
+---
+
+## Architecture & Project Structure
+
+```text
+SetPlay/
+├── app/
+│   ├── build.gradle.kts                     # Dual-edition (-PSETPLAY_TARGET=PHONE|TV), BuildConfig, Secrets plugin
+│   └── src/
+│       ├── main/java/com/example/
+│       │   ├── MainActivity.kt              # Single-activity Compose host & edition shell router
+│       │   ├── data/
+│       │   │   ├── local/                   # StreamVaultDatabase (Room v8, WAL, FTS4), StreamVaultDao
+│       │   │   ├── model/                   # Entities.kt, VodGroupingNormalizer, FTS & sync entities
+│       │   │   ├── remote/                  # XtreamClient, XtreamDto, GlobalPopularityIndexManager,
+│       │   │   │                            # GlobalCollectionsIndexManager, WyzieSubtitleService
+│       │   │   ├── repository/              # IptvRepository, FootballRepository, MatchCenterModels,
+│       │   │   │                            # MatchClockEngine, InternationalRankingResolver,
+│       │   │   │                            # ProviderAuthorityEngine, KickoffSourceMonitor, UserCountryZone
+│       │   │   └── sync/                    # CatalogSyncScheduler, CatalogSyncWorker, CatalogDiffEngine,
+│       │   │                                # CatalogUpdateCheckWorker, PlaybackResourceGovernor,
+│       │   │                                # SyncModels, TvSyncManager (port 8765 / _setplay._tcp)
+│       │   ├── ui/
+│       │   │   ├── components/              # Shared Prism glass components, Phone dock & TV rail
+│       │   │   ├── favorites/               # Saved Live TV, Movies & Series vault
+│       │   │   ├── home/                    # KickOff Arena & Match Center UI
+│       │   │   ├── livetv/                  # Live TV browser, channel zapper & EPG views
+│       │   │   ├── parental/                # Parental PIN lock & content filter controls
+│       │   │   ├── player/                  # Media3 ExoPlayer HUD, subtitles & quality switcher
+│       │   │   ├── playlists/               # Xtream & M3U playlist onboarding/management
+│       │   │   ├── search/                  # FTS4 unified catalog search
+│       │   │   ├── sync/                    # Phone ↔ TV Wi-Fi pairing & catalog sync status UI
+│       │   │   ├── theme/                   # Material 3 themes, typography & atmosphere tokens
+│       │   │   ├── viewmodel/               # Shared app & playback ViewModels
+│       │   │   └── vod/                     # Movies/Series shelves, collections, Version Picker & TV UX
+│       │   └── util/                        # EditionResolver, SecurityManager, StreamMetadataParser
+│       └── test/java/com/example/           # ExampleRobolectricTest.kt, ExampleUnitTest.kt (82 tests)
+├── docs/
+│   ├── popularity_index.json                # Daily GitHub Pages global popularity index
+│   └── collections_index.json               # Daily GitHub Pages official movie collections index
+├── gradle/
+│   └── libs.versions.toml                   # Centralized Gradle version catalog
+├── scripts/
+│   └── build_popularity_index.py            # TMDb index generator for popularity & collections JSON
+└── .github/workflows/
+    ├── android-apk-release.yml              # Unit tests + Phone/TV APK build & GitHub Release publish
+    └── update-popularity-index.yml          # Daily 04:00 UTC cloud index builder
+```
+
+---
+
+## Local Development, Testing & CI/CD
+
+### Prerequisites
+
+- **JDK 17** (project compiles targeting `JavaVersion.VERSION_11`)
+- **Android SDK** (`compileSdk 36.1`, `minSdk 24`, `targetSdk 36`)
+
+### Build & Test Commands
+
+```bash
+# Run the full 82-test JUnit + Robolectric suite (Room, Union-Find, DiffEngine, WorkManager, UI)
+./gradlew :app:testDebugUnitTest
+
+# Build the Phone & Tablet edition (default)
+./gradlew assembleDebug -PSETPLAY_TARGET=PHONE
+
+# Build the Android TV / Google TV / Fire TV 10-foot edition
+./gradlew assembleDebug -PSETPLAY_TARGET=TV
+```
+
+### GitHub Actions Workflows
+
+| Workflow | File | Triggers | Responsibility |
+| :--- | :--- | :--- | :--- |
+| **Build & Release SetPlay APK** | `.github/workflows/android-apk-release.yml` | Push (`**`, tags `v*`), PR (`main`, `master`), manual `workflow_dispatch` (`both` / `phone` / `tv`) | Runs `:app:testDebugUnitTest`, builds `SetPlay-Phone.apk` and `SetPlay-TV.apk`, uploads 90-day artifacts, and publishes to GitHub Releases. |
+| **Update Global Popularity Index** | `.github/workflows/update-popularity-index.yml` | Daily cron (`0 4 * * *` UTC), manual `workflow_dispatch` | Runs `python3 scripts/build_popularity_index.py` and commits updated `docs/popularity_index.json` and `docs/collections_index.json` to `main`. |
+
+### Optional Secrets
+
+Both APKs build and run cleanly with **zero secrets configured** — unset keys fall back to safe placeholders via the Secrets Gradle Plugin (`2.0.1`), and core IPTV playback, KickOff free sources, and OpenSubtitles v3 remain functional. For optional enrichment in local `.env` or GitHub Repository Secrets:
+
+| Secret | Purpose |
+| :--- | :--- |
+| `TMDB_API_KEY` | TMDb movie/series metadata enrichment, external ID lookup, and `update-popularity-index.yml` index generation |
+| `API_FOOTBALL_KEY` | Official lineups, player cutouts, and match statistics (`v3.football.api-sports.io`) |
+| `FOOTBALL_DATA_KEY` | European and international fixtures and standings (`api.football-data.org/v4`) |
+| `WYZIE_API_KEY` | Wyzie multi-source subtitle search (`sub.wyzie.ru`) |
+| `SUBDL_API_KEY` | SubDL archive subtitle search (`api.subdl.com`) |
+| `SPORTAPI_AI_KEY` | Optional SportAPI.ai football data source (`SPORT_API_KEY` alias supported) |
