@@ -9536,6 +9536,133 @@ class TvSyncDeviceSeparationComposeTest {
             composeTestRule.onAllNodes(androidx.compose.ui.test.hasText("Stats ›")).fetchSemanticsNodes().size >= 2
         )
     }
+
+    @Test
+    fun v21_unboxedLogosAndCompetitionHarmonizedCardsPreserveAllTagsAndAccents() {
+        // 1. Verify refined distinct competition accents across major leagues & UEFA/CAF competitions
+        val ucl = com.example.ui.home.resolveCompetitionAccentColor("uefa_cl")
+        val uel = com.example.ui.home.resolveCompetitionAccentColor("uefa_el")
+        val uecl = com.example.ui.home.resolveCompetitionAccentColor("uecl")
+        val epl = com.example.ui.home.resolveCompetitionAccentColor("epl")
+        val laliga = com.example.ui.home.resolveCompetitionAccentColor("laliga")
+        val serieA = com.example.ui.home.resolveCompetitionAccentColor("serie_a")
+        val bundesliga = com.example.ui.home.resolveCompetitionAccentColor("bundesliga")
+        val ligue1 = com.example.ui.home.resolveCompetitionAccentColor("ligue_1")
+        val botola = com.example.ui.home.resolveCompetitionAccentColor("botola_pro")
+        val cafCl = com.example.ui.home.resolveCompetitionAccentColor("caf_cl")
+        val saudiPro = com.example.ui.home.resolveCompetitionAccentColor("saudi_pro")
+
+        assertEquals(3, setOf(ucl, uel, uecl).size)
+        assertEquals(5, setOf(epl, laliga, serieA, bundesliga, ligue1).size)
+        assertEquals(3, setOf(botola, cafCl, saudiPro).size)
+        assertTrue(laliga != bundesliga)
+        assertTrue(bundesliga != botola)
+
+        val eplMatch = com.example.data.repository.FootballMatch(
+            matchId = "v21_epl_1",
+            tournamentId = "epl",
+            tournamentName = "Premier League",
+            tournamentRegion = "England",
+            dayTab = com.example.data.repository.MatchDayTab.TODAY,
+            kickoffTimeFormatted = "17:30",
+            kickoffDateFormatted = "Today",
+            status = com.example.data.repository.MatchStatus.UPCOMING,
+            liveMinuteOrBadge = "17:30",
+            homeTeamId = "ars",
+            homeTeamName = "Arsenal",
+            homeTeamBadge = "https://media.api-sports.io/football/teams/42.png",
+            homeScore = null,
+            awayTeamId = "mci",
+            awayTeamName = "Manchester City",
+            awayTeamBadge = "",
+            awayScore = null,
+            stadiumName = "Emirates Stadium",
+            cityName = "London",
+            beinChannel = "beIN Sports 1 HD",
+            beinChannelNumberHint = "1",
+            kickoffEpochMs = 0L
+        )
+        val botolaTvMatch = eplMatch.copy(
+            matchId = "v21_botola_tv_1",
+            tournamentId = "botola_pro",
+            tournamentName = "Botola Pro",
+            tournamentRegion = "Morocco",
+            status = com.example.data.repository.MatchStatus.LIVE,
+            liveMinuteOrBadge = "54'",
+            homeTeamId = "rca",
+            homeTeamName = "Raja Casablanca",
+            homeTeamBadge = "https://media.api-sports.io/football/teams/968.png",
+            homeScore = 2,
+            awayTeamId = "wac",
+            awayTeamName = "Wydad AC",
+            awayTeamBadge = "",
+            awayScore = 1,
+            beinChannel = "Arryadia HD"
+        )
+
+        composeTestRule.setContent {
+            androidx.compose.foundation.layout.Column {
+                // Phone Tournament Header & Match Card with unboxed crests + competition accent
+                com.example.ui.home.FlashscoreTournamentHeader(
+                    tournamentId = "epl",
+                    tournamentName = "Premier League",
+                    regionName = "England",
+                    menaProviderName = "beIN Sports",
+                    matchCount = 1,
+                    liveCount = 0,
+                    isPinned = false,
+                    isCollapsed = false,
+                    isFirstSection = true,
+                    onToggleCollapse = {},
+                    onTogglePin = {}
+                )
+                com.example.ui.home.FlashscoreMatchCard(
+                    match = eplMatch,
+                    isHomeTeamFavorite = false,
+                    isAwayTeamFavorite = false,
+                    onToggleHomeFavorite = {},
+                    onToggleAwayFavorite = {},
+                    onOpenDossier = {},
+                    onWatchBeinClicked = {},
+                    liveClockTickMs = 1_700_000_000_000L
+                )
+                // TV Widescreen Match Card with unboxed 48.dp crests + competition wash
+                com.example.ui.home.TvWidescreenMatchGridCard(
+                    match = botolaTvMatch,
+                    selectedCountryZone = com.example.data.repository.UserZoneRegistry.getZoneByCode("MA"),
+                    selectedSeasonTimeMode = com.example.data.repository.SeasonTimeMode.AUTO,
+                    isSelectedInStudio = true,
+                    onFocused = {},
+                    onClick = {},
+                    onWatchClick = {}
+                )
+                // Direct standalone unboxed TournamentLogoMedallion (network & custom vector)
+                com.example.ui.home.TournamentLogoMedallion(
+                    tournamentId = "caf_cl",
+                    tournamentName = "CAF Champions League",
+                    accentColor = cafCl,
+                    sizeDp = 36
+                )
+            }
+        }
+        composeTestRule.waitForIdle()
+
+        // Verify Phone header + match card testTags & unboxed monogram fallback
+        composeTestRule.onNode(androidx.compose.ui.test.hasTestTag("tournament_header_epl")).assertExists()
+        composeTestRule.onNode(androidx.compose.ui.test.hasText("Premier League")).assertExists()
+        composeTestRule.onNode(androidx.compose.ui.test.hasText("ENGLAND")).assertExists()
+        composeTestRule.onNode(androidx.compose.ui.test.hasTestTag("match_card_v21_epl_1")).assertExists()
+        composeTestRule.onNode(androidx.compose.ui.test.hasTestTag("open_match_center_v21_epl_1"), useUnmergedTree = true).assertExists()
+        composeTestRule.onNode(androidx.compose.ui.test.hasTestTag("watch_bein_btn_v21_epl_1")).assertExists()
+        composeTestRule.onNode(androidx.compose.ui.test.hasTestTag("pin_match_btn_v21_epl_1")).assertExists()
+
+        // Verify TV card renders with preserved testTags & live broadcast pill
+        composeTestRule.onNode(androidx.compose.ui.test.hasTestTag("match_card_v21_botola_tv_1")).assertExists()
+        composeTestRule.onNode(androidx.compose.ui.test.hasTestTag("watch_bein_btn_v21_botola_tv_1")).assertExists()
+        composeTestRule.onNode(androidx.compose.ui.test.hasText("● LIVE TV")).assertExists()
+        composeTestRule.onNode(androidx.compose.ui.test.hasText("Raja Casablanca")).assertExists()
+        composeTestRule.onNode(androidx.compose.ui.test.hasText("Wydad AC")).assertExists()
+    }
 }
 
 

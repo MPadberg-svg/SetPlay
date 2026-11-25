@@ -178,20 +178,29 @@ fun resolveBroadcasterVisualIdentity(channelOrProviderName: String): Broadcaster
 }
 
 /**
- * Resolves the signature broadcast accent color for each supported football competition.
+ * Resolves the signature non-neon broadcast accent color for each supported football competition.
+ * Preserves canonical theme tokens (`CompUclBlue`, `CompUelOrange`, `CompEplViolet`, `CompBotolaCrimson`,
+ * `CompCafEmerald`, `CompIntlGold`) while giving UEFA Conference League and other major leagues distinct,
+ * dark-surface-harmonized broadcast hues.
  */
 fun resolveCompetitionAccentColor(tournamentId: String): Color {
     return when (tournamentId.lowercase(Locale.ROOT).trim()) {
         "ucl", "uefa_cl", "uefa_champions_league", "champions_league" -> CompUclBlue
-        "uel", "uefa_el", "uecl", "europa_league", "conference_league" -> CompUelOrange
+        "uel", "uefa_el", "uefa_europa_league", "europa_league" -> CompUelOrange
+        "uecl", "uefa_ecl", "uefa_conference_league", "conference_league" -> Color(0xFF1DB968)
         "epl", "premier_league", "fa_cup", "efl_cup" -> CompEplViolet
-        "laliga", "la_liga", "copa_del_rey" -> CompLaLigaCoral
+        "laliga", "la_liga", "copa_del_rey" -> Color(0xFFE85D4A)
         "seriea", "serie_a", "coppa_italia" -> CompSerieACyan
-        "bundesliga", "dfb_pokal" -> CompBundesligaRed
-        "ligue1", "ligue_1", "coupe_de_france" -> CompLigue1Gold
+        "bundesliga", "dfb_pokal" -> Color(0xFFD63B49)
+        "ligue1", "ligue_1", "coupe_de_france" -> Color(0xFFD4A72C)
         "caf_cl", "caf_cc", "caf_confed", "caf_champions_league", "caf_confederation_cup" -> CompCafEmerald
         "botola_pro", "botola", "throne_cup" -> CompBotolaCrimson
-        "saudi_pro", "spl", "egyptian_premier" -> CompSaudiJade
+        "saudi_pro", "spl", "roshn_saudi_league", "egyptian_premier" -> CompSaudiJade
+        "eredivisie", "dutch_eredivisie" -> Color(0xFFE07A2F)
+        "liga_portugal", "primeira_liga" -> Color(0xFF0EA59A)
+        "super_lig", "turkish_super_lig" -> Color(0xFFCC3B47)
+        "mls", "major_league_soccer" -> Color(0xFF38BDF8)
+        "copa_libertadores", "brasileirao" -> Color(0xFFD99B26)
         "afcon", "fifa_wc", "world_cup", "uefa_nations", "euro", "copa_america", "intl_friendlies", "intl_official", "intl_friendly" -> CompIntlGold
         else -> KickoffPitchEmerald
     }
