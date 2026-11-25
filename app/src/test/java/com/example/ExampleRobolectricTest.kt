@@ -9663,6 +9663,173 @@ class TvSyncDeviceSeparationComposeTest {
         composeTestRule.onNode(androidx.compose.ui.test.hasText("Raja Casablanca")).assertExists()
         composeTestRule.onNode(androidx.compose.ui.test.hasText("Wydad AC")).assertExists()
     }
+
+    @Test
+    fun v22_broadcastScoreStageAllStatesLogoContrastAndNoCarousel() {
+        // 1. Verify smart dark-logo contrast modes
+        assertEquals(
+            com.example.ui.home.TournamentLogoContrastMode.MONOCHROME_WHITE_TINT,
+            com.example.ui.home.resolveTournamentLogoContrastMode("uefa_cl")
+        )
+        assertEquals(
+            com.example.ui.home.TournamentLogoContrastMode.MONOCHROME_WHITE_TINT,
+            com.example.ui.home.resolveTournamentLogoContrastMode("premier_league")
+        )
+        assertEquals(
+            com.example.ui.home.TournamentLogoContrastMode.MONOCHROME_WHITE_TINT,
+            com.example.ui.home.resolveTournamentLogoContrastMode("ligue_1")
+        )
+        assertEquals(
+            com.example.ui.home.TournamentLogoContrastMode.ROUNDED_OPAQUE_CLIP,
+            com.example.ui.home.resolveTournamentLogoContrastMode("serie_a")
+        )
+        assertEquals(
+            com.example.ui.home.TournamentLogoContrastMode.ROUNDED_OPAQUE_CLIP,
+            com.example.ui.home.resolveTournamentLogoContrastMode("botola_pro")
+        )
+        assertEquals(
+            com.example.ui.home.TournamentLogoContrastMode.ENHANCED_RADIAL_BACKLIGHT,
+            com.example.ui.home.resolveTournamentLogoContrastMode("uefa_el")
+        )
+
+        val base = com.example.data.repository.FootballMatch(
+            matchId = "v22_upcoming",
+            tournamentId = "premier_league",
+            tournamentName = "Premier League",
+            tournamentRegion = "England",
+            dayTab = com.example.data.repository.MatchDayTab.TODAY,
+            kickoffTimeFormatted = "20:00",
+            kickoffDateFormatted = "Today",
+            status = com.example.data.repository.MatchStatus.UPCOMING,
+            liveMinuteOrBadge = "20:00",
+            homeTeamId = "bmg",
+            homeTeamName = "Borussia Mönchengladbach",
+            homeTeamBadge = "https://media.api-sports.io/football/teams/163.png",
+            homeScore = null,
+            awayTeamId = "nfo",
+            awayTeamName = "Nottingham Forest",
+            awayTeamBadge = "https://media.api-sports.io/football/teams/65.png",
+            awayScore = null,
+            stadiumName = "City Ground",
+            cityName = "Nottingham",
+            beinChannel = "beIN Sports 1 HD",
+            beinChannelNumberHint = "1",
+            kickoffEpochMs = 0L
+        )
+        val liveMatch = base.copy(
+            matchId = "v22_live",
+            status = com.example.data.repository.MatchStatus.LIVE,
+            liveMinuteOrBadge = "53'",
+            homeTeamName = "Liverpool",
+            awayTeamName = "Club Brugge",
+            homeScore = 2,
+            awayScore = 1
+        )
+        val htMatch = base.copy(
+            matchId = "v22_ht",
+            status = com.example.data.repository.MatchStatus.HALFTIME,
+            liveMinuteOrBadge = "HT",
+            homeTeamName = "Arsenal",
+            awayTeamName = "Chelsea",
+            homeScore = 1,
+            awayScore = 1
+        )
+        val ftMatch = base.copy(
+            matchId = "v22_ft",
+            status = com.example.data.repository.MatchStatus.FINISHED,
+            liveMinuteOrBadge = "FT",
+            homeTeamName = "Real Madrid",
+            awayTeamName = "Valencia",
+            homeScore = 3,
+            awayScore = 0
+        )
+        val ppdMatch = base.copy(
+            matchId = "v22_ppd",
+            status = com.example.data.repository.MatchStatus.POSTPONED,
+            kickoffTimeFormatted = "21:15",
+            liveMinuteOrBadge = "PPD",
+            homeTeamName = "Sevilla",
+            awayTeamName = "Villarreal",
+            homeScore = null,
+            awayScore = null
+        )
+        val tvLiveMatch = liveMatch.copy(
+            matchId = "v22_tv_live",
+            tournamentId = "uefa_cl",
+            tournamentName = "UEFA Champions League",
+            tournamentRegion = "Europe",
+            homeTeamName = "Paris Saint-Germain",
+            awayTeamName = "Inter Milan",
+            homeScore = 2,
+            awayScore = 2,
+            liveMinuteOrBadge = "71'"
+        )
+
+        composeTestRule.setContent {
+            androidx.compose.foundation.layout.Column {
+                com.example.ui.home.FlashscoreTournamentHeader(
+                    tournamentId = "premier_league",
+                    tournamentName = "Premier League",
+                    regionName = "England",
+                    menaProviderName = "beIN Sports",
+                    matchCount = 5,
+                    liveCount = 2,
+                    isPinned = false,
+                    isCollapsed = false,
+                    isFirstSection = true,
+                    onToggleCollapse = {},
+                    onTogglePin = {}
+                )
+                listOf(base, liveMatch, htMatch, ftMatch, ppdMatch).forEach { fixture ->
+                    com.example.ui.home.FlashscoreMatchCard(
+                        match = fixture,
+                        isHomeTeamFavorite = false,
+                        isAwayTeamFavorite = false,
+                        onToggleHomeFavorite = {},
+                        onToggleAwayFavorite = {},
+                        onOpenDossier = {},
+                        onWatchBeinClicked = {},
+                        liveClockTickMs = 1_700_000_000_000L
+                    )
+                }
+                com.example.ui.home.TvWidescreenMatchGridCard(
+                    match = tvLiveMatch,
+                    selectedCountryZone = com.example.data.repository.UserZoneRegistry.getZoneByCode("MA"),
+                    selectedSeasonTimeMode = com.example.data.repository.SeasonTimeMode.AUTO,
+                    isSelectedInStudio = false,
+                    onFocused = {},
+                    onClick = {},
+                    onWatchClick = {}
+                )
+            }
+        }
+        composeTestRule.waitForIdle()
+
+        // Redundant live carousel must NOT be rendered
+        composeTestRule.onNode(androidx.compose.ui.test.hasTestTag("live_and_marquee_spotlight_carousel")).assertDoesNotExist()
+
+        // Verify tournament header & all 5 Phone match cards + 1 TV card preserve tags and fixed score stages
+        composeTestRule.onNode(androidx.compose.ui.test.hasTestTag("tournament_header_premier_league")).assertExists()
+        listOf("v22_upcoming", "v22_live", "v22_ht", "v22_ft", "v22_ppd", "v22_tv_live").forEach { id ->
+            composeTestRule.onNode(androidx.compose.ui.test.hasTestTag("match_card_$id")).assertExists()
+            composeTestRule.onNode(androidx.compose.ui.test.hasTestTag("match_score_stage_$id"), useUnmergedTree = true).assertExists()
+            composeTestRule.onNode(androidx.compose.ui.test.hasTestTag("open_match_center_$id"), useUnmergedTree = true).assertExists()
+        }
+
+        // Verify all 5 broadcast stage states render cleanly without collapsing team names
+        composeTestRule.onNode(androidx.compose.ui.test.hasText("Borussia Mönchengladbach")).assertExists()
+        composeTestRule.onNode(androidx.compose.ui.test.hasText("Nottingham Forest")).assertExists()
+        composeTestRule.onNode(androidx.compose.ui.test.hasText("20:00")).assertExists()
+        composeTestRule.onNode(androidx.compose.ui.test.hasText("2 - 1")).assertExists()
+        composeTestRule.onNode(androidx.compose.ui.test.hasText("1 - 1")).assertExists()
+        composeTestRule.onNode(androidx.compose.ui.test.hasText("HT")).assertExists()
+        composeTestRule.onNode(androidx.compose.ui.test.hasText("3 - 0")).assertExists()
+        composeTestRule.onNode(androidx.compose.ui.test.hasText("FT")).assertExists()
+        composeTestRule.onNode(androidx.compose.ui.test.hasText("21:15")).assertExists()
+        composeTestRule.onNode(androidx.compose.ui.test.hasText("PPD")).assertExists()
+        composeTestRule.onNode(androidx.compose.ui.test.hasText("2 - 2")).assertExists()
+        composeTestRule.onNode(androidx.compose.ui.test.hasText("71'")).assertExists()
+    }
 }
 
 
