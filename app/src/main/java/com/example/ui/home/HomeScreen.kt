@@ -193,6 +193,7 @@ fun HomeScreen(
 
     val selectedCountryZone by mainViewModel.selectedCountryZone.collectAsStateWithLifecycle()
     val selectedSeasonTimeMode by mainViewModel.selectedSeasonTimeMode.collectAsStateWithLifecycle()
+    val manualTimeOffsetMinutes by mainViewModel.manualTimeOffsetMinutes.collectAsStateWithLifecycle()
     val showCountryZoneModal by mainViewModel.showCountryZoneModal.collectAsStateWithLifecycle()
     val favoriteTeams by mainViewModel.favoriteTeams.collectAsStateWithLifecycle()
     val tournamentPreferences by mainViewModel.tournamentPreferences.collectAsStateWithLifecycle()
@@ -318,6 +319,8 @@ fun HomeScreen(
             unhealthySourcesCount = unhealthySourcesCount,
             selectedCountryZone = selectedCountryZone,
             selectedSeasonTimeMode = selectedSeasonTimeMode,
+            manualTimeOffsetMinutes = manualTimeOffsetMinutes,
+            use24HourFormat = kickoffUiPreferences.use24HourFormat,
             selectedMatchDay = selectedMatchDay,
             selectedCompetitionCategory = selectedCompetitionCategory,
             selectedTournamentFilter = selectedTournamentFilter,
@@ -448,6 +451,7 @@ fun HomeScreen(
                         activeEdition = SetPlayEdition.PHONE,
                         selectedCountryZone = selectedCountryZone,
                         selectedSeasonTimeMode = selectedSeasonTimeMode,
+                        manualTimeOffsetMinutes = manualTimeOffsetMinutes,
                         selectedMatchDay = selectedMatchDay,
                         selectedTournamentFilter = selectedTournamentFilter,
                         activeDayMatches = activeDayMatches,
@@ -543,6 +547,8 @@ fun HomeScreen(
                         matches = spotlightMatches,
                         selectedCountryZone = selectedCountryZone,
                         selectedSeasonTimeMode = selectedSeasonTimeMode,
+                        manualTimeOffsetMinutes = manualTimeOffsetMinutes,
+                        use24HourFormat = kickoffUiPreferences.use24HourFormat,
                         onOpenDossier = { mainViewModel.openMatchCenterDossier(it) },
                         onWatchMatch = { match ->
                             mainViewModel.onWatchMatchOnBeinClicked(
@@ -573,6 +579,8 @@ fun HomeScreen(
                             selectedDay = selectedMatchDay,
                             selectedCountryZone = selectedCountryZone,
                             selectedSeasonTimeMode = selectedSeasonTimeMode,
+                            manualTimeOffsetMinutes = manualTimeOffsetMinutes,
+                            uiPreferences = kickoffUiPreferences,
                             onEditFavoriteTeams = {
                                 mainViewModel.openKickoffSettingsCenter(0)
                             },
@@ -658,11 +666,19 @@ fun HomeScreen(
                                     }
                                 }
                             }
+                            val matchUtcBadge = remember(match.kickoffEpochMs, selectedCountryZone, manualTimeOffsetMinutes) {
+                                val refEpoch = if (match.kickoffEpochMs > 0L) match.kickoffEpochMs else System.currentTimeMillis()
+                                selectedCountryZone.getUtcOffsetBadge(
+                                    epochMs = refEpoch,
+                                    manualOffsetMinutes = manualTimeOffsetMinutes
+                                )
+                            }
                             FlashscoreMatchCard(
                                 match = match,
                                 selectedCountryZone = selectedCountryZone,
                                 selectedSeasonTimeMode = selectedSeasonTimeMode,
-                                utcOffsetBadge = selectedCountryZone.getUtcOffsetBadge(mode = selectedSeasonTimeMode),
+                                manualTimeOffsetMinutes = manualTimeOffsetMinutes,
+                                utcOffsetBadge = matchUtcBadge,
                                 isHomeTeamFavorite = favoriteTeams.any {
                                     it.teamName.equals(match.homeTeamName, ignoreCase = true) ||
                                         it.teamId == match.homeTeamId
@@ -742,11 +758,19 @@ fun HomeScreen(
                                 items = matchesInSection,
                                 key = { _, match -> "match_${match.matchId}" }
                             ) { index, match ->
+                                val matchUtcBadge = remember(match.kickoffEpochMs, selectedCountryZone, manualTimeOffsetMinutes) {
+                                    val refEpoch = if (match.kickoffEpochMs > 0L) match.kickoffEpochMs else System.currentTimeMillis()
+                                    selectedCountryZone.getUtcOffsetBadge(
+                                        epochMs = refEpoch,
+                                        manualOffsetMinutes = manualTimeOffsetMinutes
+                                    )
+                                }
                                 FlashscoreMatchCard(
                                     match = match,
                                     selectedCountryZone = selectedCountryZone,
                                     selectedSeasonTimeMode = selectedSeasonTimeMode,
-                                    utcOffsetBadge = selectedCountryZone.getUtcOffsetBadge(mode = selectedSeasonTimeMode),
+                                    manualTimeOffsetMinutes = manualTimeOffsetMinutes,
+                                    utcOffsetBadge = matchUtcBadge,
                                     isHomeTeamFavorite = favoriteTeams.any {
                                         it.teamName.equals(match.homeTeamName, ignoreCase = true) ||
                                             it.teamId == match.homeTeamId
@@ -808,6 +832,11 @@ fun HomeScreen(
         FirstTimeFavoriteTeamsDialog(
             selectedCountryZone = selectedCountryZone,
             selectedSeasonTimeMode = selectedSeasonTimeMode,
+            manualTimeOffsetMinutes = manualTimeOffsetMinutes,
+            onSetManualTimeOffset = { mainViewModel.setManualTimeOffset(it) },
+            onAdjustManualTimeOffset = { mainViewModel.adjustManualTimeOffset(it) },
+            use24HourFormat = kickoffUiPreferences.use24HourFormat,
+            activeEdition = activeEdition,
             searchQuery = teamSearchQuery,
             searchResults = teamSearchResults,
             isSearching = isSearchingTeams,
@@ -834,6 +863,10 @@ fun HomeScreen(
             onDismiss = { mainViewModel.closeCountryZoneModal() },
             seasonTimeMode = selectedSeasonTimeMode,
             onSelectSeasonTimeMode = { mainViewModel.selectSeasonTimeMode(it) },
+            manualTimeOffsetMinutes = manualTimeOffsetMinutes,
+            onSetManualTimeOffset = { mainViewModel.setManualTimeOffset(it) },
+            onAdjustManualTimeOffset = { mainViewModel.adjustManualTimeOffset(it) },
+            use24HourFormat = kickoffUiPreferences.use24HourFormat,
             onPrioritizeCountryLeague = { mainViewModel.prioritizeCountrySpotlightLeague() }
         )
     }
@@ -845,6 +878,9 @@ fun HomeScreen(
         CustomizeTeamsAndTournamentsSheet(
             selectedCountryZone = selectedCountryZone,
             selectedSeasonTimeMode = selectedSeasonTimeMode,
+            manualTimeOffsetMinutes = manualTimeOffsetMinutes,
+            onSetManualTimeOffset = { mainViewModel.setManualTimeOffset(it) },
+            onAdjustManualTimeOffset = { mainViewModel.adjustManualTimeOffset(it) },
             searchQuery = teamSearchQuery,
             searchResults = teamSearchResults,
             isSearching = isSearchingTeams,
@@ -1255,6 +1291,7 @@ private fun KickOffArenaHeaderCard(
     activeEdition: SetPlayEdition = SetPlayEdition.PHONE,
     selectedCountryZone: UserCountryZone = UserZoneRegistry.defaultCountryZone,
     selectedSeasonTimeMode: SeasonTimeMode = SeasonTimeMode.AUTO,
+    manualTimeOffsetMinutes: Int = 0,
     selectedMatchDay: MatchDayTab = MatchDayTab.TODAY,
     selectedTournamentFilter: String = "ALL",
     activeDayMatches: List<FootballMatch> = emptyList(),
@@ -1279,8 +1316,15 @@ private fun KickOffArenaHeaderCard(
 ) {
     val isLiveFilterActive = selectedTournamentFilter == "LIVE"
     val isTv = activeEdition == SetPlayEdition.TV
-    val utcBadge = remember(selectedCountryZone, selectedSeasonTimeMode) {
-        selectedCountryZone.getUtcOffsetBadge(mode = selectedSeasonTimeMode)
+    val headerReferenceEpochMs = remember(activeDayMatches, selectedMatchDay) {
+        activeDayMatches.firstOrNull { it.kickoffEpochMs > 0L }?.kickoffEpochMs
+            ?: (System.currentTimeMillis() + selectedMatchDay.dayOffset * 86_400_000L)
+    }
+    val utcBadge = remember(selectedCountryZone, manualTimeOffsetMinutes, headerReferenceEpochMs) {
+        selectedCountryZone.getUtcOffsetBadge(
+            epochMs = headerReferenceEpochMs,
+            manualOffsetMinutes = manualTimeOffsetMinutes
+        )
     }
 
     val activeTournamentCatalogItem = remember(selectedTournamentFilter) {
@@ -3265,13 +3309,11 @@ private fun LiveAndMarqueeSpotlightCarousel(
     matches: List<FootballMatch>,
     selectedCountryZone: UserCountryZone,
     selectedSeasonTimeMode: SeasonTimeMode,
+    manualTimeOffsetMinutes: Int = 0,
+    use24HourFormat: Boolean = true,
     onOpenDossier: (FootballMatch) -> Unit,
     onWatchMatch: (FootballMatch) -> Unit
 ) {
-    val isSummerTime = remember(selectedCountryZone, selectedSeasonTimeMode) {
-        selectedCountryZone.isSummerTimeActive(mode = selectedSeasonTimeMode)
-    }
-
     Column(
         modifier = Modifier
             .fillMaxWidth()
@@ -3285,9 +3327,20 @@ private fun LiveAndMarqueeSpotlightCarousel(
             items(matches, key = { "spotlight_${it.matchId}" }) { match ->
                 val isLive = match.status == MatchStatus.LIVE || match.status == MatchStatus.HALFTIME
                 val compAccent = resolveCompetitionAccentColor(match.tournamentId)
-                val kickoffDisplay = remember(match.kickoffEpochMs, match.kickoffTimeFormatted, selectedCountryZone, isSummerTime) {
+                val kickoffDisplay = remember(
+                    match.kickoffEpochMs,
+                    match.kickoffTimeFormatted,
+                    selectedCountryZone,
+                    manualTimeOffsetMinutes,
+                    use24HourFormat
+                ) {
                     if (match.kickoffEpochMs > 0L) {
-                        formatDynamicKickoffTime(match.kickoffEpochMs, selectedCountryZone, isSummerTime)
+                        formatDynamicKickoffTime(
+                            kickoffEpochMs = match.kickoffEpochMs,
+                            zone = selectedCountryZone,
+                            manualOffsetMinutes = manualTimeOffsetMinutes,
+                            use24Hour = use24HourFormat
+                        )
                     } else {
                         match.kickoffTimeFormatted
                     }
@@ -3748,6 +3801,8 @@ private fun PinnedFavoriteTeamsSection(
     selectedDay: MatchDayTab,
     selectedCountryZone: UserCountryZone,
     selectedSeasonTimeMode: SeasonTimeMode,
+    manualTimeOffsetMinutes: Int = 0,
+    uiPreferences: KickoffUiPreferences = KickoffUiPreferences(),
     onEditFavoriteTeams: () -> Unit,
     onInspectMatchDossier: (FootballMatch) -> Unit,
     onWatchMatch: (FootballMatch, String) -> Unit
@@ -3836,20 +3891,28 @@ private fun PinnedFavoriteTeamsSection(
                 )
             }
         } else {
-            val utcBadge = selectedCountryZone.getUtcOffsetBadge(mode = selectedSeasonTimeMode)
             favoriteMatches.forEachIndexed { index, match ->
+                val matchUtcBadge = remember(match.kickoffEpochMs, selectedCountryZone, manualTimeOffsetMinutes) {
+                    val refEpoch = if (match.kickoffEpochMs > 0L) match.kickoffEpochMs else System.currentTimeMillis()
+                    selectedCountryZone.getUtcOffsetBadge(
+                        epochMs = refEpoch,
+                        manualOffsetMinutes = manualTimeOffsetMinutes
+                    )
+                }
                 FlashscoreMatchCard(
                     match = match,
                     selectedCountryZone = selectedCountryZone,
                     selectedSeasonTimeMode = selectedSeasonTimeMode,
-                    utcOffsetBadge = utcBadge,
+                    manualTimeOffsetMinutes = manualTimeOffsetMinutes,
+                    utcOffsetBadge = matchUtcBadge,
                     isHomeTeamFavorite = true,
                     isAwayTeamFavorite = false,
                     onToggleHomeFavorite = {},
                     onToggleAwayFavorite = {},
                     onOpenDossier = { onInspectMatchDossier(match) },
                     onWatchBeinClicked = { ch -> onWatchMatch(match, ch) },
-                    isLastInSection = index == favoriteMatches.lastIndex
+                    isLastInSection = index == favoriteMatches.lastIndex,
+                    uiPreferences = uiPreferences
                 )
             }
         }
@@ -4360,6 +4423,7 @@ private fun FlashscoreMatchCard(
     match: FootballMatch,
     selectedCountryZone: UserCountryZone = UserZoneRegistry.defaultCountryZone,
     selectedSeasonTimeMode: SeasonTimeMode = SeasonTimeMode.AUTO,
+    manualTimeOffsetMinutes: Int = 0,
     utcOffsetBadge: String = "GMT+1",
     isHomeTeamFavorite: Boolean,
     isAwayTeamFavorite: Boolean,
@@ -4394,12 +4458,20 @@ private fun FlashscoreMatchCard(
     val awayIsWinner = isFinished && !uiPreferences.hideLiveAndFinalScores &&
         match.homeScore != null && match.awayScore != null && match.awayScore > match.homeScore
 
-    val isSummerTime = remember(selectedCountryZone, selectedSeasonTimeMode) {
-        selectedCountryZone.isSummerTimeActive(mode = selectedSeasonTimeMode)
-    }
-    val dynamicKickoffTime = remember(match.kickoffEpochMs, match.kickoffTimeFormatted, selectedCountryZone, isSummerTime) {
+    val dynamicKickoffTime = remember(
+        match.kickoffEpochMs,
+        match.kickoffTimeFormatted,
+        selectedCountryZone,
+        manualTimeOffsetMinutes,
+        uiPreferences.use24HourFormat
+    ) {
         if (match.kickoffEpochMs > 0L) {
-            formatDynamicKickoffTime(match.kickoffEpochMs, selectedCountryZone, isSummerTime)
+            formatDynamicKickoffTime(
+                kickoffEpochMs = match.kickoffEpochMs,
+                zone = selectedCountryZone,
+                manualOffsetMinutes = manualTimeOffsetMinutes,
+                use24Hour = uiPreferences.use24HourFormat
+            )
         } else {
             match.kickoffTimeFormatted
         }
@@ -4950,6 +5022,8 @@ private fun TvKickoffStadiumScreen(
     unhealthySourcesCount: Int = 0,
     selectedCountryZone: UserCountryZone,
     selectedSeasonTimeMode: SeasonTimeMode,
+    manualTimeOffsetMinutes: Int = 0,
+    use24HourFormat: Boolean = true,
     selectedMatchDay: MatchDayTab,
     selectedCompetitionCategory: CompetitionCategory?,
     selectedTournamentFilter: String,
@@ -5005,6 +5079,7 @@ private fun TvKickoffStadiumScreen(
             activeEdition = SetPlayEdition.TV,
             selectedCountryZone = selectedCountryZone,
             selectedSeasonTimeMode = selectedSeasonTimeMode,
+            manualTimeOffsetMinutes = manualTimeOffsetMinutes,
             selectedMatchDay = selectedMatchDay,
             selectedTournamentFilter = selectedTournamentFilter,
             activeDayMatches = activeDayMatches,
@@ -5120,6 +5195,8 @@ private fun TvKickoffStadiumScreen(
                                         match = match,
                                         selectedCountryZone = selectedCountryZone,
                                         selectedSeasonTimeMode = selectedSeasonTimeMode,
+                                        manualTimeOffsetMinutes = manualTimeOffsetMinutes,
+                                        use24HourFormat = use24HourFormat,
                                         isSelectedInStudio = focusedTvMatch?.matchId == match.matchId,
                                         onFocused = { focusedTvMatch = match },
                                         onClick = { onOpenDossier(match) },
@@ -5141,6 +5218,8 @@ private fun TvKickoffStadiumScreen(
                 match = focusedTvMatch ?: sortedVisibleMatches.firstOrNull(),
                 selectedCountryZone = selectedCountryZone,
                 selectedSeasonTimeMode = selectedSeasonTimeMode,
+                manualTimeOffsetMinutes = manualTimeOffsetMinutes,
+                use24HourFormat = use24HourFormat,
                 isPinned = focusedTvMatch?.matchId in pinnedMatchIds,
                 onWatchChannel = { ch ->
                     val target = focusedTvMatch ?: sortedVisibleMatches.firstOrNull()
@@ -5173,6 +5252,8 @@ private fun TvWidescreenMatchGridCard(
     match: FootballMatch,
     selectedCountryZone: UserCountryZone,
     selectedSeasonTimeMode: SeasonTimeMode,
+    manualTimeOffsetMinutes: Int = 0,
+    use24HourFormat: Boolean = true,
     isSelectedInStudio: Boolean,
     onFocused: () -> Unit,
     onClick: () -> Unit,
@@ -5193,12 +5274,20 @@ private fun TvWidescreenMatchGridCard(
     val cleanChannelSuffix = remember(rawChannelLabel, broadcasterIdentity.providerShortTag) {
         formatCleanBroadcastChannelSuffix(rawChannelLabel, broadcasterIdentity.providerShortTag)
     }
-    val isSummer = remember(selectedCountryZone, selectedSeasonTimeMode) {
-        selectedCountryZone.isSummerTimeActive(mode = selectedSeasonTimeMode)
-    }
-    val kickoffFormatted = remember(match.kickoffEpochMs, match.kickoffTimeFormatted, selectedCountryZone, isSummer) {
+    val kickoffFormatted = remember(
+        match.kickoffEpochMs,
+        match.kickoffTimeFormatted,
+        selectedCountryZone,
+        manualTimeOffsetMinutes,
+        use24HourFormat
+    ) {
         if (match.kickoffEpochMs > 0L) {
-            formatDynamicKickoffTime(match.kickoffEpochMs, selectedCountryZone, isSummer)
+            formatDynamicKickoffTime(
+                kickoffEpochMs = match.kickoffEpochMs,
+                zone = selectedCountryZone,
+                manualOffsetMinutes = manualTimeOffsetMinutes,
+                use24Hour = use24HourFormat
+            )
         } else {
             match.kickoffTimeFormatted
         }
@@ -5463,6 +5552,8 @@ private fun TvLiveMatchStudioDock(
     match: FootballMatch?,
     selectedCountryZone: UserCountryZone,
     selectedSeasonTimeMode: SeasonTimeMode,
+    manualTimeOffsetMinutes: Int = 0,
+    use24HourFormat: Boolean = true,
     isPinned: Boolean,
     onWatchChannel: (String) -> Unit,
     onOpenFullDossier: () -> Unit,
@@ -5493,15 +5584,30 @@ private fun TvLiveMatchStudioDock(
 
         val isLive = match.status == MatchStatus.LIVE || match.status == MatchStatus.HALFTIME
         val compAccent = resolveCompetitionAccentColor(match.tournamentId)
-        val isSummer = remember(selectedCountryZone, selectedSeasonTimeMode) {
-            selectedCountryZone.isSummerTimeActive(mode = selectedSeasonTimeMode)
-        }
-        val kickoffFormatted = remember(match.kickoffEpochMs, match.kickoffTimeFormatted, selectedCountryZone, isSummer) {
+        val kickoffFormatted = remember(
+            match.kickoffEpochMs,
+            match.kickoffTimeFormatted,
+            selectedCountryZone,
+            manualTimeOffsetMinutes,
+            use24HourFormat
+        ) {
             if (match.kickoffEpochMs > 0L) {
-                formatDynamicKickoffTime(match.kickoffEpochMs, selectedCountryZone, isSummer)
+                formatDynamicKickoffTime(
+                    kickoffEpochMs = match.kickoffEpochMs,
+                    zone = selectedCountryZone,
+                    manualOffsetMinutes = manualTimeOffsetMinutes,
+                    use24Hour = use24HourFormat
+                )
             } else {
                 match.kickoffTimeFormatted
             }
+        }
+        val studioUtcBadge = remember(match.kickoffEpochMs, selectedCountryZone, manualTimeOffsetMinutes) {
+            val refEpoch = if (match.kickoffEpochMs > 0L) match.kickoffEpochMs else System.currentTimeMillis()
+            selectedCountryZone.getUtcOffsetBadge(
+                epochMs = refEpoch,
+                manualOffsetMinutes = manualTimeOffsetMinutes
+            )
         }
         val allChannels = remember(match) {
             (listOf(match.beinChannel) + match.fallbackMenaChannels)
@@ -5632,7 +5738,7 @@ private fun TvLiveMatchStudioDock(
                                     MatchStatus.FINISHED -> if (!match.halfTimeScore.isNullOrBlank()) "FT • HT ${match.halfTimeScore}" else "FULL TIME"
                                     MatchStatus.POSTPONED -> "POSTPONED ($kickoffFormatted)"
                                     MatchStatus.CANCELLED -> "CANCELLED ($kickoffFormatted)"
-                                    MatchStatus.UPCOMING -> selectedCountryZone.getUtcOffsetBadge(mode = selectedSeasonTimeMode)
+                                    MatchStatus.UPCOMING -> studioUtcBadge
                                 },
                                 color = if (isLive) KickoffLiveCrimson else KickoffPitchEmerald,
                                 fontSize = 10.sp,

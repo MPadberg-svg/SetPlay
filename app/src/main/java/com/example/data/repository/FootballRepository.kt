@@ -296,6 +296,12 @@ class FootballRepository(
     // 5. 365Scores zero-key web API cache (90s TTL for TODAY, 30m TTL for other tabs)
     private val scores365DayCache = ConcurrentHashMap<String, Pair<Long, List<FootballMatch>>>()
 
+    // 6. Active playlist Live TV streams in-memory snapshot cache (60s TTL; eliminates per-match SQLite queries)
+    @Volatile
+    private var cachedLiveStreamsSnapshot: Pair<Long, List<StreamEntity>>? = null
+    @Volatile
+    private var cachedLiveStreamsPlaylistId: Long = -1L
+
     // 5. 5-Tab Match Center Enricher (Lineups, 2D Pitch, Timeline, Stats, H2H/Standings, MENA TV Guide)
     private val matchCenterEnricher = MatchCenterEnricher(
         httpClient = httpClient,
@@ -366,9 +372,23 @@ class FootballRepository(
         val zone = UserZoneRegistry.getZoneByCode(countryCode)
         prefs.edit()
             .putString(KEY_SELECTED_COUNTRY_CODE, zone.countryCode)
-            .putBoolean(KEY_COUNTRY_ONBOARDING_COMPLETED, true)
             .apply()
         return zone
+    }
+
+    fun getManualTimeOffsetMinutes(): Int {
+        val raw = prefs.getInt(KEY_MANUAL_TIME_OFFSET_MINUTES, 0)
+        val snapped = (raw / 60) * 60
+        return snapped.coerceIn(-180, 180)
+    }
+
+    fun setManualTimeOffsetMinutes(offsetMinutes: Int): Int {
+        val snapped = (offsetMinutes / 60) * 60
+        val clamped = snapped.coerceIn(-180, 180)
+        prefs.edit()
+            .putInt(KEY_MANUAL_TIME_OFFSET_MINUTES, clamped)
+            .apply()
+        return clamped
     }
 
     fun getSelectedSeasonTimeMode(): SeasonTimeMode {
@@ -1138,7 +1158,15 @@ class FootballRepository(
             .map { match ->
                 synchronizeElapsedMatchClock(match, dayTab)
             }
-        resolveDayMatchesTvChannelsWithMenaPriority(syncedMatches, parallelResults.tvBroadcasts)
+        val liveStreamsSnapshot = loadActivePlaylistLiveStreamsSnapshot()
+        resolveDayMatchesTvChannelsWithMenaPriority(
+            matches = syncedMatches,
+            tvBroadcasts = parallelResults.tvBroadcasts,
+            zone = getSelectedCountryZone(),
+            seasonTimeMode = getSelectedSeasonTimeMode(),
+            manualOffsetMinutes = if (getSelectedSeasonTimeMode() == SeasonTimeMode.AUTO) getManualTimeOffsetMinutes() else null,
+            playlistLiveStreamsSnapshot = liveStreamsSnapshot
+        )
     }
 
     internal suspend fun fetchLiveMatchesForDayFromApis(
@@ -1302,7 +1330,9 @@ class FootballRepository(
         matches: List<FootballMatch>,
         tvBroadcasts: List<SportsDbTvBroadcastEntry>,
         zone: UserCountryZone = getSelectedCountryZone(),
-        seasonTimeMode: SeasonTimeMode = getSelectedSeasonTimeMode()
+        seasonTimeMode: SeasonTimeMode = getSelectedSeasonTimeMode(),
+        manualOffsetMinutes: Int? = null,
+        playlistLiveStreamsSnapshot: List<StreamEntity> = emptyList()
     ): List<FootballMatch> {
         if (matches.isEmpty()) return emptyList()
 
@@ -1320,6 +1350,7 @@ class FootballRepository(
         )
 
         val resolvedByOriginalIndex = arrayOfNulls<FootballMatch>(matches.size)
+        val use24Hour = getKickoffUiPreferences().use24HourFormat
 
         for (indexed in indexedMatches) {
             val match = indexed.value
@@ -1334,7 +1365,10 @@ class FootballRepository(
 
             val claimedSet = claimedBeinChannelsByTime.getOrPut(match.kickoffTimeFormatted) { mutableSetOf() }
 
-            val playlistFixtureChannels = findPlaylistLiveChannelsNamingFixture(match)
+            val playlistFixtureChannels = findPlaylistLiveChannelsNamingFixture(
+                match = match,
+                playlistLiveStreamsSnapshot = playlistLiveStreamsSnapshot
+            )
             val matchWithPlaylistSource = if (playlistFixtureChannels.isNotEmpty()) {
                 match.copy(
                     sourceTvChannels = (playlistFixtureChannels + match.sourceTvChannels).distinct()
@@ -1350,7 +1384,9 @@ class FootballRepository(
                 claimedChannelsAtKickoff = claimedSet,
                 zone = zone,
                 seasonTimeMode = seasonTimeMode,
-                playlistExplicitChannels = playlistFixtureChannels
+                playlistExplicitChannels = playlistFixtureChannels,
+                manualOffsetMinutes = manualOffsetMinutes,
+                use24Hour = use24Hour
             )
 
             if (isBeinTournament && resolvedMatch.beinChannel.isNotBlank()) {
@@ -1367,34 +1403,72 @@ class FootballRepository(
     }
 
     /**
-     * Scans the user's synced Live TV playlist via `streamDao.searchLiveStreamsByKeyword()` for live channel names
-     * that explicitly contain both clubs of the fixture (e.g. `"beIN Sports 2 HD : Real Madrid vs Milan"`),
-     * extracting the prioritized broadcast channel name.
+     * Loads the active playlist's Live TV streams once on [Dispatchers.IO] and caches them in memory
+     * for [LIVE_STREAMS_SNAPSHOT_CACHE_TTL_MS] (60s), eliminating repeated per-match SQLite `LIKE` queries.
+     */
+    suspend fun loadActivePlaylistLiveStreamsSnapshot(): List<StreamEntity> = withContext(Dispatchers.IO) {
+        runCatching {
+            val resolvedPlaylistId = streamDao.getActiveOrLatestPlaylistIdOnce()
+            if (resolvedPlaylistId <= 0L) {
+                cachedLiveStreamsPlaylistId = 0L
+                cachedLiveStreamsSnapshot = System.currentTimeMillis() to emptyList()
+                return@runCatching emptyList()
+            }
+            val nowMs = System.currentTimeMillis()
+            val existing = cachedLiveStreamsSnapshot
+            if (existing != null &&
+                cachedLiveStreamsPlaylistId == resolvedPlaylistId &&
+                (nowMs - existing.first) < LIVE_STREAMS_SNAPSHOT_CACHE_TTL_MS
+            ) {
+                return@runCatching existing.second
+            }
+
+            val result = ArrayList<StreamEntity>(512)
+            val pageSize = 2500
+            var offset = 0
+            val maxRows = 25_000
+            while (offset < maxRows) {
+                val chunk = streamDao.getStreamsChunkByType(
+                    playlistId = resolvedPlaylistId,
+                    streamType = "live",
+                    limit = pageSize,
+                    offset = offset
+                )
+                if (chunk.isEmpty()) break
+                result.addAll(chunk)
+                if (chunk.size < pageSize) break
+                offset += pageSize
+            }
+            cachedLiveStreamsPlaylistId = resolvedPlaylistId
+            cachedLiveStreamsSnapshot = nowMs to result
+            result
+        }.getOrDefault(emptyList())
+    }
+
+    /**
+     * Scans a pre-fetched in-memory Live TV stream snapshot for channel names that explicitly contain
+     * both clubs of [match] (e.g. `"beIN Sports 2 HD : Real Madrid vs Milan"`).
+     * Strictly zero database I/O and zero `runBlocking`.
      */
     internal fun findPlaylistLiveChannelsNamingFixture(
         match: FootballMatch,
-        playlistId: Long = 0L
+        playlistLiveStreamsSnapshot: List<StreamEntity> = emptyList()
     ): List<String> {
+        if (playlistLiveStreamsSnapshot.isEmpty()) return emptyList()
         return runCatching {
             val keywords = extractClubSearchKeywordsForPlaylist(match.homeTeamName, match.awayTeamName)
             if (keywords.isEmpty()) return@runCatching emptyList()
 
-            val candidateStreams = kotlinx.coroutines.runBlocking {
-                val resolvedPlaylistId = if (playlistId > 0L) playlistId else streamDao.getActiveOrLatestPlaylistIdOnce()
-                keywords
-                    .flatMap { kw -> streamDao.searchLiveStreamsByKeyword(resolvedPlaylistId, kw) }
-                    .distinctBy { it.id }
-            }
-            if (candidateStreams.isEmpty()) return@runCatching emptyList()
-
             val matchedChannels = mutableListOf<String>()
-            for (stream in candidateStreams) {
-                if (doesLiveStreamExplicitlyNameFixture(stream.name, match.homeTeamName, match.awayTeamName)) {
-                    val extractedBroadcaster = extractBroadcasterChannelFromFixtureStream(stream.name)
+            for (stream in playlistLiveStreamsSnapshot) {
+                val streamName = stream.name
+                val hasKeyword = keywords.any { kw -> streamName.contains(kw, ignoreCase = true) }
+                if (hasKeyword && doesLiveStreamExplicitlyNameFixture(streamName, match.homeTeamName, match.awayTeamName)) {
+                    val extractedBroadcaster = extractBroadcasterChannelFromFixtureStream(streamName)
                     if (extractedBroadcaster.isNotBlank()) {
                         matchedChannels.add(extractedBroadcaster)
                     }
-                    matchedChannels.add(stream.name.trim())
+                    matchedChannels.add(streamName.trim())
                 }
             }
             matchedChannels.distinct()
@@ -1464,9 +1538,7 @@ class FootballRepository(
     }
 
     /**
-     * Instantly re-localizes a day's match list when the user switches their Country Zone ("User's Zone")
-     * or seasonal time mode (Auto / Winter / Summer), converting kickoff times, UTC offset badges,
-     * and official TV broadcasters for the new Country Zone.
+     * Synchronous legacy helper kept strictly free of `runBlocking` / DB queries (passes an empty playlist snapshot).
      */
     fun reapplyCountryZoneToMatches(
         matches: List<FootballMatch>,
@@ -1482,7 +1554,106 @@ class FootballRepository(
         }.format(cal.time)
         val cachedTv = sofascoreDayTvCache["${isoDateStr}_${zone.countryCode}"]?.second.orEmpty() +
             sportsDbTvCache[isoDateStr]?.second.orEmpty()
-        return resolveDayMatchesTvChannelsWithMenaPriority(matches, cachedTv, zone, seasonTimeMode)
+        return resolveDayMatchesTvChannelsWithMenaPriority(
+            matches = matches,
+            tvBroadcasts = cachedTv,
+            zone = zone,
+            seasonTimeMode = seasonTimeMode,
+            manualOffsetMinutes = null,
+            playlistLiveStreamsSnapshot = emptyList()
+        )
+    }
+
+    /**
+     * Pure in-memory time-only relocalization on [Dispatchers.Default] for instant manual hour-offset
+     * adjustments. Updates only `kickoffTimeFormatted` (and corresponding date/upcoming badge) using
+     * each match's `kickoffEpochMs` and `zone.formatLocalTime(...)` with ZERO DB queries and ZERO TV re-scans.
+     */
+    suspend fun relocalizeMatchTimesOnly(
+        matches: List<FootballMatch>,
+        zone: UserCountryZone,
+        manualOffsetMinutes: Int
+    ): List<FootballMatch> = withContext(Dispatchers.Default) {
+        if (matches.isEmpty()) return@withContext emptyList()
+        val use24Hour = getKickoffUiPreferences().use24HourFormat
+        matches.map { match ->
+            val canonicalRefMoroccoTime = match.referenceMoroccoTime.ifBlank { match.kickoffTimeFormatted }
+            val effectiveEpochMs = if (match.kickoffEpochMs > 0L) {
+                match.kickoffEpochMs
+            } else {
+                deriveDefaultKickoffEpochMs(match.dayTab, canonicalRefMoroccoTime)
+            }
+            val refEpochForBadge = if (effectiveEpochMs > 0L) effectiveEpochMs else System.currentTimeMillis()
+            val localizedKickoffTime = if (effectiveEpochMs > 0L) {
+                zone.formatLocalTime(
+                    epochMs = effectiveEpochMs,
+                    manualOffsetMinutes = manualOffsetMinutes,
+                    use24Hour = use24Hour
+                )
+            } else {
+                match.kickoffTimeFormatted
+            }
+            val utcOffsetBadge = zone.getUtcOffsetBadge(
+                epochMs = refEpochForBadge,
+                manualOffsetMinutes = manualOffsetMinutes
+            )
+            val effectiveOffsetMins = zone.getEffectiveOffsetMinutes(
+                epochMs = refEpochForBadge,
+                manualOffsetMinutes = manualOffsetMinutes
+            )
+            val zoneTzId = formatGmtZoneIdFromOffsetMinutes(effectiveOffsetMins)
+            val localizedDateFormatted = "${match.dayTab.getDynamicTitle(zoneTzId)} • $utcOffsetBadge"
+            val localizedLiveBadge = if (match.status == MatchStatus.UPCOMING) {
+                localizedKickoffTime
+            } else {
+                match.liveMinuteOrBadge
+            }
+            match.copy(
+                kickoffTimeFormatted = localizedKickoffTime,
+                kickoffDateFormatted = localizedDateFormatted,
+                liveMinuteOrBadge = localizedLiveBadge,
+                referenceMoroccoTime = canonicalRefMoroccoTime,
+                kickoffEpochMs = effectiveEpochMs
+            )
+        }
+    }
+
+    /**
+     * Full non-blocking country-zone relocalization on [Dispatchers.Default]/[Dispatchers.IO].
+     * Uses the 60s cached live-stream snapshot and applies per-match IANA + [manualOffsetMinutes] kickoff times
+     * alongside regional TV broadcaster mappings.
+     */
+    suspend fun reapplyCountryZoneToMatchesAsync(
+        matches: List<FootballMatch>,
+        zone: UserCountryZone = getSelectedCountryZone(),
+        manualOffsetMinutes: Int = getManualTimeOffsetMinutes()
+    ): List<FootballMatch> {
+        if (matches.isEmpty()) return emptyList()
+        val liveSnapshot = loadActivePlaylistLiveStreamsSnapshot()
+        return withContext(Dispatchers.Default) {
+            val sampleDay = matches.first().dayTab
+            val cal = Calendar.getInstance(TimeZone.getTimeZone("Africa/Casablanca"))
+            cal.add(Calendar.DAY_OF_YEAR, sampleDay.dayOffset)
+            val isoDateStr = SimpleDateFormat("yyyy-MM-dd", Locale.US).apply {
+                timeZone = TimeZone.getTimeZone("Africa/Casablanca")
+            }.format(cal.time)
+            val cachedTv = sofascoreDayTvCache["${isoDateStr}_${zone.countryCode}"]?.second.orEmpty() +
+                sportsDbTvCache[isoDateStr]?.second.orEmpty()
+            resolveDayMatchesTvChannelsWithMenaPriority(
+                matches = matches,
+                tvBroadcasts = cachedTv,
+                zone = zone,
+                seasonTimeMode = SeasonTimeMode.AUTO,
+                manualOffsetMinutes = manualOffsetMinutes,
+                playlistLiveStreamsSnapshot = liveSnapshot
+            )
+        }
+    }
+
+    private fun formatGmtZoneIdFromOffsetMinutes(totalOffsetMinutes: Int): String {
+        val sign = if (totalOffsetMinutes >= 0) "+" else "-"
+        val absMins = kotlin.math.abs(totalOffsetMinutes)
+        return String.format(Locale.US, "GMT%s%02d:%02d", sign, absMins / 60, absMins % 60)
     }
 
     private fun tournamentPriorityRank(tournamentId: String): Int {
@@ -1514,7 +1685,9 @@ class FootballRepository(
         claimedChannelsAtKickoff: Set<String> = emptySet(),
         zone: UserCountryZone = getSelectedCountryZone(),
         seasonTimeMode: SeasonTimeMode = getSelectedSeasonTimeMode(),
-        playlistExplicitChannels: List<String> = emptyList()
+        playlistExplicitChannels: List<String> = emptyList(),
+        manualOffsetMinutes: Int? = null,
+        use24Hour: Boolean = true
     ): FootballMatch {
         val isMarquee = isMarqueeMenaMatch(match.homeTeamName, match.awayTeamName)
 
@@ -1694,26 +1867,59 @@ class FootballRepository(
 
         val canonicalRefMoroccoTime = match.referenceMoroccoTime.ifBlank { match.kickoffTimeFormatted }
         val refEpochFromMorocco = deriveDefaultKickoffEpochMs(match.dayTab, canonicalRefMoroccoTime)
-        val effectiveEpochMs = if (
+        val effectiveEpochMs = if (manualOffsetMinutes != null) {
+            if (match.kickoffEpochMs > 0L) match.kickoffEpochMs else refEpochFromMorocco
+        } else if (
             match.kickoffEpochMs > 0L &&
-            formatDynamicKickoffTime(match.kickoffEpochMs, UserZoneRegistry.defaultCountryZone, isSummer = true) == canonicalRefMoroccoTime
+            (match.referenceMoroccoTime.isBlank() ||
+                formatDynamicKickoffTime(match.kickoffEpochMs, UserZoneRegistry.defaultCountryZone, isSummer = true) == canonicalRefMoroccoTime)
         ) {
             match.kickoffEpochMs
         } else {
             refEpochFromMorocco
         }
-        val isSummer = zone.isSummerTimeActive(mode = seasonTimeMode, epochMs = effectiveEpochMs)
-        val localizedKickoffTime = if (effectiveEpochMs > 0L) {
-            formatDynamicKickoffTime(effectiveEpochMs, zone, isSummer)
-        } else {
-            zone.convertMoroccoTimeToZoneTime(
-                moroccoTimeHHmm = canonicalRefMoroccoTime,
-                mode = seasonTimeMode,
-                epochMs = System.currentTimeMillis() + (match.dayTab.dayOffset * 86_400_000L)
+
+        val localizedKickoffTime: String
+        val utcOffsetBadge: String
+        val zoneTzId: String
+        if (manualOffsetMinutes != null) {
+            val refEpochForBadge = if (effectiveEpochMs > 0L) effectiveEpochMs else System.currentTimeMillis()
+            localizedKickoffTime = if (effectiveEpochMs > 0L) {
+                zone.formatLocalTime(
+                    epochMs = effectiveEpochMs,
+                    manualOffsetMinutes = manualOffsetMinutes,
+                    use24Hour = use24Hour
+                )
+            } else {
+                zone.convertMoroccoTimeToZoneTime(
+                    moroccoTimeHHmm = canonicalRefMoroccoTime,
+                    mode = SeasonTimeMode.AUTO,
+                    epochMs = System.currentTimeMillis() + (match.dayTab.dayOffset * 86_400_000L)
+                )
+            }
+            utcOffsetBadge = zone.getUtcOffsetBadge(
+                epochMs = refEpochForBadge,
+                manualOffsetMinutes = manualOffsetMinutes
             )
+            val effectiveOffsetMins = zone.getEffectiveOffsetMinutes(
+                epochMs = refEpochForBadge,
+                manualOffsetMinutes = manualOffsetMinutes
+            )
+            zoneTzId = formatGmtZoneIdFromOffsetMinutes(effectiveOffsetMins)
+        } else {
+            val isSummer = zone.isSummerTimeActive(mode = seasonTimeMode, epochMs = effectiveEpochMs)
+            localizedKickoffTime = if (effectiveEpochMs > 0L) {
+                formatDynamicKickoffTime(effectiveEpochMs, zone, isSummer)
+            } else {
+                zone.convertMoroccoTimeToZoneTime(
+                    moroccoTimeHHmm = canonicalRefMoroccoTime,
+                    mode = seasonTimeMode,
+                    epochMs = System.currentTimeMillis() + (match.dayTab.dayOffset * 86_400_000L)
+                )
+            }
+            utcOffsetBadge = zone.getUtcOffsetBadge(epochMs = effectiveEpochMs, mode = seasonTimeMode)
+            zoneTzId = zone.getTimeZoneId(isSummer)
         }
-        val utcOffsetBadge = zone.getUtcOffsetBadge(epochMs = effectiveEpochMs, mode = seasonTimeMode)
-        val zoneTzId = zone.getTimeZoneId(isSummer)
         val localizedDateFormatted = "${match.dayTab.getDynamicTitle(zoneTzId)} • $utcOffsetBadge"
         val localizedLiveBadge = if (match.status == MatchStatus.UPCOMING) {
             localizedKickoffTime
@@ -2295,7 +2501,15 @@ class FootballRepository(
         val syncedMatches = mergedMap.values.map { match ->
             synchronizeElapsedMatchClock(match, dayTab)
         }
-        resolveDayMatchesTvChannelsWithMenaPriority(syncedMatches, tvBroadcasts)
+        val liveStreamsSnapshot = loadActivePlaylistLiveStreamsSnapshot()
+        resolveDayMatchesTvChannelsWithMenaPriority(
+            matches = syncedMatches,
+            tvBroadcasts = tvBroadcasts,
+            zone = getSelectedCountryZone(),
+            seasonTimeMode = getSelectedSeasonTimeMode(),
+            manualOffsetMinutes = if (getSelectedSeasonTimeMode() == SeasonTimeMode.AUTO) getManualTimeOffsetMinutes() else null,
+            playlistLiveStreamsSnapshot = liveStreamsSnapshot
+        )
     }
 
     private data class QuadrupleLiveDelta(
@@ -4876,6 +5090,8 @@ class FootballRepository(
         private const val KEY_COUNTRY_ONBOARDING_COMPLETED = "has_completed_country_zone_onboarding_v1"
         private const val KEY_SELECTED_COUNTRY_CODE = "user_selected_country_code_v1"
         private const val KEY_SELECTED_SEASON_TIME_MODE = "user_selected_season_time_mode_v1"
+        private const val KEY_MANUAL_TIME_OFFSET_MINUTES = "user_manual_time_offset_minutes_v1"
+        private const val LIVE_STREAMS_SNAPSHOT_CACHE_TTL_MS = 60_000L
 
         // API #1: SportAPI.ai Base URL & 2,000 req/day ceiling
         const val SPORTAPI_BASE_URL = "https://sportapi.ai/api"

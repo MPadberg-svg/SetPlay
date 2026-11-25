@@ -49,6 +49,7 @@ import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.text.SimpleDateFormat
 import java.util.Calendar
 import java.util.Date
@@ -196,6 +197,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     private val _selectedSeasonTimeMode = MutableStateFlow(footballRepository.getSelectedSeasonTimeMode())
     val selectedSeasonTimeMode: StateFlow<SeasonTimeMode> = _selectedSeasonTimeMode.asStateFlow()
+
+    private val _manualTimeOffsetMinutes = MutableStateFlow(footballRepository.getManualTimeOffsetMinutes())
+    val manualTimeOffsetMinutes: StateFlow<Int> = _manualTimeOffsetMinutes.asStateFlow()
+
+    private var zoneUpdateJob: Job? = null
+    private var scheduleRefreshJob: Job? = null
+    private var zoneChangedDuringOnboarding: Boolean = false
 
     private val _showCountryZoneModal = MutableStateFlow(false)
     val showCountryZoneModal: StateFlow<Boolean> = _showCountryZoneModal.asStateFlow()
@@ -379,8 +387,17 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     private fun formatCurrentZoneSyncTime(epochMs: Long): String {
+        val zone = _selectedCountryZone.value
+        val mode = _selectedSeasonTimeMode.value
         val zoneTz = runCatching {
-            _selectedCountryZone.value.getEffectiveTimeZone(_selectedSeasonTimeMode.value, epochMs)
+            val offsetMinutes = if (mode == SeasonTimeMode.AUTO) {
+                zone.getEffectiveOffsetMinutes(epochMs, _manualTimeOffsetMinutes.value)
+            } else {
+                zone.getEffectiveOffsetMinutes(mode, epochMs)
+            }
+            val sign = if (offsetMinutes >= 0) "+" else "-"
+            val absMins = kotlin.math.abs(offsetMinutes)
+            TimeZone.getTimeZone(String.format(Locale.US, "GMT%s%02d:%02d", sign, absMins / 60, absMins % 60))
         }.getOrElse { TimeZone.getTimeZone("Africa/Casablanca") }
         return SimpleDateFormat("HH:mm:ss", Locale.US).apply {
             timeZone = zoneTz
@@ -608,7 +625,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun refreshFootballSchedules() {
-        viewModelScope.launch {
+        scheduleRefreshJob?.cancel()
+        scheduleRefreshJob = viewModelScope.launch {
             _isLoadingMatches.value = true
             try {
                 val updatedMap = coroutineScope {
@@ -679,67 +697,195 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     /**
      * Switches the user's Country Zone (`MA`, `FR`, `ES`, `GB`, `SA`, `AE`, `EG`, `DZ`, `TN`, `QA`, `KW`, `DE`, `IT`, `PT`, `NL`, `TR`, `US`, `CA`, `BR`).
-     * Immediately re-localizes all loaded match schedules, kickoff times, UTC offset badges, and TV broadcast providers
-     * in 0ms on the UI, then triggers a background schedule sync.
+     * Immediately updates state on Main without blocking I/O, relocalizes all loaded schedules asynchronously
+     * on [Dispatchers.Default], and debounces any background network refresh by 250ms so rapid taps never race.
      */
-    fun selectCountryZone(countryCode: String) {
-        val newZone = footballRepository.setSelectedCountryZone(countryCode)
+    fun selectCountryZone(countryCode: String, triggerNetworkRefresh: Boolean = true) {
+        val newZone = UserZoneRegistry.getZoneByCode(countryCode)
         _selectedCountryZone.value = newZone
-        val mode = _selectedSeasonTimeMode.value
-
-        // Immediately re-localize all in-memory matches so kickoff times and TV channels update instantaneously
-        val relocalizedMap = _matchesByDay.value.mapValues { (_, list) ->
-            footballRepository.reapplyCountryZoneToMatches(list, newZone, mode)
+        if (_showFirstTimeTeamsOnboarding.value) {
+            zoneChangedDuringOnboarding = true
         }
-        _matchesByDay.value = relocalizedMap
-        _todayMatches.value = relocalizedMap[MatchDayTab.TODAY].orEmpty()
-        _tomorrowMatches.value = relocalizedMap[MatchDayTab.TOMORROW].orEmpty()
+        val activeOffset = _manualTimeOffsetMinutes.value
+        val currentMapSnapshot = _matchesByDay.value
+        val openDossierSnapshot = _selectedMatchDossier.value
 
-        // If a Match Center Dossier is currently open, re-localize its match and broadcast guide
-        val openDossier = _selectedMatchDossier.value
-        if (openDossier != null) {
-            val relocalizedMatch = footballRepository.reapplyCountryZoneToMatches(
-                listOf(openDossier.match),
-                newZone,
-                mode
-            ).first()
-            viewModelScope.launch {
+        zoneUpdateJob?.cancel()
+        zoneUpdateJob = viewModelScope.launch(Dispatchers.Default) {
+            withContext(Dispatchers.IO) {
+                footballRepository.setSelectedCountryZone(newZone.countryCode)
+                footballRepository.setManualTimeOffsetMinutes(activeOffset)
+            }
+
+            if (currentMapSnapshot.isNotEmpty()) {
+                val relocalizedMap = LinkedHashMap<MatchDayTab, List<FootballMatch>>(currentMapSnapshot.size)
+                for ((tab, list) in currentMapSnapshot) {
+                    relocalizedMap[tab] = footballRepository.reapplyCountryZoneToMatchesAsync(
+                        matches = list,
+                        zone = newZone,
+                        manualOffsetMinutes = activeOffset
+                    )
+                }
+                _matchesByDay.value = relocalizedMap
+                _todayMatches.value = relocalizedMap[MatchDayTab.TODAY].orEmpty()
+                _tomorrowMatches.value = relocalizedMap[MatchDayTab.TOMORROW].orEmpty()
+            }
+
+            if (openDossierSnapshot != null) {
+                val relocalizedMatch = footballRepository.reapplyCountryZoneToMatchesAsync(
+                    matches = listOf(openDossierSnapshot.match),
+                    zone = newZone,
+                    manualOffsetMinutes = activeOffset
+                ).firstOrNull() ?: openDossierSnapshot.match
+                _selectedMatchDossier.value = openDossierSnapshot.copy(
+                    match = relocalizedMatch,
+                    countryZone = newZone
+                )
                 runCatching {
-                    footballRepository.fetchMatchFullDossier(relocalizedMatch, forceRefresh = true, countryZone = newZone)
+                    footballRepository.fetchMatchFullDossier(
+                        match = relocalizedMatch,
+                        forceRefresh = true,
+                        countryZone = newZone
+                    )
                 }.onSuccess { updatedDossier ->
-                    _selectedMatchDossier.value = updatedDossier
+                    if (_selectedCountryZone.value.countryCode == newZone.countryCode &&
+                        _selectedMatchDossier.value?.match?.matchId == relocalizedMatch.matchId
+                    ) {
+                        _selectedMatchDossier.value = updatedDossier
+                    }
                 }
             }
-        }
 
-        // Refresh schedules in background for any date-boundary or live updates
-        refreshFootballSchedules()
+            if (triggerNetworkRefresh && !_showFirstTimeTeamsOnboarding.value) {
+                delay(250L)
+                refreshFootballSchedules()
+            }
+        }
+    }
+
+    /**
+     * Adjusts the universal manual hour offset by [deltaMinutes] (clamped to `-180..+180` in 60-minute steps).
+     */
+    fun adjustManualTimeOffset(deltaMinutes: Int) {
+        setManualTimeOffset(_manualTimeOffsetMinutes.value + deltaMinutes)
+    }
+
+    /**
+     * Sets the universal manual time offset in minutes (clamped to `-180..+180` in 60-minute steps)
+     * and relocalizes kickoff times purely in memory on [Dispatchers.Default] with zero DB or network I/O.
+     */
+    fun setManualTimeOffset(offsetMinutes: Int) {
+        val snapped = (offsetMinutes / 60) * 60
+        val clamped = snapped.coerceIn(-180, 180)
+        _manualTimeOffsetMinutes.value = clamped
+        if (clamped == 0 && _selectedSeasonTimeMode.value != SeasonTimeMode.AUTO) {
+            _selectedSeasonTimeMode.value = SeasonTimeMode.AUTO
+        }
+        val activeZone = _selectedCountryZone.value
+        val currentMapSnapshot = _matchesByDay.value
+        val openDossierSnapshot = _selectedMatchDossier.value
+
+        zoneUpdateJob?.cancel()
+        zoneUpdateJob = viewModelScope.launch(Dispatchers.Default) {
+            withContext(Dispatchers.IO) {
+                footballRepository.setSelectedCountryZone(activeZone.countryCode)
+                footballRepository.setManualTimeOffsetMinutes(clamped)
+                if (clamped == 0) {
+                    footballRepository.setSelectedSeasonTimeMode(SeasonTimeMode.AUTO)
+                }
+            }
+
+            if (currentMapSnapshot.isNotEmpty()) {
+                val relocalizedMap = LinkedHashMap<MatchDayTab, List<FootballMatch>>(currentMapSnapshot.size)
+                for ((tab, list) in currentMapSnapshot) {
+                    relocalizedMap[tab] = footballRepository.relocalizeMatchTimesOnly(
+                        matches = list,
+                        zone = activeZone,
+                        manualOffsetMinutes = clamped
+                    )
+                }
+                _matchesByDay.value = relocalizedMap
+                _todayMatches.value = relocalizedMap[MatchDayTab.TODAY].orEmpty()
+                _tomorrowMatches.value = relocalizedMap[MatchDayTab.TOMORROW].orEmpty()
+            }
+
+            if (openDossierSnapshot != null) {
+                val relocalizedMatch = footballRepository.relocalizeMatchTimesOnly(
+                    matches = listOf(openDossierSnapshot.match),
+                    zone = activeZone,
+                    manualOffsetMinutes = clamped
+                ).firstOrNull() ?: openDossierSnapshot.match
+                _selectedMatchDossier.value = openDossierSnapshot.copy(match = relocalizedMatch)
+            }
+        }
     }
 
     /**
      * Switches the seasonal clock mode ([SeasonTimeMode.AUTO], [SeasonTimeMode.WINTER], or [SeasonTimeMode.SUMMER])
-     * and immediately recalculates all match kickoff times and UTC badges in 0ms.
+     * off the Main thread via [zoneUpdateJob] on [Dispatchers.Default] and keeps [manualTimeOffsetMinutes] in sync.
      */
     fun selectSeasonTimeMode(mode: SeasonTimeMode) {
-        val updatedMode = footballRepository.setSelectedSeasonTimeMode(mode)
-        _selectedSeasonTimeMode.value = updatedMode
+        _selectedSeasonTimeMode.value = mode
         val activeZone = _selectedCountryZone.value
-
-        val relocalizedMap = _matchesByDay.value.mapValues { (_, list) ->
-            footballRepository.reapplyCountryZoneToMatches(list, activeZone, updatedMode)
+        val syncedManualOffset = when (mode) {
+            SeasonTimeMode.AUTO -> 0
+            SeasonTimeMode.WINTER -> {
+                val autoNow = activeZone.getAutoIanaOffsetMinutes()
+                ((activeZone.winterUtcOffsetMinutes - autoNow) / 60 * 60).coerceIn(-180, 180)
+            }
+            SeasonTimeMode.SUMMER -> {
+                val autoNow = activeZone.getAutoIanaOffsetMinutes()
+                ((activeZone.summerUtcOffsetMinutes - autoNow) / 60 * 60).coerceIn(-180, 180)
+            }
         }
-        _matchesByDay.value = relocalizedMap
-        _todayMatches.value = relocalizedMap[MatchDayTab.TODAY].orEmpty()
-        _tomorrowMatches.value = relocalizedMap[MatchDayTab.TOMORROW].orEmpty()
+        _manualTimeOffsetMinutes.value = syncedManualOffset
+        val currentMapSnapshot = _matchesByDay.value
+        val openDossierSnapshot = _selectedMatchDossier.value
 
-        val openDossier = _selectedMatchDossier.value
-        if (openDossier != null) {
-            val relocalizedMatch = footballRepository.reapplyCountryZoneToMatches(
-                listOf(openDossier.match),
-                activeZone,
-                updatedMode
-            ).first()
-            _selectedMatchDossier.value = openDossier.copy(match = relocalizedMatch)
+        zoneUpdateJob?.cancel()
+        zoneUpdateJob = viewModelScope.launch(Dispatchers.Default) {
+            withContext(Dispatchers.IO) {
+                footballRepository.setSelectedSeasonTimeMode(mode)
+                footballRepository.setManualTimeOffsetMinutes(syncedManualOffset)
+            }
+
+            if (currentMapSnapshot.isNotEmpty()) {
+                val relocalizedMap = LinkedHashMap<MatchDayTab, List<FootballMatch>>(currentMapSnapshot.size)
+                for ((tab, list) in currentMapSnapshot) {
+                    relocalizedMap[tab] = if (mode == SeasonTimeMode.AUTO) {
+                        footballRepository.relocalizeMatchTimesOnly(
+                            matches = list,
+                            zone = activeZone,
+                            manualOffsetMinutes = 0
+                        )
+                    } else {
+                        footballRepository.reapplyCountryZoneToMatches(list, activeZone, mode)
+                    }
+                }
+                _matchesByDay.value = relocalizedMap
+                _todayMatches.value = relocalizedMap[MatchDayTab.TODAY].orEmpty()
+                _tomorrowMatches.value = relocalizedMap[MatchDayTab.TOMORROW].orEmpty()
+            }
+
+            if (openDossierSnapshot != null) {
+                val relocalizedMatch = if (mode == SeasonTimeMode.AUTO) {
+                    footballRepository.relocalizeMatchTimesOnly(
+                        matches = listOf(openDossierSnapshot.match),
+                        zone = activeZone,
+                        manualOffsetMinutes = 0
+                    ).firstOrNull() ?: openDossierSnapshot.match
+                } else {
+                    footballRepository.reapplyCountryZoneToMatches(
+                        listOf(openDossierSnapshot.match),
+                        activeZone,
+                        mode
+                    ).firstOrNull() ?: openDossierSnapshot.match
+                }
+                _selectedMatchDossier.value = openDossierSnapshot.copy(
+                    match = relocalizedMatch,
+                    seasonTimeMode = mode
+                )
+            }
         }
     }
 
@@ -751,7 +897,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun autoDetectAndSelectCountryZone(): UserCountryZone {
         val detected = UserZoneRegistry.detectDeviceCountryZone()
-        selectSeasonTimeMode(SeasonTimeMode.AUTO)
+        _selectedSeasonTimeMode.value = SeasonTimeMode.AUTO
+        _manualTimeOffsetMinutes.value = 0
+        viewModelScope.launch(Dispatchers.IO) {
+            footballRepository.setSelectedSeasonTimeMode(SeasonTimeMode.AUTO)
+            footballRepository.setManualTimeOffsetMinutes(0)
+        }
         selectCountryZone(detected.countryCode)
         return detected
     }
@@ -910,6 +1061,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         _showFirstTimeTeamsOnboarding.value = false
         _teamSearchQuery.value = ""
         _teamSearchResults.value = emptyList()
+        if (zoneChangedDuringOnboarding) {
+            zoneChangedDuringOnboarding = false
+            refreshFootballSchedules()
+        }
     }
 
     fun updateKickoffUiPreferences(transform: (KickoffUiPreferences) -> KickoffUiPreferences) {

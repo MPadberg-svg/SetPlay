@@ -36,6 +36,9 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.ArrowForward
+import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.EmojiEvents
@@ -44,6 +47,7 @@ import androidx.compose.material.icons.filled.LiveTv
 import androidx.compose.material.icons.filled.LocationOn
 import androidx.compose.material.icons.filled.Public
 import androidx.compose.material.icons.filled.PushPin
+import androidx.compose.material.icons.filled.Remove
 import androidx.compose.material.icons.filled.Schedule
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.SportsSoccer
@@ -126,7 +130,8 @@ fun UserCountryZoneCapsuleButton(
     selectedZone: UserCountryZone,
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
-    seasonTimeMode: SeasonTimeMode = SeasonTimeMode.AUTO
+    seasonTimeMode: SeasonTimeMode = SeasonTimeMode.AUTO,
+    manualTimeOffsetMinutes: Int = 0
 ) {
     val interactionSource = remember { MutableInteractionSource() }
     val isPressed by interactionSource.collectIsPressedAsState()
@@ -138,16 +143,11 @@ fun UserCountryZoneCapsuleButton(
         ),
         label = "country_zone_capsule_scale"
     )
-    val utcBadge = remember(selectedZone.countryCode, seasonTimeMode) {
-        selectedZone.getUtcOffsetBadge(mode = seasonTimeMode)
-    }
-    val seasonEmoji = remember(selectedZone.countryCode, seasonTimeMode) {
-        if (!selectedZone.hasSeasonalTimeChange) {
-            ""
-        } else if (selectedZone.isSummerTimeActive(mode = seasonTimeMode)) {
-            "☀️ "
+    val utcBadge = remember(selectedZone.countryCode, seasonTimeMode, manualTimeOffsetMinutes) {
+        if (seasonTimeMode == SeasonTimeMode.AUTO) {
+            selectedZone.getUtcOffsetBadge(manualOffsetMinutes = manualTimeOffsetMinutes)
         } else {
-            "❄️ "
+            selectedZone.getUtcOffsetBadge(mode = seasonTimeMode)
         }
     }
 
@@ -199,7 +199,7 @@ fun UserCountryZoneCapsuleButton(
                     .background(KickoffPitchEmerald)
             )
             Text(
-                text = "$seasonEmoji$utcBadge",
+                text = utcBadge,
                 color = KickoffMistSilver,
                 fontSize = 9.5.sp,
                 fontWeight = FontWeight.ExtraBold,
@@ -212,6 +212,199 @@ fun UserCountryZoneCapsuleButton(
                 tint = KickoffMistSilver,
                 modifier = Modifier.size(13.dp)
             )
+        }
+    }
+}
+
+/**
+ * Unified, clean single-row Local Clock Adjustment control shared across Onboarding and Settings.
+ * Displays the live IANA + manual offset clock status and compact `-1h` / `Auto` / `+1h` controls (-3h..+3h)
+ * with full touch and Android TV D-Pad focus support.
+ */
+@Composable
+fun LocalClockAdjustmentControl(
+    zone: UserCountryZone,
+    manualTimeOffsetMinutes: Int,
+    onAdjustManualTimeOffset: (Int) -> Unit,
+    onSetManualTimeOffset: (Int) -> Unit,
+    modifier: Modifier = Modifier,
+    use24Hour: Boolean = true,
+    showLiveClockPreview: Boolean = true
+) {
+    val nowMs = remember(zone.countryCode, manualTimeOffsetMinutes, use24Hour) {
+        System.currentTimeMillis()
+    }
+    val localClock = remember(zone.countryCode, manualTimeOffsetMinutes, use24Hour, nowMs) {
+        zone.formatLocalTime(
+            epochMs = nowMs,
+            manualOffsetMinutes = manualTimeOffsetMinutes,
+            use24Hour = use24Hour
+        )
+    }
+    val utcBadge = remember(zone.countryCode, manualTimeOffsetMinutes, nowMs) {
+        zone.getUtcOffsetBadge(
+            epochMs = nowMs,
+            manualOffsetMinutes = manualTimeOffsetMinutes
+        )
+    }
+    val statusSubtitle = remember(zone.countryCode, manualTimeOffsetMinutes, nowMs) {
+        val rawStatus = zone.getClockStatusLabel(
+            epochMs = nowMs,
+            manualOffsetMinutes = manualTimeOffsetMinutes
+        )
+        when {
+            manualTimeOffsetMinutes < 0 -> "Adjusted ${manualTimeOffsetMinutes / 60}h"
+            manualTimeOffsetMinutes > 0 -> "Adjusted +${manualTimeOffsetMinutes / 60}h"
+            rawStatus.contains("DST active", ignoreCase = true) -> "Auto DST"
+            rawStatus.contains("Fixed", ignoreCase = true) -> "Auto Fixed"
+            else -> "Auto Standard"
+        }
+    }
+    val isAuto = manualTimeOffsetMinutes == 0
+    val canDecrement = manualTimeOffsetMinutes > -180
+    val canIncrement = manualTimeOffsetMinutes < 180
+
+    Surface(
+        color = KickoffTurfSurface,
+        shape = RoundedCornerShape(14.dp),
+        border = BorderStroke(0.9.dp, KickoffEmeraldBorder),
+        modifier = modifier
+            .fillMaxWidth()
+            .testTag("local_clock_adjustment_control")
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 12.dp, vertical = 10.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween
+        ) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier.weight(1f)
+            ) {
+                Box(
+                    contentAlignment = Alignment.Center,
+                    modifier = Modifier
+                        .size(32.dp)
+                        .clip(RoundedCornerShape(9.dp))
+                        .background(KickoffCanopyElevated)
+                        .border(0.7.dp, KickoffEmeraldBorder, RoundedCornerShape(9.dp))
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Schedule,
+                        contentDescription = null,
+                        tint = KickoffPitchEmerald,
+                        modifier = Modifier.size(16.dp)
+                    )
+                }
+                Spacer(modifier = Modifier.width(10.dp))
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = "Local Clock",
+                        color = KickoffFloodlightWhite,
+                        fontSize = 12.5.sp,
+                        fontWeight = FontWeight.Bold,
+                        maxLines = 1
+                    )
+                    Text(
+                        text = if (showLiveClockPreview) {
+                            "$localClock · $utcBadge · $statusSubtitle"
+                        } else {
+                            "$utcBadge · $statusSubtitle"
+                        },
+                        color = if (isAuto) KickoffMistSilver else KickoffPitchEmerald,
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        style = TabularNumeralTextStyle,
+                        modifier = Modifier.testTag("local_clock_status_text")
+                    )
+                }
+            }
+
+            Spacer(modifier = Modifier.width(8.dp))
+
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(5.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Surface(
+                    color = if (canDecrement) KickoffCanopyElevated else KickoffGlassWell.copy(alpha = 0.5f),
+                    shape = RoundedCornerShape(9.dp),
+                    border = BorderStroke(
+                        width = 0.8.dp,
+                        color = if (canDecrement) KickoffEmeraldBorder else KickoffEmeraldBorder.copy(alpha = 0.35f)
+                    ),
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(9.dp))
+                        .tvFocusableControl(
+                            accentColor = KickoffPitchEmerald,
+                            shape = RoundedCornerShape(9.dp),
+                            onClick = { if (canDecrement) onAdjustManualTimeOffset(-60) }
+                        )
+                        .testTag("local_clock_minus_1h_btn")
+                ) {
+                    Text(
+                        text = "-1h",
+                        color = if (canDecrement) KickoffFloodlightWhite else KickoffMistSilver.copy(alpha = 0.4f),
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.ExtraBold,
+                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 7.dp)
+                    )
+                }
+
+                Surface(
+                    color = if (isAuto) KickoffPitchEmerald else KickoffCanopyElevated,
+                    shape = RoundedCornerShape(9.dp),
+                    border = BorderStroke(
+                        width = if (isAuto) 1.dp else 0.8.dp,
+                        color = if (isAuto) KickoffPitchEmerald else KickoffEmeraldBorder
+                    ),
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(9.dp))
+                        .tvFocusableControl(
+                            accentColor = KickoffPitchEmerald,
+                            shape = RoundedCornerShape(9.dp),
+                            onClick = { onSetManualTimeOffset(0) }
+                        )
+                        .testTag("local_clock_auto_btn")
+                ) {
+                    Text(
+                        text = "Auto",
+                        color = if (isAuto) KickoffPitchBlack else KickoffFloodlightWhite,
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.ExtraBold,
+                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 7.dp)
+                    )
+                }
+
+                Surface(
+                    color = if (canIncrement) KickoffCanopyElevated else KickoffGlassWell.copy(alpha = 0.5f),
+                    shape = RoundedCornerShape(9.dp),
+                    border = BorderStroke(
+                        width = 0.8.dp,
+                        color = if (canIncrement) KickoffEmeraldBorder else KickoffEmeraldBorder.copy(alpha = 0.35f)
+                    ),
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(9.dp))
+                        .tvFocusableControl(
+                            accentColor = KickoffPitchEmerald,
+                            shape = RoundedCornerShape(9.dp),
+                            onClick = { if (canIncrement) onAdjustManualTimeOffset(60) }
+                        )
+                        .testTag("local_clock_plus_1h_btn")
+                ) {
+                    Text(
+                        text = "+1h",
+                        color = if (canIncrement) KickoffFloodlightWhite else KickoffMistSilver.copy(alpha = 0.4f),
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.ExtraBold,
+                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 7.dp)
+                    )
+                }
+            }
         }
     }
 }
@@ -386,29 +579,17 @@ fun OnboardingCountryZoneSelectorCard(
                         }
                     }
 
-                    Surface(
-                        color = providerStyle.surfaceColor,
-                        shape = RoundedCornerShape(6.dp),
-                        border = BorderStroke(0.6.dp, providerStyle.borderColor)
-                    ) {
-                        Text(
-                            text = selectedZone.iptvCategoryPrefixes.take(2).joinToString(" "),
-                            color = providerStyle.textColor,
-                            fontSize = 8.5.sp,
-                            fontWeight = FontWeight.Bold,
-                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 3.dp)
-                        )
+                    val localClock = remember(selectedZone.countryCode, seasonTimeMode) {
+                        selectedZone.formatLocalTime(System.currentTimeMillis(), manualOffsetMinutes = 0)
                     }
+                    Text(
+                        text = localClock,
+                        color = KickoffPitchEmerald,
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.ExtraBold,
+                        style = TabularNumeralTextStyle
+                    )
                 }
-            }
-
-            // Seasonal Clock Switcher (Winter Time vs. Summer Time) when the selected country uses 2 seasonal offsets
-            if (selectedZone.hasSeasonalTimeChange) {
-                SeasonTimeModeCompactSelectorRow(
-                    zone = selectedZone,
-                    selectedMode = seasonTimeMode,
-                    onSelectMode = onSelectSeasonTimeMode
-                )
             }
 
             // Horizontal Quick-Switch Country Pills
@@ -564,6 +745,10 @@ fun UserCountryZoneBottomSheet(
     onDismiss: () -> Unit,
     seasonTimeMode: SeasonTimeMode = SeasonTimeMode.AUTO,
     onSelectSeasonTimeMode: (SeasonTimeMode) -> Unit = {},
+    manualTimeOffsetMinutes: Int = 0,
+    onSetManualTimeOffset: (Int) -> Unit = {},
+    onAdjustManualTimeOffset: (Int) -> Unit = {},
+    use24HourFormat: Boolean = true,
     onPrioritizeCountryLeague: () -> Unit = {}
 ) {
     var searchQuery by remember { mutableStateOf("") }
@@ -629,7 +814,7 @@ fun UserCountryZoneBottomSheet(
                             fontWeight = FontWeight.ExtraBold
                         )
                         Text(
-                            text = "Sync Winter/Summer timezone, kickoff clocks & TV channels",
+                            text = "Sync local IANA timezone, kickoff clocks & TV channels",
                             color = KickoffMistSilver,
                             fontSize = 11.5.sp
                         )
@@ -649,11 +834,13 @@ fun UserCountryZoneBottomSheet(
 
             Spacer(modifier = Modifier.height(10.dp))
 
-            // 2. Active Country Zone Live Telemetry Banner + Winter/Summer Switcher + Auto-Detect Button
+            // 2. Active Country Zone Live Telemetry Banner + Unified Local Clock Stepper + Auto-Detect Button
             ActiveCountryZoneTelemetryBanner(
                 zone = selectedZone,
-                seasonTimeMode = seasonTimeMode,
-                onSelectSeasonTimeMode = onSelectSeasonTimeMode,
+                manualTimeOffsetMinutes = manualTimeOffsetMinutes,
+                onSetManualTimeOffset = onSetManualTimeOffset,
+                onAdjustManualTimeOffset = onAdjustManualTimeOffset,
+                use24HourFormat = use24HourFormat,
                 onAutoDetect = onAutoDetectCountryZone,
                 spotlightPinnedFeedback = spotlightPinnedFeedback,
                 onPrioritizeCountryLeague = {
@@ -754,7 +941,8 @@ fun UserCountryZoneBottomSheet(
                     val isSelected = zone.countryCode.equals(selectedZone.countryCode, ignoreCase = true)
                     CountryZoneOptionCard(
                         zone = zone,
-                        seasonTimeMode = if (isSelected) seasonTimeMode else SeasonTimeMode.AUTO,
+                        manualTimeOffsetMinutes = if (isSelected) manualTimeOffsetMinutes else 0,
+                        use24HourFormat = use24HourFormat,
                         isSelected = isSelected,
                         onClick = {
                             onSelectCountryZone(zone.countryCode)
@@ -771,17 +959,35 @@ fun UserCountryZoneBottomSheet(
 @Composable
 private fun ActiveCountryZoneTelemetryBanner(
     zone: UserCountryZone,
-    seasonTimeMode: SeasonTimeMode,
-    onSelectSeasonTimeMode: (SeasonTimeMode) -> Unit,
+    manualTimeOffsetMinutes: Int = 0,
+    onSetManualTimeOffset: (Int) -> Unit = {},
+    onAdjustManualTimeOffset: (Int) -> Unit = {},
+    use24HourFormat: Boolean = true,
     onAutoDetect: () -> Unit,
     spotlightPinnedFeedback: Boolean,
     onPrioritizeCountryLeague: (() -> Unit)? = null
 ) {
-    val localClock = remember(zone.countryCode, seasonTimeMode) {
-        zone.formatCurrentLocalClock(mode = seasonTimeMode)
+    val nowMs = remember(zone.countryCode, manualTimeOffsetMinutes, use24HourFormat) {
+        System.currentTimeMillis()
     }
-    val utcBadge = remember(zone.countryCode, seasonTimeMode) {
-        zone.getUtcOffsetBadge(mode = seasonTimeMode)
+    val localClock = remember(zone.countryCode, manualTimeOffsetMinutes, use24HourFormat, nowMs) {
+        zone.formatLocalTime(
+            epochMs = nowMs,
+            manualOffsetMinutes = manualTimeOffsetMinutes,
+            use24Hour = use24HourFormat
+        )
+    }
+    val utcBadge = remember(zone.countryCode, manualTimeOffsetMinutes, nowMs) {
+        zone.getUtcOffsetBadge(
+            epochMs = nowMs,
+            manualOffsetMinutes = manualTimeOffsetMinutes
+        )
+    }
+    val clockStatus = remember(zone.countryCode, manualTimeOffsetMinutes, nowMs) {
+        zone.getClockStatusLabel(
+            epochMs = nowMs,
+            manualOffsetMinutes = manualTimeOffsetMinutes
+        )
     }
 
     Surface(
@@ -851,10 +1057,12 @@ private fun ActiveCountryZoneTelemetryBanner(
                             }
                         }
                         Text(
-                            text = zone.getDualSeasonBadgeSummary(),
+                            text = "${zone.timeZoneId} · $clockStatus",
                             color = KickoffMistSilver,
                             fontSize = 10.sp,
-                            fontWeight = FontWeight.SemiBold
+                            fontWeight = FontWeight.SemiBold,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
                         )
                     }
                 }
@@ -866,7 +1074,11 @@ private fun ActiveCountryZoneTelemetryBanner(
                     border = BorderStroke(0.8.dp, KickoffPitchEmerald.copy(alpha = 0.7f)),
                     modifier = Modifier
                         .clip(RoundedCornerShape(10.dp))
-                        .clickable { onAutoDetect() }
+                        .tvFocusableControl(
+                            accentColor = KickoffPitchEmerald,
+                            shape = RoundedCornerShape(10.dp),
+                            onClick = onAutoDetect
+                        )
                         .testTag("auto_detect_country_zone_btn")
                 ) {
                     Row(
@@ -890,14 +1102,15 @@ private fun ActiveCountryZoneTelemetryBanner(
                 }
             }
 
-            // Seasonal Time Mode Switcher (Auto vs. Winter Time vs. Summer Time)
-            if (zone.hasSeasonalTimeChange) {
-                SeasonTimeModeCompactSelectorRow(
-                    zone = zone,
-                    selectedMode = seasonTimeMode,
-                    onSelectMode = onSelectSeasonTimeMode
-                )
-            }
+            // Unified Local Clock Adjustment Control (-1h / Auto / +1h)
+            LocalClockAdjustmentControl(
+                zone = zone,
+                manualTimeOffsetMinutes = manualTimeOffsetMinutes,
+                onAdjustManualTimeOffset = onAdjustManualTimeOffset,
+                onSetManualTimeOffset = onSetManualTimeOffset,
+                use24Hour = use24HourFormat,
+                showLiveClockPreview = false
+            )
 
             // Telemetry Row: Local Clock + UTC Offset + Primary TV Broadcasters + Pin Domestic League CTA
             Row(
@@ -999,22 +1212,26 @@ private fun ActiveCountryZoneTelemetryBanner(
 @Composable
 private fun CountryZoneOptionCard(
     zone: UserCountryZone,
-    seasonTimeMode: SeasonTimeMode,
+    manualTimeOffsetMinutes: Int = 0,
+    use24HourFormat: Boolean = true,
     isSelected: Boolean,
     onClick: () -> Unit
 ) {
-    val utcBadge = remember(zone.countryCode, seasonTimeMode) {
-        zone.getUtcOffsetBadge(mode = seasonTimeMode)
+    val nowMs = remember(zone.countryCode, manualTimeOffsetMinutes, use24HourFormat) {
+        System.currentTimeMillis()
     }
-    val localClock = remember(zone.countryCode, seasonTimeMode) {
-        zone.formatCurrentLocalClock(mode = seasonTimeMode)
+    val utcBadge = remember(zone.countryCode, manualTimeOffsetMinutes, nowMs) {
+        zone.getUtcOffsetBadge(epochMs = nowMs, manualOffsetMinutes = manualTimeOffsetMinutes)
     }
-    val dualSeasonSummary = remember(zone.countryCode) {
-        if (zone.hasSeasonalTimeChange) {
-            "❄️ ${zone.winterGmtBadge} / ☀️ ${zone.summerGmtBadge}"
-        } else {
-            "Permanent ${zone.winterGmtBadge}"
-        }
+    val localClock = remember(zone.countryCode, manualTimeOffsetMinutes, use24HourFormat, nowMs) {
+        zone.formatLocalTime(
+            epochMs = nowMs,
+            manualOffsetMinutes = manualTimeOffsetMinutes,
+            use24Hour = use24HourFormat
+        )
+    }
+    val clockStatus = remember(zone.countryCode, manualTimeOffsetMinutes, nowMs) {
+        zone.getClockStatusLabel(epochMs = nowMs, manualOffsetMinutes = manualTimeOffsetMinutes)
     }
     val providerStyle = remember(zone.primaryTvProviderName) {
         resolveBroadcastProviderBadgeStyle(zone.primaryTvProviderName)
@@ -1030,7 +1247,11 @@ private fun CountryZoneOptionCard(
         modifier = Modifier
             .fillMaxWidth()
             .clip(RoundedCornerShape(14.dp))
-            .clickable(onClick = onClick)
+            .tvFocusableControl(
+                accentColor = KickoffPitchEmerald,
+                shape = RoundedCornerShape(14.dp),
+                onClick = onClick
+            )
             .testTag("country_zone_card_${zone.countryCode}")
     ) {
         Row(
@@ -1083,20 +1304,22 @@ private fun CountryZoneOptionCard(
                             border = BorderStroke(0.5.dp, KickoffEmeraldBorder)
                         ) {
                             Text(
-                                text = "$localClock • $utcBadge",
+                                text = "$localClock · $utcBadge",
                                 color = KickoffFloodlightVolt,
                                 fontSize = 8.5.sp,
                                 fontWeight = FontWeight.ExtraBold,
+                                style = TabularNumeralTextStyle,
                                 modifier = Modifier.padding(horizontal = 5.dp, vertical = 1.dp)
                             )
                         }
                         Spacer(modifier = Modifier.width(5.dp))
                         Text(
-                            text = dualSeasonSummary,
+                            text = clockStatus,
                             color = KickoffMistSilver,
                             fontSize = 8.5.sp,
                             fontWeight = FontWeight.SemiBold,
-                            maxLines = 1
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
                         )
                     }
 
@@ -1269,21 +1492,116 @@ fun LiveGoalAlertBanner(
     }
 }
 
+private val ONBOARDING_QUICK_COUNTRY_CODES = listOf(
+    "MA", "SA", "AE", "EG", "FR", "ES", "GB", "US", "DE", "IT", "PT", "QA", "DZ", "TN", "TR", "CA", "BR"
+)
+
+private val ONBOARDING_GLOBAL_GIANTS = listOf(
+    FootballTeam(
+        teamId = "giant_real_madrid",
+        name = "Real Madrid",
+        shortName = "RMA",
+        badgeUrl = "",
+        country = "Spain",
+        primaryLeague = "LaLiga EA Sports"
+    ),
+    FootballTeam(
+        teamId = "giant_fc_barcelona",
+        name = "FC Barcelona",
+        shortName = "BAR",
+        badgeUrl = "",
+        country = "Spain",
+        primaryLeague = "LaLiga EA Sports"
+    ),
+    FootballTeam(
+        teamId = "giant_arsenal",
+        name = "Arsenal",
+        shortName = "ARS",
+        badgeUrl = "",
+        country = "England",
+        primaryLeague = "Premier League"
+    ),
+    FootballTeam(
+        teamId = "giant_liverpool",
+        name = "Liverpool",
+        shortName = "LIV",
+        badgeUrl = "",
+        country = "England",
+        primaryLeague = "Premier League"
+    ),
+    FootballTeam(
+        teamId = "giant_man_city",
+        name = "Manchester City",
+        shortName = "MCI",
+        badgeUrl = "",
+        country = "England",
+        primaryLeague = "Premier League"
+    ),
+    FootballTeam(
+        teamId = "giant_psg",
+        name = "Paris Saint-Germain",
+        shortName = "PSG",
+        badgeUrl = "",
+        country = "France",
+        primaryLeague = "Ligue 1 McDonald's"
+    ),
+    FootballTeam(
+        teamId = "giant_bayern",
+        name = "Bayern Munich",
+        shortName = "BAY",
+        badgeUrl = "",
+        country = "Germany",
+        primaryLeague = "Bundesliga"
+    ),
+    FootballTeam(
+        teamId = "giant_inter",
+        name = "Inter Milan",
+        shortName = "INT",
+        badgeUrl = "",
+        country = "Italy",
+        primaryLeague = "Serie A"
+    )
+)
+
+private fun buildQuickOnboardingClub(clubName: String, zone: UserCountryZone): FootballTeam {
+    val slug = clubName.lowercase().replace(Regex("[^a-z0-9]+"), "_").trim('_')
+    val shortCode = clubName.split(" ")
+        .filter { it.isNotBlank() }
+        .take(3)
+        .joinToString("") { it.take(1).uppercase() }
+        .ifBlank { clubName.take(3).uppercase() }
+    return FootballTeam(
+        teamId = "quick_${zone.countryCode.lowercase()}_$slug",
+        name = clubName,
+        shortName = shortCode,
+        badgeUrl = "",
+        country = zone.countryName,
+        primaryLeague = zone.regionSubtitle
+    )
+}
+
 /**
- * First-Time Favorite Teams & Country Zone Onboarding Modal (`FirstTimeFavoriteTeamsDialog`)
- * styled with the Floodlight Noir & Pitch Emerald Brand Color Kit.
+ * First-Time Guided 2-Step Onboarding Modal (`FirstTimeFavoriteTeamsDialog`):
+ * - Step 1: Region & Local Clock (Active Region summary card, quick country chips, unified `-1h / Auto / +1h` stepper).
+ * - Step 2: Follow Your Clubs (Search input + 1-tap Popular in [Country] & Global Giants chips + Selected clubs strip).
+ * Adapts cleanly between Mobile (`SetPlayEdition.PHONE`) and widescreen 2-column Android TV (`SetPlayEdition.TV`).
  */
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun FirstTimeFavoriteTeamsDialog(
     selectedCountryZone: UserCountryZone = UserZoneRegistry.defaultCountryZone,
     selectedSeasonTimeMode: SeasonTimeMode = SeasonTimeMode.AUTO,
+    manualTimeOffsetMinutes: Int = 0,
+    activeEdition: SetPlayEdition = SetPlayEdition.PHONE,
+    use24HourFormat: Boolean = true,
     searchQuery: String,
     searchResults: List<FootballTeam>,
     isSearching: Boolean,
     selectedFavorites: List<FavoriteTeamEntity>,
     onSelectCountryZone: (String) -> Unit = {},
     onSelectSeasonTimeMode: (SeasonTimeMode) -> Unit = {},
+    onSetManualTimeOffset: (Int) -> Unit = {},
+    onAdjustManualTimeOffset: (Int) -> Unit = {},
     onAutoDetectCountryZone: () -> Unit = {},
     onOpenFullCountryZoneSheet: () -> Unit = {},
     onSearchQueryChange: (String) -> Unit,
@@ -1291,293 +1609,1012 @@ fun FirstTimeFavoriteTeamsDialog(
     onRemoveFavoriteTeam: (String) -> Unit,
     onCompleteOnboarding: () -> Unit
 ) {
+    var currentStep by remember { mutableIntStateOf(1) }
+    val isTv = activeEdition == SetPlayEdition.TV
+    val allZones = UserZoneRegistry.allCountryZones
+    val quickZones = remember(allZones) {
+        val byCode = allZones.associateBy { it.countryCode }
+        val curated = ONBOARDING_QUICK_COUNTRY_CODES.mapNotNull { byCode[it] }
+        val remainder = allZones.filter { zone -> curated.none { it.countryCode == zone.countryCode } }
+        curated + remainder
+    }
+    val progressFraction by animateFloatAsState(
+        targetValue = if (currentStep == 1) 0.5f else 1f,
+        animationSpec = spring(stiffness = Spring.StiffnessMediumLow),
+        label = "onboarding_step_progress"
+    )
+    val nowMs = remember(selectedCountryZone.countryCode, manualTimeOffsetMinutes, use24HourFormat) {
+        System.currentTimeMillis()
+    }
+    val liveLocalClock = remember(selectedCountryZone.countryCode, manualTimeOffsetMinutes, use24HourFormat, nowMs) {
+        selectedCountryZone.formatLocalTime(
+            epochMs = nowMs,
+            manualOffsetMinutes = manualTimeOffsetMinutes,
+            use24Hour = use24HourFormat
+        )
+    }
+    val liveUtcBadge = remember(selectedCountryZone.countryCode, manualTimeOffsetMinutes, nowMs) {
+        selectedCountryZone.getUtcOffsetBadge(
+            epochMs = nowMs,
+            manualOffsetMinutes = manualTimeOffsetMinutes
+        )
+    }
+    val localPopularClubs = remember(selectedCountryZone.countryCode) {
+        selectedCountryZone.popularLocalClubs.map { buildQuickOnboardingClub(it, selectedCountryZone) }
+    }
+
+    val renderStepOneBody: @Composable () -> Unit = {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .verticalScroll(rememberScrollState()),
+            verticalArrangement = Arrangement.spacedBy(14.dp)
+        ) {
+            // Single Elevated Active Region Card (zero nested sub-boxes, zero raw IPTV pipe prefixes)
+            Surface(
+                color = KickoffCanopyElevated,
+                shape = RoundedCornerShape(16.dp),
+                border = BorderStroke(1.dp, KickoffPitchEmerald.copy(alpha = 0.55f)),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .testTag("onboarding_country_zone_card")
+            ) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(14.dp),
+                    verticalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.Top
+                    ) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier.weight(1f)
+                        ) {
+                            Text(
+                                text = selectedCountryZone.flagEmoji,
+                                fontSize = 28.sp
+                            )
+                            Spacer(modifier = Modifier.width(12.dp))
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    text = selectedCountryZone.countryName,
+                                    color = KickoffFloodlightWhite,
+                                    fontSize = 16.sp,
+                                    fontWeight = FontWeight.ExtraBold,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                                Spacer(modifier = Modifier.height(2.dp))
+                                Text(
+                                    text = "$liveLocalClock · $liveUtcBadge",
+                                    color = KickoffPitchEmerald,
+                                    fontSize = 13.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    style = TabularNumeralTextStyle,
+                                    modifier = Modifier.testTag("onboarding_active_clock_readout")
+                                )
+                            }
+                        }
+
+                        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                            Surface(
+                                color = KickoffTurfSurface,
+                                shape = RoundedCornerShape(9.dp),
+                                border = BorderStroke(0.8.dp, KickoffEmeraldBorder),
+                                modifier = Modifier
+                                    .clip(RoundedCornerShape(9.dp))
+                                    .tvFocusableControl(
+                                        accentColor = KickoffPitchEmerald,
+                                        shape = RoundedCornerShape(9.dp),
+                                        onClick = onAutoDetectCountryZone
+                                    )
+                                    .testTag("onboarding_auto_detect_zone_btn")
+                            ) {
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    modifier = Modifier.padding(horizontal = 9.dp, vertical = 6.dp)
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.LocationOn,
+                                        contentDescription = "Auto-Detect Region",
+                                        tint = KickoffPitchEmerald,
+                                        modifier = Modifier.size(12.dp)
+                                    )
+                                    Spacer(modifier = Modifier.width(4.dp))
+                                    Text(
+                                        text = "Auto-Detect",
+                                        color = KickoffFloodlightWhite,
+                                        fontSize = 10.sp,
+                                        fontWeight = FontWeight.Bold
+                                    )
+                                }
+                            }
+
+                            Surface(
+                                color = KickoffPitchEmerald.copy(alpha = 0.16f),
+                                shape = RoundedCornerShape(9.dp),
+                                border = BorderStroke(0.8.dp, KickoffPitchEmerald.copy(alpha = 0.7f)),
+                                modifier = Modifier
+                                    .clip(RoundedCornerShape(9.dp))
+                                    .tvFocusableControl(
+                                        accentColor = KickoffPitchEmerald,
+                                        shape = RoundedCornerShape(9.dp),
+                                        onClick = onOpenFullCountryZoneSheet
+                                    )
+                                    .testTag("onboarding_open_all_zones_btn")
+                            ) {
+                                Text(
+                                    text = "All ${allZones.size} Zones",
+                                    color = KickoffFloodlightWhite,
+                                    fontSize = 10.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    modifier = Modifier.padding(horizontal = 9.dp, vertical = 6.dp)
+                                )
+                            }
+                        }
+                    }
+
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.LiveTv,
+                            contentDescription = null,
+                            tint = KickoffMistSilver,
+                            modifier = Modifier.size(13.dp)
+                        )
+                        Text(
+                            text = "TV: ${selectedCountryZone.primaryTvProviderName}",
+                            color = KickoffMistSilver,
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.Medium,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+                }
+            }
+
+            // Quick-Select Popular Countries Row
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text(
+                    text = "POPULAR REGIONS",
+                    color = KickoffMistSilver,
+                    fontSize = 10.5.sp,
+                    fontWeight = FontWeight.ExtraBold,
+                    letterSpacing = 0.7.sp
+                )
+                LazyRow(
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    contentPadding = PaddingValues(vertical = 2.dp),
+                    modifier = Modifier.testTag("onboarding_country_pills_row")
+                ) {
+                    items(quickZones, key = { it.countryCode }) { zone ->
+                        val isSelected = zone.countryCode.equals(selectedCountryZone.countryCode, ignoreCase = true)
+                        val chipBg by animateColorAsState(
+                            targetValue = if (isSelected) KickoffPitchEmerald.copy(alpha = 0.22f) else KickoffTurfSurface,
+                            animationSpec = tween(160),
+                            label = "onboarding_zone_bg_${zone.countryCode}"
+                        )
+                        Surface(
+                            color = chipBg,
+                            shape = RoundedCornerShape(50),
+                            border = BorderStroke(
+                                width = if (isSelected) 1.3.dp else 0.8.dp,
+                                color = if (isSelected) KickoffPitchEmerald else KickoffEmeraldBorder
+                            ),
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(50))
+                                .tvFocusableControl(
+                                    accentColor = KickoffPitchEmerald,
+                                    shape = RoundedCornerShape(50),
+                                    onClick = { onSelectCountryZone(zone.countryCode) }
+                                )
+                                .testTag("onboarding_zone_chip_${zone.countryCode}")
+                        ) {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)
+                            ) {
+                                Text(text = zone.flagEmoji, fontSize = 13.sp)
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text(
+                                    text = zone.countryName,
+                                    color = KickoffFloodlightWhite,
+                                    fontSize = 12.sp,
+                                    fontWeight = if (isSelected) FontWeight.ExtraBold else FontWeight.SemiBold,
+                                    maxLines = 1
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Single-Row Unified Local Clock Adjustment Control (-1h / Auto / +1h)
+            LocalClockAdjustmentControl(
+                zone = selectedCountryZone,
+                manualTimeOffsetMinutes = manualTimeOffsetMinutes,
+                onAdjustManualTimeOffset = onAdjustManualTimeOffset,
+                onSetManualTimeOffset = onSetManualTimeOffset,
+                use24Hour = use24HourFormat,
+                showLiveClockPreview = true
+            )
+        }
+    }
+
+    val renderStepTwoBody: @Composable () -> Unit = {
+        Column(
+            modifier = Modifier.fillMaxWidth(),
+            verticalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            // Step 2 Header with Back to Step 1
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Surface(
+                    color = KickoffTurfSurface,
+                    shape = RoundedCornerShape(10.dp),
+                    border = BorderStroke(0.8.dp, KickoffEmeraldBorder),
+                    modifier = Modifier
+                        .size(36.dp)
+                        .clip(RoundedCornerShape(10.dp))
+                        .tvFocusableControl(
+                            accentColor = KickoffPitchEmerald,
+                            shape = RoundedCornerShape(10.dp),
+                            onClick = { currentStep = 1 }
+                        )
+                        .testTag("onboarding_back_step1_btn")
+                ) {
+                    Box(contentAlignment = Alignment.Center, modifier = Modifier.fillMaxSize()) {
+                        Icon(
+                            imageVector = Icons.AutoMirrored.Filled.ArrowBack,
+                            contentDescription = "Back to Region & Clock",
+                            tint = KickoffFloodlightWhite,
+                            modifier = Modifier.size(18.dp)
+                        )
+                    }
+                }
+                Spacer(modifier = Modifier.width(12.dp))
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = "Follow Your Clubs",
+                        color = KickoffFloodlightWhite,
+                        fontSize = 16.sp,
+                        fontWeight = FontWeight.ExtraBold
+                    )
+                    Text(
+                        text = "Pin your clubs for instant kickoff alerts and matchday priority.",
+                        color = KickoffMistSilver,
+                        fontSize = 11.5.sp,
+                        maxLines = 2
+                    )
+                }
+            }
+
+            // Clean Global Club Search Input (preserved testTag)
+            OutlinedTextField(
+                value = searchQuery,
+                onValueChange = onSearchQueryChange,
+                placeholder = {
+                    Text(
+                        text = "Search any club (e.g., Real Madrid, Raja, Arsenal, PSG)...",
+                        color = KickoffMistSilver.copy(alpha = 0.65f),
+                        fontSize = 12.5.sp
+                    )
+                },
+                leadingIcon = {
+                    Icon(
+                        imageVector = Icons.Default.Search,
+                        contentDescription = "Search Global Teams",
+                        tint = KickoffPitchEmerald
+                    )
+                },
+                trailingIcon = {
+                    if (searchQuery.isNotBlank()) {
+                        IconButton(onClick = { onSearchQueryChange("") }) {
+                            Icon(
+                                imageVector = Icons.Default.Close,
+                                contentDescription = "Clear search",
+                                tint = KickoffMistSilver
+                            )
+                        }
+                    }
+                },
+                singleLine = true,
+                colors = OutlinedTextFieldDefaults.colors(
+                    focusedBorderColor = KickoffPitchEmerald,
+                    unfocusedBorderColor = KickoffEmeraldBorder,
+                    focusedContainerColor = KickoffTurfSurface,
+                    unfocusedContainerColor = KickoffTurfSurface,
+                    focusedTextColor = KickoffFloodlightWhite,
+                    unfocusedTextColor = KickoffFloodlightWhite
+                ),
+                shape = RoundedCornerShape(12.dp),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .testTag("onboarding_team_search_input")
+            )
+
+            // Selected Clubs Removable Chips Strip
+            if (selectedFavorites.isNotEmpty()) {
+                LazyRow(
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .testTag("onboarding_selected_clubs_strip")
+                ) {
+                    items(selectedFavorites, key = { it.teamId }) { fav ->
+                        Surface(
+                            color = KickoffCanopyElevated,
+                            shape = RoundedCornerShape(50),
+                            border = BorderStroke(1.dp, KickoffPitchEmerald),
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(50))
+                                .tvFocusableControl(
+                                    accentColor = KickoffPitchEmerald,
+                                    shape = RoundedCornerShape(50),
+                                    onClick = { onRemoveFavoriteTeam(fav.teamId) }
+                                )
+                        ) {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp)
+                            ) {
+                                TeamCrestImage(
+                                    badgeUrl = fav.badgeUrl,
+                                    teamName = fav.teamName,
+                                    sizeDp = 16
+                                )
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text(
+                                    text = fav.teamName,
+                                    color = KickoffFloodlightWhite,
+                                    fontSize = 11.5.sp,
+                                    fontWeight = FontWeight.Bold
+                                )
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Icon(
+                                    imageVector = Icons.Default.Close,
+                                    contentDescription = "Remove ${fav.teamName}",
+                                    tint = KickoffPitchEmerald,
+                                    modifier = Modifier.size(14.dp)
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Interactive 1-Tap Club Suggestions OR Live Search Results
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(min = 165.dp, max = if (isTv) 275.dp else 250.dp)
+                    .clip(RoundedCornerShape(14.dp))
+                    .background(KickoffTurfSurface)
+                    .border(0.8.dp, KickoffEmeraldBorder, RoundedCornerShape(14.dp))
+                    .padding(12.dp)
+            ) {
+                when {
+                    isSearching -> {
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(150.dp),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            CircularProgressIndicator(color = KickoffPitchEmerald)
+                        }
+                    }
+                    searchQuery.isBlank() -> {
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .verticalScroll(rememberScrollState()),
+                            verticalArrangement = Arrangement.spacedBy(12.dp)
+                        ) {
+                            // Section 1: Popular in [Country]
+                            Column(verticalArrangement = Arrangement.spacedBy(7.dp)) {
+                                Text(
+                                    text = "Popular in ${selectedCountryZone.countryName}",
+                                    color = KickoffFloodlightWhite,
+                                    fontSize = 12.sp,
+                                    fontWeight = FontWeight.ExtraBold
+                                )
+                                FlowRow(
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                                ) {
+                                    localPopularClubs.forEach { club ->
+                                        val isFollowed = selectedFavorites.any {
+                                            it.teamId.equals(club.teamId, ignoreCase = true) ||
+                                                it.teamName.equals(club.name, ignoreCase = true)
+                                        }
+                                        OnboardingQuickClubChip(
+                                            club = club,
+                                            isSelected = isFollowed,
+                                            onClick = { onToggleTeam(club) },
+                                            testTag = "onboarding_local_club_chip_${club.teamId}"
+                                        )
+                                    }
+                                }
+                            }
+
+                            // Section 2: Global Giants
+                            Column(verticalArrangement = Arrangement.spacedBy(7.dp)) {
+                                Text(
+                                    text = "Global Giants",
+                                    color = KickoffMistSilver,
+                                    fontSize = 11.5.sp,
+                                    fontWeight = FontWeight.Bold
+                                )
+                                FlowRow(
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                                ) {
+                                    ONBOARDING_GLOBAL_GIANTS.forEach { club ->
+                                        val isFollowed = selectedFavorites.any {
+                                            it.teamId.equals(club.teamId, ignoreCase = true) ||
+                                                it.teamName.equals(club.name, ignoreCase = true)
+                                        }
+                                        OnboardingQuickClubChip(
+                                            club = club,
+                                            isSelected = isFollowed,
+                                            onClick = { onToggleTeam(club) },
+                                            testTag = "onboarding_giant_club_chip_${club.teamId}"
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    searchResults.isEmpty() -> {
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(140.dp),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Text(
+                                text = "No clubs found for \"$searchQuery\". Try another name.",
+                                color = KickoffMistSilver,
+                                fontSize = 12.sp,
+                                textAlign = TextAlign.Center
+                            )
+                        }
+                    }
+                    else -> {
+                        LazyColumn(
+                            verticalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            items(searchResults, key = { it.teamId }) { team ->
+                                val isSelected = selectedFavorites.any {
+                                    it.teamId.equals(team.teamId, ignoreCase = true) ||
+                                        it.teamName.equals(team.name, ignoreCase = true)
+                                }
+                                TeamSearchResultRow(
+                                    team = team,
+                                    isSelected = isSelected,
+                                    onToggle = { onToggleTeam(team) }
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    val renderBottomActions: @Composable () -> Unit = {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(10.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Surface(
+                color = Color.Transparent,
+                shape = RoundedCornerShape(12.dp),
+                border = BorderStroke(1.dp, KickoffEmeraldBorder),
+                modifier = Modifier
+                    .weight(0.9f)
+                    .height(48.dp)
+                    .clip(RoundedCornerShape(12.dp))
+                    .tvFocusableControl(
+                        accentColor = KickoffPitchEmerald,
+                        shape = RoundedCornerShape(12.dp),
+                        onClick = onCompleteOnboarding
+                    )
+                    .testTag("onboarding_skip_btn")
+            ) {
+                Box(
+                    contentAlignment = Alignment.Center,
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .padding(horizontal = 12.dp)
+                ) {
+                    Text(
+                        text = if (currentStep == 1) "Skip" else "Skip for Now",
+                        color = KickoffMistSilver,
+                        fontSize = 13.sp,
+                        fontWeight = FontWeight.Bold,
+                        maxLines = 1
+                    )
+                }
+            }
+
+            if (currentStep == 1) {
+                Surface(
+                    color = KickoffPitchEmerald,
+                    shape = RoundedCornerShape(12.dp),
+                    modifier = Modifier
+                        .weight(1.4f)
+                        .height(48.dp)
+                        .clip(RoundedCornerShape(12.dp))
+                        .tvFocusableControl(
+                            accentColor = KickoffFloodlightWhite,
+                            shape = RoundedCornerShape(12.dp),
+                            onClick = { currentStep = 2 }
+                        )
+                        .testTag("onboarding_continue_step2_btn")
+                ) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.Center,
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .padding(horizontal = 14.dp)
+                    ) {
+                        Text(
+                            text = "Continue",
+                            color = KickoffPitchBlack,
+                            fontSize = 13.5.sp,
+                            fontWeight = FontWeight.ExtraBold
+                        )
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Icon(
+                            imageVector = Icons.AutoMirrored.Filled.ArrowForward,
+                            contentDescription = null,
+                            tint = KickoffPitchBlack,
+                            modifier = Modifier.size(16.dp)
+                        )
+                    }
+                }
+            } else {
+                Surface(
+                    color = KickoffPitchEmerald,
+                    shape = RoundedCornerShape(12.dp),
+                    modifier = Modifier
+                        .weight(1.4f)
+                        .height(48.dp)
+                        .clip(RoundedCornerShape(12.dp))
+                        .tvFocusableControl(
+                            accentColor = KickoffFloodlightWhite,
+                            shape = RoundedCornerShape(12.dp),
+                            onClick = onCompleteOnboarding
+                        )
+                        .testTag("onboarding_save_teams_btn")
+                ) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.Center,
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .padding(horizontal = 14.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Check,
+                            contentDescription = null,
+                            tint = KickoffPitchBlack,
+                            modifier = Modifier.size(16.dp)
+                        )
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text(
+                            text = if (selectedFavorites.isEmpty()) {
+                                "Enter Kickoff Arena"
+                            } else {
+                                "Enter Kickoff Arena (${selectedFavorites.size})"
+                            },
+                            color = KickoffPitchBlack,
+                            fontSize = 13.sp,
+                            fontWeight = FontWeight.ExtraBold,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+                }
+            }
+        }
+    }
+
     Dialog(
         onDismissRequest = onCompleteOnboarding,
         properties = DialogProperties(usePlatformDefaultWidth = false)
     ) {
         Surface(
             color = KickoffPitchBlack,
-            shape = RoundedCornerShape(22.dp),
-            border = BorderStroke(1.2.dp, KickoffPitchEmerald),
+            shape = RoundedCornerShape(24.dp),
+            border = BorderStroke(1.2.dp, KickoffPitchEmerald.copy(alpha = 0.7f)),
             modifier = Modifier
-                .fillMaxWidth(0.95f)
-                .heightIn(max = 680.dp)
+                .fillMaxWidth(if (isTv) 0.86f else 0.94f)
+                .heightIn(max = if (isTv) 580.dp else 680.dp)
                 .testTag("first_time_teams_onboarding_dialog")
         ) {
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(18.dp)
-            ) {
+            if (isTv) {
+                // =========================================================================
+                // ANDROID TV 10-FOOT LANDSCAPE 2-COLUMN ONBOARDING LAYOUT
+                // =========================================================================
                 Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .background(
+                            Brush.horizontalGradient(
+                                listOf(
+                                    KickoffStadiumForest.copy(alpha = 0.45f),
+                                    KickoffPitchBlack
+                                )
+                            )
+                        )
+                        .padding(24.dp),
+                    horizontalArrangement = Arrangement.spacedBy(24.dp)
                 ) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Box(
-                            contentAlignment = Alignment.Center,
-                            modifier = Modifier
-                                .size(38.dp)
-                                .clip(CircleShape)
-                                .background(KickoffStadiumForest)
-                                .border(1.1.dp, KickoffFloodlightVolt, CircleShape)
-                        ) {
-                            Icon(
-                                imageVector = Icons.Default.SportsSoccer,
-                                contentDescription = null,
-                                tint = KickoffPitchEmerald,
-                                modifier = Modifier.size(21.dp)
-                            )
-                        }
-                        Spacer(modifier = Modifier.width(10.dp))
-                        Column {
-                            Text(
-                                text = "Welcome to KickOff Arena",
-                                color = KickoffFloodlightWhite,
-                                fontSize = 17.5.sp,
-                                fontWeight = FontWeight.ExtraBold
-                            )
-                            Text(
-                                text = "Choose your Country Zone (time & TV channels) and follow your teams",
-                                color = KickoffPitchEmerald,
-                                fontSize = 11.5.sp,
-                                fontWeight = FontWeight.SemiBold
-                            )
-                        }
-                    }
-                }
+                    // Left Rail: Brand Emblem, 2-Step Checklist & Live Region/Clock Summary
+                    Column(
+                        modifier = Modifier
+                            .weight(0.36f)
+                            .fillMaxHeight(),
+                        verticalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Box(
+                                    contentAlignment = Alignment.Center,
+                                    modifier = Modifier
+                                        .size(44.dp)
+                                        .clip(CircleShape)
+                                        .background(KickoffStadiumForest)
+                                        .border(1.2.dp, KickoffPitchEmerald, CircleShape)
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.SportsSoccer,
+                                        contentDescription = null,
+                                        tint = KickoffPitchEmerald,
+                                        modifier = Modifier.size(24.dp)
+                                    )
+                                }
+                                Spacer(modifier = Modifier.width(12.dp))
+                                Column {
+                                    Text(
+                                        text = "Welcome to Kickoff Arena",
+                                        color = KickoffFloodlightWhite,
+                                        fontSize = 18.sp,
+                                        fontWeight = FontWeight.ExtraBold
+                                    )
+                                    Text(
+                                        text = "Step $currentStep of 2",
+                                        color = KickoffPitchEmerald,
+                                        fontSize = 12.sp,
+                                        fontWeight = FontWeight.Bold
+                                    )
+                                }
+                            }
 
-                Spacer(modifier = Modifier.height(10.dp))
+                            // Progress Track
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .height(4.dp)
+                                    .clip(RoundedCornerShape(50))
+                                    .background(KickoffTurfSurface)
+                            ) {
+                                Box(
+                                    modifier = Modifier
+                                        .fillMaxWidth(progressFraction)
+                                        .fillMaxHeight()
+                                        .clip(RoundedCornerShape(50))
+                                        .background(KickoffPitchEmerald)
+                                )
+                            }
 
-                // Step 1: User's Country Zone Selector (Timezone, Winter/Summer Clocks & Official TV Providers)
-                OnboardingCountryZoneSelectorCard(
-                    selectedZone = selectedCountryZone,
-                    onSelectCountryCode = onSelectCountryZone,
-                    onAutoDetectCountry = onAutoDetectCountryZone,
-                    onOpenFullZoneSheet = onOpenFullCountryZoneSheet,
-                    seasonTimeMode = selectedSeasonTimeMode,
-                    onSelectSeasonTimeMode = onSelectSeasonTimeMode
-                )
-
-                Spacer(modifier = Modifier.height(10.dp))
-
-                // Manual Global Search Input
-                OutlinedTextField(
-                    value = searchQuery,
-                    onValueChange = onSearchQueryChange,
-                    placeholder = {
-                        Text(
-                            text = "Type a team name (e.g., Real Madrid, Raja, Arsenal, PSG)...",
-                            color = KickoffMistSilver.copy(alpha = 0.65f),
-                            fontSize = 13.sp
-                        )
-                    },
-                    leadingIcon = {
-                        Icon(
-                            imageVector = Icons.Default.Search,
-                            contentDescription = "Search Global Teams",
-                            tint = KickoffPitchEmerald
-                        )
-                    },
-                    trailingIcon = {
-                        if (searchQuery.isNotBlank()) {
-                            IconButton(onClick = { onSearchQueryChange("") }) {
-                                Icon(
-                                    imageVector = Icons.Default.Close,
-                                    contentDescription = "Clear search",
-                                    tint = KickoffMistSilver
+                            // Step Checklist
+                            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                                OnboardingTvStepChecklistItem(
+                                    stepNumber = 1,
+                                    title = "Region & Local Clock",
+                                    subtitle = "${selectedCountryZone.countryName} · $liveUtcBadge",
+                                    isActive = currentStep == 1,
+                                    isCompleted = currentStep > 1
+                                )
+                                OnboardingTvStepChecklistItem(
+                                    stepNumber = 2,
+                                    title = "Follow Your Clubs",
+                                    subtitle = if (selectedFavorites.isEmpty()) "Optional 1-tap pins" else "${selectedFavorites.size} club(s) followed",
+                                    isActive = currentStep == 2,
+                                    isCompleted = false
                                 )
                             }
                         }
-                    },
-                    singleLine = true,
-                    colors = OutlinedTextFieldDefaults.colors(
-                        focusedBorderColor = KickoffPitchEmerald,
-                        unfocusedBorderColor = KickoffEmeraldBorder,
-                        focusedContainerColor = KickoffTurfSurface,
-                        unfocusedContainerColor = KickoffTurfSurface,
-                        focusedTextColor = KickoffFloodlightWhite,
-                        unfocusedTextColor = KickoffFloodlightWhite
-                    ),
-                    shape = RoundedCornerShape(12.dp),
+
+                        // Live Region & Clock Summary Card
+                        Surface(
+                            color = KickoffTurfSurface,
+                            shape = RoundedCornerShape(14.dp),
+                            border = BorderStroke(0.9.dp, KickoffEmeraldBorder),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Column(
+                                modifier = Modifier.padding(14.dp),
+                                verticalArrangement = Arrangement.spacedBy(4.dp)
+                            ) {
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Text(text = selectedCountryZone.flagEmoji, fontSize = 20.sp)
+                                    Spacer(modifier = Modifier.width(8.dp))
+                                    Text(
+                                        text = selectedCountryZone.countryName,
+                                        color = KickoffFloodlightWhite,
+                                        fontSize = 14.sp,
+                                        fontWeight = FontWeight.Bold
+                                    )
+                                }
+                                Text(
+                                    text = "$liveLocalClock · $liveUtcBadge",
+                                    color = KickoffPitchEmerald,
+                                    fontSize = 13.sp,
+                                    fontWeight = FontWeight.ExtraBold,
+                                    style = TabularNumeralTextStyle
+                                )
+                                Text(
+                                    text = "TV: ${selectedCountryZone.primaryTvProviderName}",
+                                    color = KickoffMistSilver,
+                                    fontSize = 11.sp,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                            }
+                        }
+                    }
+
+                    // Right Pane: Active Step Controls + Bottom Action Bar
+                    Column(
+                        modifier = Modifier
+                            .weight(0.64f)
+                            .fillMaxHeight(),
+                        verticalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .weight(1f)
+                                .fillMaxWidth()
+                        ) {
+                            if (currentStep == 1) {
+                                renderStepOneBody()
+                            } else {
+                                renderStepTwoBody()
+                            }
+                        }
+                        Spacer(modifier = Modifier.height(14.dp))
+                        renderBottomActions()
+                    }
+                }
+            } else {
+                // =========================================================================
+                // MOBILE TOUCH-FIRST 2-STEP ONBOARDING LAYOUT
+                // =========================================================================
+                Column(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .testTag("onboarding_team_search_input")
-                )
+                        .padding(20.dp),
+                    verticalArrangement = Arrangement.spacedBy(14.dp)
+                ) {
+                    // Brand Header + Step Pill + Animated Emerald Progress Bar
+                    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                modifier = Modifier.weight(1f)
+                            ) {
+                                Box(
+                                    contentAlignment = Alignment.Center,
+                                    modifier = Modifier
+                                        .size(38.dp)
+                                        .clip(CircleShape)
+                                        .background(KickoffStadiumForest)
+                                        .border(1.1.dp, KickoffPitchEmerald, CircleShape)
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.SportsSoccer,
+                                        contentDescription = null,
+                                        tint = KickoffPitchEmerald,
+                                        modifier = Modifier.size(20.dp)
+                                    )
+                                }
+                                Spacer(modifier = Modifier.width(10.dp))
+                                Text(
+                                    text = "Welcome to Kickoff Arena",
+                                    color = KickoffFloodlightWhite,
+                                    fontSize = 17.sp,
+                                    fontWeight = FontWeight.ExtraBold,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                            }
 
-                // Selected Favorite Teams Pills
-                if (selectedFavorites.isNotEmpty()) {
-                    Spacer(modifier = Modifier.height(10.dp))
-                    Text(
-                        text = "SELECTED TEAMS (${selectedFavorites.size})",
-                        color = KickoffMistSilver,
-                        fontSize = 11.sp,
-                        fontWeight = FontWeight.ExtraBold
-                    )
-                    Spacer(modifier = Modifier.height(5.dp))
-                    FlowRow(
-                        horizontalArrangement = Arrangement.spacedBy(6.dp),
-                        verticalArrangement = Arrangement.spacedBy(6.dp)
-                    ) {
-                        selectedFavorites.forEach { fav ->
                             Surface(
                                 color = KickoffCanopyElevated,
                                 shape = RoundedCornerShape(50),
-                                border = BorderStroke(1.dp, KickoffPitchEmerald)
+                                border = BorderStroke(0.8.dp, KickoffPitchEmerald.copy(alpha = 0.6f))
                             ) {
-                                Row(
-                                    verticalAlignment = Alignment.CenterVertically,
-                                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp)
-                                ) {
-                                    TeamCrestImage(
-                                        badgeUrl = fav.badgeUrl,
-                                        teamName = fav.teamName,
-                                        sizeDp = 16
-                                    )
-                                    Spacer(modifier = Modifier.width(6.dp))
-                                    Text(
-                                        text = fav.teamName,
-                                        color = KickoffFloodlightWhite,
-                                        fontSize = 11.sp,
-                                        fontWeight = FontWeight.Bold
-                                    )
-                                    Spacer(modifier = Modifier.width(6.dp))
-                                    Icon(
-                                        imageVector = Icons.Default.Close,
-                                        contentDescription = "Remove ${fav.teamName}",
-                                        tint = KickoffPitchEmerald,
-                                        modifier = Modifier
-                                            .size(14.dp)
-                                            .clickable { onRemoveFavoriteTeam(fav.teamId) }
-                                    )
-                                }
+                                Text(
+                                    text = "Step $currentStep of 2",
+                                    color = KickoffPitchEmerald,
+                                    fontSize = 10.5.sp,
+                                    fontWeight = FontWeight.ExtraBold,
+                                    modifier = Modifier
+                                        .padding(horizontal = 10.dp, vertical = 4.dp)
+                                        .testTag("onboarding_step_pill")
+                                )
                             }
                         }
-                    }
-                }
 
-                Spacer(modifier = Modifier.height(10.dp))
-
-                // Search Results Area
-                Box(
-                    modifier = Modifier
-                        .weight(1f, fill = false)
-                        .heightIn(min = 140.dp, max = 230.dp)
-                        .fillMaxWidth()
-                        .clip(RoundedCornerShape(12.dp))
-                        .background(KickoffTurfSurface)
-                        .padding(8.dp)
-                ) {
-                    when {
-                        isSearching -> {
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(4.dp)
+                                .clip(RoundedCornerShape(50))
+                                .background(KickoffTurfSurface)
+                        ) {
                             Box(
                                 modifier = Modifier
-                                    .fillMaxWidth()
-                                    .height(150.dp),
-                                contentAlignment = Alignment.Center
-                            ) {
-                                CircularProgressIndicator(color = KickoffPitchEmerald)
-                            }
-                        }
-                        searchQuery.isBlank() -> {
-                            Column(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .padding(16.dp),
-                                horizontalAlignment = Alignment.CenterHorizontally
-                            ) {
-                                Icon(
-                                    imageVector = Icons.Default.Search,
-                                    contentDescription = null,
-                                    tint = KickoffPitchEmerald.copy(alpha = 0.85f),
-                                    modifier = Modifier.size(28.dp)
-                                )
-                                Spacer(modifier = Modifier.height(6.dp))
-                                Text(
-                                    text = "Search Any Team Globally",
-                                    color = KickoffFloodlightWhite,
-                                    fontSize = 13.5.sp,
-                                    fontWeight = FontWeight.Bold
-                                )
-                                Spacer(modifier = Modifier.height(4.dp))
-                                Text(
-                                    text = "Popular in ${selectedCountryZone.flagEmoji} ${selectedCountryZone.countryName}: ${selectedCountryZone.popularLocalClubs.joinToString(", ")}. Type any club above to add it.",
-                                    color = KickoffMistSilver,
-                                    fontSize = 11.5.sp,
-                                    textAlign = TextAlign.Center
-                                )
-                            }
-                        }
-                        searchResults.isEmpty() -> {
-                            Box(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .height(140.dp),
-                                contentAlignment = Alignment.Center
-                            ) {
-                                Text(
-                                    text = "No teams found for \"$searchQuery\". Try another club name.",
-                                    color = KickoffMistSilver,
-                                    fontSize = 12.sp
-                                )
-                            }
-                        }
-                        else -> {
-                            LazyColumn(
-                                verticalArrangement = Arrangement.spacedBy(6.dp)
-                            ) {
-                                items(searchResults, key = { it.teamId }) { team ->
-                                    val isSelected = selectedFavorites.any {
-                                        it.teamId.equals(team.teamId, ignoreCase = true) ||
-                                            it.teamName.equals(team.name, ignoreCase = true)
-                                    }
-                                    TeamSearchResultRow(
-                                        team = team,
-                                        isSelected = isSelected,
-                                        onToggle = { onToggleTeam(team) }
-                                    )
-                                }
-                            }
+                                    .fillMaxWidth(progressFraction)
+                                    .fillMaxHeight()
+                                    .clip(RoundedCornerShape(50))
+                                    .background(KickoffPitchEmerald)
+                            )
                         }
                     }
-                }
 
-                Spacer(modifier = Modifier.height(12.dp))
-
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(10.dp)
-                ) {
-                    OutlinedButton(
-                        onClick = onCompleteOnboarding,
-                        border = BorderStroke(1.dp, KickoffPitchEmerald),
+                    // Active Step Content
+                    Box(
                         modifier = Modifier
-                            .weight(1f)
-                            .testTag("onboarding_skip_btn")
+                            .weight(1f, fill = false)
+                            .fillMaxWidth()
                     ) {
-                        Text("Skip for Now", color = KickoffFloodlightVolt, fontWeight = FontWeight.Bold)
+                        if (currentStep == 1) {
+                            renderStepOneBody()
+                        } else {
+                            renderStepTwoBody()
+                        }
                     }
 
-                    Button(
-                        onClick = onCompleteOnboarding,
-                        border = BorderStroke(1.dp, KickoffFloodlightVolt),
-                        colors = ButtonDefaults.buttonColors(
-                            containerColor = KickoffPitchEmerald,
-                            contentColor = KickoffPitchBlack
-                        ),
-                        modifier = Modifier
-                            .weight(1.4f)
-                            .testTag("onboarding_save_teams_btn")
-                    ) {
-                        Icon(Icons.Default.Check, contentDescription = null, modifier = Modifier.size(16.dp))
-                        Spacer(modifier = Modifier.width(6.dp))
-                        Text(
-                            text = if (selectedFavorites.isEmpty()) "Enter KickOff Arena" else "Save (${selectedFavorites.size}) & Continue",
-                            fontWeight = FontWeight.ExtraBold
-                        )
-                    }
+                    // Bottom Action Bar
+                    renderBottomActions()
                 }
+            }
+        }
+    }
+}
+
+@Composable
+private fun OnboardingQuickClubChip(
+    club: FootballTeam,
+    isSelected: Boolean,
+    onClick: () -> Unit,
+    testTag: String
+) {
+    Surface(
+        color = if (isSelected) KickoffPitchEmerald.copy(alpha = 0.22f) else KickoffCanopyElevated,
+        shape = RoundedCornerShape(50),
+        border = BorderStroke(
+            width = if (isSelected) 1.2.dp else 0.8.dp,
+            color = if (isSelected) KickoffPitchEmerald else KickoffEmeraldBorder
+        ),
+        modifier = Modifier
+            .clip(RoundedCornerShape(50))
+            .tvFocusableControl(
+                accentColor = KickoffPitchEmerald,
+                shape = RoundedCornerShape(50),
+                onClick = onClick
+            )
+            .testTag(testTag)
+    ) {
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            modifier = Modifier.padding(horizontal = 11.dp, vertical = 7.dp)
+        ) {
+            Icon(
+                imageVector = if (isSelected) Icons.Default.Check else Icons.Default.Add,
+                contentDescription = if (isSelected) "Unfollow ${club.name}" else "Follow ${club.name}",
+                tint = if (isSelected) KickoffPitchEmerald else KickoffMistSilver,
+                modifier = Modifier.size(14.dp)
+            )
+            Spacer(modifier = Modifier.width(5.dp))
+            Text(
+                text = club.name,
+                color = KickoffFloodlightWhite,
+                fontSize = 12.sp,
+                fontWeight = if (isSelected) FontWeight.ExtraBold else FontWeight.SemiBold,
+                maxLines = 1
+            )
+        }
+    }
+}
+
+@Composable
+private fun OnboardingTvStepChecklistItem(
+    stepNumber: Int,
+    title: String,
+    subtitle: String,
+    isActive: Boolean,
+    isCompleted: Boolean
+) {
+    Surface(
+        color = if (isActive) KickoffCanopyElevated else Color.Transparent,
+        shape = RoundedCornerShape(12.dp),
+        border = if (isActive) BorderStroke(1.dp, KickoffPitchEmerald.copy(alpha = 0.65f)) else null,
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            modifier = Modifier.padding(horizontal = 10.dp, vertical = 9.dp)
+        ) {
+            Box(
+                contentAlignment = Alignment.Center,
+                modifier = Modifier
+                    .size(26.dp)
+                    .clip(CircleShape)
+                    .background(
+                        when {
+                            isCompleted || isActive -> KickoffPitchEmerald
+                            else -> KickoffTurfSurface
+                        }
+                    )
+                    .border(
+                        width = 0.9.dp,
+                        color = if (isActive || isCompleted) KickoffPitchEmerald else KickoffEmeraldBorder,
+                        shape = CircleShape
+                    )
+            ) {
+                if (isCompleted) {
+                    Icon(
+                        imageVector = Icons.Default.Check,
+                        contentDescription = null,
+                        tint = KickoffPitchBlack,
+                        modifier = Modifier.size(14.dp)
+                    )
+                } else {
+                    Text(
+                        text = "$stepNumber",
+                        color = if (isActive) KickoffPitchBlack else KickoffMistSilver,
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.ExtraBold
+                    )
+                }
+            }
+            Spacer(modifier = Modifier.width(10.dp))
+            Column {
+                Text(
+                    text = title,
+                    color = if (isActive || isCompleted) KickoffFloodlightWhite else KickoffMistSilver,
+                    fontSize = 13.sp,
+                    fontWeight = FontWeight.Bold
+                )
+                Text(
+                    text = subtitle,
+                    color = KickoffMistSilver,
+                    fontSize = 10.5.sp,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
             }
         }
     }
@@ -1751,6 +2788,7 @@ fun KickoffSourceStatusAlertBanner(
 fun CustomizeTeamsAndTournamentsSheet(
     selectedCountryZone: UserCountryZone = UserZoneRegistry.defaultCountryZone,
     selectedSeasonTimeMode: SeasonTimeMode = SeasonTimeMode.AUTO,
+    manualTimeOffsetMinutes: Int = 0,
     searchQuery: String,
     searchResults: List<FootballTeam>,
     isSearching: Boolean,
@@ -1758,6 +2796,8 @@ fun CustomizeTeamsAndTournamentsSheet(
     tournamentPreferences: List<TournamentPreferenceEntity>,
     onSelectCountryZone: (String) -> Unit = {},
     onSelectSeasonTimeMode: (SeasonTimeMode) -> Unit = {},
+    onSetManualTimeOffset: (Int) -> Unit = {},
+    onAdjustManualTimeOffset: (Int) -> Unit = {},
     onAutoDetectCountryZone: () -> Unit = {},
     onOpenFullCountryZoneSheet: () -> Unit = {},
     onSearchQueryChange: (String) -> Unit,
@@ -2168,21 +3208,14 @@ fun CustomizeTeamsAndTournamentsSheet(
                     // Domain 1: Region & TV (Unified Localization Center — Zero Duplication)
                     ActiveCountryZoneTelemetryBanner(
                         zone = selectedCountryZone,
-                        seasonTimeMode = selectedSeasonTimeMode,
-                        onSelectSeasonTimeMode = onSelectSeasonTimeMode,
+                        manualTimeOffsetMinutes = manualTimeOffsetMinutes,
+                        onSetManualTimeOffset = onSetManualTimeOffset,
+                        onAdjustManualTimeOffset = onAdjustManualTimeOffset,
+                        use24HourFormat = uiPreferences.use24HourFormat,
                         onAutoDetect = onAutoDetectCountryZone,
                         spotlightPinnedFeedback = false,
                         onPrioritizeCountryLeague = null
                     )
-
-                    if (!selectedCountryZone.hasSeasonalTimeChange) {
-                        Spacer(modifier = Modifier.height(8.dp))
-                        SeasonTimeModeCompactSelectorRow(
-                            zone = selectedCountryZone,
-                            selectedMode = selectedSeasonTimeMode,
-                            onSelectMode = onSelectSeasonTimeMode
-                        )
-                    }
 
                     Spacer(modifier = Modifier.height(10.dp))
 
@@ -2252,7 +3285,8 @@ fun CustomizeTeamsAndTournamentsSheet(
                             val isSelected = zone.countryCode.equals(selectedCountryZone.countryCode, ignoreCase = true)
                             CountryZoneOptionCard(
                                 zone = zone,
-                                seasonTimeMode = if (isSelected) selectedSeasonTimeMode else SeasonTimeMode.AUTO,
+                                manualTimeOffsetMinutes = if (isSelected) manualTimeOffsetMinutes else 0,
+                                use24HourFormat = uiPreferences.use24HourFormat,
                                 isSelected = isSelected,
                                 onClick = { onSelectCountryZone(zone.countryCode) }
                             )

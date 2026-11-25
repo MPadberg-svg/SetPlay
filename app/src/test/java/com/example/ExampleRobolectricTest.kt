@@ -1396,10 +1396,12 @@ class ExampleRobolectricTest {
             menaProviderName = "beIN Sports MENA"
         )
 
+        val liveSnapshot = footballRepository.loadActivePlaylistLiveStreamsSnapshot()
         val resolvedMatches = footballRepository.resolveDayMatchesTvChannelsWithMenaPriority(
-            listOf(realMilanMatch),
-            emptyList(),
-            maZone
+            matches = listOf(realMilanMatch),
+            tvBroadcasts = emptyList(),
+            zone = maZone,
+            playlistLiveStreamsSnapshot = liveSnapshot
         )
         assertEquals("beIN Sports 2 HD", resolvedMatches.first().beinChannel)
     }
@@ -8929,6 +8931,369 @@ class TvSyncDeviceSeparationComposeTest {
             com.example.data.sync.CatalogTaskOrchestrator.clearForTest(context)
             db.openHelper.writableDatabase.execSQL("DELETE FROM sync_section_state WHERE playlistId = ?", arrayOf(playlistId))
         }
+    }
+
+    @Test
+    fun v19Phase9a_ianaDstBoundaryPerMatchOffsetAndFixedZone() = runBlocking {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val db = StreamVaultDatabase.getInstance(context)
+        val repo = com.example.data.repository.FootballRepository(
+            context = context,
+            favoriteTeamDao = db.favoriteTeamDao(),
+            tournamentPreferenceDao = db.tournamentPreferenceDao(),
+            streamDao = db.streamDao()
+        )
+        val utc = java.util.TimeZone.getTimeZone("UTC")
+        // Europe/Paris DST 2026 begins on Sunday, March 29, 2026 at 01:00 UTC.
+        val beforeDstEpochMs = java.util.Calendar.getInstance(utc).apply {
+            set(2026, java.util.Calendar.MARCH, 28, 19, 0, 0)
+            set(java.util.Calendar.MILLISECOND, 0)
+        }.timeInMillis
+        val afterDstEpochMs = java.util.Calendar.getInstance(utc).apply {
+            set(2026, java.util.Calendar.MARCH, 30, 19, 0, 0)
+            set(java.util.Calendar.MILLISECOND, 0)
+        }.timeInMillis
+
+        val parisZone = com.example.data.repository.UserZoneRegistry.getZoneByCode("FR")
+        val riyadhZone = com.example.data.repository.UserZoneRegistry.getZoneByCode("SA")
+
+        // 1. Europe/Paris: GMT+1 before DST -> GMT+2 after DST
+        assertEquals(60, parisZone.getAutoIanaOffsetMinutes(beforeDstEpochMs))
+        assertEquals("GMT+1", parisZone.getUtcOffsetBadge(beforeDstEpochMs, 0))
+        assertEquals("Auto (Standard)", parisZone.getClockStatusLabel(beforeDstEpochMs, 0))
+        assertEquals("20:00", parisZone.formatLocalTime(beforeDstEpochMs, 0, use24Hour = true))
+
+        assertEquals(120, parisZone.getAutoIanaOffsetMinutes(afterDstEpochMs))
+        assertEquals("GMT+2", parisZone.getUtcOffsetBadge(afterDstEpochMs, 0))
+        assertEquals("Auto (DST active)", parisZone.getClockStatusLabel(afterDstEpochMs, 0))
+        assertEquals("21:00", parisZone.formatLocalTime(afterDstEpochMs, 0, use24Hour = true))
+
+        // 2. Both timestamps in the SAME match list must compute distinct per-match offsets
+        val beforeMatch = com.example.data.repository.FootballMatch(
+            matchId = "dst_before",
+            tournamentId = "uefa_cl",
+            tournamentName = "UEFA Champions League",
+            tournamentRegion = "Europe",
+            dayTab = com.example.data.repository.MatchDayTab.TODAY,
+            kickoffTimeFormatted = "20:00",
+            kickoffDateFormatted = "Today",
+            status = com.example.data.repository.MatchStatus.UPCOMING,
+            liveMinuteOrBadge = "20:00",
+            homeTeamId = "psg",
+            homeTeamName = "Paris Saint-Germain",
+            homeTeamBadge = "",
+            homeScore = null,
+            awayTeamId = "rma",
+            awayTeamName = "Real Madrid",
+            awayTeamBadge = "",
+            awayScore = null,
+            stadiumName = "Parc des Princes",
+            cityName = "Paris",
+            beinChannel = "Canal+ Foot",
+            beinChannelNumberHint = "Canal+",
+            kickoffEpochMs = beforeDstEpochMs
+        )
+        val afterMatch = beforeMatch.copy(
+            matchId = "dst_after",
+            dayTab = com.example.data.repository.MatchDayTab.DAY_PLUS_2,
+            kickoffEpochMs = afterDstEpochMs
+        )
+
+        val relocalizedTimes = repo.relocalizeMatchTimesOnly(
+            matches = listOf(beforeMatch, afterMatch),
+            zone = parisZone,
+            manualOffsetMinutes = 0
+        )
+        assertEquals("20:00", relocalizedTimes[0].kickoffTimeFormatted)
+        assertTrue(relocalizedTimes[0].kickoffDateFormatted.contains("GMT+1"))
+        assertEquals("21:00", relocalizedTimes[1].kickoffTimeFormatted)
+        assertTrue(relocalizedTimes[1].kickoffDateFormatted.contains("GMT+2"))
+
+        // 3. Asia/Riyadh stays GMT+3 year-round across both timestamps
+        assertEquals(180, riyadhZone.getAutoIanaOffsetMinutes(beforeDstEpochMs))
+        assertEquals(180, riyadhZone.getAutoIanaOffsetMinutes(afterDstEpochMs))
+        assertEquals("GMT+3", riyadhZone.getUtcOffsetBadge(beforeDstEpochMs, 0))
+        assertEquals("GMT+3", riyadhZone.getUtcOffsetBadge(afterDstEpochMs, 0))
+        assertEquals("Auto (Fixed)", riyadhZone.getClockStatusLabel(afterDstEpochMs, 0))
+        val riyadhRelocalized = repo.relocalizeMatchTimesOnly(
+            matches = listOf(beforeMatch, afterMatch),
+            zone = riyadhZone,
+            manualOffsetMinutes = 0
+        )
+        assertEquals("22:00", riyadhRelocalized[0].kickoffTimeFormatted)
+        assertEquals("22:00", riyadhRelocalized[1].kickoffTimeFormatted)
+    }
+
+    @Test
+    fun v19Phase9a_manualOffsetRamadanShiftAndResetRestoresAuto() = runBlocking {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val db = StreamVaultDatabase.getInstance(context)
+        val repo = com.example.data.repository.FootballRepository(
+            context = context,
+            favoriteTeamDao = db.favoriteTeamDao(),
+            tournamentPreferenceDao = db.tournamentPreferenceDao(),
+            streamDao = db.streamDao()
+        )
+        try {
+            // Confirm setSelectedCountryZone does NOT prematurely complete onboarding
+            repo.setCountryZoneOnboardingCompleted(false)
+            repo.setSelectedCountryZone("MA")
+            assertFalse(
+                "Selecting a country zone must not prematurely mark onboarding completed",
+                repo.hasCompletedCountryZoneOnboarding()
+            )
+
+            // July 15, 2026 20:00 UTC -> Morocco IANA Africa/Casablanca is GMT+1 (21:00)
+            val utc = java.util.TimeZone.getTimeZone("UTC")
+            val july20UtcMs = java.util.Calendar.getInstance(utc).apply {
+                set(2026, java.util.Calendar.JULY, 15, 20, 0, 0)
+                set(java.util.Calendar.MILLISECOND, 0)
+            }.timeInMillis
+
+            val moroccoZone = com.example.data.repository.UserZoneRegistry.getZoneByCode("MA")
+            assertEquals(60, moroccoZone.getEffectiveOffsetMinutes(july20UtcMs, 0))
+            assertEquals("GMT+1", moroccoZone.getUtcOffsetBadge(july20UtcMs, 0))
+            assertEquals("21:00", com.example.data.repository.formatDynamicKickoffTime(july20UtcMs, moroccoZone, 0))
+
+            // Apply Ramadan -1h manual override (-60 minutes) -> GMT+0 (20:00)
+            assertEquals(-60, repo.setManualTimeOffsetMinutes(-60))
+            assertEquals(-60, repo.getManualTimeOffsetMinutes())
+            assertEquals(0, moroccoZone.getEffectiveOffsetMinutes(july20UtcMs, -60))
+            assertEquals("GMT+0", moroccoZone.getUtcOffsetBadge(july20UtcMs, -60))
+            assertEquals("Manual (-1h)", moroccoZone.getClockStatusLabel(july20UtcMs, -60))
+            assertEquals("20:00", com.example.data.repository.formatDynamicKickoffTime(july20UtcMs, moroccoZone, -60))
+
+            val match = com.example.data.repository.FootballMatch(
+                matchId = "ma_ramadan_test",
+                tournamentId = "botola_pro",
+                tournamentName = "Botola Pro Inwi",
+                tournamentRegion = "Morocco",
+                dayTab = com.example.data.repository.MatchDayTab.TODAY,
+                kickoffTimeFormatted = "21:00",
+                kickoffDateFormatted = "Today • GMT+1",
+                status = com.example.data.repository.MatchStatus.UPCOMING,
+                liveMinuteOrBadge = "21:00",
+                homeTeamId = "raja",
+                homeTeamName = "Raja Casablanca",
+                homeTeamBadge = "",
+                homeScore = null,
+                awayTeamId = "wydad",
+                awayTeamName = "Wydad AC",
+                awayTeamBadge = "",
+                awayScore = null,
+                stadiumName = "Stade Mohammed V",
+                cityName = "Casablanca",
+                beinChannel = "Arryadia HD",
+                beinChannelNumberHint = "Arryadia",
+                kickoffEpochMs = july20UtcMs
+            )
+
+            val ramadanShifted = repo.relocalizeMatchTimesOnly(listOf(match), moroccoZone, -60)
+            assertEquals("20:00", ramadanShifted.first().kickoffTimeFormatted)
+            assertTrue(ramadanShifted.first().kickoffDateFormatted.contains("GMT+0"))
+
+            // Reset to 0 -> restores Auto GMT+1 (21:00)
+            assertEquals(0, repo.setManualTimeOffsetMinutes(0))
+            val restoredAuto = repo.relocalizeMatchTimesOnly(ramadanShifted, moroccoZone, 0)
+            assertEquals("21:00", restoredAuto.first().kickoffTimeFormatted)
+            assertTrue(restoredAuto.first().kickoffDateFormatted.contains("GMT+1"))
+
+            // Clamping check: [-180, +180] in 60-minute steps
+            assertEquals(-180, repo.setManualTimeOffsetMinutes(-300))
+            assertEquals(180, repo.setManualTimeOffsetMinutes(300))
+            assertEquals(0, repo.setManualTimeOffsetMinutes(0))
+        } finally {
+            repo.setManualTimeOffsetMinutes(0)
+            repo.setSelectedCountryZone("MA")
+        }
+    }
+
+    @Test
+    fun v19Phase9a_rapidZoneAndManualOffsetSwitchingSettlesCleanlyWithoutBlocking() = runBlocking {
+        val app = ApplicationProvider.getApplicationContext<android.app.Application>()
+        val viewModel = com.example.ui.viewmodel.MainViewModel(app)
+        try {
+            // Rapidly fire multiple zone switches and manual offset adjustments without blocking
+            viewModel.selectCountryZone("FR", triggerNetworkRefresh = false)
+            viewModel.selectCountryZone("GB", triggerNetworkRefresh = false)
+            viewModel.selectCountryZone("SA", triggerNetworkRefresh = false)
+            viewModel.selectCountryZone("ES", triggerNetworkRefresh = false)
+            viewModel.setManualTimeOffset(-60)
+            viewModel.adjustManualTimeOffset(-60) // -120
+            viewModel.adjustManualTimeOffset(60)  // -60
+            viewModel.setManualTimeOffset(0)
+            viewModel.selectCountryZone("DE", triggerNetworkRefresh = false)
+            viewModel.setManualTimeOffset(60)
+
+            // Immediate StateFlow values must already reflect the latest selections
+            assertEquals("DE", viewModel.selectedCountryZone.value.countryCode)
+            assertEquals(60, viewModel.manualTimeOffsetMinutes.value)
+
+            // Wait for background IO persistence to settle on the final selection
+            kotlinx.coroutines.delay(250L)
+
+            assertEquals("DE", viewModel.selectedCountryZone.value.countryCode)
+            assertEquals(60, viewModel.manualTimeOffsetMinutes.value)
+            assertEquals("DE", viewModel.footballRepository.getSelectedCountryZone().countryCode)
+            assertEquals(60, viewModel.footballRepository.getManualTimeOffsetMinutes())
+        } finally {
+            viewModel.footballRepository.setManualTimeOffsetMinutes(0)
+            viewModel.footballRepository.setSelectedCountryZone("MA")
+        }
+    }
+
+    @Test
+    fun v19Phase9b_welcomeOnboardingPhoneTwoStepFlowClockStepperAndCleanCopy() {
+        val selectedZoneState = androidx.compose.runtime.mutableStateOf(
+            com.example.data.repository.UserZoneRegistry.getZoneByCode("MA")
+        )
+        val manualOffsetState = androidx.compose.runtime.mutableIntStateOf(0)
+        val favoritesState = androidx.compose.runtime.mutableStateOf<List<com.example.data.model.FavoriteTeamEntity>>(emptyList())
+        val searchQueryState = androidx.compose.runtime.mutableStateOf("")
+        var completedCount = 0
+
+        composeTestRule.setContent {
+            com.example.ui.home.FirstTimeFavoriteTeamsDialog(
+                selectedCountryZone = selectedZoneState.value,
+                selectedSeasonTimeMode = com.example.data.repository.SeasonTimeMode.AUTO,
+                manualTimeOffsetMinutes = manualOffsetState.intValue,
+                onSetManualTimeOffset = { manualOffsetState.intValue = it.coerceIn(-180, 180) },
+                onAdjustManualTimeOffset = { delta ->
+                    manualOffsetState.intValue = (manualOffsetState.intValue + delta).coerceIn(-180, 180)
+                },
+                use24HourFormat = true,
+                activeEdition = com.example.util.SetPlayEdition.PHONE,
+                searchQuery = searchQueryState.value,
+                searchResults = emptyList(),
+                isSearching = false,
+                selectedFavorites = favoritesState.value,
+                onSelectCountryZone = { code ->
+                    selectedZoneState.value = com.example.data.repository.UserZoneRegistry.getZoneByCode(code)
+                },
+                onSelectSeasonTimeMode = {},
+                onAutoDetectCountryZone = {},
+                onOpenFullCountryZoneSheet = {},
+                onSearchQueryChange = { searchQueryState.value = it },
+                onToggleTeam = { team ->
+                    val existing = favoritesState.value.any { it.teamId == team.teamId }
+                    favoritesState.value = if (existing) {
+                        favoritesState.value.filterNot { it.teamId == team.teamId }
+                    } else {
+                        favoritesState.value + com.example.data.model.FavoriteTeamEntity(
+                            teamId = team.teamId,
+                            teamName = team.name,
+                            shortName = team.shortName,
+                            badgeUrl = team.badgeUrl,
+                            country = team.country,
+                            primaryLeague = team.primaryLeague
+                        )
+                    }
+                },
+                onRemoveFavoriteTeam = { teamId ->
+                    favoritesState.value = favoritesState.value.filterNot { it.teamId == teamId }
+                },
+                onCompleteOnboarding = { completedCount++ }
+            )
+        }
+        composeTestRule.waitForIdle()
+
+        // Step 1: Verify core dialog, region card, live clock stepper, and preserved skip button
+        composeTestRule.onNode(androidx.compose.ui.test.hasTestTag("first_time_teams_onboarding_dialog")).assertExists()
+        composeTestRule.onNode(androidx.compose.ui.test.hasText("Welcome to Kickoff Arena", substring = true)).assertExists()
+        composeTestRule.onNode(androidx.compose.ui.test.hasTestTag("onboarding_country_zone_card")).assertExists()
+        composeTestRule.onNode(androidx.compose.ui.test.hasTestTag("local_clock_adjustment_control")).assertExists()
+        composeTestRule.onNode(androidx.compose.ui.test.hasTestTag("local_clock_minus_1h_btn")).assertExists()
+        composeTestRule.onNode(androidx.compose.ui.test.hasTestTag("local_clock_auto_btn")).assertExists()
+        composeTestRule.onNode(androidx.compose.ui.test.hasTestTag("local_clock_plus_1h_btn")).assertExists()
+        composeTestRule.onNode(androidx.compose.ui.test.hasTestTag("onboarding_skip_btn")).assertExists()
+        composeTestRule.onNode(androidx.compose.ui.test.hasTestTag("onboarding_continue_step2_btn")).assertExists()
+
+        // Zero raw internal IPTV pipe prefixes anywhere on Welcome screen
+        composeTestRule.onNode(androidx.compose.ui.test.hasText("MA|", substring = true)).assertDoesNotExist()
+        composeTestRule.onNode(androidx.compose.ui.test.hasText("AE|", substring = true)).assertDoesNotExist()
+        composeTestRule.onNode(androidx.compose.ui.test.hasText("AR|", substring = true)).assertDoesNotExist()
+
+        // Tap -1h and verify offset updates cleanly to -60 (Adjusted -1h), then Auto resets to 0
+        composeTestRule.onNode(androidx.compose.ui.test.hasTestTag("local_clock_minus_1h_btn")).performClick()
+        composeTestRule.waitForIdle()
+        assertEquals(-60, manualOffsetState.intValue)
+        composeTestRule.onNode(
+            androidx.compose.ui.test.hasTestTag("local_clock_status_text") and
+                androidx.compose.ui.test.hasText("Adjusted -1h", substring = true)
+        ).assertExists()
+
+        composeTestRule.onNode(androidx.compose.ui.test.hasTestTag("local_clock_auto_btn")).performClick()
+        composeTestRule.waitForIdle()
+        assertEquals(0, manualOffsetState.intValue)
+        composeTestRule.onNode(
+            androidx.compose.ui.test.hasTestTag("local_clock_status_text") and
+                androidx.compose.ui.test.hasText("Auto", substring = true)
+        ).assertExists()
+
+        // Advance cleanly to Step 2
+        composeTestRule.onNode(androidx.compose.ui.test.hasTestTag("onboarding_continue_step2_btn")).performClick()
+        composeTestRule.waitForIdle()
+
+        // Verify Step 2 preserved testTags and tappable local + global giant chips
+        composeTestRule.onNode(androidx.compose.ui.test.hasTestTag("onboarding_team_search_input")).assertExists()
+        composeTestRule.onNode(androidx.compose.ui.test.hasTestTag("onboarding_skip_btn")).assertExists()
+        composeTestRule.onNode(androidx.compose.ui.test.hasText("Popular in Morocco", substring = true)).assertExists()
+        composeTestRule.onNode(androidx.compose.ui.test.hasText("Global Giants", substring = true)).assertExists()
+        composeTestRule.onNode(androidx.compose.ui.test.hasTestTag("onboarding_local_club_chip_quick_ma_raja_casablanca")).assertExists()
+        composeTestRule.onNode(androidx.compose.ui.test.hasTestTag("onboarding_giant_club_chip_giant_real_madrid")).assertExists()
+
+        // Tap a local club chip -> updates favorites strip & CTA count
+        composeTestRule.onNode(androidx.compose.ui.test.hasTestTag("onboarding_local_club_chip_quick_ma_raja_casablanca")).performClick()
+        composeTestRule.waitForIdle()
+        assertEquals(1, favoritesState.value.size)
+        composeTestRule.onNode(androidx.compose.ui.test.hasTestTag("onboarding_selected_clubs_strip")).assertExists()
+        composeTestRule.onNode(androidx.compose.ui.test.hasText("Enter Kickoff Arena (1)", substring = true)).assertExists()
+
+        // Finish onboarding
+        composeTestRule.onNode(androidx.compose.ui.test.hasTestTag("onboarding_save_teams_btn")).performClick()
+        composeTestRule.waitForIdle()
+        assertEquals(1, completedCount)
+    }
+
+    @Test
+    fun v19Phase9b_welcomeOnboardingAndroidTvTwoColumnLayoutWorksCleanly() {
+        val manualOffsetState = androidx.compose.runtime.mutableIntStateOf(0)
+
+        composeTestRule.setContent {
+            com.example.ui.home.FirstTimeFavoriteTeamsDialog(
+                selectedCountryZone = com.example.data.repository.UserZoneRegistry.getZoneByCode("FR"),
+                selectedSeasonTimeMode = com.example.data.repository.SeasonTimeMode.AUTO,
+                manualTimeOffsetMinutes = manualOffsetState.intValue,
+                onSetManualTimeOffset = { manualOffsetState.intValue = it },
+                onAdjustManualTimeOffset = { delta -> manualOffsetState.intValue += delta },
+                use24HourFormat = true,
+                activeEdition = com.example.util.SetPlayEdition.TV,
+                searchQuery = "",
+                searchResults = emptyList(),
+                isSearching = false,
+                selectedFavorites = emptyList(),
+                onSelectCountryZone = {},
+                onSelectSeasonTimeMode = {},
+                onAutoDetectCountryZone = {},
+                onOpenFullCountryZoneSheet = {},
+                onSearchQueryChange = {},
+                onToggleTeam = {},
+                onRemoveFavoriteTeam = {},
+                onCompleteOnboarding = {}
+            )
+        }
+        composeTestRule.waitForIdle()
+
+        composeTestRule.onNode(androidx.compose.ui.test.hasTestTag("first_time_teams_onboarding_dialog")).assertExists()
+        composeTestRule.onNode(androidx.compose.ui.test.hasTestTag("local_clock_adjustment_control")).assertExists()
+        composeTestRule.onNode(androidx.compose.ui.test.hasTestTag("onboarding_skip_btn")).assertExists()
+        composeTestRule.onNode(androidx.compose.ui.test.hasText("FR|", substring = true)).assertDoesNotExist()
+
+        // Step 1 -> Step 2 on TV
+        composeTestRule.onNode(androidx.compose.ui.test.hasTestTag("onboarding_continue_step2_btn")).performClick()
+        composeTestRule.waitForIdle()
+        composeTestRule.onNode(androidx.compose.ui.test.hasTestTag("onboarding_team_search_input")).assertExists()
+        composeTestRule.onNode(androidx.compose.ui.test.hasText("Popular in France", substring = true)).assertExists()
     }
 }
 

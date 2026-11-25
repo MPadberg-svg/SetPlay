@@ -165,6 +165,14 @@ data class UserCountryZone(
     }
 
     /**
+     * Computes the exact automatic IANA UTC offset in minutes at [epochMs] using the zone's IANA [timeZoneId]
+     * (automatically honoring DST transitions, fixed-offset regions, and historical/future date rules).
+     */
+    fun getAutoIanaOffsetMinutes(epochMs: Long = System.currentTimeMillis()): Int {
+        return TimeZone.getTimeZone(timeZoneId).getOffset(epochMs) / 60_000
+    }
+
+    /**
      * Returns the effective UTC offset in minutes (e.g., +60 for GMT+1, +120 for GMT+2, 0 for GMT+0, -300 for GMT-5)
      * taking into account both the country's Winter/Summer rules and the user's [SeasonTimeMode].
      */
@@ -180,6 +188,17 @@ data class UserCountryZone(
         } else {
             winterUtcOffsetMinutes
         }
+    }
+
+    /**
+     * Returns the effective UTC offset in minutes combining the automatic IANA offset at [epochMs]
+     * with an optional universal [manualOffsetMinutes] adjustment clamped to [-180, +180].
+     */
+    fun getEffectiveOffsetMinutes(
+        epochMs: Long = System.currentTimeMillis(),
+        manualOffsetMinutes: Int = 0
+    ): Int {
+        return getAutoIanaOffsetMinutes(epochMs) + manualOffsetMinutes.coerceIn(-180, 180)
     }
 
     /**
@@ -207,6 +226,61 @@ data class UserCountryZone(
     ): String {
         val totalMinutes = getEffectiveOffsetMinutes(mode, epochMs)
         return formatOffsetMinutesToGmtBadge(totalMinutes)
+    }
+
+    /**
+     * Returns the formatted UTC/GMT offset badge using automatic IANA offset at [epochMs]
+     * plus [manualOffsetMinutes] (clamped to [-180, +180]).
+     */
+    fun getUtcOffsetBadge(
+        epochMs: Long = System.currentTimeMillis(),
+        manualOffsetMinutes: Int
+    ): String {
+        return formatOffsetMinutesToGmtBadge(getEffectiveOffsetMinutes(epochMs, manualOffsetMinutes))
+    }
+
+    /**
+     * Returns a concise status label describing whether the clock is running on automatic IANA DST/Standard/Fixed
+     * time or a manual hour adjustment (e.g. `"Auto (DST active)"`, `"Auto (Standard)"`, `"Auto (Fixed)"`, `"Manual (-1h)"`).
+     */
+    fun getClockStatusLabel(
+        epochMs: Long = System.currentTimeMillis(),
+        manualOffsetMinutes: Int = 0
+    ): String {
+        val clampedManual = manualOffsetMinutes.coerceIn(-180, 180)
+        if (clampedManual != 0) {
+            val sign = if (clampedManual > 0) "+" else "-"
+            val absMins = abs(clampedManual)
+            val hours = absMins / 60
+            val remMins = absMins % 60
+            return if (remMins == 0) {
+                "Manual ($sign${hours}h)"
+            } else {
+                String.format(Locale.US, "Manual (%s%d:%02d)", sign, hours, remMins)
+            }
+        }
+        val tz = TimeZone.getTimeZone(timeZoneId)
+        return when {
+            tz.inDaylightTime(Date(epochMs)) -> "Auto (DST active)"
+            hasSeasonalTimeChange -> "Auto (Standard)"
+            else -> "Auto (Fixed)"
+        }
+    }
+
+    /**
+     * Formats [epochMs] in this zone's effective local time using automatic IANA offset + [manualOffsetMinutes].
+     */
+    fun formatLocalTime(
+        epochMs: Long,
+        manualOffsetMinutes: Int = 0,
+        use24Hour: Boolean = true
+    ): String {
+        val offsetMins = getEffectiveOffsetMinutes(epochMs, manualOffsetMinutes)
+        val customTz = buildCustomGmtTimeZone(offsetMins)
+        val pattern = if (use24Hour) "HH:mm" else "h:mm a"
+        return SimpleDateFormat(pattern, Locale.US).apply {
+            timeZone = customTz
+        }.format(Date(epochMs))
     }
 
     val winterGmtBadge: String
@@ -353,8 +427,28 @@ fun formatDynamicKickoffTime(kickoffEpochMs: Long, zone: UserCountryZone, isSumm
 fun formatDynamicKickoffTime(
     kickoffEpochMs: Long,
     zone: UserCountryZone,
+    manualOffsetMinutes: Int,
+    use24Hour: Boolean = true
+): String {
+    return zone.formatLocalTime(
+        epochMs = kickoffEpochMs,
+        manualOffsetMinutes = manualOffsetMinutes,
+        use24Hour = use24Hour
+    )
+}
+
+fun formatDynamicKickoffTime(
+    kickoffEpochMs: Long,
+    zone: UserCountryZone,
     seasonTimeMode: SeasonTimeMode
 ): String {
+    if (seasonTimeMode == SeasonTimeMode.AUTO) {
+        return zone.formatLocalTime(
+            epochMs = kickoffEpochMs,
+            manualOffsetMinutes = 0,
+            use24Hour = true
+        )
+    }
     val isSummer = zone.isSummerTimeActive(mode = seasonTimeMode, epochMs = kickoffEpochMs)
     return formatDynamicKickoffTime(kickoffEpochMs, zone, isSummer)
 }
