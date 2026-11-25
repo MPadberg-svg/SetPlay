@@ -29,14 +29,18 @@ import com.example.data.remote.XtreamAuthResponse
 import com.example.data.remote.XtreamClient
 import com.example.data.sync.CatalogDiffEngine
 import com.example.data.sync.CatalogSyncScheduler
+import com.example.data.sync.CatalogTaskOrchestrator
+import com.example.data.sync.CatalogTaskStateMachine
 import com.example.data.sync.CatalogUpdateCheckWorker
 import com.example.data.sync.PlaybackResourceGovernor
 import com.example.data.sync.SyncPriority
 import com.example.data.sync.SyncStage
 import com.example.data.sync.SyncStatus
 import com.example.data.sync.SyncTelemetry
+import com.example.data.sync.TaskPriority
 import com.example.data.sync.toSyncTelemetry
 import com.example.util.SecurityManager
+import java.io.IOException
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -133,7 +137,11 @@ class IptvRepository(
         if (stateDao != null) {
             indexingScope.launch(Dispatchers.IO) {
                 runCatching {
-                    stateDao.markAllRunningAsInterrupted(System.currentTimeMillis())
+                    val now = System.currentTimeMillis()
+                    stateDao.recoverOrphanedRunningOnStartup(
+                        staleBeforeMs = now - CatalogTaskOrchestrator.STALE_LEASE_TIMEOUT_MS,
+                        nowMs = now
+                    )
                 }
             }
         }
@@ -149,10 +157,100 @@ class IptvRepository(
         }
     }
 
+    /**
+     * Ensures direct non-worker invocations (such as unit tests or manual Stage 2 indexers)
+     * enter [SyncStatus.RUNNING] via legal FSM steps (`IDLE/COMPLETED/FAILED/INTERRUPTED ->
+     * PENDING -> RUNNING`) without overwriting an active worker's lease metadata.
+     */
+    private suspend fun ensureRunningStateForDirectExecution(telemetry: SyncTelemetry) {
+        val dao = syncSectionStateDao ?: return
+        val normalized = SyncTelemetry.normalizeSyncSectionType(telemetry.sectionType)
+        runCatching {
+            val existing = dao.getSectionOnce(telemetry.playlistId, normalized)
+            val currentStatus = CatalogTaskStateMachine.parseStatus(existing?.status)
+            if (currentStatus == SyncStatus.RUNNING) {
+                return
+            }
+            if (currentStatus != SyncStatus.PENDING) {
+                if (!CatalogTaskStateMachine.requireValidTransition(
+                        currentStatus,
+                        SyncStatus.PENDING,
+                        "ensureRunning-step1(${telemetry.playlistId},$normalized)"
+                    )
+                ) {
+                    return
+                }
+                val baseEntity = existing ?: telemetry.toEntity(telemetry.playlistId, normalized)
+                dao.upsert(
+                    baseEntity.copy(
+                        status = SyncStatus.PENDING.name,
+                        stage = "PENDING",
+                        lastAttemptedSyncMs = System.currentTimeMillis()
+                    )
+                )
+            }
+            val pendingRow = dao.getSectionOnce(telemetry.playlistId, normalized)
+            val pendingStatus = CatalogTaskStateMachine.parseStatus(pendingRow?.status)
+            if (!CatalogTaskStateMachine.requireValidTransition(
+                    pendingStatus,
+                    SyncStatus.RUNNING,
+                    "ensureRunning-step2(${telemetry.playlistId},$normalized)"
+                )
+            ) {
+                return
+            }
+            val runningEntity = telemetry.toEntity(telemetry.playlistId, normalized).copy(
+                status = SyncStatus.RUNNING.name,
+                queuePriority = pendingRow?.queuePriority ?: 99,
+                queueSequence = pendingRow?.queueSequence ?: 0L,
+                requestedCategoryId = pendingRow?.requestedCategoryId.orEmpty(),
+                forceFullReconcile = pendingRow?.forceFullReconcile ?: false,
+                ownerWorkerId = pendingRow?.ownerWorkerId.orEmpty(),
+                heartbeatMs = pendingRow?.heartbeatMs ?: 0L
+            )
+            dao.upsert(runningEntity)
+        }
+    }
+
     private suspend fun persistSyncTelemetry(telemetry: SyncTelemetry) {
         val dao = syncSectionStateDao ?: return
+        val normalized = SyncTelemetry.normalizeSyncSectionType(telemetry.sectionType)
         runCatching {
-            dao.upsert(telemetry.toEntity())
+            val existing = dao.getSectionOnce(telemetry.playlistId, normalized)
+            val currentStatus = CatalogTaskStateMachine.parseStatus(existing?.status)
+
+            // Guard against cancelled/stale runs overwriting PENDING or IDLE rows
+            if (existing != null && currentStatus == SyncStatus.PENDING &&
+                existing.sessionId.isNotBlank() &&
+                telemetry.sessionId.isNotBlank() &&
+                existing.sessionId != telemetry.sessionId
+            ) {
+                return
+            }
+
+            if (!CatalogTaskStateMachine.requireValidTransition(
+                    currentStatus,
+                    telemetry.status,
+                    "persistSyncTelemetry(${telemetry.playlistId},$normalized)"
+                )
+            ) {
+                return
+            }
+
+            val isTerminal = telemetry.status == SyncStatus.COMPLETED ||
+                telemetry.status == SyncStatus.FAILED ||
+                telemetry.status == SyncStatus.INTERRUPTED ||
+                telemetry.status == SyncStatus.IDLE
+
+            val entity = telemetry.toEntity(telemetry.playlistId, normalized).copy(
+                queuePriority = if (isTerminal) 99 else (existing?.queuePriority ?: 99),
+                queueSequence = existing?.queueSequence ?: 0L,
+                requestedCategoryId = if (isTerminal) "" else existing?.requestedCategoryId.orEmpty(),
+                forceFullReconcile = if (isTerminal) false else (existing?.forceFullReconcile ?: false),
+                ownerWorkerId = if (isTerminal) "" else existing?.ownerWorkerId.orEmpty(),
+                heartbeatMs = if (isTerminal) 0L else (existing?.heartbeatMs ?: 0L)
+            )
+            dao.upsert(entity)
         }
     }
 
@@ -161,6 +259,15 @@ class IptvRepository(
         val normalized = SyncTelemetry.normalizeSyncSectionType(sectionType)
         runCatching {
             val existing = dao.getSectionOnce(playlistId, normalized)
+            val currentStatus = CatalogTaskStateMachine.parseStatus(existing?.status)
+            if (!CatalogTaskStateMachine.requireValidTransition(
+                    currentStatus,
+                    SyncStatus.INTERRUPTED,
+                    "markSectionInterrupted($playlistId,$normalized)"
+                )
+            ) {
+                return
+            }
             val base = existing?.toSyncTelemetry()
                 ?: SyncTelemetry(playlistId = playlistId, sectionType = normalized)
             dao.upsert(
@@ -168,7 +275,14 @@ class IptvRepository(
                     status = SyncStatus.INTERRUPTED,
                     isIndeterminate = false,
                     lastAttemptedSyncMs = System.currentTimeMillis()
-                ).toEntity(playlistId, normalized)
+                ).toEntity(playlistId, normalized).copy(
+                    queuePriority = 99,
+                    queueSequence = existing?.queueSequence ?: 0L,
+                    requestedCategoryId = "",
+                    forceFullReconcile = false,
+                    ownerWorkerId = "",
+                    heartbeatMs = 0L
+                )
             )
         }
     }
@@ -184,7 +298,14 @@ class IptvRepository(
                 base.copy(
                     pendingUpdateAvailable = summary.isNotBlank(),
                     pendingUpdateSummary = summary
-                ).toEntity(playlistId, normalized)
+                ).toEntity(playlistId, normalized).copy(
+                    queuePriority = existing?.queuePriority ?: 99,
+                    queueSequence = existing?.queueSequence ?: 0L,
+                    requestedCategoryId = existing?.requestedCategoryId.orEmpty(),
+                    forceFullReconcile = existing?.forceFullReconcile ?: false,
+                    ownerWorkerId = existing?.ownerWorkerId.orEmpty(),
+                    heartbeatMs = existing?.heartbeatMs ?: 0L
+                )
             )
         }
     }
@@ -291,6 +412,12 @@ class IptvRepository(
     }
 
     suspend fun deletePlaylist(id: Long) {
+        val ctx = appContext ?: cachedAppContext
+        if (ctx != null) {
+            runCatching {
+                CatalogTaskOrchestrator.cancelPlaylistTasks(ctx, id)
+            }
+        }
         vodGroupDao?.deleteGroupsByType(id, "movie")
         vodGroupDao?.deleteGroupsByType(id, "series")
         vodGroupDao?.deleteGroupMembersByType(id, "movie")
@@ -488,6 +615,7 @@ class IptvRepository(
                     itemsGrouped = 0,
                     errorMessage = ""
                 )
+                ensureRunningStateForDirectExecution(latestGroupTelemetry)
                 persistSyncTelemetry(latestGroupTelemetry)
 
                 val allProjections = ArrayList<StreamIndexProjection>(totalCount)
@@ -855,12 +983,11 @@ class IptvRepository(
             val ctx = appContext ?: cachedAppContext
             if (anotherSyncActive && ctx != null) {
                 val sectionType = if (normalizedType == "movie") "MOVIE" else "SERIES"
-                CatalogSyncScheduler.enqueueSectionSync(
+                CatalogTaskOrchestrator.enqueueSection(
                     context = ctx,
                     playlistId = playlistId,
                     sectionType = sectionType,
-                    priority = SyncPriority.VOD_SYNC,
-                    userInitiated = false
+                    priority = TaskPriority.INITIAL_ACCOUNT_SYNC
                 )
                 return
             }
@@ -1692,9 +1819,10 @@ class IptvRepository(
     }
 
     /**
-     * Full account synchronization routed sequentially through [syncPlaylistSection]
-     * (`LIVE` -> `SERIES` -> `MOVIE`) so only one catalog downloads and processes at a time
-     * against the Xtream host with unified `sync_section_state` telemetry and zero overlap.
+     * Full account synchronization: authenticates & updates account metadata, then delegates
+     * `LIVE` -> `SERIES` -> `MOVIE` scheduling atomically to [CatalogTaskOrchestrator.enqueueAccountSync]
+     * so all catalog downloads execute strictly through the single WorkManager runner with zero
+     * competing inline loops.
      */
     suspend fun syncPlaylist(playlist: PlaylistEntity): Result<Unit> = withContext(PlaybackResourceGovernor.syncDispatcher) {
         if (!isSyncInProgress.compareAndSet(false, true)) {
@@ -1731,10 +1859,20 @@ class IptvRepository(
             playlistDao.updatePlaylist(updatedPlaylist)
             val workingPlaylist = updatedPlaylist.decrypted()
 
-            // 2. Execute LIVE -> SERIES -> MOVIE strictly sequentially via syncPlaylistSection
+            // 2. Delegate LIVE -> SERIES -> MOVIE to the Room-backed single WorkManager orchestrator
+            val ctx = appContext ?: cachedAppContext
+            if (ctx != null) {
+                CatalogTaskOrchestrator.enqueueAccountSync(ctx, workingPlaylist.id)
+                _syncProgress.value = SyncProgress(
+                    isSyncing = false,
+                    phase = "Catalog sync queued (Live TV, Series, Movies)…"
+                )
+                return@withContext Result.success(Unit)
+            }
+
+            // Fallback ONLY for isolated context-free unit tests
             val orderedSections = listOf("LIVE", "SERIES", "MOVIE")
             var firstFailure: Throwable? = null
-
             for (sec in orderedSections) {
                 val sectionResult = syncPlaylistSection(
                     playlist = workingPlaylist,
@@ -1939,6 +2077,9 @@ class IptvRepository(
         val plainPassword = SecurityManager.decryptCredential(playlist.password)
 
         try {
+            // Ensure direct non-worker calls enter RUNNING cleanly via the FSM
+            ensureRunningStateForDirectExecution(telemetry)
+
             // Stage 1: CONNECTING_AND_CHECKING (0..5%)
             emitTelemetry(
                 updated = telemetry.copy(
@@ -1957,15 +2098,25 @@ class IptvRepository(
                 plainPassword
             )
             if (authResult.isFailure) {
-                val rawErr = authResult.exceptionOrNull()?.message ?: "Authentication failed"
+                val authErr = authResult.exceptionOrNull()
+                val rawErr = authErr?.message ?: "Authentication failed"
                 val safeErr = SecurityManager.redactSensitiveText(rawErr, playlist.username, plainPassword)
+                val terminalStatus = if (isTransientNetworkError(authErr)) {
+                    SyncStatus.INTERRUPTED
+                } else {
+                    SyncStatus.FAILED
+                }
                 emitTelemetry(
                     updated = telemetry.copy(
-                        status = SyncStatus.FAILED,
+                        status = terminalStatus,
                         isIndeterminate = false,
                         errorMessage = safeErr
                     ),
-                    statusText = "$sectionLabel sync failed",
+                    statusText = if (terminalStatus == SyncStatus.INTERRUPTED) {
+                        "$sectionLabel sync interrupted"
+                    } else {
+                        "$sectionLabel sync failed"
+                    },
                     forceDbWrite = true
                 )
                 return@withContext Result.failure(Exception(safeErr))
@@ -2645,16 +2796,25 @@ class IptvRepository(
         } catch (e: Exception) {
             val safeErr = SecurityManager.redactSensitiveText(e.message, playlist.username, plainPassword)
             Log.e("IptvRepository", "Section sync ($sectionType) failed: $safeErr")
+            val terminalStatus = if (isTransientNetworkError(e)) {
+                SyncStatus.INTERRUPTED
+            } else {
+                SyncStatus.FAILED
+            }
             emitTelemetry(
                 updated = telemetry.copy(
-                    status = SyncStatus.FAILED,
+                    status = terminalStatus,
                     isIndeterminate = false,
                     lastSuccessfulSyncMs = priorLastSuccessMs,
                     etag = priorEtag,
                     lastModified = priorLastModified,
                     errorMessage = safeErr
                 ),
-                statusText = "$sectionLabel sync failed",
+                statusText = if (terminalStatus == SyncStatus.INTERRUPTED) {
+                    "$sectionLabel sync interrupted"
+                } else {
+                    "$sectionLabel sync failed"
+                },
                 forceDbWrite = true
             )
             Result.failure(Exception(safeErr))
@@ -2663,6 +2823,28 @@ class IptvRepository(
         } finally {
             sectionLock.set(false)
         }
+    }
+
+    private fun isTransientNetworkError(error: Throwable?): Boolean {
+        if (error == null) return false
+        var cursor: Throwable? = error
+        var depth = 0
+        while (cursor != null && depth < 5) {
+            if (cursor is IOException) return true
+            val msg = cursor.message.orEmpty()
+            if (msg.contains("timeout", ignoreCase = true) ||
+                msg.contains("Unable to reach", ignoreCase = true) ||
+                msg.contains("Failed to connect", ignoreCase = true) ||
+                msg.contains("Socket", ignoreCase = true) ||
+                msg.contains("HTTP 5", ignoreCase = true) ||
+                msg.contains("HTTP 429", ignoreCase = true)
+            ) {
+                return true
+            }
+            cursor = cursor.cause
+            depth++
+        }
+        return false
     }
 
     private data class SectionSyncSpec(

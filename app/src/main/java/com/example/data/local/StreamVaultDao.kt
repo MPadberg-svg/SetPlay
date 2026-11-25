@@ -1125,10 +1125,95 @@ interface SyncSectionStateDao {
         UPDATE sync_section_state
         SET status = 'INTERRUPTED',
             stage = 'INTERRUPTED',
+            ownerWorkerId = '',
+            heartbeatMs = 0,
             lastAttemptedSyncMs = :nowMs
         WHERE status IN ('RUNNING', 'PENDING')
     """)
     suspend fun markAllRunningAsInterrupted(nowMs: Long)
+
+    @Query("""
+        SELECT * FROM sync_section_state
+        WHERE status = 'PENDING'
+        ORDER BY queuePriority ASC, queueSequence ASC
+        LIMIT 1
+    """)
+    suspend fun getNextPendingTask(): SyncSectionStateEntity?
+
+    @Query("SELECT * FROM sync_section_state WHERE status = 'RUNNING'")
+    suspend fun getRunningTasks(): List<SyncSectionStateEntity>
+
+    @Query("""
+        SELECT * FROM sync_section_state
+        WHERE playlistId = :playlistId
+          AND status = 'PENDING'
+        ORDER BY queuePriority ASC, queueSequence ASC
+    """)
+    suspend fun getPendingTasksForPlaylist(playlistId: Long): List<SyncSectionStateEntity>
+
+    @Query("SELECT COUNT(*) FROM sync_section_state WHERE status IN ('RUNNING', 'PENDING')")
+    suspend fun countActiveOrPending(): Int
+
+    @Query("SELECT COUNT(*) FROM sync_section_state WHERE status = 'PENDING'")
+    suspend fun countPending(): Int
+
+    @Query("""
+        UPDATE sync_section_state
+        SET heartbeatMs = :heartbeatMs
+        WHERE playlistId = :playlistId
+          AND sectionType = :sectionType
+          AND status = 'RUNNING'
+          AND ownerWorkerId = :ownerWorkerId
+    """)
+    suspend fun updateHeartbeat(
+        playlistId: Long,
+        sectionType: String,
+        ownerWorkerId: String,
+        heartbeatMs: Long
+    )
+
+    @Query("""
+        UPDATE sync_section_state
+        SET status = 'INTERRUPTED',
+            ownerWorkerId = '',
+            heartbeatMs = 0,
+            lastAttemptedSyncMs = :nowMs,
+            errorMessage = 'Interrupted (stale worker lease recovered)'
+        WHERE status = 'RUNNING'
+          AND heartbeatMs > 0
+          AND heartbeatMs < :staleBeforeMs
+    """)
+    suspend fun recoverStaleRunningTasks(staleBeforeMs: Long, nowMs: Long): Int
+
+    @Query("""
+        UPDATE sync_section_state
+        SET status = 'INTERRUPTED',
+            ownerWorkerId = '',
+            heartbeatMs = 0,
+            lastAttemptedSyncMs = :nowMs,
+            errorMessage = 'Interrupted (process restarted)'
+        WHERE status = 'RUNNING'
+          AND (heartbeatMs = 0 OR heartbeatMs < :staleBeforeMs)
+    """)
+    suspend fun recoverOrphanedRunningOnStartup(staleBeforeMs: Long, nowMs: Long): Int
+
+    @Query("""
+        UPDATE sync_section_state
+        SET status = 'IDLE',
+            stage = 'IDLE',
+            ownerWorkerId = '',
+            heartbeatMs = 0,
+            queuePriority = 99,
+            requestedCategoryId = '',
+            forceFullReconcile = 0,
+            pendingUpdateSummary = ''
+        WHERE playlistId = :playlistId
+          AND status IN ('PENDING', 'RUNNING')
+    """)
+    suspend fun cancelAllForPlaylist(playlistId: Long)
+
+    @Query("DELETE FROM sync_section_state WHERE status IN ('PENDING', 'RUNNING')")
+    suspend fun clearPendingAndRunningForTest()
 }
 
 

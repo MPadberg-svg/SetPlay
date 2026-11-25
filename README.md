@@ -9,7 +9,7 @@ Dual-Edition Android Phone & Android TV IPTV Cinema & Live Football Companion en
 
 ![Kotlin 2.2.10](https://img.shields.io/badge/Kotlin-2.2.10-7F52FF?logo=kotlin&logoColor=white)
 ![Jetpack Compose](https://img.shields.io/badge/Jetpack%20Compose-BOM%202024.09.00-4285F4?logo=jetpackcompose&logoColor=white)
-![Room 2.7.0](https://img.shields.io/badge/Room-2.7.0%20(v8)-3DDC84?logo=android&logoColor=black)
+![Room 2.7.0](https://img.shields.io/badge/Room-2.7.0%20(v9)-3DDC84?logo=android&logoColor=black)
 ![Media3 1.5.1](https://img.shields.io/badge/Media3-1.5.1-0F9D58?logo=googleplay&logoColor=white)
 ![WorkManager 2.10.0](https://img.shields.io/badge/WorkManager-2.10.0-4285F4?logo=android&logoColor=white)
 ![Android SDK](https://img.shields.io/badge/Android%20SDK-Min%2024%20%7C%20Target%2036-34A853?logo=android&logoColor=white)
@@ -59,9 +59,9 @@ SetPlay compiles from a single codebase into two target-specific APKs selected a
 - **Background Update Checks**: `CatalogUpdateCheckWorker` runs a configurable 12-hour lightweight check before scheduling full diffs.
 - **Network & Resource Isolation**: Dedicated `playbackOkHttpClient` and `syncOkHttpClient` pools paired with `PlaybackResourceGovernor` throttle background sync work whenever ExoPlayer is actively streaming.
 
-### High-Scale Storage (Room v8)
+### High-Scale Storage (Room v9)
 
-- SQLite runs in WAL mode with `PRAGMA busy_timeout` configured and non-destructive schema migrations (`v3 → v8`).
+- SQLite runs in WAL mode with `PRAGMA busy_timeout` configured and non-destructive schema migrations (`v3 → v9`).
 - Full-text search uses Room FTS4 virtual tables; catalog shelves and "See All →" views use keyset cursor pagination for constant-time deep scrolling across 250K+ entries.
 - Stage 2 catalog diffs commit atomically in a single Room transaction to prevent partial UI states.
 
@@ -77,6 +77,8 @@ SetPlay compiles from a single codebase into two target-specific APKs selected a
 
 ## Architecture & Project Structure
 
+For mandatory concurrency, finite-state-machine, priority, and lease/heartbeat invariants governing catalog synchronization, see **[`docs/TASK_ORCHESTRATION_RULES.md`](docs/TASK_ORCHESTRATION_RULES.md)**.
+
 ```text
 SetPlay/
 ├── app/
@@ -85,14 +87,15 @@ SetPlay/
 │       ├── main/java/com/example/
 │       │   ├── MainActivity.kt              # Single-activity Compose host & edition shell router
 │       │   ├── data/
-│       │   │   ├── local/                   # StreamVaultDatabase (Room v8, WAL, FTS4), StreamVaultDao
+│       │   │   ├── local/                   # StreamVaultDatabase (Room v9, WAL, FTS4), StreamVaultDao
 │       │   │   ├── model/                   # Entities.kt, VodGroupingNormalizer, FTS & sync entities
 │       │   │   ├── remote/                  # XtreamClient, XtreamDto, GlobalPopularityIndexManager,
 │       │   │   │                            # GlobalCollectionsIndexManager, WyzieSubtitleService
 │       │   │   ├── repository/              # IptvRepository, FootballRepository, MatchCenterModels,
 │       │   │   │                            # MatchClockEngine, InternationalRankingResolver,
 │       │   │   │                            # ProviderAuthorityEngine, KickoffSourceMonitor, UserCountryZone
-│       │   │   └── sync/                    # CatalogSyncScheduler, CatalogSyncWorker, CatalogDiffEngine,
+│       │   │   └── sync/                    # CatalogTaskOrchestrator, CatalogTaskStateMachine,
+│       │   │                                # CatalogSyncScheduler, CatalogSyncWorker, CatalogDiffEngine,
 │       │   │                                # CatalogUpdateCheckWorker, PlaybackResourceGovernor,
 │       │   │                                # SyncModels, TvSyncManager (port 8765 / _setplay._tcp)
 │       │   ├── ui/
@@ -109,8 +112,9 @@ SetPlay/
 │       │   │   ├── viewmodel/               # Shared app & playback ViewModels
 │       │   │   └── vod/                     # Movies/Series shelves, collections, Version Picker & TV UX
 │       │   └── util/                        # EditionResolver, SecurityManager, StreamMetadataParser
-│       └── test/java/com/example/           # ExampleRobolectricTest.kt, ExampleUnitTest.kt (82 tests)
+│       └── test/java/com/example/           # ExampleRobolectricTest.kt, ExampleUnitTest.kt (89 tests)
 ├── docs/
+│   ├── TASK_ORCHESTRATION_RULES.md          # Mandatory Room SSOT, FSM, priority & lease orchestration rules
 │   ├── popularity_index.json                # Daily GitHub Pages global popularity index
 │   └── collections_index.json               # Daily GitHub Pages official movie collections index
 ├── gradle/
@@ -134,7 +138,7 @@ SetPlay/
 ### Build & Test Commands
 
 ```bash
-# Run the full 82-test JUnit + Robolectric suite (Room, Union-Find, DiffEngine, WorkManager, UI)
+# Run the full 89-test JUnit + Robolectric suite (Room, Union-Find, DiffEngine, Orchestrator, WorkManager, UI)
 ./gradlew :app:testDebugUnitTest
 
 # Build the Phone & Tablet edition (default)

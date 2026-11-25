@@ -8479,7 +8479,459 @@ class TvSyncDeviceSeparationComposeTest {
             )
         }
     }
+
+    @Test
+    fun v18Phase8b_userReproInterruptedMovieResumePreemptsWaitingSeriesAndCompletesBoth() = runBlocking {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val db = StreamVaultDatabase.getInstance(context)
+        val dao = db.syncSectionStateDao()
+        val playlistId = 98101L
+        try {
+            com.example.data.sync.CatalogTaskOrchestrator.clearForTest(context)
+            db.openHelper.writableDatabase.execSQL("DELETE FROM sync_section_state WHERE playlistId = ?", arrayOf(playlistId))
+
+            // 1. Account onboarding enqueues LIVE -> SERIES -> MOVIE at P3 (INITIAL_ACCOUNT_SYNC)
+            com.example.data.sync.CatalogTaskOrchestrator.enqueueAccountSync(context, playlistId)
+            val pendingInitial = dao.getPendingTasksForPlaylist(playlistId)
+            assertEquals(listOf("LIVE", "SERIES", "MOVIE"), pendingInitial.map { it.sectionType })
+
+            // 2. Worker claims and completes LIVE
+            val claimedLive = com.example.data.sync.CatalogTaskOrchestrator.claimNextTask(context, "worker-a")
+            assertNotNull(claimedLive)
+            assertEquals("LIVE", claimedLive!!.sectionType)
+            com.example.data.sync.CatalogTaskOrchestrator.markTaskTerminal(
+                context = context,
+                playlistId = playlistId,
+                sectionType = "LIVE",
+                workerId = "worker-a",
+                terminalStatus = com.example.data.sync.SyncStatus.COMPLETED
+            )
+
+            // 3. Simulate MOVIE interrupted while SERIES is still PENDING at P3
+            val movieRow = dao.getSectionOnce(playlistId, "MOVIE")!!
+            dao.upsert(
+                movieRow.copy(
+                    status = com.example.data.sync.SyncStatus.INTERRUPTED.name,
+                    ownerWorkerId = "",
+                    heartbeatMs = 0L,
+                    queuePriority = 99
+                )
+            )
+            assertEquals("PENDING", dao.getSectionOnce(playlistId, "SERIES")!!.status)
+
+            // 4. User taps Resume on MOVIE -> must receive P0 (USER_RESUME) and preempt waiting SERIES
+            val resumed = com.example.data.sync.CatalogTaskOrchestrator.resumeSection(context, playlistId, "MOVIE")
+            assertTrue("resumeSection(MOVIE) must succeed", resumed)
+            val resumedMovieRow = dao.getSectionOnce(playlistId, "MOVIE")!!
+            assertEquals("PENDING", resumedMovieRow.status)
+            assertEquals(com.example.data.sync.TaskPriority.USER_RESUME.rank, resumedMovieRow.queuePriority)
+
+            // 5. Next claim MUST return MOVIE ahead of waiting SERIES
+            val claimedMovie = com.example.data.sync.CatalogTaskOrchestrator.claimNextTask(context, "worker-b")
+            assertNotNull(claimedMovie)
+            assertEquals("MOVIE", claimedMovie!!.sectionType)
+            assertEquals("RUNNING", claimedMovie.status)
+            assertEquals("worker-b", claimedMovie.ownerWorkerId)
+            assertTrue(claimedMovie.heartbeatMs > 0L)
+
+            // Complete MOVIE -> SERIES runs cleanly right after
+            com.example.data.sync.CatalogTaskOrchestrator.markTaskTerminal(
+                context = context,
+                playlistId = playlistId,
+                sectionType = "MOVIE",
+                workerId = "worker-b",
+                terminalStatus = com.example.data.sync.SyncStatus.COMPLETED
+            )
+            val claimedSeries = com.example.data.sync.CatalogTaskOrchestrator.claimNextTask(context, "worker-b")
+            assertNotNull("SERIES must claim right after MOVIE completes", claimedSeries)
+            assertEquals("SERIES", claimedSeries!!.sectionType)
+
+            com.example.data.sync.CatalogTaskOrchestrator.markTaskTerminal(
+                context = context,
+                playlistId = playlistId,
+                sectionType = "SERIES",
+                workerId = "worker-b",
+                terminalStatus = com.example.data.sync.SyncStatus.COMPLETED
+            )
+            assertNull(com.example.data.sync.CatalogTaskOrchestrator.claimNextTask(context, "worker-b"))
+            assertFalse(com.example.data.sync.CatalogTaskOrchestrator.hasActiveOrPendingTasks(context))
+        } finally {
+            com.example.data.sync.CatalogTaskOrchestrator.clearForTest(context)
+            db.openHelper.writableDatabase.execSQL("DELETE FROM sync_section_state WHERE playlistId = ?", arrayOf(playlistId))
+        }
+    }
+
+    @Test
+    fun v18Phase8b_strictFsmRejectsRunningToPendingAndAllowsValidLifecycle() = runBlocking {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val db = StreamVaultDatabase.getInstance(context)
+        val dao = db.syncSectionStateDao()
+        val playlistId = 98102L
+        try {
+            // 1. Direct FSM transition table assertions
+            assertFalse(
+                "RUNNING -> PENDING must be strictly forbidden",
+                com.example.data.sync.CatalogTaskStateMachine.canTransition(
+                    com.example.data.sync.SyncStatus.RUNNING,
+                    com.example.data.sync.SyncStatus.PENDING
+                )
+            )
+            assertFalse(
+                com.example.data.sync.CatalogTaskStateMachine.requireValidTransition(
+                    com.example.data.sync.SyncStatus.RUNNING,
+                    com.example.data.sync.SyncStatus.PENDING,
+                    "test-illegal"
+                )
+            )
+            assertFalse(
+                com.example.data.sync.CatalogTaskStateMachine.canTransition(
+                    com.example.data.sync.SyncStatus.IDLE,
+                    com.example.data.sync.SyncStatus.RUNNING
+                )
+            )
+            assertFalse(
+                com.example.data.sync.CatalogTaskStateMachine.canTransition(
+                    com.example.data.sync.SyncStatus.COMPLETED,
+                    com.example.data.sync.SyncStatus.RUNNING
+                )
+            )
+
+            // Valid full lifecycle: IDLE -> PENDING -> RUNNING -> INTERRUPTED -> PENDING -> RUNNING -> COMPLETED
+            assertTrue(com.example.data.sync.CatalogTaskStateMachine.canTransition(com.example.data.sync.SyncStatus.IDLE, com.example.data.sync.SyncStatus.PENDING))
+            assertTrue(com.example.data.sync.CatalogTaskStateMachine.canTransition(com.example.data.sync.SyncStatus.PENDING, com.example.data.sync.SyncStatus.RUNNING))
+            assertTrue(com.example.data.sync.CatalogTaskStateMachine.canTransition(com.example.data.sync.SyncStatus.RUNNING, com.example.data.sync.SyncStatus.INTERRUPTED))
+            assertTrue(com.example.data.sync.CatalogTaskStateMachine.canTransition(com.example.data.sync.SyncStatus.INTERRUPTED, com.example.data.sync.SyncStatus.PENDING))
+            assertTrue(com.example.data.sync.CatalogTaskStateMachine.canTransition(com.example.data.sync.SyncStatus.PENDING, com.example.data.sync.SyncStatus.RUNNING))
+            assertTrue(com.example.data.sync.CatalogTaskStateMachine.canTransition(com.example.data.sync.SyncStatus.RUNNING, com.example.data.sync.SyncStatus.COMPLETED))
+
+            // 2. End-to-end Room verification that enqueuing a RUNNING section never overwrites it to PENDING
+            com.example.data.sync.CatalogTaskOrchestrator.clearForTest(context)
+            db.openHelper.writableDatabase.execSQL("DELETE FROM sync_section_state WHERE playlistId = ?", arrayOf(playlistId))
+
+            assertTrue(
+                com.example.data.sync.CatalogTaskOrchestrator.enqueueSection(
+                    context = context,
+                    playlistId = playlistId,
+                    sectionType = "MOVIE",
+                    priority = com.example.data.sync.TaskPriority.USER_SECTION_SYNC
+                )
+            )
+            val claimed = com.example.data.sync.CatalogTaskOrchestrator.claimNextTask(context, "worker-fsm")
+            assertNotNull(claimed)
+            assertEquals("RUNNING", dao.getSectionOnce(playlistId, "MOVIE")!!.status)
+
+            val duplicateEnqueue = com.example.data.sync.CatalogTaskOrchestrator.enqueueSection(
+                context = context,
+                playlistId = playlistId,
+                sectionType = "MOVIE",
+                priority = com.example.data.sync.TaskPriority.USER_RESUME
+            )
+            assertFalse("Enqueuing an already-RUNNING section must be an idempotent no-op", duplicateEnqueue)
+            assertEquals("RUNNING", dao.getSectionOnce(playlistId, "MOVIE")!!.status)
+
+            // Transition RUNNING -> INTERRUPTED -> PENDING -> RUNNING -> COMPLETED
+            com.example.data.sync.CatalogTaskOrchestrator.markTaskTerminal(
+                context, playlistId, "MOVIE", "worker-fsm", com.example.data.sync.SyncStatus.INTERRUPTED
+            )
+            assertEquals("INTERRUPTED", dao.getSectionOnce(playlistId, "MOVIE")!!.status)
+            assertTrue(com.example.data.sync.CatalogTaskOrchestrator.resumeSection(context, playlistId, "MOVIE"))
+            assertEquals("PENDING", dao.getSectionOnce(playlistId, "MOVIE")!!.status)
+            assertNotNull(com.example.data.sync.CatalogTaskOrchestrator.claimNextTask(context, "worker-fsm-2"))
+            assertEquals("RUNNING", dao.getSectionOnce(playlistId, "MOVIE")!!.status)
+            com.example.data.sync.CatalogTaskOrchestrator.markTaskTerminal(
+                context, playlistId, "MOVIE", "worker-fsm-2", com.example.data.sync.SyncStatus.COMPLETED
+            )
+            assertEquals("COMPLETED", dao.getSectionOnce(playlistId, "MOVIE")!!.status)
+        } finally {
+            com.example.data.sync.CatalogTaskOrchestrator.clearForTest(context)
+            db.openHelper.writableDatabase.execSQL("DELETE FROM sync_section_state WHERE playlistId = ?", arrayOf(playlistId))
+        }
+    }
+
+    @Test
+    fun v18Phase8b_repeatedResumeAndEnqueueIdempotencyNeverDuplicatesOrCorruptsRunning() = runBlocking {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val db = StreamVaultDatabase.getInstance(context)
+        val dao = db.syncSectionStateDao()
+        val playlistId = 98103L
+        try {
+            com.example.data.sync.CatalogTaskOrchestrator.clearForTest(context)
+            db.openHelper.writableDatabase.execSQL("DELETE FROM sync_section_state WHERE playlistId = ?", arrayOf(playlistId))
+
+            dao.upsert(
+                com.example.data.model.SyncSectionStateEntity(
+                    playlistId = playlistId,
+                    sectionType = "MOVIE",
+                    status = com.example.data.sync.SyncStatus.INTERRUPTED.name,
+                    stage = "DOWNLOADING_AND_DIFFING",
+                    progressPercent = 40
+                )
+            )
+
+            // Rapidly tap Resume 5 times -> must produce exactly 1 PENDING row at P0
+            for (attempt in 1..5) {
+                com.example.data.sync.CatalogTaskOrchestrator.resumeSection(context, playlistId, "MOVIE")
+            }
+            val pendingAfterBursts = dao.getPendingTasksForPlaylist(playlistId)
+            assertEquals("5 rapid resume taps must yield exactly 1 PENDING row", 1, pendingAfterBursts.size)
+            assertEquals(com.example.data.sync.TaskPriority.USER_RESUME.rank, pendingAfterBursts.first().queuePriority)
+
+            // Claim task -> now RUNNING
+            val claimed = com.example.data.sync.CatalogTaskOrchestrator.claimNextTask(context, "worker-idempotent")
+            assertNotNull(claimed)
+            val originalHeartbeat = claimed!!.heartbeatMs
+
+            // Fire 5 more rapid resume/enqueue bursts while RUNNING -> zero duplicates, lease untouched
+            for (attempt in 1..5) {
+                assertFalse(com.example.data.sync.CatalogTaskOrchestrator.resumeSection(context, playlistId, "MOVIE"))
+                assertFalse(
+                    com.example.data.sync.CatalogTaskOrchestrator.enqueueSection(
+                        context = context,
+                        playlistId = playlistId,
+                        sectionType = "MOVIE",
+                        priority = com.example.data.sync.TaskPriority.USER_SECTION_SYNC,
+                        forceFull = true
+                    )
+                )
+            }
+            assertEquals(0, dao.getPendingTasksForPlaylist(playlistId).size)
+            val activeRow = dao.getSectionOnce(playlistId, "MOVIE")!!
+            assertEquals("RUNNING", activeRow.status)
+            assertEquals("worker-idempotent", activeRow.ownerWorkerId)
+            assertEquals(originalHeartbeat, activeRow.heartbeatMs)
+        } finally {
+            com.example.data.sync.CatalogTaskOrchestrator.clearForTest(context)
+            db.openHelper.writableDatabase.execSQL("DELETE FROM sync_section_state WHERE playlistId = ?", arrayOf(playlistId))
+        }
+    }
+
+    @Test
+    fun v18Phase8b_staleLeaseWatchdogRecoversDeadWorkerAfter45sAndUnblocksQueue() = runBlocking {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val db = StreamVaultDatabase.getInstance(context)
+        val dao = db.syncSectionStateDao()
+        val playlistId = 98104L
+        try {
+            com.example.data.sync.CatalogTaskOrchestrator.clearForTest(context)
+            db.openHelper.writableDatabase.execSQL("DELETE FROM sync_section_state WHERE playlistId = ?", arrayOf(playlistId))
+
+            val now = System.currentTimeMillis()
+            // 1. Insert a dead RUNNING worker lease older than 45s (60s old) + a waiting PENDING SERIES task
+            dao.upsert(
+                com.example.data.model.SyncSectionStateEntity(
+                    playlistId = playlistId,
+                    sectionType = "MOVIE",
+                    status = com.example.data.sync.SyncStatus.RUNNING.name,
+                    stage = "DOWNLOADING_AND_DIFFING",
+                    ownerWorkerId = "dead-worker-1",
+                    heartbeatMs = now - 60_000L
+                )
+            )
+            dao.upsert(
+                com.example.data.model.SyncSectionStateEntity(
+                    playlistId = playlistId,
+                    sectionType = "SERIES",
+                    status = com.example.data.sync.SyncStatus.PENDING.name,
+                    stage = "PENDING",
+                    queuePriority = com.example.data.sync.TaskPriority.INITIAL_ACCOUNT_SYNC.rank,
+                    queueSequence = now
+                )
+            )
+
+            // 2. Claiming next task triggers 45s stale lease recovery and unblocks SERIES
+            val claimed = com.example.data.sync.CatalogTaskOrchestrator.claimNextTask(context, "live-worker-2")
+            assertNotNull("Stale RUNNING lease must be recovered so waiting SERIES can claim", claimed)
+            assertEquals("SERIES", claimed!!.sectionType)
+            assertEquals("live-worker-2", claimed.ownerWorkerId)
+
+            val recoveredMovie = dao.getSectionOnce(playlistId, "MOVIE")!!
+            assertEquals("INTERRUPTED", recoveredMovie.status)
+            assertEquals("", recoveredMovie.ownerWorkerId)
+            assertTrue(recoveredMovie.errorMessage.contains("stale worker lease recovered", ignoreCase = true))
+
+            // 3. Conversely, a fresh RUNNING lease (SERIES just claimed) MUST block another worker
+            dao.upsert(
+                com.example.data.model.SyncSectionStateEntity(
+                    playlistId = playlistId,
+                    sectionType = "LIVE",
+                    status = com.example.data.sync.SyncStatus.PENDING.name,
+                    stage = "PENDING",
+                    queuePriority = com.example.data.sync.TaskPriority.USER_SECTION_SYNC.rank,
+                    queueSequence = now + 10L
+                )
+            )
+            val blockedClaim = com.example.data.sync.CatalogTaskOrchestrator.claimNextTask(context, "competing-worker-3")
+            assertNull("Fresh RUNNING lease must block competing workers from claiming another task", blockedClaim)
+        } finally {
+            com.example.data.sync.CatalogTaskOrchestrator.clearForTest(context)
+            db.openHelper.writableDatabase.execSQL("DELETE FROM sync_section_state WHERE playlistId = ?", arrayOf(playlistId))
+        }
+    }
+
+    @Test
+    fun v18Phase8b_failureIsolationAllowsWaitingSeriesToClaimAfterMovieFails() = runBlocking {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val db = StreamVaultDatabase.getInstance(context)
+        val dao = db.syncSectionStateDao()
+        val playlistId = 98105L
+        try {
+            com.example.data.sync.CatalogTaskOrchestrator.clearForTest(context)
+            db.openHelper.writableDatabase.execSQL("DELETE FROM sync_section_state WHERE playlistId = ?", arrayOf(playlistId))
+
+            com.example.data.sync.CatalogTaskOrchestrator.enqueueSection(
+                context = context,
+                playlistId = playlistId,
+                sectionType = "MOVIE",
+                priority = com.example.data.sync.TaskPriority.USER_SECTION_SYNC
+            )
+            com.example.data.sync.CatalogTaskOrchestrator.enqueueSection(
+                context = context,
+                playlistId = playlistId,
+                sectionType = "SERIES",
+                priority = com.example.data.sync.TaskPriority.INITIAL_ACCOUNT_SYNC
+            )
+
+            // Claim MOVIE and fail it
+            val claimedMovie = com.example.data.sync.CatalogTaskOrchestrator.claimNextTask(context, "worker-iso")
+            assertNotNull(claimedMovie)
+            assertEquals("MOVIE", claimedMovie!!.sectionType)
+            com.example.data.sync.CatalogTaskOrchestrator.markTaskTerminal(
+                context = context,
+                playlistId = playlistId,
+                sectionType = "MOVIE",
+                workerId = "worker-iso",
+                terminalStatus = com.example.data.sync.SyncStatus.FAILED,
+                errorMessage = "HTTP 403 Forbidden"
+            )
+
+            val failedMovie = dao.getSectionOnce(playlistId, "MOVIE")!!
+            assertEquals("FAILED", failedMovie.status)
+            assertEquals("", failedMovie.ownerWorkerId)
+
+            // Waiting SERIES must still be claimable immediately
+            val claimedSeries = com.example.data.sync.CatalogTaskOrchestrator.claimNextTask(context, "worker-iso")
+            assertNotNull("SERIES must never be stranded when MOVIE fails", claimedSeries)
+            assertEquals("SERIES", claimedSeries!!.sectionType)
+            assertEquals("RUNNING", claimedSeries.status)
+        } finally {
+            com.example.data.sync.CatalogTaskOrchestrator.clearForTest(context)
+            db.openHelper.writableDatabase.execSQL("DELETE FROM sync_section_state WHERE playlistId = ?", arrayOf(playlistId))
+        }
+    }
+
+    @Test
+    fun v18Phase8b_accountSwitchCancelsPreviousPlaylistTasksBeforeEnqueueingNewAccount() = runBlocking {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val db = StreamVaultDatabase.getInstance(context)
+        val dao = db.syncSectionStateDao()
+        val playlist1 = 98106L
+        val playlist2 = 98107L
+        try {
+            com.example.data.sync.CatalogTaskOrchestrator.clearForTest(context)
+            db.openHelper.writableDatabase.execSQL("DELETE FROM sync_section_state WHERE playlistId IN (?, ?)", arrayOf(playlist1, playlist2))
+
+            // 1. Playlist 1 has LIVE RUNNING and SERIES/MOVIE PENDING
+            com.example.data.sync.CatalogTaskOrchestrator.enqueueAccountSync(context, playlist1)
+            val p1Live = com.example.data.sync.CatalogTaskOrchestrator.claimNextTask(context, "worker-p1")
+            assertNotNull(p1Live)
+            assertEquals(playlist1, p1Live!!.playlistId)
+            assertEquals("LIVE", p1Live.sectionType)
+
+            // 2. Account switch cancels Playlist 1 cleanly before enqueueing Playlist 2
+            com.example.data.sync.CatalogTaskOrchestrator.cancelPlaylistTasks(context, playlist1)
+            com.example.data.sync.CatalogTaskOrchestrator.enqueueAccountSync(context, playlist2)
+
+            assertEquals("IDLE", dao.getSectionOnce(playlist1, "LIVE")!!.status)
+            assertEquals("", dao.getSectionOnce(playlist1, "LIVE")!!.ownerWorkerId)
+            assertEquals("IDLE", dao.getSectionOnce(playlist1, "SERIES")!!.status)
+            assertEquals("IDLE", dao.getSectionOnce(playlist1, "MOVIE")!!.status)
+            assertTrue(dao.getPendingTasksForPlaylist(playlist1).isEmpty())
+
+            // 3. Playlist 2 tasks are queued and claim cleanly
+            val p2Pending = dao.getPendingTasksForPlaylist(playlist2)
+            assertEquals(listOf("LIVE", "SERIES", "MOVIE"), p2Pending.map { it.sectionType })
+            val p2Claimed = com.example.data.sync.CatalogTaskOrchestrator.claimNextTask(context, "worker-p2")
+            assertNotNull(p2Claimed)
+            assertEquals(playlist2, p2Claimed!!.playlistId)
+            assertEquals("LIVE", p2Claimed.sectionType)
+        } finally {
+            com.example.data.sync.CatalogTaskOrchestrator.clearForTest(context)
+            db.openHelper.writableDatabase.execSQL("DELETE FROM sync_section_state WHERE playlistId IN (?, ?)", arrayOf(playlist1, playlist2))
+        }
+    }
+
+    @Test
+    fun v18Phase8b_resumeMovieWhileLiveRunningKeepsLiveRunningAndPromotesMovieAheadOfSeries() = runBlocking {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val db = StreamVaultDatabase.getInstance(context)
+        val dao = db.syncSectionStateDao()
+        val playlistId = 98108L
+        try {
+            com.example.data.sync.CatalogTaskOrchestrator.clearForTest(context)
+            db.openHelper.writableDatabase.execSQL("DELETE FROM sync_section_state WHERE playlistId = ?", arrayOf(playlistId))
+
+            // 1. Account sync queues LIVE, SERIES, MOVIE; worker starts LIVE
+            com.example.data.sync.CatalogTaskOrchestrator.enqueueAccountSync(context, playlistId)
+            val claimedLive = com.example.data.sync.CatalogTaskOrchestrator.claimNextTask(context, "worker-live")
+            assertNotNull(claimedLive)
+            assertEquals("LIVE", claimedLive!!.sectionType)
+
+            // 2. MOVIE was previously INTERRUPTED while SERIES waits at P3
+            val movieExisting = dao.getSectionOnce(playlistId, "MOVIE")!!
+            dao.upsert(
+                movieExisting.copy(
+                    status = com.example.data.sync.SyncStatus.INTERRUPTED.name,
+                    ownerWorkerId = "",
+                    heartbeatMs = 0L,
+                    queuePriority = 99
+                )
+            )
+
+            // 3. User resumes MOVIE while LIVE is actively RUNNING
+            assertTrue(com.example.data.sync.CatalogTaskOrchestrator.resumeSection(context, playlistId, "MOVIE"))
+
+            // LIVE must remain undisturbed and single-lane exclusion prevents concurrent claim
+            val liveRow = dao.getSectionOnce(playlistId, "LIVE")!!
+            assertEquals("RUNNING", liveRow.status)
+            assertEquals("worker-live", liveRow.ownerWorkerId)
+            assertNull("Single-lane execution must not claim MOVIE while LIVE is RUNNING", com.example.data.sync.CatalogTaskOrchestrator.claimNextTask(context, "worker-other"))
+
+            // MOVIE must be promoted to P0 (USER_RESUME) with queued-waiting summary
+            val movieRow = dao.getSectionOnce(playlistId, "MOVIE")!!
+            assertEquals("PENDING", movieRow.status)
+            assertEquals(com.example.data.sync.TaskPriority.USER_RESUME.rank, movieRow.queuePriority)
+            assertEquals(com.example.data.sync.CatalogTaskOrchestrator.STATUS_QUEUED_WAITING, movieRow.pendingUpdateSummary)
+
+            // 4. Once LIVE finishes, MOVIE (P0) claims immediately ahead of P3 SERIES, then SERIES claims next
+            com.example.data.sync.CatalogTaskOrchestrator.markTaskTerminal(
+                context = context,
+                playlistId = playlistId,
+                sectionType = "LIVE",
+                workerId = "worker-live",
+                terminalStatus = com.example.data.sync.SyncStatus.COMPLETED
+            )
+            val nextAfterLive = com.example.data.sync.CatalogTaskOrchestrator.claimNextTask(context, "worker-live")
+            assertNotNull(nextAfterLive)
+            assertEquals("MOVIE", nextAfterLive!!.sectionType)
+            assertEquals(com.example.data.sync.TaskPriority.USER_RESUME.rank, nextAfterLive.queuePriority)
+
+            com.example.data.sync.CatalogTaskOrchestrator.markTaskTerminal(
+                context = context,
+                playlistId = playlistId,
+                sectionType = "MOVIE",
+                workerId = "worker-live",
+                terminalStatus = com.example.data.sync.SyncStatus.COMPLETED
+            )
+            val finalSeries = com.example.data.sync.CatalogTaskOrchestrator.claimNextTask(context, "worker-live")
+            assertNotNull(finalSeries)
+            assertEquals("SERIES", finalSeries!!.sectionType)
+        } finally {
+            com.example.data.sync.CatalogTaskOrchestrator.clearForTest(context)
+            db.openHelper.writableDatabase.execSQL("DELETE FROM sync_section_state WHERE playlistId = ?", arrayOf(playlistId))
+        }
+    }
 }
+
 
 
 

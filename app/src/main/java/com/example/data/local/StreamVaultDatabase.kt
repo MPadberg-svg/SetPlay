@@ -34,7 +34,7 @@ import com.example.data.model.VodGroupMemberEntity
         SyncSectionStateEntity::class,
         VodCollectionEntity::class
     ],
-    version = 8,
+    version = 9,
     exportSchema = false
 )
 abstract class StreamVaultDatabase : RoomDatabase() {
@@ -228,6 +228,17 @@ abstract class StreamVaultDatabase : RoomDatabase() {
             }
         }
 
+        val MIGRATION_8_9: Migration = object : Migration(8, 9) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE sync_section_state ADD COLUMN queuePriority INTEGER NOT NULL DEFAULT 99")
+                db.execSQL("ALTER TABLE sync_section_state ADD COLUMN queueSequence INTEGER NOT NULL DEFAULT 0")
+                db.execSQL("ALTER TABLE sync_section_state ADD COLUMN requestedCategoryId TEXT NOT NULL DEFAULT ''")
+                db.execSQL("ALTER TABLE sync_section_state ADD COLUMN forceFullReconcile INTEGER NOT NULL DEFAULT 0")
+                db.execSQL("ALTER TABLE sync_section_state ADD COLUMN ownerWorkerId TEXT NOT NULL DEFAULT ''")
+                db.execSQL("ALTER TABLE sync_section_state ADD COLUMN heartbeatMs INTEGER NOT NULL DEFAULT 0")
+            }
+        }
+
         private val walHardeningCallback = object : RoomDatabase.Callback() {
             override fun onOpen(db: SupportSQLiteDatabase) {
                 super.onOpen(db)
@@ -251,7 +262,8 @@ abstract class StreamVaultDatabase : RoomDatabase() {
                         MIGRATION_4_5,
                         MIGRATION_5_6,
                         MIGRATION_6_7,
-                        MIGRATION_7_8
+                        MIGRATION_7_8,
+                        MIGRATION_8_9
                     )
                     .fallbackToDestructiveMigration()
                     .build()

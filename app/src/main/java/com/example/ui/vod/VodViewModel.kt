@@ -18,9 +18,11 @@ import com.example.data.repository.IptvRepository
 import com.example.data.repository.VodPipelinePhase
 import com.example.data.repository.VodPipelineState
 import com.example.data.sync.CatalogSyncScheduler
+import com.example.data.sync.CatalogTaskOrchestrator
 import com.example.data.sync.SyncStage
 import com.example.data.sync.SyncStatus
 import com.example.data.sync.SyncTelemetry
+import com.example.data.sync.TaskPriority
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.FlowPreview
 import kotlinx.coroutines.Job
@@ -536,12 +538,25 @@ class VodViewModel(application: Application) : AndroidViewModel(application) {
     private var lastSeriesTelemetryStatus: SyncStatus = SyncStatus.IDLE
     private var lastMoviePipelinePhase: VodPipelinePhase = VodPipelinePhase.IDLE
     private var lastSeriesPipelinePhase: VodPipelinePhase = VodPipelinePhase.IDLE
+    private var moviePendingWakePlaylistId: Long = -1L
+    private var seriesPendingWakePlaylistId: Long = -1L
 
     init {
         viewModelScope.launch {
             combine(movieSyncTelemetry, repository.moviesPipelineState) { telemetry, pipeline ->
                 telemetry to pipeline
             }.collect { (telemetry, pipeline) ->
+                if (telemetry.status == SyncStatus.PENDING && telemetry.playlistId > 0L) {
+                    if (moviePendingWakePlaylistId != telemetry.playlistId) {
+                        moviePendingWakePlaylistId = telemetry.playlistId
+                        CatalogTaskOrchestrator.ensureRunnerActive(
+                            context = getApplication(),
+                            forceWakeIfIdle = false
+                        )
+                    }
+                } else {
+                    moviePendingWakePlaylistId = -1L
+                }
                 val transitionedToComplete =
                     (lastMovieTelemetryStatus == SyncStatus.RUNNING || lastMovieTelemetryStatus == SyncStatus.PENDING) &&
                         telemetry.status == SyncStatus.COMPLETED
@@ -564,6 +579,17 @@ class VodViewModel(application: Application) : AndroidViewModel(application) {
             combine(seriesSyncTelemetry, repository.seriesPipelineState) { telemetry, pipeline ->
                 telemetry to pipeline
             }.collect { (telemetry, pipeline) ->
+                if (telemetry.status == SyncStatus.PENDING && telemetry.playlistId > 0L) {
+                    if (seriesPendingWakePlaylistId != telemetry.playlistId) {
+                        seriesPendingWakePlaylistId = telemetry.playlistId
+                        CatalogTaskOrchestrator.ensureRunnerActive(
+                            context = getApplication(),
+                            forceWakeIfIdle = false
+                        )
+                    }
+                } else {
+                    seriesPendingWakePlaylistId = -1L
+                }
                 val transitionedToComplete =
                     (lastSeriesTelemetryStatus == SyncStatus.RUNNING || lastSeriesTelemetryStatus == SyncStatus.PENDING) &&
                         telemetry.status == SyncStatus.COMPLETED
@@ -899,6 +925,17 @@ class VodViewModel(application: Application) : AndroidViewModel(application) {
         val targetPlaylist = playlist ?: return
         val isMovies = sectionTab == VodTab.MOVIES
         val streamType = if (isMovies) "movie" else "series"
+        val sectionType = if (isMovies) "MOVIE" else "SERIES"
+
+        val currentTelemetry = if (isMovies) movieSyncTelemetry.value else seriesSyncTelemetry.value
+        if (currentTelemetry.status == SyncStatus.PENDING) {
+            CatalogTaskOrchestrator.ensureRunnerActive(
+                context = getApplication(),
+                forceWakeIfIdle = false
+            )
+            return
+        }
+
         val currentlyEmpty = if (isMovies) {
             groupedMovieItems.value.isEmpty() && movieDiscoveryShelves.value.isEmpty()
         } else {
@@ -913,14 +950,29 @@ class VodViewModel(application: Application) : AndroidViewModel(application) {
         val sectionPipelineBusy = sectionPhase == VodPipelinePhase.DOWNLOADING ||
             sectionPhase == VodPipelinePhase.ORGANIZING
         if (sectionPipelineBusy) return
-        if (isMovies && (_isRefreshingMoviesTrigger.value || movieSyncTelemetry.value.isActive)) return
-        if (!isMovies && (_isRefreshingSeriesTrigger.value || seriesSyncTelemetry.value.isActive)) return
+        if (isMovies && (_isRefreshingMoviesTrigger.value || currentTelemetry.isActive)) return
+        if (!isMovies && (_isRefreshingSeriesTrigger.value || currentTelemetry.isActive)) return
 
         val recoveryKey = "${targetPlaylist.id}_$streamType"
         if (!autoSectionRecoveryGuard.add(recoveryKey)) return
 
         viewModelScope.launch {
             try {
+                // Check Room SSOT directly: if already PENDING or RUNNING (e.g., queued by
+                // enqueueAccountSync), never duplicate the enqueue; wake idle runner if needed.
+                if (CatalogTaskOrchestrator.isSectionQueuedOrRunning(
+                        context = getApplication(),
+                        playlistId = targetPlaylist.id,
+                        sectionType = sectionType
+                    )
+                ) {
+                    CatalogTaskOrchestrator.ensureRunnerActive(
+                        context = getApplication(),
+                        forceWakeIfIdle = false
+                    )
+                    return@launch
+                }
+
                 repository.ensureVodCatalogIndexed(targetPlaylist.id, streamType)
                 val rawCount = repository.countStreamsByType(targetPlaylist.id, streamType)
                 val latestPhase = if (isMovies) {
@@ -931,11 +983,14 @@ class VodViewModel(application: Application) : AndroidViewModel(application) {
                 val stillBusy = latestPhase == VodPipelinePhase.DOWNLOADING ||
                     latestPhase == VodPipelinePhase.ORGANIZING
                 if (rawCount == 0 && !stillBusy) {
-                    if (isMovies) {
-                        refreshMovies(targetPlaylist, force = true)
-                    } else {
-                        refreshSeries(targetPlaylist, force = true)
-                    }
+                    CatalogTaskOrchestrator.enqueueSection(
+                        context = getApplication(),
+                        playlistId = targetPlaylist.id,
+                        sectionType = sectionType,
+                        priority = TaskPriority.INITIAL_ACCOUNT_SYNC,
+                        categoryId = null,
+                        forceFull = false
+                    )
                 }
             } catch (_: Exception) {
                 autoSectionRecoveryGuard.remove(recoveryKey)
@@ -1427,8 +1482,9 @@ class VodViewModel(application: Application) : AndroidViewModel(application) {
     fun refreshMovies(playlist: PlaylistEntity? = null, force: Boolean = false) {
         val telemetry = movieSyncTelemetry.value
         if (telemetry.status == SyncStatus.RUNNING || _isRefreshingMoviesTrigger.value) return
+        val isResumingInterrupted = telemetry.status == SyncStatus.INTERRUPTED
         val isResumingInterruptedOrFailed =
-            telemetry.status == SyncStatus.INTERRUPTED || telemetry.status == SyncStatus.FAILED
+            isResumingInterrupted || telemetry.status == SyncStatus.FAILED
         val selectedCat = if (isResumingInterruptedOrFailed) {
             null
         } else {
@@ -1450,14 +1506,52 @@ class VodViewModel(application: Application) : AndroidViewModel(application) {
             val target = playlist ?: repository.getActivePlaylistOnce() ?: return@launch
             _isRefreshingMoviesTrigger.value = true
             try {
-                CatalogSyncScheduler.enqueueSectionSync(
+                if (isResumingInterrupted) {
+                    CatalogTaskOrchestrator.resumeSection(
+                        context = getApplication(),
+                        playlistId = target.id,
+                        sectionType = "MOVIE"
+                    )
+                } else if (selectedCat != null) {
+                    CatalogTaskOrchestrator.enqueueSection(
+                        context = getApplication(),
+                        playlistId = target.id,
+                        sectionType = "MOVIE",
+                        priority = TaskPriority.CATEGORY_REFRESH,
+                        categoryId = selectedCat,
+                        forceFull = force
+                    )
+                } else {
+                    val priority = if (isResumingInterruptedOrFailed) {
+                        TaskPriority.USER_RESUME
+                    } else {
+                        TaskPriority.USER_SECTION_SYNC
+                    }
+                    CatalogTaskOrchestrator.enqueueSection(
+                        context = getApplication(),
+                        playlistId = target.id,
+                        sectionType = "MOVIE",
+                        priority = priority,
+                        categoryId = null,
+                        forceFull = force
+                    )
+                }
+            } finally {
+                _isRefreshingMoviesTrigger.value = false
+            }
+        }
+    }
+
+    fun resumeMovies(playlist: PlaylistEntity? = null) {
+        if (movieSyncTelemetry.value.status == SyncStatus.RUNNING || _isRefreshingMoviesTrigger.value) return
+        viewModelScope.launch {
+            val target = playlist ?: repository.getActivePlaylistOnce() ?: return@launch
+            _isRefreshingMoviesTrigger.value = true
+            try {
+                CatalogTaskOrchestrator.resumeSection(
                     context = getApplication(),
                     playlistId = target.id,
-                    sectionType = "MOVIE",
-                    categoryId = selectedCat,
-                    forceFull = force,
-                    expedited = true,
-                    userInitiated = true
+                    sectionType = "MOVIE"
                 )
             } finally {
                 _isRefreshingMoviesTrigger.value = false
@@ -1476,14 +1570,13 @@ class VodViewModel(application: Application) : AndroidViewModel(application) {
             val target = playlist ?: repository.getActivePlaylistOnce() ?: return@launch
             _isRefreshingMoviesTrigger.value = true
             try {
-                CatalogSyncScheduler.enqueueSectionSync(
+                CatalogTaskOrchestrator.enqueueSection(
                     context = getApplication(),
                     playlistId = target.id,
                     sectionType = "MOVIE",
+                    priority = TaskPriority.CATEGORY_REFRESH,
                     categoryId = cleanCatId,
-                    forceFull = false,
-                    expedited = true,
-                    userInitiated = true
+                    forceFull = false
                 )
             } finally {
                 _isRefreshingMoviesTrigger.value = false
@@ -1494,8 +1587,9 @@ class VodViewModel(application: Application) : AndroidViewModel(application) {
     fun refreshSeries(playlist: PlaylistEntity? = null, force: Boolean = false) {
         val telemetry = seriesSyncTelemetry.value
         if (telemetry.status == SyncStatus.RUNNING || _isRefreshingSeriesTrigger.value) return
+        val isResumingInterrupted = telemetry.status == SyncStatus.INTERRUPTED
         val isResumingInterruptedOrFailed =
-            telemetry.status == SyncStatus.INTERRUPTED || telemetry.status == SyncStatus.FAILED
+            isResumingInterrupted || telemetry.status == SyncStatus.FAILED
         val selectedCat = if (isResumingInterruptedOrFailed) {
             null
         } else {
@@ -1517,14 +1611,52 @@ class VodViewModel(application: Application) : AndroidViewModel(application) {
             val target = playlist ?: repository.getActivePlaylistOnce() ?: return@launch
             _isRefreshingSeriesTrigger.value = true
             try {
-                CatalogSyncScheduler.enqueueSectionSync(
+                if (isResumingInterrupted) {
+                    CatalogTaskOrchestrator.resumeSection(
+                        context = getApplication(),
+                        playlistId = target.id,
+                        sectionType = "SERIES"
+                    )
+                } else if (selectedCat != null) {
+                    CatalogTaskOrchestrator.enqueueSection(
+                        context = getApplication(),
+                        playlistId = target.id,
+                        sectionType = "SERIES",
+                        priority = TaskPriority.CATEGORY_REFRESH,
+                        categoryId = selectedCat,
+                        forceFull = force
+                    )
+                } else {
+                    val priority = if (isResumingInterruptedOrFailed) {
+                        TaskPriority.USER_RESUME
+                    } else {
+                        TaskPriority.USER_SECTION_SYNC
+                    }
+                    CatalogTaskOrchestrator.enqueueSection(
+                        context = getApplication(),
+                        playlistId = target.id,
+                        sectionType = "SERIES",
+                        priority = priority,
+                        categoryId = null,
+                        forceFull = force
+                    )
+                }
+            } finally {
+                _isRefreshingSeriesTrigger.value = false
+            }
+        }
+    }
+
+    fun resumeSeries(playlist: PlaylistEntity? = null) {
+        if (seriesSyncTelemetry.value.status == SyncStatus.RUNNING || _isRefreshingSeriesTrigger.value) return
+        viewModelScope.launch {
+            val target = playlist ?: repository.getActivePlaylistOnce() ?: return@launch
+            _isRefreshingSeriesTrigger.value = true
+            try {
+                CatalogTaskOrchestrator.resumeSection(
                     context = getApplication(),
                     playlistId = target.id,
-                    sectionType = "SERIES",
-                    categoryId = selectedCat,
-                    forceFull = force,
-                    expedited = true,
-                    userInitiated = true
+                    sectionType = "SERIES"
                 )
             } finally {
                 _isRefreshingSeriesTrigger.value = false
@@ -1543,14 +1675,13 @@ class VodViewModel(application: Application) : AndroidViewModel(application) {
             val target = playlist ?: repository.getActivePlaylistOnce() ?: return@launch
             _isRefreshingSeriesTrigger.value = true
             try {
-                CatalogSyncScheduler.enqueueSectionSync(
+                CatalogTaskOrchestrator.enqueueSection(
                     context = getApplication(),
                     playlistId = target.id,
                     sectionType = "SERIES",
+                    priority = TaskPriority.CATEGORY_REFRESH,
                     categoryId = cleanCatId,
-                    forceFull = false,
-                    expedited = true,
-                    userInitiated = true
+                    forceFull = false
                 )
             } finally {
                 _isRefreshingSeriesTrigger.value = false

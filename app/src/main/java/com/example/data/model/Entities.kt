@@ -207,7 +207,13 @@ data class SyncSectionStateEntity(
     val etag: String = "",
     val lastModified: String = "",
     val lastContentLength: Long = -1L,
-    val errorMessage: String = ""
+    val errorMessage: String = "",
+    val queuePriority: Int = 99,
+    val queueSequence: Long = 0L,
+    val requestedCategoryId: String = "",
+    val forceFullReconcile: Boolean = false,
+    val ownerWorkerId: String = "",
+    val heartbeatMs: Long = 0L
 )
 
 object VodGroupingNormalizer {

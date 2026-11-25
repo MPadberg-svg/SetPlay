@@ -54,6 +54,11 @@ class CatalogUpdateCheckWorker(
     )
 
     override suspend fun doWork(): Result = withContext(PlaybackResourceGovernor.syncDispatcher) {
+        if (CatalogTaskOrchestrator.hasActiveOrPendingTasks(applicationContext)) {
+            Log.d(TAG, "Skipping background update probe while catalog sync tasks are active or pending")
+            return@withContext Result.success()
+        }
+
         val repository = IptvRepository.getInstance(applicationContext)
         val playlist = repository.getActivePlaylistOnce()
             ?: return@withContext Result.success()
@@ -154,23 +159,21 @@ class CatalogUpdateCheckWorker(
                 if (repository.countStreamsByType(playlist.id, "movie") > 0 &&
                     !PlaybackResourceGovernor.isPlaybackActive.value
                 ) {
-                    CatalogSyncScheduler.enqueueSectionSync(
+                    CatalogTaskOrchestrator.enqueueSection(
                         context = applicationContext,
                         playlistId = playlist.id,
                         sectionType = "MOVIE",
-                        priority = SyncPriority.BACKGROUND_CHECK,
-                        userInitiated = false
+                        priority = TaskPriority.BACKGROUND_CHECK
                     )
                 }
                 if (repository.countStreamsByType(playlist.id, "series") > 0 &&
                     !PlaybackResourceGovernor.isPlaybackActive.value
                 ) {
-                    CatalogSyncScheduler.enqueueSectionSync(
+                    CatalogTaskOrchestrator.enqueueSection(
                         context = applicationContext,
                         playlistId = playlist.id,
                         sectionType = "SERIES",
-                        priority = SyncPriority.BACKGROUND_CHECK,
-                        userInitiated = false
+                        priority = TaskPriority.BACKGROUND_CHECK
                     )
                 }
             }

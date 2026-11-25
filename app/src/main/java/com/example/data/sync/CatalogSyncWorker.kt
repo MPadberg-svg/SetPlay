@@ -3,19 +3,27 @@ package com.example.data.sync
 import android.content.Context
 import android.util.Log
 import androidx.work.CoroutineWorker
-import androidx.work.Data
 import androidx.work.WorkerParameters
+import com.example.data.local.StreamVaultDatabase
+import com.example.data.local.SyncSectionStateDao
+import com.example.data.model.SyncSectionStateEntity
 import com.example.data.repository.IptvRepository
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.IOException
 
 /**
- * Persistent WorkManager worker for serialized per-section catalog synchronization
- * (`"LIVE"`, `"MOVIE"`, or `"SERIES"`). All enqueues route through [CatalogSyncScheduler]'s
- * single unique WorkManager queue ([CatalogSyncScheduler.UNIQUE_QUEUE_NAME]) so Live TV,
- * Series, and Movies never download or process concurrently against the same Xtream server.
+ * Single Room-draining WorkManager runner for serialized per-section catalog synchronization.
+ *
+ * Always pulls work strictly from Room via [CatalogTaskOrchestrator.claimNextTask], maintains
+ * a 5-second lease heartbeat while running, never strands queued sections on single-section
+ * failure, and never enters WorkManager exponential backoff while other tasks are ready.
  */
 class CatalogSyncWorker(
     appContext: Context,
@@ -23,134 +31,145 @@ class CatalogSyncWorker(
 ) : CoroutineWorker(appContext, params) {
 
     override suspend fun doWork(): Result {
-        val fallbackPlaylistId = inputData.getLong(KEY_PLAYLIST_ID, -1L)
-        val fallbackSection = inputData.getString(KEY_SECTION_TYPE).orEmpty().trim()
-        val fallbackCategoryId = inputData.getString(KEY_CATEGORY_ID)?.trim()?.takeIf { it.isNotEmpty() }
-        val fallbackForceFull = inputData.getBoolean(KEY_FORCE_FULL, false)
-        val fallbackPriorityRank = inputData.getInt(KEY_PRIORITY, SyncPriority.VOD_SYNC.rank)
-        val fallbackPriority = SyncPriority.entries.firstOrNull { it.rank == fallbackPriorityRank }
-            ?: CatalogSyncScheduler.defaultPriorityFor(fallbackSection, fallbackCategoryId)
+        val workerId = id.toString()
+        val repository = IptvRepository.getInstance(applicationContext)
+        val dao = StreamVaultDatabase.getInstance(applicationContext).syncSectionStateDao()
 
-        val fallbackRequest = if (fallbackPlaylistId > 0L && fallbackSection.isNotEmpty()) {
-            QueuedSyncRequest(
-                playlistId = fallbackPlaylistId,
-                sectionType = SyncTelemetry.normalizeSyncSectionType(fallbackSection),
-                categoryId = fallbackCategoryId,
-                forceFull = fallbackForceFull,
-                priority = fallbackPriority
+        while (true) {
+            val task = CatalogTaskOrchestrator.claimNextTask(applicationContext, workerId)
+                ?: break
+
+            executeClaimedTask(
+                task = task,
+                workerId = workerId,
+                repository = repository,
+                dao = dao
             )
-        } else {
-            null
         }
 
-        val initialRequest = CatalogSyncScheduler.pollNextPendingRequest(
-            context = applicationContext,
-            fallbackRequest = fallbackRequest
-        )
-        if (initialRequest == null) {
-            if (fallbackRequest == null) {
-                // Drain-only continuation worker woke up after pendingQueue was already drained
-                return Result.success()
-            }
-            Log.w(TAG, "No valid sync request found: playlistId=$fallbackPlaylistId sectionType=$fallbackSection")
-            return Result.failure(errorOutputData("Invalid playlist id or section type"))
+        // Race-free re-check: if a new task arrived as the drain loop exited, ensure runner wakes.
+        if (CatalogTaskOrchestrator.hasPendingTasks(applicationContext)) {
+            CatalogTaskOrchestrator.ensureRunnerActive(
+                context = applicationContext,
+                forceWakeIfIdle = false
+            )
         }
 
-        var currentRequest: QueuedSyncRequest? = initialRequest
-        var finalResult: Result = Result.success()
-
-        while (currentRequest != null) {
-            val req = currentRequest
-            val stepResult = executeSingleRequest(req)
-            if (stepResult is Result.Retry) {
-                return stepResult
-            }
-            if (stepResult is Result.Failure) {
-                finalResult = stepResult
-            }
-
-            // Drain any additional pending requests in strict priority order while keeping single-queue serialization
-            currentRequest = if (CatalogSyncScheduler.hasPendingRequests()) {
-                CatalogSyncScheduler.pollNextPendingRequest(
-                    context = applicationContext,
-                    fallbackRequest = null
-                )
-            } else {
-                null
-            }
-        }
-
-        // Race-free re-check: if a new request arrived in the millisecond the drain loop exited,
-        // schedule a fallback-free continuation worker so it drains cleanly without double-syncing.
-        if (CatalogSyncScheduler.hasPendingRequests()) {
-            CatalogSyncScheduler.ensureDrainWorkerScheduled(applicationContext)
-        }
-
-        return finalResult
+        return Result.success()
     }
 
-    private suspend fun executeSingleRequest(request: QueuedSyncRequest): Result {
-        val playlistId = request.playlistId
-        val normalizedSection = SyncTelemetry.normalizeSyncSectionType(request.sectionType)
-        val repository = IptvRepository.getInstance(applicationContext)
+    private suspend fun executeClaimedTask(
+        task: SyncSectionStateEntity,
+        workerId: String,
+        repository: IptvRepository,
+        dao: SyncSectionStateDao
+    ) {
+        val playlistId = task.playlistId
+        val normalizedSection = SyncTelemetry.normalizeSyncSectionType(task.sectionType)
 
-        return try {
-            val playlist = repository.getPlaylistById(playlistId)
-            if (playlist == null) {
-                Log.w(TAG, "Playlist $playlistId not found for $normalizedSection sync")
-                return Result.failure(errorOutputData("Playlist $playlistId not found"))
-            }
-
-            val syncResult = withContext(PlaybackResourceGovernor.syncDispatcher) {
-                repository.syncPlaylistSection(
-                    playlist = playlist,
-                    sectionType = normalizedSection,
-                    categoryId = request.categoryId,
-                    forceFullReconcile = request.forceFull
-                )
-            }
-
-            if (syncResult.isSuccess) {
-                Result.success()
-            } else {
-                val err = syncResult.exceptionOrNull()
-                val isTransientIo = isTransientNetworkFailure(err)
-                if (isTransientIo && runAttemptCount < MAX_RETRY_ATTEMPTS) {
-                    Log.w(TAG, "Transient sync failure for $normalizedSection (attempt ${runAttemptCount + 1}), scheduling retry")
-                    Result.retry()
-                } else {
-                    val msg = err?.message ?: "Sync failed for $normalizedSection"
-                    Log.e(TAG, "Sync failed for $normalizedSection: $msg")
-                    Result.failure(errorOutputData(msg))
+        coroutineScope {
+            val heartbeatJob = launch(Dispatchers.IO) {
+                while (isActive) {
+                    delay(CatalogTaskOrchestrator.HEARTBEAT_INTERVAL_MS)
+                    runCatching {
+                        dao.updateHeartbeat(
+                            playlistId = playlistId,
+                            sectionType = normalizedSection,
+                            ownerWorkerId = workerId,
+                            heartbeatMs = System.currentTimeMillis()
+                        )
+                    }
                 }
             }
-        } catch (ce: CancellationException) {
-            withContext(NonCancellable) {
-                repository.markSectionInterrupted(playlistId, normalizedSection)
-            }
-            throw ce
-        } catch (ioe: IOException) {
-            if (runAttemptCount < MAX_RETRY_ATTEMPTS) {
-                Log.w(TAG, "Transient IOException during $normalizedSection sync (attempt ${runAttemptCount + 1}), retrying")
-                Result.retry()
-            } else {
-                val msg = ioe.message ?: "Network error during $normalizedSection sync"
-                Log.e(TAG, "Max retries reached for $normalizedSection sync: $msg")
-                Result.failure(errorOutputData(msg))
-            }
-        } catch (e: Exception) {
-            val msg = e.message ?: "Unexpected error during $normalizedSection sync"
-            Log.e(TAG, "Unexpected error during $normalizedSection sync: $msg")
-            Result.failure(errorOutputData(msg))
-        } finally {
-            CatalogSyncScheduler.markRequestFinished(playlistId, normalizedSection)
-        }
-    }
 
-    private fun errorOutputData(message: String): Data {
-        return Data.Builder()
-            .putString(KEY_ERROR, message.take(512))
-            .build()
+            try {
+                val playlist = repository.getPlaylistById(playlistId)
+                if (playlist == null) {
+                    Log.w(TAG, "Playlist $playlistId not found for $normalizedSection sync")
+                    CatalogTaskOrchestrator.markTaskTerminal(
+                        context = applicationContext,
+                        playlistId = playlistId,
+                        sectionType = normalizedSection,
+                        workerId = workerId,
+                        terminalStatus = SyncStatus.FAILED,
+                        errorMessage = "Playlist $playlistId not found"
+                    )
+                    return@coroutineScope
+                }
+
+                val categoryId = task.requestedCategoryId.trim().takeIf { it.isNotEmpty() }
+                val syncResult = withContext(PlaybackResourceGovernor.syncDispatcher) {
+                    repository.syncPlaylistSection(
+                        playlist = playlist,
+                        sectionType = normalizedSection,
+                        categoryId = categoryId,
+                        forceFullReconcile = task.forceFullReconcile
+                    )
+                }
+
+                if (syncResult.isSuccess) {
+                    CatalogTaskOrchestrator.releaseLeaseIfStillRunning(
+                        context = applicationContext,
+                        playlistId = playlistId,
+                        sectionType = normalizedSection,
+                        workerId = workerId
+                    )
+                } else {
+                    val err = syncResult.exceptionOrNull()
+                    val terminalStatus = if (isTransientNetworkFailure(err)) {
+                        SyncStatus.INTERRUPTED
+                    } else {
+                        SyncStatus.FAILED
+                    }
+                    val msg = err?.message ?: "Sync failed for $normalizedSection"
+                    Log.w(TAG, "Section $normalizedSection ended with $terminalStatus (continuing queue): $msg")
+                    CatalogTaskOrchestrator.markTaskTerminal(
+                        context = applicationContext,
+                        playlistId = playlistId,
+                        sectionType = normalizedSection,
+                        workerId = workerId,
+                        terminalStatus = terminalStatus,
+                        errorMessage = msg
+                    )
+                }
+            } catch (ce: CancellationException) {
+                withContext(NonCancellable) {
+                    CatalogTaskOrchestrator.markTaskTerminal(
+                        context = applicationContext,
+                        playlistId = playlistId,
+                        sectionType = normalizedSection,
+                        workerId = workerId,
+                        terminalStatus = SyncStatus.INTERRUPTED,
+                        errorMessage = ""
+                    )
+                }
+                throw ce
+            } catch (ioe: IOException) {
+                val msg = ioe.message ?: "Network error during $normalizedSection sync"
+                Log.w(TAG, "Transient network error for $normalizedSection (marking INTERRUPTED and continuing queue): $msg")
+                CatalogTaskOrchestrator.markTaskTerminal(
+                    context = applicationContext,
+                    playlistId = playlistId,
+                    sectionType = normalizedSection,
+                    workerId = workerId,
+                    terminalStatus = SyncStatus.INTERRUPTED,
+                    errorMessage = msg
+                )
+            } catch (e: Exception) {
+                val msg = e.message ?: "Unexpected error during $normalizedSection sync"
+                Log.e(TAG, "Unexpected error during $normalizedSection sync (marking FAILED and continuing queue): $msg")
+                CatalogTaskOrchestrator.markTaskTerminal(
+                    context = applicationContext,
+                    playlistId = playlistId,
+                    sectionType = normalizedSection,
+                    workerId = workerId,
+                    terminalStatus = SyncStatus.FAILED,
+                    errorMessage = msg
+                )
+            } finally {
+                heartbeatJob.cancel()
+            }
+        }
     }
 
     private fun isTransientNetworkFailure(error: Throwable?): Boolean {
@@ -177,7 +196,6 @@ class CatalogSyncWorker(
 
     companion object {
         private const val TAG = "CatalogSyncWorker"
-        private const val MAX_RETRY_ATTEMPTS = 3
 
         const val KEY_PLAYLIST_ID = "playlist_id"
         const val KEY_SECTION_TYPE = "section_type"
@@ -192,8 +210,8 @@ class CatalogSyncWorker(
         }
 
         /**
-         * Delegates all section sync requests to [CatalogSyncScheduler]'s centralized single
-         * serialized queue so Movies, Series, and Live TV never compete against the same host.
+         * Delegates all section sync requests through [CatalogSyncScheduler] ->
+         * [CatalogTaskOrchestrator]'s Room-backed serialized queue.
          */
         fun enqueueSectionSync(
             context: Context,

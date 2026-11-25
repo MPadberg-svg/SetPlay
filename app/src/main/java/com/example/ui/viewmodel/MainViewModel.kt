@@ -24,6 +24,7 @@ import com.example.data.repository.SeasonTimeMode
 import com.example.data.repository.SyncProgress
 import com.example.data.repository.UserCountryZone
 import com.example.data.repository.UserZoneRegistry
+import com.example.data.sync.CatalogTaskOrchestrator
 import com.example.data.sync.RemoteControlCommand
 import com.example.data.sync.RemoteNavMirrorCommand
 import com.example.data.sync.RemotePlayCommand
@@ -1240,12 +1241,16 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
 
         var targetPlaylist = activePlaylist.value ?: repository.getActivePlaylistOnce()
+        val previousActiveId = targetPlaylist?.id
         if (payload.serverUrl.isNotBlank() && payload.username.isNotBlank()) {
             val existing = allPlaylists.value.find {
                 it.serverUrl.equals(payload.serverUrl.trim(), ignoreCase = true) &&
                     it.username.equals(payload.username.trim(), ignoreCase = true)
             }
             if (existing != null) {
+                if (previousActiveId != null && previousActiveId != existing.id) {
+                    CatalogTaskOrchestrator.cancelPlaylistTasks(getApplication(), previousActiveId)
+                }
                 repository.setActivePlaylist(existing.id)
                 targetPlaylist = existing
             } else {
@@ -1257,12 +1262,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     isActive = true
                 )
                 val newId = repository.addOrUpdatePlaylist(newPlaylist)
+                if (previousActiveId != null && previousActiveId != newId) {
+                    CatalogTaskOrchestrator.cancelPlaylistTasks(getApplication(), previousActiveId)
+                }
                 repository.setActivePlaylist(newId)
                 targetPlaylist = repository.getPlaylistById(newId)
                 if (targetPlaylist != null) {
-                    viewModelScope.launch {
-                        repository.syncPlaylist(targetPlaylist!!)
-                    }
+                    CatalogTaskOrchestrator.enqueueAccountSync(getApplication(), newId)
                 }
             }
         }
@@ -1476,20 +1482,25 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun syncActiveAccount() {
         viewModelScope.launch {
             val playlist = repository.getActivePlaylistOnce() ?: return@launch
-            repository.syncPlaylist(playlist)
+            CatalogTaskOrchestrator.enqueueAccountSync(getApplication(), playlist.id)
         }
     }
 
     fun syncSpecificPlaylist(playlistId: Long) {
         viewModelScope.launch {
+            val previousActiveId = repository.getActivePlaylistOnce()?.id
+            if (previousActiveId != null && previousActiveId != playlistId) {
+                CatalogTaskOrchestrator.cancelPlaylistTasks(getApplication(), previousActiveId)
+            }
             repository.setActivePlaylist(playlistId)
             val playlist = repository.getPlaylistById(playlistId) ?: return@launch
-            repository.syncPlaylist(playlist)
+            CatalogTaskOrchestrator.enqueueAccountSync(getApplication(), playlist.id)
         }
     }
 
     fun addCustomPlaylist(name: String, url: String, user: String, pass: String) {
         viewModelScope.launch {
+            val previousActiveId = repository.getActivePlaylistOnce()?.id
             val newPlaylist = PlaylistEntity(
                 name = name.trim().ifBlank { "Xtream Account" },
                 serverUrl = url.trim(),
@@ -1498,11 +1509,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 isActive = true
             )
             val id = repository.addOrUpdatePlaylist(newPlaylist)
+            if (previousActiveId != null && previousActiveId != id) {
+                CatalogTaskOrchestrator.cancelPlaylistTasks(getApplication(), previousActiveId)
+            }
             repository.setActivePlaylist(id)
             _connectionTestState.value = ConnectionTestState.Idle
-            val inserted = repository.getPlaylistById(id)
-            if (inserted != null) {
-                repository.syncPlaylist(inserted)
+            if (repository.getPlaylistById(id) != null) {
+                CatalogTaskOrchestrator.enqueueAccountSync(getApplication(), id)
             }
         }
     }
@@ -1512,9 +1525,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             repository.updatePlaylistCredentials(id, name, url, user, pass)
             _connectionTestState.value = ConnectionTestState.Idle
             if (syncAfterUpdate) {
-                val updated = repository.getPlaylistById(id)
-                if (updated != null) {
-                    repository.syncPlaylist(updated)
+                val previousActiveId = repository.getActivePlaylistOnce()?.id
+                if (previousActiveId != null && previousActiveId != id) {
+                    CatalogTaskOrchestrator.cancelPlaylistTasks(getApplication(), previousActiveId)
+                }
+                if (repository.getPlaylistById(id) != null) {
+                    CatalogTaskOrchestrator.enqueueAccountSync(getApplication(), id)
                 }
             }
         }
@@ -1522,6 +1538,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun switchPlaylist(playlistId: Long) {
         viewModelScope.launch {
+            val previousActiveId = repository.getActivePlaylistOnce()?.id
+            if (previousActiveId != null && previousActiveId != playlistId) {
+                CatalogTaskOrchestrator.cancelPlaylistTasks(getApplication(), previousActiveId)
+            }
             repository.setActivePlaylist(playlistId)
             _connectionTestState.value = ConnectionTestState.Idle
         }
@@ -1530,6 +1550,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun deletePlaylist(playlistId: Long) {
         viewModelScope.launch {
             val wasActive = repository.getActivePlaylistOnce()?.id == playlistId
+            CatalogTaskOrchestrator.cancelPlaylistTasks(getApplication(), playlistId)
             repository.deletePlaylist(playlistId)
             if (wasActive) {
                 val remaining = allPlaylists.value.filter { it.id != playlistId }
