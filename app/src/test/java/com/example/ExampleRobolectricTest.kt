@@ -9296,6 +9296,246 @@ class TvSyncDeviceSeparationComposeTest {
         composeTestRule.onNode(androidx.compose.ui.test.hasTestTag("onboarding_team_search_input")).assertExists()
         composeTestRule.onNode(androidx.compose.ui.test.hasText("Popular in France", substring = true)).assertExists()
     }
+
+    @Test
+    fun v20_dayNavigatorStepsYesterdayAndForwardWithTodayReset() {
+        val allDays = com.example.data.repository.MatchDayTab.ALL_NAVIGABLE_DAYS
+        assertEquals(8, allDays.size)
+        assertEquals(com.example.data.repository.MatchDayTab.YESTERDAY, allDays.first())
+        assertEquals(com.example.data.repository.MatchDayTab.DAY_PLUS_6, allDays.last())
+
+        val tzId = "Africa/Casablanca"
+        assertTrue(com.example.data.repository.MatchDayTab.TODAY.getCompactNavigatorLabel(tzId).startsWith("Today · "))
+        assertTrue(com.example.data.repository.MatchDayTab.YESTERDAY.getCompactNavigatorLabel(tzId).startsWith("Yesterday · "))
+        assertTrue(com.example.data.repository.MatchDayTab.TOMORROW.getCompactNavigatorLabel(tzId).startsWith("Tomorrow · "))
+        assertFalse(com.example.data.repository.MatchDayTab.DAY_PLUS_2.getCompactNavigatorLabel(tzId).contains("·"))
+
+        val selectedDayState = androidx.compose.runtime.mutableStateOf(com.example.data.repository.MatchDayTab.TODAY)
+        var modalOpenClicks = 0
+        val dummyMatch = com.example.data.repository.FootballMatch(
+            matchId = "v20_nav_sample",
+            tournamentId = "uefa_cl",
+            tournamentName = "UEFA Champions League",
+            tournamentRegion = "Europe",
+            dayTab = com.example.data.repository.MatchDayTab.TODAY,
+            kickoffTimeFormatted = "20:00",
+            kickoffDateFormatted = "Today",
+            status = com.example.data.repository.MatchStatus.UPCOMING,
+            liveMinuteOrBadge = "20:00",
+            homeTeamId = "rma",
+            homeTeamName = "Real Madrid",
+            homeTeamBadge = "",
+            homeScore = null,
+            awayTeamId = "ars",
+            awayTeamName = "Arsenal",
+            awayTeamBadge = "",
+            awayScore = null,
+            stadiumName = "Bernabeu",
+            cityName = "Madrid",
+            beinChannel = "beIN Sports 1 HD",
+            beinChannelNumberHint = "1",
+            kickoffEpochMs = 0L
+        )
+        val matchesByDay = mapOf(
+            com.example.data.repository.MatchDayTab.YESTERDAY to listOf(dummyMatch),
+            com.example.data.repository.MatchDayTab.TODAY to listOf(dummyMatch, dummyMatch.copy(matchId = "v20_nav_sample_2")),
+            com.example.data.repository.MatchDayTab.TOMORROW to listOf(dummyMatch)
+        )
+
+        composeTestRule.setContent {
+            com.example.ui.home.InstantSevenDayDateStrip(
+                selectedDay = selectedDayState.value,
+                selectedCountryZone = com.example.data.repository.UserZoneRegistry.getZoneByCode("MA"),
+                matchesByDay = matchesByDay,
+                liveCountToday = 0,
+                onSelectDay = { selectedDayState.value = it },
+                activeEdition = com.example.util.SetPlayEdition.PHONE,
+                onOpenDateSelectorModal = { modalOpenClicks++ },
+                onResetToToday = { selectedDayState.value = com.example.data.repository.MatchDayTab.TODAY }
+            )
+        }
+        composeTestRule.waitForIdle()
+
+        // Verify TODAY state: preserved ribbon testTag, steppers, center pill, NO Today reset button
+        composeTestRule.onNode(androidx.compose.ui.test.hasTestTag("five_day_timeline_ribbon")).assertExists()
+        composeTestRule.onNode(androidx.compose.ui.test.hasTestTag("kickoff_prev_day_btn")).assertExists()
+        composeTestRule.onNode(androidx.compose.ui.test.hasTestTag("kickoff_date_selector_btn")).assertExists()
+        composeTestRule.onNode(androidx.compose.ui.test.hasTestTag("kickoff_next_day_btn")).assertExists()
+        composeTestRule.onNode(
+            androidx.compose.ui.test.hasText(
+                com.example.data.repository.MatchDayTab.TODAY.getCompactNavigatorLabel(tzId)
+            )
+        ).assertExists()
+        composeTestRule.onNode(androidx.compose.ui.test.hasTestTag("kickoff_reset_today_btn")).assertDoesNotExist()
+
+        // Step backward to YESTERDAY -> Today reset pill appears
+        composeTestRule.onNode(androidx.compose.ui.test.hasTestTag("kickoff_prev_day_btn")).performClick()
+        composeTestRule.waitForIdle()
+        assertEquals(com.example.data.repository.MatchDayTab.YESTERDAY, selectedDayState.value)
+        composeTestRule.onNode(
+            androidx.compose.ui.test.hasText(
+                com.example.data.repository.MatchDayTab.YESTERDAY.getCompactNavigatorLabel(tzId)
+            )
+        ).assertExists()
+        composeTestRule.onNode(androidx.compose.ui.test.hasTestTag("kickoff_reset_today_btn")).assertExists()
+
+        // Boundary check: clicking prev on YESTERDAY does not crash or change day
+        composeTestRule.onNode(androidx.compose.ui.test.hasTestTag("kickoff_prev_day_btn")).performClick()
+        composeTestRule.waitForIdle()
+        assertEquals(com.example.data.repository.MatchDayTab.YESTERDAY, selectedDayState.value)
+
+        // Tap quick Today reset pill -> returns to TODAY and hides reset pill
+        composeTestRule.onNode(androidx.compose.ui.test.hasTestTag("kickoff_reset_today_btn")).performClick()
+        composeTestRule.waitForIdle()
+        assertEquals(com.example.data.repository.MatchDayTab.TODAY, selectedDayState.value)
+        composeTestRule.onNode(androidx.compose.ui.test.hasTestTag("kickoff_reset_today_btn")).assertDoesNotExist()
+
+        // Step forward twice -> TOMORROW -> DAY_PLUS_2
+        composeTestRule.onNode(androidx.compose.ui.test.hasTestTag("kickoff_next_day_btn")).performClick()
+        composeTestRule.waitForIdle()
+        assertEquals(com.example.data.repository.MatchDayTab.TOMORROW, selectedDayState.value)
+        composeTestRule.onNode(androidx.compose.ui.test.hasTestTag("kickoff_next_day_btn")).performClick()
+        composeTestRule.waitForIdle()
+        assertEquals(com.example.data.repository.MatchDayTab.DAY_PLUS_2, selectedDayState.value)
+        composeTestRule.onNode(
+            androidx.compose.ui.test.hasText(
+                com.example.data.repository.MatchDayTab.DAY_PLUS_2.getCompactNavigatorLabel(tzId)
+            )
+        ).assertExists()
+        composeTestRule.onNode(androidx.compose.ui.test.hasTestTag("kickoff_reset_today_btn")).assertExists()
+
+        // Tapping center calendar pill opens modal
+        composeTestRule.onNode(androidx.compose.ui.test.hasTestTag("kickoff_date_selector_btn")).performClick()
+        composeTestRule.waitForIdle()
+        assertEquals(1, modalOpenClicks)
+    }
+
+    @Test
+    fun v20_tournamentHeaderAndMatchCardsRenderAllStatesWithPreservedTags() {
+        val baseFixture = com.example.data.repository.FootballMatch(
+            matchId = "v20_upcoming",
+            tournamentId = "uefa_cl",
+            tournamentName = "UEFA Champions League",
+            tournamentRegion = "Europe",
+            dayTab = com.example.data.repository.MatchDayTab.TODAY,
+            kickoffTimeFormatted = "20:00",
+            kickoffDateFormatted = "Today",
+            status = com.example.data.repository.MatchStatus.UPCOMING,
+            liveMinuteOrBadge = "20:00",
+            homeTeamId = "rma",
+            homeTeamName = "Real Madrid",
+            homeTeamBadge = "",
+            homeScore = null,
+            awayTeamId = "bay",
+            awayTeamName = "Bayern Munich",
+            awayTeamBadge = "",
+            awayScore = null,
+            stadiumName = "Bernabeu",
+            cityName = "Madrid",
+            beinChannel = "beIN Sports 1 HD",
+            beinChannelNumberHint = "1",
+            kickoffEpochMs = 0L
+        )
+        val upcomingMatch = baseFixture
+        val liveMatch = baseFixture.copy(
+            matchId = "v20_live",
+            homeTeamId = "ars",
+            homeTeamName = "Arsenal",
+            awayTeamId = "int",
+            awayTeamName = "Inter Milan",
+            kickoffTimeFormatted = "19:00",
+            status = com.example.data.repository.MatchStatus.LIVE,
+            liveMinuteOrBadge = "67'",
+            homeScore = 2,
+            awayScore = 1,
+            beinChannel = "beIN Sports 2 HD",
+            beinChannelNumberHint = "2"
+        )
+        val finishedMatch = baseFixture.copy(
+            matchId = "v20_finished",
+            homeTeamId = "liv",
+            homeTeamName = "Liverpool",
+            awayTeamId = "acm",
+            awayTeamName = "AC Milan",
+            kickoffTimeFormatted = "17:45",
+            status = com.example.data.repository.MatchStatus.FINISHED,
+            liveMinuteOrBadge = "FT",
+            homeScore = 3,
+            awayScore = 1,
+            beinChannel = "beIN Sports 3 HD",
+            beinChannelNumberHint = "3"
+        )
+        val postponedMatch = baseFixture.copy(
+            matchId = "v20_postponed",
+            homeTeamId = "atm",
+            homeTeamName = "Atletico Madrid",
+            awayTeamId = "bvb",
+            awayTeamName = "Borussia Dortmund",
+            kickoffTimeFormatted = "21:00",
+            status = com.example.data.repository.MatchStatus.POSTPONED,
+            liveMinuteOrBadge = "PPD",
+            homeScore = null,
+            awayScore = null,
+            beinChannel = "beIN Sports 4 HD",
+            beinChannelNumberHint = "4"
+        )
+
+        composeTestRule.setContent {
+            androidx.compose.foundation.layout.Column {
+                com.example.ui.home.FlashscoreTournamentHeader(
+                    tournamentId = "uefa_cl",
+                    tournamentName = "UEFA Champions League",
+                    regionName = "Europe",
+                    menaProviderName = "beIN Sports",
+                    matchCount = 4,
+                    liveCount = 1,
+                    isPinned = false,
+                    isCollapsed = false,
+                    isFirstSection = true,
+                    onToggleCollapse = {},
+                    onTogglePin = {}
+                )
+                listOf(upcomingMatch, liveMatch, finishedMatch, postponedMatch).forEach { fixture ->
+                    com.example.ui.home.FlashscoreMatchCard(
+                        match = fixture,
+                        isHomeTeamFavorite = false,
+                        isAwayTeamFavorite = false,
+                        onToggleHomeFavorite = {},
+                        onToggleAwayFavorite = {},
+                        onOpenDossier = {},
+                        onWatchBeinClicked = {},
+                        liveClockTickMs = 1_700_000_000_000L
+                    )
+                }
+            }
+        }
+        composeTestRule.waitForIdle()
+
+        // Verify 2-line Tournament Chapter Header & preserved tag
+        composeTestRule.onNode(androidx.compose.ui.test.hasTestTag("tournament_header_uefa_cl")).assertExists()
+        composeTestRule.onNode(androidx.compose.ui.test.hasText("UEFA Champions League")).assertExists()
+        composeTestRule.onNode(androidx.compose.ui.test.hasText("EUROPE")).assertExists()
+        composeTestRule.onNode(androidx.compose.ui.test.hasText("1 LIVE")).assertExists()
+
+        // Verify all 4 separated match cards preserve required testTags
+        listOf("v20_upcoming", "v20_live", "v20_finished", "v20_postponed").forEach { id ->
+            composeTestRule.onNode(androidx.compose.ui.test.hasTestTag("match_card_$id")).assertExists()
+            composeTestRule.onNode(androidx.compose.ui.test.hasTestTag("open_match_center_$id"), useUnmergedTree = true).assertExists()
+            composeTestRule.onNode(androidx.compose.ui.test.hasTestTag("watch_bein_btn_$id")).assertExists()
+            composeTestRule.onNode(androidx.compose.ui.test.hasTestTag("pin_match_btn_$id")).assertExists()
+        }
+
+        // Verify distinct state-driven scorebugs & footer action pills
+        composeTestRule.onNode(androidx.compose.ui.test.hasText("20:00")).assertExists()
+        composeTestRule.onNode(androidx.compose.ui.test.hasText("Watch")).assertExists()
+        composeTestRule.onNode(androidx.compose.ui.test.hasText("2 - 1")).assertExists()
+        composeTestRule.onNode(androidx.compose.ui.test.hasText("LIVE")).assertExists()
+        composeTestRule.onNode(androidx.compose.ui.test.hasText("FT")).assertExists()
+        composeTestRule.onNode(androidx.compose.ui.test.hasText("PPD")).assertExists()
+        assertTrue(
+            composeTestRule.onAllNodes(androidx.compose.ui.test.hasText("Stats ›")).fetchSemanticsNodes().size >= 2
+        )
+    }
 }
 
 

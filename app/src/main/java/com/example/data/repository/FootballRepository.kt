@@ -115,6 +115,24 @@ enum class MatchDayTab(val defaultLabel: String, val dayOffset: Int) {
         }
     }
 
+    fun getCompactNavigatorLabel(timeZoneId: String = "Africa/Casablanca"): String {
+        val tz = TimeZone.getTimeZone(timeZoneId)
+        val cal = Calendar.getInstance(tz)
+        cal.add(Calendar.DAY_OF_YEAR, dayOffset)
+        val datePart = SimpleDateFormat("dd/MM", Locale.US).apply {
+            timeZone = tz
+        }.format(cal.time)
+        val weekdayPart = SimpleDateFormat("EEE", Locale.US).apply {
+            timeZone = tz
+        }.format(cal.time).uppercase(Locale.US)
+        return when (this) {
+            TODAY -> "Today · $datePart $weekdayPart"
+            YESTERDAY -> "Yesterday · $datePart $weekdayPart"
+            TOMORROW -> "Tomorrow · $datePart $weekdayPart"
+            DAY_PLUS_2, DAY_PLUS_3, DAY_PLUS_4, DAY_PLUS_5, DAY_PLUS_6 -> "$datePart $weekdayPart"
+        }
+    }
+
     // Backwards-compatible property used by UI components
     val label: String
         get() = getDynamicTitle()
@@ -131,6 +149,17 @@ enum class MatchDayTab(val defaultLabel: String, val dayOffset: Int) {
         )
 
         val forwardTimelineTabs: List<MatchDayTab> = FORWARD_SEVEN_DAYS
+
+        val ALL_NAVIGABLE_DAYS: List<MatchDayTab> = listOf(
+            YESTERDAY,
+            TODAY,
+            TOMORROW,
+            DAY_PLUS_2,
+            DAY_PLUS_3,
+            DAY_PLUS_4,
+            DAY_PLUS_5,
+            DAY_PLUS_6
+        )
     }
 }
 
