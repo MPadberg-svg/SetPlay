@@ -49,12 +49,15 @@ import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import java.text.SimpleDateFormat
 import java.util.Calendar
 import java.util.Date
 import java.util.Locale
 import java.util.TimeZone
+import java.util.concurrent.atomic.AtomicLong
 
 enum class AppScreen {
     HOME,
@@ -202,8 +205,30 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     val manualTimeOffsetMinutes: StateFlow<Int> = _manualTimeOffsetMinutes.asStateFlow()
 
     private var zoneUpdateJob: Job? = null
+    private val zoneUpdateGeneration = AtomicLong(0L)
+    private val zonePrefsWriteMutex = Mutex()
     private var scheduleRefreshJob: Job? = null
     private var zoneChangedDuringOnboarding: Boolean = false
+
+    internal suspend fun awaitPendingZoneUpdate() {
+        zoneUpdateJob?.join()
+    }
+
+    private suspend fun persistLatestZoneClockPreferences(expectedGeneration: Long) {
+        zonePrefsWriteMutex.withLock {
+            if (zoneUpdateGeneration.get() != expectedGeneration) return@withLock
+            val latestZone = _selectedCountryZone.value
+            val latestOffset = _manualTimeOffsetMinutes.value
+            val latestMode = _selectedSeasonTimeMode.value
+            withContext(Dispatchers.IO) {
+                footballRepository.saveZoneClockPreferences(
+                    countryCode = latestZone.countryCode,
+                    manualOffsetMinutes = latestOffset,
+                    seasonTimeMode = latestMode
+                )
+            }
+        }
+    }
 
     private val _showCountryZoneModal = MutableStateFlow(false)
     val showCountryZoneModal: StateFlow<Boolean> = _showCountryZoneModal.asStateFlow()
@@ -706,16 +731,15 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         if (_showFirstTimeTeamsOnboarding.value) {
             zoneChangedDuringOnboarding = true
         }
+        val myGeneration = zoneUpdateGeneration.incrementAndGet()
         val activeOffset = _manualTimeOffsetMinutes.value
         val currentMapSnapshot = _matchesByDay.value
         val openDossierSnapshot = _selectedMatchDossier.value
 
         zoneUpdateJob?.cancel()
         zoneUpdateJob = viewModelScope.launch(Dispatchers.Default) {
-            withContext(Dispatchers.IO) {
-                footballRepository.setSelectedCountryZone(newZone.countryCode)
-                footballRepository.setManualTimeOffsetMinutes(activeOffset)
-            }
+            persistLatestZoneClockPreferences(myGeneration)
+            if (zoneUpdateGeneration.get() != myGeneration) return@launch
 
             if (currentMapSnapshot.isNotEmpty()) {
                 val relocalizedMap = LinkedHashMap<MatchDayTab, List<FootballMatch>>(currentMapSnapshot.size)
@@ -726,21 +750,25 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         manualOffsetMinutes = activeOffset
                     )
                 }
-                _matchesByDay.value = relocalizedMap
-                _todayMatches.value = relocalizedMap[MatchDayTab.TODAY].orEmpty()
-                _tomorrowMatches.value = relocalizedMap[MatchDayTab.TOMORROW].orEmpty()
+                if (zoneUpdateGeneration.get() == myGeneration) {
+                    _matchesByDay.value = relocalizedMap
+                    _todayMatches.value = relocalizedMap[MatchDayTab.TODAY].orEmpty()
+                    _tomorrowMatches.value = relocalizedMap[MatchDayTab.TOMORROW].orEmpty()
+                }
             }
 
-            if (openDossierSnapshot != null) {
+            if (openDossierSnapshot != null && zoneUpdateGeneration.get() == myGeneration) {
                 val relocalizedMatch = footballRepository.reapplyCountryZoneToMatchesAsync(
                     matches = listOf(openDossierSnapshot.match),
                     zone = newZone,
                     manualOffsetMinutes = activeOffset
                 ).firstOrNull() ?: openDossierSnapshot.match
-                _selectedMatchDossier.value = openDossierSnapshot.copy(
-                    match = relocalizedMatch,
-                    countryZone = newZone
-                )
+                if (zoneUpdateGeneration.get() == myGeneration) {
+                    _selectedMatchDossier.value = openDossierSnapshot.copy(
+                        match = relocalizedMatch,
+                        countryZone = newZone
+                    )
+                }
                 runCatching {
                     footballRepository.fetchMatchFullDossier(
                         match = relocalizedMatch,
@@ -748,7 +776,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         countryZone = newZone
                     )
                 }.onSuccess { updatedDossier ->
-                    if (_selectedCountryZone.value.countryCode == newZone.countryCode &&
+                    if (zoneUpdateGeneration.get() == myGeneration &&
+                        _selectedCountryZone.value.countryCode == newZone.countryCode &&
                         _selectedMatchDossier.value?.match?.matchId == relocalizedMatch.matchId
                     ) {
                         _selectedMatchDossier.value = updatedDossier
@@ -756,9 +785,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 }
             }
 
-            if (triggerNetworkRefresh && !_showFirstTimeTeamsOnboarding.value) {
+            if (triggerNetworkRefresh && !_showFirstTimeTeamsOnboarding.value && zoneUpdateGeneration.get() == myGeneration) {
                 delay(250L)
-                refreshFootballSchedules()
+                if (zoneUpdateGeneration.get() == myGeneration) {
+                    refreshFootballSchedules()
+                }
             }
         }
     }
@@ -781,19 +812,15 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         if (clamped == 0 && _selectedSeasonTimeMode.value != SeasonTimeMode.AUTO) {
             _selectedSeasonTimeMode.value = SeasonTimeMode.AUTO
         }
+        val myGeneration = zoneUpdateGeneration.incrementAndGet()
         val activeZone = _selectedCountryZone.value
         val currentMapSnapshot = _matchesByDay.value
         val openDossierSnapshot = _selectedMatchDossier.value
 
         zoneUpdateJob?.cancel()
         zoneUpdateJob = viewModelScope.launch(Dispatchers.Default) {
-            withContext(Dispatchers.IO) {
-                footballRepository.setSelectedCountryZone(activeZone.countryCode)
-                footballRepository.setManualTimeOffsetMinutes(clamped)
-                if (clamped == 0) {
-                    footballRepository.setSelectedSeasonTimeMode(SeasonTimeMode.AUTO)
-                }
-            }
+            persistLatestZoneClockPreferences(myGeneration)
+            if (zoneUpdateGeneration.get() != myGeneration) return@launch
 
             if (currentMapSnapshot.isNotEmpty()) {
                 val relocalizedMap = LinkedHashMap<MatchDayTab, List<FootballMatch>>(currentMapSnapshot.size)
@@ -804,18 +831,22 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         manualOffsetMinutes = clamped
                     )
                 }
-                _matchesByDay.value = relocalizedMap
-                _todayMatches.value = relocalizedMap[MatchDayTab.TODAY].orEmpty()
-                _tomorrowMatches.value = relocalizedMap[MatchDayTab.TOMORROW].orEmpty()
+                if (zoneUpdateGeneration.get() == myGeneration) {
+                    _matchesByDay.value = relocalizedMap
+                    _todayMatches.value = relocalizedMap[MatchDayTab.TODAY].orEmpty()
+                    _tomorrowMatches.value = relocalizedMap[MatchDayTab.TOMORROW].orEmpty()
+                }
             }
 
-            if (openDossierSnapshot != null) {
+            if (openDossierSnapshot != null && zoneUpdateGeneration.get() == myGeneration) {
                 val relocalizedMatch = footballRepository.relocalizeMatchTimesOnly(
                     matches = listOf(openDossierSnapshot.match),
                     zone = activeZone,
                     manualOffsetMinutes = clamped
                 ).firstOrNull() ?: openDossierSnapshot.match
-                _selectedMatchDossier.value = openDossierSnapshot.copy(match = relocalizedMatch)
+                if (zoneUpdateGeneration.get() == myGeneration) {
+                    _selectedMatchDossier.value = openDossierSnapshot.copy(match = relocalizedMatch)
+                }
             }
         }
     }
@@ -839,15 +870,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             }
         }
         _manualTimeOffsetMinutes.value = syncedManualOffset
+        val myGeneration = zoneUpdateGeneration.incrementAndGet()
         val currentMapSnapshot = _matchesByDay.value
         val openDossierSnapshot = _selectedMatchDossier.value
 
         zoneUpdateJob?.cancel()
         zoneUpdateJob = viewModelScope.launch(Dispatchers.Default) {
-            withContext(Dispatchers.IO) {
-                footballRepository.setSelectedSeasonTimeMode(mode)
-                footballRepository.setManualTimeOffsetMinutes(syncedManualOffset)
-            }
+            persistLatestZoneClockPreferences(myGeneration)
+            if (zoneUpdateGeneration.get() != myGeneration) return@launch
 
             if (currentMapSnapshot.isNotEmpty()) {
                 val relocalizedMap = LinkedHashMap<MatchDayTab, List<FootballMatch>>(currentMapSnapshot.size)
@@ -862,12 +892,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         footballRepository.reapplyCountryZoneToMatches(list, activeZone, mode)
                     }
                 }
-                _matchesByDay.value = relocalizedMap
-                _todayMatches.value = relocalizedMap[MatchDayTab.TODAY].orEmpty()
-                _tomorrowMatches.value = relocalizedMap[MatchDayTab.TOMORROW].orEmpty()
+                if (zoneUpdateGeneration.get() == myGeneration) {
+                    _matchesByDay.value = relocalizedMap
+                    _todayMatches.value = relocalizedMap[MatchDayTab.TODAY].orEmpty()
+                    _tomorrowMatches.value = relocalizedMap[MatchDayTab.TOMORROW].orEmpty()
+                }
             }
 
-            if (openDossierSnapshot != null) {
+            if (openDossierSnapshot != null && zoneUpdateGeneration.get() == myGeneration) {
                 val relocalizedMatch = if (mode == SeasonTimeMode.AUTO) {
                     footballRepository.relocalizeMatchTimesOnly(
                         matches = listOf(openDossierSnapshot.match),
@@ -881,10 +913,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         mode
                     ).firstOrNull() ?: openDossierSnapshot.match
                 }
-                _selectedMatchDossier.value = openDossierSnapshot.copy(
-                    match = relocalizedMatch,
-                    seasonTimeMode = mode
-                )
+                if (zoneUpdateGeneration.get() == myGeneration) {
+                    _selectedMatchDossier.value = openDossierSnapshot.copy(
+                        match = relocalizedMatch,
+                        seasonTimeMode = mode
+                    )
+                }
             }
         }
     }
@@ -899,10 +933,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val detected = UserZoneRegistry.detectDeviceCountryZone()
         _selectedSeasonTimeMode.value = SeasonTimeMode.AUTO
         _manualTimeOffsetMinutes.value = 0
-        viewModelScope.launch(Dispatchers.IO) {
-            footballRepository.setSelectedSeasonTimeMode(SeasonTimeMode.AUTO)
-            footballRepository.setManualTimeOffsetMinutes(0)
-        }
         selectCountryZone(detected.countryCode)
         return detected
     }

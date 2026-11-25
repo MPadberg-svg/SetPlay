@@ -363,17 +363,19 @@ class FootballRepository(
         prefs.edit().putBoolean(KEY_COUNTRY_ONBOARDING_COMPLETED, completed).apply()
     }
 
+    private val zonePrefsLock = Any()
+
     fun getSelectedCountryZone(): UserCountryZone {
         val savedCode = prefs.getString(KEY_SELECTED_COUNTRY_CODE, UserZoneRegistry.DEFAULT_COUNTRY_CODE)
         return UserZoneRegistry.getZoneByCode(savedCode)
     }
 
-    fun setSelectedCountryZone(countryCode: String): UserCountryZone {
+    fun setSelectedCountryZone(countryCode: String): UserCountryZone = synchronized(zonePrefsLock) {
         val zone = UserZoneRegistry.getZoneByCode(countryCode)
         prefs.edit()
             .putString(KEY_SELECTED_COUNTRY_CODE, zone.countryCode)
             .apply()
-        return zone
+        zone
     }
 
     fun getManualTimeOffsetMinutes(): Int {
@@ -382,13 +384,13 @@ class FootballRepository(
         return snapped.coerceIn(-180, 180)
     }
 
-    fun setManualTimeOffsetMinutes(offsetMinutes: Int): Int {
+    fun setManualTimeOffsetMinutes(offsetMinutes: Int): Int = synchronized(zonePrefsLock) {
         val snapped = (offsetMinutes / 60) * 60
         val clamped = snapped.coerceIn(-180, 180)
         prefs.edit()
             .putInt(KEY_MANUAL_TIME_OFFSET_MINUTES, clamped)
             .apply()
-        return clamped
+        clamped
     }
 
     fun getSelectedSeasonTimeMode(): SeasonTimeMode {
@@ -396,11 +398,29 @@ class FootballRepository(
         return SeasonTimeMode.fromCode(savedMode)
     }
 
-    fun setSelectedSeasonTimeMode(mode: SeasonTimeMode): SeasonTimeMode {
+    fun setSelectedSeasonTimeMode(mode: SeasonTimeMode): SeasonTimeMode = synchronized(zonePrefsLock) {
         prefs.edit()
             .putString(KEY_SELECTED_SEASON_TIME_MODE, mode.code)
             .apply()
-        return mode
+        mode
+    }
+
+    /**
+     * Atomically persists country zone, manual time offset, and season mode in a single
+     * SharedPreferences transaction under [zonePrefsLock] so rapid updates never race or tear.
+     */
+    fun saveZoneClockPreferences(
+        countryCode: String,
+        manualOffsetMinutes: Int,
+        seasonTimeMode: SeasonTimeMode
+    ) = synchronized(zonePrefsLock) {
+        val zone = UserZoneRegistry.getZoneByCode(countryCode)
+        val clampedOffset = ((manualOffsetMinutes / 60) * 60).coerceIn(-180, 180)
+        prefs.edit()
+            .putString(KEY_SELECTED_COUNTRY_CODE, zone.countryCode)
+            .putInt(KEY_MANUAL_TIME_OFFSET_MINUTES, clampedOffset)
+            .putString(KEY_SELECTED_SEASON_TIME_MODE, seasonTimeMode.code)
+            .apply()
     }
 
     fun getKickoffUiPreferences(): KickoffUiPreferences {

@@ -9129,14 +9129,15 @@ class TvSyncDeviceSeparationComposeTest {
             assertEquals("DE", viewModel.selectedCountryZone.value.countryCode)
             assertEquals(60, viewModel.manualTimeOffsetMinutes.value)
 
-            // Wait for background IO persistence to settle on the final selection
-            kotlinx.coroutines.delay(250L)
+            // Deterministically wait for the serialized IO persistence job to settle on the final selection
+            viewModel.awaitPendingZoneUpdate()
 
             assertEquals("DE", viewModel.selectedCountryZone.value.countryCode)
             assertEquals(60, viewModel.manualTimeOffsetMinutes.value)
             assertEquals("DE", viewModel.footballRepository.getSelectedCountryZone().countryCode)
             assertEquals(60, viewModel.footballRepository.getManualTimeOffsetMinutes())
         } finally {
+            viewModel.awaitPendingZoneUpdate()
             viewModel.footballRepository.setManualTimeOffsetMinutes(0)
             viewModel.footballRepository.setSelectedCountryZone("MA")
         }
