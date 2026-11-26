@@ -83,8 +83,8 @@ jobs:
             exit 1
           }
 
-          echo ">>> Syntax-checking Python index builder scripts..."
-          python3 -m py_compile scripts/build_kickoff_index.py scripts/build_popularity_index.py
+          echo ">>> Syntax-checking Python CI & index builder scripts..."
+          python3 -m py_compile scripts/normalize_ci_gradle.py scripts/build_kickoff_index.py scripts/build_popularity_index.py
           echo "✅ Preflight validation passed."
 
       - name: Generate Non-Empty .env
@@ -130,17 +130,18 @@ jobs:
             --no-daemon --no-configuration-cache --no-build-cache \
             -PSETPLAY_KICKOFF_EDGE_URL="${{ vars.SETPLAY_KICKOFF_EDGE_URL }}"
 
-          BUILD_CONFIG_FILE="app/build/generated/source/buildConfig/debug/com/example/BuildConfig.java"
-          if [[ ! -f "$BUILD_CONFIG_FILE" ]]; then
-            echo "❌ ERROR: Expected generated BuildConfig file not found at ${BUILD_CONFIG_FILE}."
+          BUILD_CONFIG_FILE="$(find app/build/generated/source/buildConfig/debug -name BuildConfig.java -print -quit)"
+          if [[ -z "$BUILD_CONFIG_FILE" || ! -f "$BUILD_CONFIG_FILE" ]]; then
+            echo "❌ ERROR: Expected generated BuildConfig.java not found under app/build/generated/source/buildConfig/debug."
             exit 1
           fi
+          echo ">>> Inspecting generated BuildConfig at ${BUILD_CONFIG_FILE}..."
           if ! grep -q 'DEVICE_EDITION' "$BUILD_CONFIG_FILE"; then
-            echo "❌ ERROR: Generated BuildConfig.java is missing DEVICE_EDITION."
+            echo "❌ ERROR: Generated BuildConfig.java (${BUILD_CONFIG_FILE}) is missing DEVICE_EDITION."
             exit 1
           fi
           if ! grep -q 'KICKOFF_EDGE_BASE_URL' "$BUILD_CONFIG_FILE"; then
-            echo "❌ ERROR: Generated BuildConfig.java is missing KICKOFF_EDGE_BASE_URL."
+            echo "❌ ERROR: Generated BuildConfig.java (${BUILD_CONFIG_FILE}) is missing KICKOFF_EDGE_BASE_URL."
             exit 1
           fi
           echo "✅ Verified BuildConfig.java contains DEVICE_EDITION and KICKOFF_EDGE_BASE_URL."
@@ -232,11 +233,33 @@ jobs:
             -PSETPLAY_KICKOFF_EDGE_URL="${{ vars.SETPLAY_KICKOFF_EDGE_URL }}" \
             --no-daemon --no-configuration-cache --no-build-cache --stacktrace
 
+          verify_apk() {
+            local apk_path="$1"
+            if [[ ! -f "$apk_path" ]]; then
+              echo "❌ ERROR: Expected APK not found at ${apk_path}."
+              exit 1
+            fi
+            local apk_size
+            apk_size="$(stat -c%s "$apk_path" 2>/dev/null || wc -c < "$apk_path")"
+            if [[ "$apk_size" -le 1000000 ]]; then
+              echo "❌ ERROR: APK ${apk_path} is unexpectedly small (${apk_size} bytes <= 1,000,000 bytes)."
+              exit 1
+            fi
+            if ! unzip -tq "$apk_path" >/dev/null 2>&1; then
+              echo "❌ ERROR: APK archive integrity check (unzip -tq) failed for ${apk_path}."
+              exit 1
+            fi
+            echo "✅ Verified valid APK: ${apk_path} (${apk_size} bytes)"
+          }
+
           if [[ "${{ matrix.edition }}" == "PHONE" ]]; then
             cp app/build/outputs/apk/debug/app-debug.apk release-apk/SetPlay-Phone.apk
             cp app/build/outputs/apk/debug/app-debug.apk release-apk/SetPlay.apk
+            verify_apk release-apk/SetPlay-Phone.apk
+            verify_apk release-apk/SetPlay.apk
           else
             cp app/build/outputs/apk/debug/app-debug.apk release-apk/SetPlay-TV.apk
+            verify_apk release-apk/SetPlay-TV.apk
           fi
 
           ls -lh release-apk/
