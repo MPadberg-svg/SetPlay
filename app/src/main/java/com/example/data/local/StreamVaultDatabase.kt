@@ -34,7 +34,7 @@ import com.example.data.model.VodGroupMemberEntity
         SyncSectionStateEntity::class,
         VodCollectionEntity::class
     ],
-    version = 9,
+    version = 10,
     exportSchema = false
 )
 abstract class StreamVaultDatabase : RoomDatabase() {
@@ -239,6 +239,17 @@ abstract class StreamVaultDatabase : RoomDatabase() {
             }
         }
 
+        val MIGRATION_9_10: Migration = object : Migration(9, 10) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    "CREATE INDEX IF NOT EXISTS `index_streams_playlistId_streamId` ON `streams` (`playlistId`, `streamId`)"
+                )
+                db.execSQL(
+                    "CREATE INDEX IF NOT EXISTS `index_sync_section_state_status_queuePriority_queueSequence` ON `sync_section_state` (`status`, `queuePriority`, `queueSequence`)"
+                )
+            }
+        }
+
         private val walHardeningCallback = object : RoomDatabase.Callback() {
             override fun onOpen(db: SupportSQLiteDatabase) {
                 super.onOpen(db)
@@ -263,7 +274,8 @@ abstract class StreamVaultDatabase : RoomDatabase() {
                         MIGRATION_5_6,
                         MIGRATION_6_7,
                         MIGRATION_7_8,
-                        MIGRATION_8_9
+                        MIGRATION_8_9,
+                        MIGRATION_9_10
                     )
                     .fallbackToDestructiveMigration()
                     .build()

@@ -47,12 +47,10 @@ class CatalogSyncWorker(
             )
         }
 
-        // Race-free re-check: if a new task arrived as the drain loop exited, ensure runner wakes.
+        // Race-free re-check: if a new task arrived as the drain loop exited, chain a follow-up drain worker
+        // via APPEND_OR_REPLACE so it executes after this RUNNING worker completes instead of hitting alreadyRunning.
         if (CatalogTaskOrchestrator.hasPendingTasks(applicationContext)) {
-            CatalogTaskOrchestrator.ensureRunnerActive(
-                context = applicationContext,
-                forceWakeIfIdle = false
-            )
+            CatalogTaskOrchestrator.enqueueChainedDrainWorker(applicationContext)
         }
 
         return Result.success()

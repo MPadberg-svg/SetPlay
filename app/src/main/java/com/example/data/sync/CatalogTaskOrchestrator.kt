@@ -1,6 +1,7 @@
 package com.example.data.sync
 
 import android.content.Context
+import android.os.Looper
 import android.util.Log
 import androidx.room.withTransaction
 import androidx.work.BackoffPolicy
@@ -15,8 +16,13 @@ import androidx.work.WorkManager
 import com.example.data.local.StreamVaultDatabase
 import com.example.data.model.SyncSectionStateEntity
 import com.example.data.repository.IptvRepository
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withContext
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicLong
 
@@ -38,6 +44,7 @@ object CatalogTaskOrchestrator {
 
     private val orchestrationMutex = Mutex()
     private val sequenceCounter = AtomicLong(0L)
+    private val runnerWakeScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
     @Volatile
     internal var lastAppContext: Context? = null
@@ -63,8 +70,8 @@ object CatalogTaskOrchestrator {
         priority: TaskPriority,
         categoryId: String? = null,
         forceFull: Boolean = false
-    ): Boolean {
-        if (playlistId <= 0L) return false
+    ): Boolean = withContext(Dispatchers.IO) {
+        if (playlistId <= 0L) return@withContext false
         val appContext = context.applicationContext
         lastAppContext = appContext
         val normalizedSection = SyncTelemetry.normalizeSyncSectionType(sectionType)
@@ -89,16 +96,12 @@ object CatalogTaskOrchestrator {
 
             // 3. Idempotent no-op if already RUNNING (strictly forbids RUNNING -> PENDING)
             if (currentStatus == SyncStatus.RUNNING) {
-                return false
+                return@withContext false
             }
 
             val runningTasks = dao.getRunningTasks()
-            var anotherSectionRunning = false
-            for (running in runningTasks) {
-                if (running.playlistId != playlistId || running.sectionType != normalizedSection) {
-                    anotherSectionRunning = true
-                    break
-                }
+            val anotherSectionRunning = runningTasks.any { running ->
+                running.playlistId != playlistId || running.sectionType != normalizedSection
             }
             val summary = if (anotherSectionRunning) STATUS_QUEUED_WAITING else STATUS_STARTING
 
@@ -110,7 +113,7 @@ object CatalogTaskOrchestrator {
                         "enqueueSection-upgrade($playlistId,$normalizedSection)"
                     )
                 ) {
-                    return false
+                    return@withContext false
                 }
                 val upgradedPriority = if (priority.rank < existing.queuePriority) {
                     priority.rank
@@ -143,7 +146,7 @@ object CatalogTaskOrchestrator {
                         "enqueueSection($playlistId,$normalizedSection)"
                     )
                 ) {
-                    return false
+                    return@withContext false
                 }
                 val pendingEntity = SyncSectionStateEntity(
                     playlistId = playlistId,
@@ -184,7 +187,7 @@ object CatalogTaskOrchestrator {
             }
         }
 
-        if (!committed) return false
+        if (!committed) return@withContext false
 
         committedSummary?.let { text ->
             runCatching {
@@ -200,7 +203,7 @@ object CatalogTaskOrchestrator {
             priority == TaskPriority.CATEGORY_REFRESH ||
             priority == TaskPriority.USER_SECTION_SYNC
         ensureRunnerActive(appContext, forceWakeIfIdle = forceWake)
-        return true
+        true
     }
 
     /**
@@ -229,8 +232,8 @@ object CatalogTaskOrchestrator {
     suspend fun enqueueAccountSync(
         context: Context,
         playlistId: Long
-    ) {
-        if (playlistId <= 0L) return
+    ) = withContext(Dispatchers.IO) {
+        if (playlistId <= 0L) return@withContext
         val appContext = context.applicationContext
         lastAppContext = appContext
 
@@ -257,69 +260,68 @@ object CatalogTaskOrchestrator {
                     val currentStatus = CatalogTaskStateMachine.parseStatus(existing?.status)
                     if (currentStatus == SyncStatus.RUNNING) {
                         queuedEarlierInBatch = true
-                        continue
-                    }
-
-                    val summary = if (hasAnyRunning || queuedEarlierInBatch) {
-                        STATUS_QUEUED_WAITING
                     } else {
-                        STATUS_STARTING
-                    }
+                        val summary = if (hasAnyRunning || queuedEarlierInBatch) {
+                            STATUS_QUEUED_WAITING
+                        } else {
+                            STATUS_STARTING
+                        }
 
-                    if (currentStatus == SyncStatus.PENDING && existing != null) {
-                        val upgradedPriority = minOf(existing.queuePriority, TaskPriority.INITIAL_ACCOUNT_SYNC.rank)
-                        dao.upsert(
-                            existing.copy(
-                                queuePriority = upgradedPriority,
-                                pendingUpdateSummary = summary,
-                                lastAttemptedSyncMs = now,
-                                errorMessage = ""
+                        if (currentStatus == SyncStatus.PENDING && existing != null) {
+                            val upgradedPriority = minOf(existing.queuePriority, TaskPriority.INITIAL_ACCOUNT_SYNC.rank)
+                            dao.upsert(
+                                existing.copy(
+                                    queuePriority = upgradedPriority,
+                                    pendingUpdateSummary = summary,
+                                    lastAttemptedSyncMs = now,
+                                    errorMessage = ""
+                                )
                             )
-                        )
-                        queuedNotifications.add(section to summary)
-                        queuedEarlierInBatch = true
-                    } else if (CatalogTaskStateMachine.requireValidTransition(
-                            currentStatus,
-                            SyncStatus.PENDING,
-                            "enqueueAccountSync($playlistId,$section)"
-                        )
-                    ) {
-                        val pendingEntity = SyncSectionStateEntity(
-                            playlistId = playlistId,
-                            sectionType = section,
-                            status = SyncStatus.PENDING.name,
-                            stage = "PENDING",
-                            sessionId = existing?.sessionId.orEmpty(),
-                            isIndeterminate = true,
-                            progressPercent = 0,
-                            totalDiscovered = existing?.totalDiscovered ?: 0,
-                            itemsDownloaded = 0,
-                            itemsProcessed = 0,
-                            itemsUnchanged = 0,
-                            itemsAdded = 0,
-                            itemsUpdated = 0,
-                            itemsRemoved = 0,
-                            itemsSkipped = 0,
-                            itemsGrouped = 0,
-                            itemsPersisted = 0,
-                            lastSuccessfulSyncMs = existing?.lastSuccessfulSyncMs ?: 0L,
-                            lastAttemptedSyncMs = now,
-                            pendingUpdateAvailable = false,
-                            pendingUpdateSummary = summary,
-                            etag = existing?.etag.orEmpty(),
-                            lastModified = existing?.lastModified.orEmpty(),
-                            lastContentLength = existing?.lastContentLength ?: -1L,
-                            errorMessage = "",
-                            queuePriority = TaskPriority.INITIAL_ACCOUNT_SYNC.rank,
-                            queueSequence = nextMonotonicSeq(),
-                            requestedCategoryId = "",
-                            forceFullReconcile = false,
-                            ownerWorkerId = "",
-                            heartbeatMs = 0L
-                        )
-                        dao.upsert(pendingEntity)
-                        queuedNotifications.add(section to summary)
-                        queuedEarlierInBatch = true
+                            queuedNotifications.add(section to summary)
+                            queuedEarlierInBatch = true
+                        } else if (CatalogTaskStateMachine.requireValidTransition(
+                                currentStatus,
+                                SyncStatus.PENDING,
+                                "enqueueAccountSync($playlistId,$section)"
+                            )
+                        ) {
+                            val pendingEntity = SyncSectionStateEntity(
+                                playlistId = playlistId,
+                                sectionType = section,
+                                status = SyncStatus.PENDING.name,
+                                stage = "PENDING",
+                                sessionId = existing?.sessionId.orEmpty(),
+                                isIndeterminate = true,
+                                progressPercent = 0,
+                                totalDiscovered = existing?.totalDiscovered ?: 0,
+                                itemsDownloaded = 0,
+                                itemsProcessed = 0,
+                                itemsUnchanged = 0,
+                                itemsAdded = 0,
+                                itemsUpdated = 0,
+                                itemsRemoved = 0,
+                                itemsSkipped = 0,
+                                itemsGrouped = 0,
+                                itemsPersisted = 0,
+                                lastSuccessfulSyncMs = existing?.lastSuccessfulSyncMs ?: 0L,
+                                lastAttemptedSyncMs = now,
+                                pendingUpdateAvailable = false,
+                                pendingUpdateSummary = summary,
+                                etag = existing?.etag.orEmpty(),
+                                lastModified = existing?.lastModified.orEmpty(),
+                                lastContentLength = existing?.lastContentLength ?: -1L,
+                                errorMessage = "",
+                                queuePriority = TaskPriority.INITIAL_ACCOUNT_SYNC.rank,
+                                queueSequence = nextMonotonicSeq(),
+                                requestedCategoryId = "",
+                                forceFullReconcile = false,
+                                ownerWorkerId = "",
+                                heartbeatMs = 0L
+                            )
+                            dao.upsert(pendingEntity)
+                            queuedNotifications.add(section to summary)
+                            queuedEarlierInBatch = true
+                        }
                     }
                 }
             }
@@ -343,8 +345,8 @@ object CatalogTaskOrchestrator {
     suspend fun cancelPlaylistTasks(
         context: Context,
         playlistId: Long
-    ) {
-        if (playlistId <= 0L) return
+    ) = withContext(Dispatchers.IO) {
+        if (playlistId <= 0L) return@withContext
         val appContext = context.applicationContext
         lastAppContext = appContext
 
@@ -354,12 +356,7 @@ object CatalogTaskOrchestrator {
         orchestrationMutex.withLock {
             val dao = StreamVaultDatabase.getInstance(appContext).syncSectionStateDao()
             val runningTasks = dao.getRunningTasks()
-            for (running in runningTasks) {
-                if (running.playlistId == playlistId) {
-                    playlistOwnedRunningWorker = true
-                    break
-                }
-            }
+            playlistOwnedRunningWorker = runningTasks.any { running -> running.playlistId == playlistId }
             dao.cancelAllForPlaylist(playlistId)
             remainingPending = dao.countPending() > 0
         }
@@ -388,11 +385,11 @@ object CatalogTaskOrchestrator {
     suspend fun claimNextTask(
         context: Context,
         workerId: String
-    ): SyncSectionStateEntity? {
+    ): SyncSectionStateEntity? = withContext(Dispatchers.IO) {
         val appContext = context.applicationContext
         lastAppContext = appContext
 
-        return orchestrationMutex.withLock {
+        orchestrationMutex.withLock {
             val now = System.currentTimeMillis()
             val dao = StreamVaultDatabase.getInstance(appContext).syncSectionStateDao()
 
@@ -432,10 +429,9 @@ object CatalogTaskOrchestrator {
 
     /**
      * Inspects WorkManager's unique runner ([UNIQUE_RUNNER_NAME]):
-     * - If a worker is already `RUNNING`, leaves it completely undisturbed (it will drain Room).
-     * - If no worker is `RUNNING` (e.g., idle, succeeded, cancelled, or stuck in exponential backoff),
-     *   enqueues [CatalogSyncWorker] with [Data.EMPTY] using `REPLACE` (if [forceWakeIfIdle])
-     *   or `KEEP`, ensuring the worker pulls strictly from Room.
+     * - If called on the Main thread, dispatches onto [runnerWakeScope] (`Dispatchers.IO`) so
+     *   UI ViewModels never block the main looper waiting on WorkManager's ListenableFuture.
+     * - If already on a background thread (Worker or unit test), executes synchronously inline.
      */
     fun ensureRunnerActive(
         context: Context,
@@ -444,19 +440,26 @@ object CatalogTaskOrchestrator {
         val appContext = context.applicationContext
         lastAppContext = appContext
 
+        if (Looper.myLooper() == Looper.getMainLooper()) {
+            runnerWakeScope.launch {
+                ensureRunnerActiveInternal(appContext, forceWakeIfIdle)
+            }
+        } else {
+            ensureRunnerActiveInternal(appContext, forceWakeIfIdle)
+        }
+    }
+
+    private fun ensureRunnerActiveInternal(
+        appContext: Context,
+        forceWakeIfIdle: Boolean
+    ) {
         runCatching {
             val wm = WorkManager.getInstance(appContext)
             val infos = runCatching {
                 wm.getWorkInfosForUniqueWork(UNIQUE_RUNNER_NAME).get(2L, TimeUnit.SECONDS)
             }.getOrDefault(emptyList())
 
-            var alreadyRunning = false
-            for (info in infos) {
-                if (info.state == WorkInfo.State.RUNNING) {
-                    alreadyRunning = true
-                    break
-                }
-            }
+            val alreadyRunning = infos.any { info -> info.state == WorkInfo.State.RUNNING }
             if (alreadyRunning) {
                 return
             }
@@ -488,6 +491,38 @@ object CatalogTaskOrchestrator {
     }
 
     /**
+     * Chains a follow-up [CatalogSyncWorker] using [ExistingWorkPolicy.APPEND_OR_REPLACE] so a
+     * currently `RUNNING` worker can safely schedule a post-loop drain without hitting an
+     * `alreadyRunning` no-op.
+     */
+    internal fun enqueueChainedDrainWorker(context: Context) {
+        val appContext = context.applicationContext
+        lastAppContext = appContext
+
+        runCatching {
+            val wm = WorkManager.getInstance(appContext)
+            val constraints = Constraints.Builder()
+                .setRequiredNetworkType(NetworkType.CONNECTED)
+                .build()
+
+            val request = OneTimeWorkRequestBuilder<CatalogSyncWorker>()
+                .setInputData(Data.EMPTY)
+                .setConstraints(constraints)
+                .setBackoffCriteria(BackoffPolicy.EXPONENTIAL, 15L, TimeUnit.SECONDS)
+                .addTag(UNIQUE_RUNNER_NAME)
+                .build()
+
+            wm.enqueueUniqueWork(
+                UNIQUE_RUNNER_NAME,
+                ExistingWorkPolicy.APPEND_OR_REPLACE,
+                request
+            )
+        }.onFailure { err ->
+            Log.w(TAG, "Unable to enqueue chained CatalogSyncWorker drain: ${err.message}")
+        }
+    }
+
+    /**
      * Marks a claimed task as terminal (`COMPLETED`, `FAILED`, or `INTERRUPTED`) and releases
      * its lease atomically if it is still `RUNNING` under [workerId] (or unowned).
      */
@@ -498,7 +533,7 @@ object CatalogTaskOrchestrator {
         workerId: String?,
         terminalStatus: SyncStatus,
         errorMessage: String = ""
-    ) {
+    ) = withContext(Dispatchers.IO) {
         val appContext = context.applicationContext
         lastAppContext = appContext
         val normalizedSection = SyncTelemetry.normalizeSyncSectionType(sectionType)
@@ -567,10 +602,10 @@ object CatalogTaskOrchestrator {
         )
     }
 
-    suspend fun hasActiveOrPendingTasks(context: Context): Boolean {
+    suspend fun hasActiveOrPendingTasks(context: Context): Boolean = withContext(Dispatchers.IO) {
         val appContext = context.applicationContext
         lastAppContext = appContext
-        return orchestrationMutex.withLock {
+        orchestrationMutex.withLock {
             val now = System.currentTimeMillis()
             val dao = StreamVaultDatabase.getInstance(appContext).syncSectionStateDao()
             dao.recoverStaleRunningTasks(
@@ -581,10 +616,10 @@ object CatalogTaskOrchestrator {
         }
     }
 
-    suspend fun hasPendingTasks(context: Context): Boolean {
+    suspend fun hasPendingTasks(context: Context): Boolean = withContext(Dispatchers.IO) {
         val appContext = context.applicationContext
         lastAppContext = appContext
-        return orchestrationMutex.withLock {
+        orchestrationMutex.withLock {
             val dao = StreamVaultDatabase.getInstance(appContext).syncSectionStateDao()
             dao.countPending() > 0
         }
@@ -594,11 +629,11 @@ object CatalogTaskOrchestrator {
         context: Context,
         playlistId: Long,
         sectionType: String
-    ): Boolean {
+    ): Boolean = withContext(Dispatchers.IO) {
         val appContext = context.applicationContext
         lastAppContext = appContext
         val normalizedSection = SyncTelemetry.normalizeSyncSectionType(sectionType)
-        return orchestrationMutex.withLock {
+        orchestrationMutex.withLock {
             val dao = StreamVaultDatabase.getInstance(appContext).syncSectionStateDao()
             val row = dao.getSectionOnce(playlistId, normalizedSection) ?: return@withLock false
             val status = CatalogTaskStateMachine.parseStatus(row.status)

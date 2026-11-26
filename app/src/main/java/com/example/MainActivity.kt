@@ -114,7 +114,9 @@ import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import androidx.lifecycle.Lifecycle
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -277,6 +279,9 @@ class MainActivity : ComponentActivity() {
     ) {
         super.onPictureInPictureModeChanged(isInPictureInPictureMode, newConfig)
         isInSystemPipModeFlow.value = isInPictureInPictureMode
+        if (!isInPictureInPictureMode && lifecycle.currentState == Lifecycle.State.CREATED) {
+            playerViewModel.pausePlayback()
+        }
     }
 }
 
@@ -378,7 +383,7 @@ fun MainAppContent(
         }
     }
 
-    var isFullScreenPlayer by remember { mutableStateOf(false) }
+    var isFullScreenPlayer by rememberSaveable { mutableStateOf(false) }
     var showNavigationMenuSheet by remember { mutableStateOf(false) }
     var showTvSyncSheet by remember { mutableStateOf(false) }
     var openTvSyncSheetOnHostTab by remember { mutableStateOf(false) }
@@ -413,33 +418,13 @@ fun MainAppContent(
         }
     }
 
-    val lifecycleOwner = androidx.lifecycle.compose.LocalLifecycleOwner.current
-    DisposableEffect(lifecycleOwner) {
-        val observer = androidx.lifecycle.LifecycleEventObserver { _, event ->
-            if (event == androidx.lifecycle.Lifecycle.Event.ON_RESUME) {
-                mainViewModel.refreshTvSyncStatusOnResume()
-            }
-        }
-        lifecycleOwner.lifecycle.addObserver(observer)
-        onDispose {
-            lifecycleOwner.lifecycle.removeObserver(observer)
-        }
-    }
-
     LaunchedEffect(isFullScreenPlayer) {
         mainViewModel.isTvInFullScreenPlayback = isFullScreenPlayer
     }
 
-    LaunchedEffect(
-        playerUiState.currentStream?.name,
-        playerUiState.currentStream?.streamId,
-        playerUiState.currentStream?.streamType,
-        playerUiState.currentPositionMs,
-        playerUiState.isPlaying,
-        playerUiState.selectedWyzieLanguageCode,
-        playerUiState.lastSelectedSubtitleLanguageCode
-    ) {
-        mainViewModel.tvSyncManager.tvPlaybackStatusProvider = {
+    DisposableEffect(mainViewModel.tvSyncManager, playerViewModel) {
+        val syncManager = mainViewModel.tvSyncManager
+        syncManager.tvPlaybackStatusProvider = {
             val latestPlayerState = playerViewModel.uiState.value
             mainViewModel.tvSyncState.value.copy(
                 tvNowPlayingTitle = latestPlayerState.currentStream?.name.orEmpty(),
@@ -450,10 +435,7 @@ fun MainAppContent(
                 tvActiveSubtitleLang = (latestPlayerState.selectedWyzieLanguageCode ?: latestPlayerState.lastSelectedSubtitleLanguageCode).orEmpty()
             )
         }
-    }
-
-    LaunchedEffect(mainViewModel.tvSyncManager) {
-        mainViewModel.tvSyncManager.onControlCommandReceived = { cmd ->
+        syncManager.onControlCommandReceived = { cmd ->
             if (mainViewModel.tvSyncState.value.role == SyncRole.TV_HOST) {
                 kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main.immediate) {
                     when (cmd.action.uppercase()) {
@@ -477,17 +459,22 @@ fun MainAppContent(
                 }
             }
         }
-        launch {
-            mainViewModel.tvSyncManager.incomingPlayCommands.collect { cmd ->
-                if (mainViewModel.tvSyncState.value.role == SyncRole.TV_HOST) {
-                    val resolved = mainViewModel.resolveOrBuildStreamForTvCommand(cmd)
-                    if (resolved != null) {
-                        val (stream, playlist) = resolved
-                        isFullScreenPlayer = true
-                        playerViewModel.playStream(stream, playlist)
-                        if (cmd.preferredSubtitleLang.isNotBlank()) {
-                            playerViewModel.chooseSubtitleLanguageFromPrompt(cmd.preferredSubtitleLang)
-                        }
+        onDispose {
+            syncManager.tvPlaybackStatusProvider = null
+            syncManager.onControlCommandReceived = null
+        }
+    }
+
+    LaunchedEffect(mainViewModel.tvSyncManager) {
+        mainViewModel.tvSyncManager.incomingPlayCommands.collect { cmd ->
+            if (mainViewModel.tvSyncState.value.role == SyncRole.TV_HOST) {
+                val resolved = mainViewModel.resolveOrBuildStreamForTvCommand(cmd)
+                if (resolved != null) {
+                    val (stream, playlist) = resolved
+                    isFullScreenPlayer = true
+                    playerViewModel.playStream(stream, playlist)
+                    if (cmd.preferredSubtitleLang.isNotBlank()) {
+                        playerViewModel.chooseSubtitleLanguageFromPrompt(cmd.preferredSubtitleLang)
                     }
                 }
             }
@@ -511,6 +498,9 @@ fun MainAppContent(
                 },
                 update = { view ->
                     view.player = playerViewModel.player
+                },
+                onRelease = { view ->
+                    view.player = null
                 },
                 modifier = Modifier.fillMaxSize()
             )
@@ -1316,6 +1306,9 @@ fun FloatingInAppPipWindow(
                     },
                     update = { playerView ->
                         playerView.player = playerViewModel.player
+                    },
+                    onRelease = { playerView ->
+                        playerView.player = null
                     },
                     modifier = Modifier.fillMaxSize()
                 )
@@ -2365,8 +2358,17 @@ fun TvLeftNavigationRail(
     val allEntries = primaryEntries + utilityEntries
     val hasMatchingTarget = allEntries.any { it.targetScreen != null && it.targetScreen == currentScreen }
 
-    LaunchedEffect(currentScreen) {
-        runCatching { activeRailItemFocusRequester.requestFocus() }
+    var hasRequestedInitialRailFocus by remember { mutableStateOf(false) }
+    LaunchedEffect(Unit) {
+        if (!hasRequestedInitialRailFocus) {
+            hasRequestedInitialRailFocus = true
+            runCatching { activeRailItemFocusRequester.requestFocus() }
+        }
+    }
+    LaunchedEffect(currentScreen, isRailFocused) {
+        if (isRailFocused) {
+            runCatching { activeRailItemFocusRequester.requestFocus() }
+        }
     }
 
     Row(

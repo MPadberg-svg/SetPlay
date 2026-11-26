@@ -48,6 +48,7 @@ import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -289,6 +290,31 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val _isLoadingMatches = MutableStateFlow(false)
     val isLoadingMatches: StateFlow<Boolean> = _isLoadingMatches.asStateFlow()
 
+    private val dayFetchLock = Any()
+    private val inFlightDayFetchJobs = mutableMapOf<MatchDayTab, Job>()
+
+    @Volatile
+    internal var dayMatchesFetcherOverrideForTesting: (suspend (MatchDayTab) -> List<FootballMatch>)? = null
+
+    internal fun seedMatchesByDayForTesting(map: Map<MatchDayTab, List<FootballMatch>>) {
+        initBootstrapJob?.cancel()
+        scheduleRefreshJob?.cancel()
+        livePollingJob?.cancel()
+        synchronized(dayFetchLock) {
+            inFlightDayFetchJobs.values.forEach { it.cancel() }
+            inFlightDayFetchJobs.clear()
+        }
+        _isLoadingMatches.value = false
+        _matchesByDay.value = map
+        _todayMatches.value = map[MatchDayTab.TODAY].orEmpty()
+        _tomorrowMatches.value = map[MatchDayTab.TOMORROW].orEmpty()
+    }
+
+    internal suspend fun awaitAllInFlightDayFetches() {
+        val jobs = synchronized(dayFetchLock) { inFlightDayFetchJobs.values.toList() }
+        jobs.forEach { it.join() }
+    }
+
     private val _teamSearchQuery = MutableStateFlow("")
     val teamSearchQuery: StateFlow<String> = _teamSearchQuery.asStateFlow()
 
@@ -339,6 +365,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private var teamSearchJob: Job? = null
     private var livePollingJob: Job? = null
     private var goalAlertDismissJob: Job? = null
+    private var initBootstrapJob: Job? = null
 
     init {
         tvSyncManager.onVaultPayloadReceived = { incomingVault ->
@@ -371,7 +398,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch(Dispatchers.IO) {
             runCatching { repository.purgeExpiredHousekeepingData() }
         }
-        viewModelScope.launch {
+        initBootstrapJob = viewModelScope.launch {
             runCatching { repository.purgeAllAdultContent() }
             runCatching { footballRepository.internationalRankingResolver.syncInternationalRankingsIfNeeded() }
             footballRepository.ensureDefaultTournamentsInitialized()
@@ -657,10 +684,16 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 val updatedMap = coroutineScope {
                     MatchDayTab.forwardTimelineTabs.map { tab ->
                         async {
-                            tab to footballRepository.fetchMatchesForDay(
-                                dayTab = tab,
-                                forceLiveRefresh = (tab == MatchDayTab.TODAY)
-                            )
+                            val fetcher = dayMatchesFetcherOverrideForTesting
+                            val list = if (fetcher != null) {
+                                fetcher(tab)
+                            } else {
+                                footballRepository.fetchMatchesForDay(
+                                    dayTab = tab,
+                                    forceLiveRefresh = (tab == MatchDayTab.TODAY)
+                                )
+                            }
+                            tab to list
                         }
                     }.awaitAll().toMap()
                 }
@@ -695,9 +728,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     dayTab = dayTab,
                     forceLiveRefresh = true
                 )
-                val updatedMap = _matchesByDay.value.toMutableMap()
-                updatedMap[dayTab] = refreshed
-                _matchesByDay.value = updatedMap
+                _matchesByDay.update { prev -> prev + (dayTab to refreshed) }
                 if (dayTab == MatchDayTab.TODAY) {
                     _todayMatches.value = refreshed
                 } else if (dayTab == MatchDayTab.TOMORROW) {
@@ -947,11 +978,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun selectMatchDay(dayTab: MatchDayTab) {
         _selectedMatchDay.value = dayTab
+        val existingDayList = _matchesByDay.value[dayTab].orEmpty()
         if (_kickoffUiPreferences.value.autoFallbackEmptyLeagueDay) {
-            val dayList = _matchesByDay.value[dayTab].orEmpty()
-            if (dayList.isNotEmpty() &&
+            if (existingDayList.isNotEmpty() &&
                 _selectedTournamentFilter.value !in setOf("ALL", "LIVE", "MY_TEAMS") &&
-                dayList.none { it.tournamentId == _selectedTournamentFilter.value }
+                existingDayList.none { it.tournamentId == _selectedTournamentFilter.value }
             ) {
                 _selectedTournamentFilter.value = "ALL"
             }
@@ -964,22 +995,77 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 )
             )
         }
-        if (_matchesByDay.value[dayTab].isNullOrEmpty()) {
-            viewModelScope.launch {
-                val fetched = footballRepository.fetchMatchesForDay(dayTab)
-                val current = _matchesByDay.value.toMutableMap()
-                current[dayTab] = fetched
-                _matchesByDay.value = current
-                if (_kickoffUiPreferences.value.autoFallbackEmptyLeagueDay &&
-                    _selectedMatchDay.value == dayTab &&
-                    fetched.isNotEmpty() &&
-                    _selectedTournamentFilter.value !in setOf("ALL", "LIVE", "MY_TEAMS") &&
-                    fetched.none { it.tournamentId == _selectedTournamentFilter.value }
-                ) {
-                    _selectedTournamentFilter.value = "ALL"
+        if (existingDayList.isNotEmpty()) {
+            val isSelectedFetching = synchronized(dayFetchLock) {
+                inFlightDayFetchJobs[dayTab]?.isActive == true
+            }
+            _isLoadingMatches.value = isSelectedFetching
+            return
+        }
+
+        var newJobToStart: Job? = null
+        val launched = synchronized(dayFetchLock) {
+            val existingJob = inFlightDayFetchJobs[dayTab]
+            if (existingJob != null && existingJob.isActive) {
+                false
+            } else {
+                var jobRef: Job? = null
+                val createdJob = viewModelScope.launch(Dispatchers.IO, start = kotlinx.coroutines.CoroutineStart.LAZY) {
+                    try {
+                        val fetcher = dayMatchesFetcherOverrideForTesting
+                        val fetchedResult = runCatching {
+                            if (fetcher != null) {
+                                fetcher(dayTab)
+                            } else {
+                                footballRepository.fetchMatchesForDay(dayTab)
+                            }
+                        }
+                        val fetched = fetchedResult.getOrNull()
+                        if (fetched != null) {
+                            _matchesByDay.update { prev -> prev + (dayTab to fetched) }
+                            if (dayTab == MatchDayTab.TODAY) {
+                                _todayMatches.value = fetched
+                            } else if (dayTab == MatchDayTab.TOMORROW) {
+                                _tomorrowMatches.value = fetched
+                            }
+                            if (_kickoffUiPreferences.value.autoFallbackEmptyLeagueDay &&
+                                _selectedMatchDay.value == dayTab &&
+                                fetched.isNotEmpty() &&
+                                _selectedTournamentFilter.value !in setOf("ALL", "LIVE", "MY_TEAMS") &&
+                                fetched.none { it.tournamentId == _selectedTournamentFilter.value }
+                            ) {
+                                _selectedTournamentFilter.value = "ALL"
+                            }
+                        }
+                    } finally {
+                        val stillLoadingSelected = synchronized(dayFetchLock) {
+                            if (inFlightDayFetchJobs[dayTab] === jobRef) {
+                                inFlightDayFetchJobs.remove(dayTab)
+                            }
+                            inFlightDayFetchJobs[_selectedMatchDay.value]?.isActive == true
+                        }
+                        if (!stillLoadingSelected) {
+                            _isLoadingMatches.value = false
+                        }
+                    }
                 }
+                jobRef = createdJob
+                inFlightDayFetchJobs[dayTab] = createdJob
+                newJobToStart = createdJob
+                true
             }
         }
+        if (!launched) {
+            if (_selectedMatchDay.value == dayTab) {
+                _isLoadingMatches.value = true
+            }
+            return
+        }
+
+        if (_selectedMatchDay.value == dayTab) {
+            _isLoadingMatches.value = true
+        }
+        newJobToStart?.start()
     }
 
     fun selectTournamentFilter(filterId: String) {

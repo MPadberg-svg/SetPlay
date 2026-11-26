@@ -4,7 +4,9 @@ import android.app.Application
 import android.content.Context
 import android.view.KeyEvent
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.test.assertCountEquals
 import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.performScrollToKey
 import androidx.room.Room
 import androidx.test.core.app.ApplicationProvider
 import com.example.data.local.StreamVaultDatabase
@@ -9833,12 +9835,13 @@ class TvSyncDeviceSeparationComposeTest {
 
     @Test
     fun v23_menaTransliterationDeduplicationAndVersioning() {
-        // 1. Verify centralized BuildConfig V23 release versioning
-        assertTrue(
-            "BuildConfig.VERSION_CODE must be >= 23, was ${com.example.BuildConfig.VERSION_CODE}",
-            com.example.BuildConfig.VERSION_CODE >= 23
+        // 1. Verify centralized BuildConfig V23.1 release versioning
+        assertEquals(
+            "BuildConfig.VERSION_CODE must be 24 for V23.1",
+            24,
+            com.example.BuildConfig.VERSION_CODE
         )
-        assertEquals("V23", com.example.BuildConfig.VERSION_NAME)
+        assertEquals("V23.1", com.example.BuildConfig.VERSION_NAME)
 
         // 2. Verify Saudi/MENA club transliteration canonicalization
         assertEquals(
@@ -10137,6 +10140,266 @@ class TvSyncDeviceSeparationComposeTest {
         composeTestRule.onNode(androidx.compose.ui.test.hasTestTag("match_center_header_watch_btn")).assertExists()
         composeTestRule.onNode(androidx.compose.ui.test.hasText("Channels")).assertExists()
         composeTestRule.onNode(androidx.compose.ui.test.hasText("WATCH LIVE")).assertDoesNotExist()
+    }
+
+    @Test
+    fun v23_1_phoneKickoffRendersThreeTournamentsWithSingleFooterAndNoDuplicateKeyCrash() {
+        val app = ApplicationProvider.getApplicationContext<Application>()
+        val previousEdition = com.example.util.EditionResolver.runtimeEditionOverride
+        com.example.util.EditionResolver.runtimeEditionOverride = com.example.util.SetPlayEdition.PHONE
+        val mainViewModel = com.example.ui.viewmodel.MainViewModel(app)
+        try {
+            mainViewModel.completeFirstTimeTeamsOnboarding()
+            mainViewModel.dayMatchesFetcherOverrideForTesting = { emptyList() }
+            mainViewModel.selectTournamentFilter("ALL")
+
+            val multiTournamentFixtures = listOf(
+                com.example.data.repository.FootballMatch(
+                    matchId = "v231_ucl_1",
+                    tournamentId = "uefa_cl",
+                    tournamentName = "UEFA Champions League",
+                    tournamentRegion = "Europe",
+                    dayTab = com.example.data.repository.MatchDayTab.TODAY,
+                    kickoffTimeFormatted = "20:00",
+                    kickoffDateFormatted = "Today",
+                    status = com.example.data.repository.MatchStatus.UPCOMING,
+                    liveMinuteOrBadge = "20:00",
+                    homeTeamId = "rma",
+                    homeTeamName = "Real Madrid",
+                    homeTeamBadge = "",
+                    homeScore = null,
+                    awayTeamId = "mci",
+                    awayTeamName = "Manchester City",
+                    awayTeamBadge = "",
+                    awayScore = null,
+                    stadiumName = "Santiago Bernabéu",
+                    cityName = "Madrid",
+                    beinChannel = "beIN Sports 1 HD",
+                    beinChannelNumberHint = "1",
+                    kickoffEpochMs = 1_794_200_000_000L
+                ),
+                com.example.data.repository.FootballMatch(
+                    matchId = "v231_epl_1",
+                    tournamentId = "premier_league",
+                    tournamentName = "Premier League",
+                    tournamentRegion = "England",
+                    dayTab = com.example.data.repository.MatchDayTab.TODAY,
+                    kickoffTimeFormatted = "17:30",
+                    kickoffDateFormatted = "Today",
+                    status = com.example.data.repository.MatchStatus.FINISHED,
+                    liveMinuteOrBadge = "FT",
+                    homeTeamId = "ars",
+                    homeTeamName = "Arsenal",
+                    homeTeamBadge = "",
+                    homeScore = 2,
+                    awayTeamId = "liv",
+                    awayTeamName = "Liverpool",
+                    awayTeamBadge = "",
+                    awayScore = 1,
+                    stadiumName = "Emirates Stadium",
+                    cityName = "London",
+                    beinChannel = "beIN Sports 2 HD",
+                    beinChannelNumberHint = "2",
+                    kickoffEpochMs = 1_794_190_000_000L
+                ),
+                com.example.data.repository.FootballMatch(
+                    matchId = "v231_ll_1",
+                    tournamentId = "laliga",
+                    tournamentName = "LaLiga",
+                    tournamentRegion = "Spain",
+                    dayTab = com.example.data.repository.MatchDayTab.TODAY,
+                    kickoffTimeFormatted = "21:00",
+                    kickoffDateFormatted = "Today",
+                    status = com.example.data.repository.MatchStatus.UPCOMING,
+                    liveMinuteOrBadge = "21:00",
+                    homeTeamId = "fcb",
+                    homeTeamName = "Barcelona",
+                    homeTeamBadge = "",
+                    homeScore = null,
+                    awayTeamId = "atm",
+                    awayTeamName = "Atletico Madrid",
+                    awayTeamBadge = "",
+                    awayScore = null,
+                    stadiumName = "Camp Nou",
+                    cityName = "Barcelona",
+                    beinChannel = "beIN Sports 3 HD",
+                    beinChannelNumberHint = "3",
+                    kickoffEpochMs = 1_794_203_600_000L
+                ),
+                com.example.data.repository.FootballMatch(
+                    matchId = "v231_bot_1",
+                    tournamentId = "botola_pro",
+                    tournamentName = "Botola Pro",
+                    tournamentRegion = "Morocco",
+                    dayTab = com.example.data.repository.MatchDayTab.TODAY,
+                    kickoffTimeFormatted = "19:00",
+                    kickoffDateFormatted = "Today",
+                    status = com.example.data.repository.MatchStatus.FINISHED,
+                    liveMinuteOrBadge = "FT",
+                    homeTeamId = "rca",
+                    homeTeamName = "Raja Casablanca",
+                    homeTeamBadge = "",
+                    homeScore = 1,
+                    awayTeamId = "wac",
+                    awayTeamName = "Wydad AC",
+                    awayTeamBadge = "",
+                    awayScore = 1,
+                    stadiumName = "Stade Mohammed V",
+                    cityName = "Casablanca",
+                    beinChannel = "Arryadia HD",
+                    beinChannelNumberHint = "",
+                    kickoffEpochMs = 1_794_196_000_000L
+                )
+            )
+            mainViewModel.seedMatchesByDayForTesting(
+                mapOf(com.example.data.repository.MatchDayTab.TODAY to multiTournamentFixtures)
+            )
+
+            composeTestRule.setContent {
+                com.example.ui.home.HomeScreen(
+                    mainViewModel = mainViewModel,
+                    onStreamClick = {},
+                    onNavigateScreen = {}
+                )
+            }
+            composeTestRule.waitForIdle()
+
+            // Verify Phone Kickoff LazyColumn renders 4 distinct tournaments with zero duplicate-key crash
+            val listNode = composeTestRule.onNode(androidx.compose.ui.test.hasTestTag("match_center_list"))
+            listNode.assertExists()
+
+            listNode.performScrollToKey("header_unified_uefa_cl")
+            composeTestRule.onNode(androidx.compose.ui.test.hasTestTag("tournament_header_uefa_cl")).assertExists()
+
+            listNode.performScrollToKey("header_unified_premier_league")
+            composeTestRule.onNode(androidx.compose.ui.test.hasTestTag("tournament_header_premier_league")).assertExists()
+
+            listNode.performScrollToKey("header_unified_laliga")
+            composeTestRule.onNode(androidx.compose.ui.test.hasTestTag("tournament_header_laliga")).assertExists()
+
+            // Verify kickoff_version_footer is emitted strictly ONCE at the bottom of the feed
+            listNode.performScrollToKey("kickoff_version_footer")
+            composeTestRule.onAllNodes(androidx.compose.ui.test.hasTestTag("kickoff_version_footer"))
+                .assertCountEquals(1)
+            composeTestRule.onNode(androidx.compose.ui.test.hasText("SetPlay V23.1 • KickOff Settings"))
+                .assertExists()
+        } finally {
+            com.example.util.EditionResolver.runtimeEditionOverride = previousEdition
+        }
+    }
+
+    @Test
+    fun v23_1_rapidSelectMatchDayDeduplicatesAndAtomicallyMergesMatchesByDay() = runBlocking {
+        val app = ApplicationProvider.getApplicationContext<Application>()
+        val mainViewModel = com.example.ui.viewmodel.MainViewModel(app)
+        val fetchCounts = java.util.concurrent.ConcurrentHashMap<
+            com.example.data.repository.MatchDayTab,
+            java.util.concurrent.atomic.AtomicInteger
+        >()
+
+        fun makeMatchForDay(day: com.example.data.repository.MatchDayTab): com.example.data.repository.FootballMatch {
+            return com.example.data.repository.FootballMatch(
+                matchId = "v231_day_${day.name.lowercase()}",
+                tournamentId = "premier_league",
+                tournamentName = "Premier League",
+                tournamentRegion = "England",
+                dayTab = day,
+                kickoffTimeFormatted = "18:00",
+                kickoffDateFormatted = day.name,
+                status = com.example.data.repository.MatchStatus.UPCOMING,
+                liveMinuteOrBadge = "18:00",
+                homeTeamId = "h_${day.name}",
+                homeTeamName = "Home ${day.name}",
+                homeTeamBadge = "",
+                homeScore = null,
+                awayTeamId = "a_${day.name}",
+                awayTeamName = "Away ${day.name}",
+                awayTeamBadge = "",
+                awayScore = null,
+                stadiumName = "Arena",
+                cityName = "London",
+                beinChannel = "beIN Sports 1 HD",
+                beinChannelNumberHint = "1",
+                kickoffEpochMs = 1_794_200_000_000L
+            )
+        }
+
+        mainViewModel.dayMatchesFetcherOverrideForTesting = { day ->
+            fetchCounts.computeIfAbsent(day) { java.util.concurrent.atomic.AtomicInteger(0) }.incrementAndGet()
+            kotlinx.coroutines.delay(60L)
+            if (day == com.example.data.repository.MatchDayTab.DAY_PLUS_2) {
+                throw IllegalStateException("Simulated transient provider error")
+            }
+            listOf(makeMatchForDay(day))
+        }
+        mainViewModel.seedMatchesByDayForTesting(emptyMap())
+
+        // Fire rapid duplicate and interleaved date switches
+        mainViewModel.selectMatchDay(com.example.data.repository.MatchDayTab.YESTERDAY)
+        mainViewModel.selectMatchDay(com.example.data.repository.MatchDayTab.YESTERDAY)
+        mainViewModel.selectMatchDay(com.example.data.repository.MatchDayTab.TOMORROW)
+        mainViewModel.selectMatchDay(com.example.data.repository.MatchDayTab.TODAY)
+        mainViewModel.selectMatchDay(com.example.data.repository.MatchDayTab.YESTERDAY)
+        mainViewModel.selectMatchDay(com.example.data.repository.MatchDayTab.DAY_PLUS_2)
+        mainViewModel.selectMatchDay(com.example.data.repository.MatchDayTab.TOMORROW)
+
+        mainViewModel.awaitAllInFlightDayFetches()
+
+        // Each day must be fetched strictly once despite rapid repeated taps
+        assertEquals(1, fetchCounts[com.example.data.repository.MatchDayTab.YESTERDAY]?.get())
+        assertEquals(1, fetchCounts[com.example.data.repository.MatchDayTab.TODAY]?.get())
+        assertEquals(1, fetchCounts[com.example.data.repository.MatchDayTab.TOMORROW]?.get())
+        assertEquals(1, fetchCounts[com.example.data.repository.MatchDayTab.DAY_PLUS_2]?.get())
+
+        // Selected day settles cleanly on final tap, and all successful days are atomically present in matchesByDay
+        assertEquals(com.example.data.repository.MatchDayTab.TOMORROW, mainViewModel.selectedMatchDay.value)
+        val merged = mainViewModel.matchesByDay.value
+        assertEquals(
+            listOf("v231_day_yesterday"),
+            merged[com.example.data.repository.MatchDayTab.YESTERDAY]?.map { it.matchId }
+        )
+        assertEquals(
+            listOf("v231_day_today"),
+            merged[com.example.data.repository.MatchDayTab.TODAY]?.map { it.matchId }
+        )
+        assertEquals(
+            listOf("v231_day_tomorrow"),
+            merged[com.example.data.repository.MatchDayTab.TOMORROW]?.map { it.matchId }
+        )
+        assertFalse("isLoadingMatches must settle to false after all in-flight day fetches finish", mainViewModel.isLoadingMatches.value)
+    }
+
+    @Test
+    fun v23_1_phase4_stabilityGuardsCoilAndTvSyncBodyCap() {
+        val app = ApplicationProvider.getApplicationContext<Application>()
+        assertTrue(
+            "AndroidManifest must register SetPlayApplication as Application class",
+            app is com.example.SetPlayApplication
+        )
+        val setPlayApp = app as com.example.SetPlayApplication
+        val imageLoader = setPlayApp.newImageLoader()
+        try {
+            val memoryCache = imageLoader.memoryCache
+            val diskCache = imageLoader.diskCache
+            assertNotNull("Coil ImageLoader must configure a bounded MemoryCache", memoryCache)
+            assertNotNull("Coil ImageLoader must configure a bounded DiskCache", diskCache)
+            assertTrue(
+                "Coil MemoryCache maxSize must be positive",
+                (memoryCache?.maxSize ?: 0) > 0
+            )
+            assertEquals(
+                "Coil DiskCache maxSize must be capped at 50 MB",
+                50L * 1024L * 1024L,
+                diskCache?.maxSize
+            )
+            assertEquals(
+                "TvSyncManager HTTP body cap must be strictly 256 KB",
+                256 * 1024,
+                com.example.data.sync.TvSyncManager.MAX_HTTP_BODY_BYTES
+            )
+        } finally {
+            imageLoader.shutdown()
+        }
     }
 }
 

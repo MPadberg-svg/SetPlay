@@ -42,6 +42,7 @@ import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -89,6 +90,8 @@ import com.example.ui.theme.TvTwilightIndigo
 import com.example.ui.theme.luxuryFocusableCard
 import com.example.ui.viewmodel.MainViewModel
 import com.example.util.StreamMetadataParser
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.flowOf
 
 @Composable
 fun GlobalSearchScreen(
@@ -110,10 +113,25 @@ fun GlobalSearchScreen(
     }
 
     var searchQuery by remember { mutableStateOf("") }
+    var debouncedQuery by remember { mutableStateOf("") }
     var streamTypeFilter by remember { mutableStateOf<String?>(null) } // null = All, "live", "movie", "series"
 
-    val searchFlow = remember(activePlaylist.id, searchQuery, streamTypeFilter) {
-        viewModel.repository.searchAllStreams(activePlaylist.id, searchQuery, streamTypeFilter)
+    LaunchedEffect(searchQuery) {
+        if (searchQuery.trim().length < 2) {
+            debouncedQuery = ""
+        } else {
+            delay(250L)
+            debouncedQuery = searchQuery
+        }
+    }
+
+    val searchFlow = remember(activePlaylist.id, debouncedQuery, streamTypeFilter) {
+        val trimmed = debouncedQuery.trim()
+        if (trimmed.length < 2) {
+            flowOf(emptyList())
+        } else {
+            viewModel.repository.searchAllStreams(activePlaylist.id, trimmed, streamTypeFilter)
+        }
     }
     val results by searchFlow.collectAsStateWithLifecycle(emptyList())
 
@@ -224,7 +242,7 @@ fun GlobalSearchScreen(
 
         Spacer(modifier = Modifier.height(10.dp))
 
-        if (results.isEmpty() && searchQuery.isNotEmpty()) {
+        if (results.isEmpty() && debouncedQuery.trim().length >= 2) {
             Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                 Text("No results for \"$searchQuery\"", color = TextSecondary, fontSize = 15.sp)
             }

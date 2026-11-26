@@ -14,8 +14,12 @@ import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.flow.updateAndGet
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
@@ -37,6 +41,7 @@ import java.net.URLEncoder
 import java.util.Locale
 import java.util.Random
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicLong
 
 enum class SyncRole {
     STANDALONE,
@@ -259,7 +264,7 @@ class TvSyncManager(
 
     private val _sessionState = MutableStateFlow(
         TvSyncSessionState(
-            localIpAddress = detectLocalLanIpv4(),
+            localIpAddress = "",
             savedTvHostIp = prefs.getString(KEY_LAST_TV_IP, "").orEmpty(),
             savedTvHostPort = prefs.getInt(KEY_LAST_TV_PORT, DEFAULT_PORT),
             savedTvHostPin = prefs.getString(KEY_LAST_TV_PIN, "").orEmpty(),
@@ -279,8 +284,22 @@ class TvSyncManager(
 
     private var serverSocket: ServerSocket? = null
     private var serverJob: Job? = null
+    private val serverGeneration = AtomicLong(0L)
+    private val httpClientSemaphore = Semaphore(permits = MAX_CONCURRENT_HTTP_CLIENTS)
     private var nsdRegistrationListener: NsdManager.RegistrationListener? = null
     private var nsdDiscoveryListener: NsdManager.DiscoveryListener? = null
+    private val nsdResolveLock = Any()
+    private val pendingNsdResolveQueue = ArrayDeque<NsdServiceInfo>()
+    private var isNsdResolveInFlight = false
+
+    init {
+        scope.launch(Dispatchers.IO) {
+            val lanIp = detectLocalLanIpv4()
+            _sessionState.update { current ->
+                if (current.localIpAddress.isBlank()) current.copy(localIpAddress = lanIp) else current
+            }
+        }
+    }
 
     // Active Phone Controller target connection details
     @Volatile
@@ -308,7 +327,6 @@ class TvSyncManager(
         if (_sessionState.value.role == SyncRole.TV_HOST && serverSocket?.isClosed == false) {
             return _sessionState.value
         }
-        stopServerInternal()
 
         val persistedPin = prefs.getString(KEY_PERSISTENT_TV_PIN, "").orEmpty()
             .takeIf { it.length == 6 && it.all(Char::isDigit) }
@@ -318,106 +336,158 @@ class TvSyncManager(
                 prefs.edit().putString(KEY_PERSISTENT_TV_PIN, generated).apply()
             }
 
-        var boundSocket: ServerSocket? = null
-        var boundPort = preferredPort
-        for (candidate in preferredPort..(preferredPort + 10)) {
-            try {
-                boundSocket = ServerSocket().apply {
-                    reuseAddress = true
-                    bind(InetSocketAddress("0.0.0.0", candidate))
+        val generation = serverGeneration.incrementAndGet()
+        val pendingState = _sessionState.updateAndGet { current ->
+            current.copy(
+                role = SyncRole.TV_HOST,
+                isSyncActive = true,
+                serverPort = preferredPort,
+                pairingPin = pin,
+                lastSyncStatusMessage = "Starting TV Host on port $preferredPort (PIN: $pin)"
+            )
+        }
+
+        serverJob?.cancel()
+        serverJob = scope.launch(Dispatchers.IO) {
+            stopServerSocketAndNsdOnIo()
+            if (serverGeneration.get() != generation) return@launch
+
+            var boundSocket: ServerSocket? = null
+            var boundPort = preferredPort
+            for (candidate in preferredPort..(preferredPort + 10)) {
+                try {
+                    boundSocket = ServerSocket().apply {
+                        reuseAddress = true
+                        bind(InetSocketAddress("0.0.0.0", candidate))
+                    }
+                    boundPort = candidate
+                    break
+                } catch (_: Exception) {
+                    // Try next port
                 }
-                boundPort = candidate
-                break
-            } catch (_: Exception) {
-                // Try next port
             }
-        }
-        if (boundSocket == null) {
-            boundSocket = ServerSocket(0)
-            boundPort = boundSocket.localPort
-        }
+            if (boundSocket == null) {
+                boundSocket = ServerSocket(0)
+                boundPort = boundSocket.localPort
+            }
 
-        serverSocket = boundSocket
-        val lanIp = detectLocalLanIpv4()
-        val newState = _sessionState.value.copy(
-            role = SyncRole.TV_HOST,
-            isSyncActive = true,
-            localIpAddress = lanIp,
-            serverPort = boundPort,
-            pairingPin = pin,
-            lastSyncStatusMessage = "TV Host listening on $lanIp:$boundPort (PIN: $pin)"
-        )
-        _sessionState.value = newState
+            if (serverGeneration.get() != generation || !isActive) {
+                runCatching { boundSocket.close() }
+                return@launch
+            }
 
-        registerNsdService(boundPort)
+            serverSocket = boundSocket
+            val lanIp = detectLocalLanIpv4()
+            _sessionState.update { current ->
+                if (serverGeneration.get() != generation) {
+                    current
+                } else {
+                    current.copy(
+                        role = SyncRole.TV_HOST,
+                        isSyncActive = true,
+                        localIpAddress = lanIp,
+                        serverPort = boundPort,
+                        pairingPin = pin,
+                        lastSyncStatusMessage = "TV Host listening on $lanIp:$boundPort (PIN: $pin)"
+                    )
+                }
+            }
 
-        serverJob = scope.launch {
-            while (isActive && boundSocket.isClosed.not()) {
+            registerNsdService(boundPort)
+
+            while (isActive && boundSocket.isClosed.not() && serverGeneration.get() == generation) {
                 val client = try {
                     boundSocket.accept()
                 } catch (_: Exception) {
                     break
                 }
-                launch {
+                launch(Dispatchers.IO) {
                     handleIncomingHttpClient(client)
                 }
             }
         }
-        return newState
+        return pendingState
+    }
+
+    private fun writeHttpJsonResponse(
+        socket: Socket,
+        statusCode: Int,
+        statusText: String,
+        responseJson: JSONObject
+    ) {
+        val responseBytes = responseJson.toString().toByteArray(Charsets.UTF_8)
+        val writer = PrintWriter(OutputStreamWriter(socket.getOutputStream(), Charsets.UTF_8), false)
+        writer.print("HTTP/1.1 $statusCode $statusText\r\n")
+        writer.print("Content-Type: application/json; charset=utf-8\r\n")
+        writer.print("Content-Length: ${responseBytes.size}\r\n")
+        writer.print("Connection: close\r\n\r\n")
+        writer.flush()
+        socket.getOutputStream().write(responseBytes)
+        socket.getOutputStream().flush()
     }
 
     private suspend fun handleIncomingHttpClient(socket: Socket) = withContext(Dispatchers.IO) {
-        try {
-            socket.soTimeout = 8_000
-            val reader = BufferedReader(InputStreamReader(socket.getInputStream(), Charsets.UTF_8))
-            val requestLine = reader.readLine() ?: return@withContext
-            val parts = requestLine.split(" ")
-            val method = parts.getOrNull(0)?.uppercase(Locale.ROOT) ?: "GET"
-            val path = parts.getOrNull(1) ?: "/"
+        httpClientSemaphore.withPermit {
+            try {
+                socket.soTimeout = 8_000
+                val reader = BufferedReader(InputStreamReader(socket.getInputStream(), Charsets.UTF_8))
+                val requestLine = reader.readLine() ?: return@withPermit
+                val parts = requestLine.split(" ")
+                val method = parts.getOrNull(0)?.uppercase(Locale.ROOT) ?: "GET"
+                val path = parts.getOrNull(1) ?: "/"
 
-            var contentLength = 0
-            val headers = mutableMapOf<String, String>()
-            while (true) {
-                val headerLine = reader.readLine() ?: break
-                if (headerLine.isEmpty()) break
-                val colonIdx = headerLine.indexOf(':')
-                if (colonIdx > 0) {
-                    val key = headerLine.substring(0, colonIdx).trim().lowercase(Locale.ROOT)
-                    val value = headerLine.substring(colonIdx + 1).trim()
-                    headers[key] = value
-                    if (key == "content-length") {
-                        contentLength = value.toIntOrNull() ?: 0
+                var declaredContentLength: Long = 0L
+                val headers = mutableMapOf<String, String>()
+                while (true) {
+                    val headerLine = reader.readLine() ?: break
+                    if (headerLine.isEmpty()) break
+                    val colonIdx = headerLine.indexOf(':')
+                    if (colonIdx > 0) {
+                        val key = headerLine.substring(0, colonIdx).trim().lowercase(Locale.ROOT)
+                        val value = headerLine.substring(colonIdx + 1).trim()
+                        headers[key] = value
+                        if (key == "content-length") {
+                            declaredContentLength = value.toLongOrNull() ?: -1L
+                        }
                     }
                 }
-            }
 
-            val bodyText = if (contentLength > 0) {
-                val buffer = CharArray(contentLength)
-                var totalRead = 0
-                while (totalRead < contentLength) {
-                    val read = reader.read(buffer, totalRead, contentLength - totalRead)
-                    if (read == -1) break
-                    totalRead += read
+                if (declaredContentLength < 0L || declaredContentLength > MAX_HTTP_BODY_BYTES.toLong()) {
+                    writeHttpJsonResponse(
+                        socket = socket,
+                        statusCode = 413,
+                        statusText = "Payload Too Large",
+                        responseJson = JSONObject().put("error", "Payload Too Large")
+                    )
+                    return@withPermit
                 }
-                String(buffer, 0, totalRead)
-            } else {
-                ""
-            }
 
-            val (statusCode, responseJson) = routeHttpRequest(method, path, bodyText, headers)
-            val responseBytes = responseJson.toString().toByteArray(Charsets.UTF_8)
-            val writer = PrintWriter(OutputStreamWriter(socket.getOutputStream(), Charsets.UTF_8), false)
-            val statusText = if (statusCode == 200) "OK" else if (statusCode == 403) "Forbidden" else "Bad Request"
-            writer.print("HTTP/1.1 $statusCode $statusText\r\n")
-            writer.print("Content-Type: application/json; charset=utf-8\r\n")
-            writer.print("Content-Length: ${responseBytes.size}\r\n")
-            writer.print("Connection: close\r\n\r\n")
-            writer.flush()
-            socket.getOutputStream().write(responseBytes)
-            socket.getOutputStream().flush()
-        } catch (_: Exception) {
-        } finally {
-            runCatching { socket.close() }
+                val contentLength = declaredContentLength.toInt()
+                val bodyText = if (contentLength > 0) {
+                    val buffer = CharArray(contentLength)
+                    var totalRead = 0
+                    while (totalRead < contentLength) {
+                        val read = reader.read(buffer, totalRead, contentLength - totalRead)
+                        if (read == -1) break
+                        totalRead += read
+                    }
+                    String(buffer, 0, totalRead)
+                } else {
+                    ""
+                }
+
+                val (statusCode, responseJson) = routeHttpRequest(method, path, bodyText, headers)
+                val statusText = when (statusCode) {
+                    200 -> "OK"
+                    403 -> "Forbidden"
+                    413 -> "Payload Too Large"
+                    else -> "Bad Request"
+                }
+                writeHttpJsonResponse(socket, statusCode, statusText, responseJson)
+            } catch (_: Exception) {
+            } finally {
+                runCatching { socket.close() }
+            }
         }
     }
 
@@ -465,16 +535,18 @@ class TvSyncManager(
                     return 403 to JSONObject().put("error", "Unauthorized: Invalid Pairing PIN")
                 }
                 val liveStatus = tvPlaybackStatusProvider?.invoke() ?: _sessionState.value
-                _sessionState.value = _sessionState.value.copy(
-                    tvNowPlayingTitle = liveStatus.tvNowPlayingTitle,
-                    tvNowPlayingStreamId = liveStatus.tvNowPlayingStreamId,
-                    tvNowPlayingType = liveStatus.tvNowPlayingType,
-                    tvNowPlayingUrl = liveStatus.tvNowPlayingUrl,
-                    tvNowPlayingPositionMs = liveStatus.tvNowPlayingPositionMs,
-                    tvIsPlaying = liveStatus.tvIsPlaying,
-                    tvActiveSubtitleLang = liveStatus.tvActiveSubtitleLang
-                )
-                200 to buildStatusJson(_sessionState.value)
+                val updatedStatus = _sessionState.updateAndGet { current ->
+                    current.copy(
+                        tvNowPlayingTitle = liveStatus.tvNowPlayingTitle,
+                        tvNowPlayingStreamId = liveStatus.tvNowPlayingStreamId,
+                        tvNowPlayingType = liveStatus.tvNowPlayingType,
+                        tvNowPlayingUrl = liveStatus.tvNowPlayingUrl,
+                        tvNowPlayingPositionMs = liveStatus.tvNowPlayingPositionMs,
+                        tvIsPlaying = liveStatus.tvIsPlaying,
+                        tvActiveSubtitleLang = liveStatus.tvActiveSubtitleLang
+                    )
+                }
+                200 to buildStatusJson(updatedStatus)
             }
 
             method == "POST" && cleanPath == "/api/sync/pair" -> {
@@ -488,11 +560,13 @@ class TvSyncManager(
                 val incomingVault = VaultSyncPayload.fromJson(reqJson.optJSONObject("vault"))
                 val replyVault = onVaultPayloadReceived?.invoke(incomingVault) ?: incomingVault
 
-                _sessionState.value = _sessionState.value.copy(
-                    isSyncActive = true,
-                    connectedPeerName = peerName,
-                    lastSyncStatusMessage = "Paired with $peerName • Accounts & Favorites Synced"
-                )
+                _sessionState.update { current ->
+                    current.copy(
+                        isSyncActive = true,
+                        connectedPeerName = peerName,
+                        lastSyncStatusMessage = "Paired with $peerName • Accounts & Favorites Synced"
+                    )
+                }
                 val statusSnapshot = tvPlaybackStatusProvider?.invoke() ?: _sessionState.value
                 val resp = buildStatusJson(statusSnapshot).apply {
                     put("status", "paired")
@@ -521,19 +595,21 @@ class TvSyncManager(
                     return 403 to JSONObject().put("error", "Unauthorized: Invalid Pairing PIN")
                 }
                 val cmd = RemotePlayCommand.fromJson(reqJson)
-                _sessionState.value = _sessionState.value.copy(
-                    tvNowPlayingTitle = cmd.streamName,
-                    tvNowPlayingStreamId = cmd.streamId,
-                    tvNowPlayingType = cmd.streamType,
-                    tvNowPlayingUrl = cmd.streamUrl,
-                    tvNowPlayingPositionMs = cmd.resumePositionMs,
-                    tvIsPlaying = true,
-                    tvActiveSubtitleLang = cmd.preferredSubtitleLang,
-                    lastSyncStatusMessage = "Playing ${cmd.streamName} on TV"
-                )
+                val playState = _sessionState.updateAndGet { current ->
+                    current.copy(
+                        tvNowPlayingTitle = cmd.streamName,
+                        tvNowPlayingStreamId = cmd.streamId,
+                        tvNowPlayingType = cmd.streamType,
+                        tvNowPlayingUrl = cmd.streamUrl,
+                        tvNowPlayingPositionMs = cmd.resumePositionMs,
+                        tvIsPlaying = true,
+                        tvActiveSubtitleLang = cmd.preferredSubtitleLang,
+                        lastSyncStatusMessage = "Playing ${cmd.streamName} on TV"
+                    )
+                }
                 _incomingPlayCommands.tryEmit(cmd)
                 onPlayCommandReceived?.invoke(cmd)
-                200 to buildStatusJson(_sessionState.value).put("status", "playing_on_tv")
+                200 to buildStatusJson(playState).put("status", "playing_on_tv")
             }
 
             method == "POST" && cleanPath == "/api/sync/control" -> {
@@ -546,23 +622,25 @@ class TvSyncManager(
                 val preControlSnapshot = tvPlaybackStatusProvider?.invoke() ?: _sessionState.value
                 when (cmd.action.uppercase(Locale.ROOT)) {
                     "TOGGLE_PLAY_PAUSE" -> {
-                        _sessionState.value = _sessionState.value.copy(
-                            tvIsPlaying = !_sessionState.value.tvIsPlaying
-                        )
+                        _sessionState.update { current ->
+                            current.copy(tvIsPlaying = !current.tvIsPlaying)
+                        }
                     }
                     "STOP" -> {
-                        _sessionState.value = _sessionState.value.copy(
-                            tvNowPlayingTitle = "",
-                            tvNowPlayingStreamId = "",
-                            tvNowPlayingUrl = "",
-                            tvNowPlayingPositionMs = 0L,
-                            tvIsPlaying = false
-                        )
+                        _sessionState.update { current ->
+                            current.copy(
+                                tvNowPlayingTitle = "",
+                                tvNowPlayingStreamId = "",
+                                tvNowPlayingUrl = "",
+                                tvNowPlayingPositionMs = 0L,
+                                tvIsPlaying = false
+                            )
+                        }
                     }
                     "SET_SUBTITLE_LANG" -> {
-                        _sessionState.value = _sessionState.value.copy(
-                            tvActiveSubtitleLang = cmd.value
-                        )
+                        _sessionState.update { current ->
+                            current.copy(tvActiveSubtitleLang = cmd.value)
+                        }
                     }
                     "ZAP_NEXT", "ZAP_PREV" -> {
                         // Handled by onControlCommandReceived (zapChannelOffset(1) / zapChannelOffset(-1))
@@ -574,8 +652,21 @@ class TvSyncManager(
                 val updated = if (cmd.action.equals("STOP", ignoreCase = true)) {
                     _sessionState.value
                 } else {
-                    (tvPlaybackStatusProvider?.invoke() ?: _sessionState.value).also { latest ->
-                        _sessionState.value = latest
+                    val latest = tvPlaybackStatusProvider?.invoke()
+                    if (latest != null) {
+                        _sessionState.updateAndGet { current ->
+                            current.copy(
+                                tvNowPlayingTitle = latest.tvNowPlayingTitle,
+                                tvNowPlayingStreamId = latest.tvNowPlayingStreamId,
+                                tvNowPlayingType = latest.tvNowPlayingType,
+                                tvNowPlayingUrl = latest.tvNowPlayingUrl,
+                                tvNowPlayingPositionMs = latest.tvNowPlayingPositionMs,
+                                tvIsPlaying = latest.tvIsPlaying,
+                                tvActiveSubtitleLang = latest.tvActiveSubtitleLang
+                            )
+                        }
+                    } else {
+                        _sessionState.value
                     }
                 }
                 val resp = buildStatusJson(updated).apply {
@@ -664,27 +755,29 @@ class TvSyncManager(
                 activeTargetPin = cleanPin
                 saveLastPairedTvHost(cleanIp, port, cleanPin, remoteHostName)
 
-                val newState = _sessionState.value.copy(
-                    role = SyncRole.PHONE_CONTROLLER,
-                    isSyncActive = true,
-                    localIpAddress = detectLocalLanIpv4(),
-                    serverPort = port,
-                    pairingPin = cleanPin,
-                    connectedPeerName = remoteHostName,
-                    tvNowPlayingTitle = respJson.optString("tvNowPlayingTitle", ""),
-                    tvNowPlayingStreamId = respJson.optString("tvNowPlayingStreamId", ""),
-                    tvNowPlayingType = respJson.optString("tvNowPlayingType", ""),
-                    tvNowPlayingUrl = respJson.optString("tvNowPlayingUrl", ""),
-                    tvNowPlayingPositionMs = respJson.optLong("tvNowPlayingPositionMs", 0L),
-                    tvIsPlaying = respJson.optBoolean("tvIsPlaying", false),
-                    tvActiveSubtitleLang = respJson.optString("tvActiveSubtitleLang", ""),
-                    savedTvHostIp = cleanIp,
-                    savedTvHostPort = port,
-                    savedTvHostPin = cleanPin,
-                    savedTvHostName = remoteHostName,
-                    lastSyncStatusMessage = "Connected to $remoteHostName ($cleanIp)"
-                )
-                _sessionState.value = newState
+                val localLanIp = detectLocalLanIpv4()
+                val newState = _sessionState.updateAndGet { current ->
+                    current.copy(
+                        role = SyncRole.PHONE_CONTROLLER,
+                        isSyncActive = true,
+                        localIpAddress = localLanIp,
+                        serverPort = port,
+                        pairingPin = cleanPin,
+                        connectedPeerName = remoteHostName,
+                        tvNowPlayingTitle = respJson.optString("tvNowPlayingTitle", ""),
+                        tvNowPlayingStreamId = respJson.optString("tvNowPlayingStreamId", ""),
+                        tvNowPlayingType = respJson.optString("tvNowPlayingType", ""),
+                        tvNowPlayingUrl = respJson.optString("tvNowPlayingUrl", ""),
+                        tvNowPlayingPositionMs = respJson.optLong("tvNowPlayingPositionMs", 0L),
+                        tvIsPlaying = respJson.optBoolean("tvIsPlaying", false),
+                        tvActiveSubtitleLang = respJson.optString("tvActiveSubtitleLang", ""),
+                        savedTvHostIp = cleanIp,
+                        savedTvHostPort = port,
+                        savedTvHostPin = cleanPin,
+                        savedTvHostName = remoteHostName,
+                        lastSyncStatusMessage = "Connected to $remoteHostName ($cleanIp)"
+                    )
+                }
                 Result.success(newState)
             }
         } catch (e: Exception) {
@@ -723,16 +816,18 @@ class TvSyncManager(
         val pin = resolveActiveControllerPin(state)
 
         // Optimistically update the companion bar immediately for zero-latency UX
-        _sessionState.value = _sessionState.value.copy(
-            tvNowPlayingTitle = command.streamName,
-            tvNowPlayingStreamId = command.streamId,
-            tvNowPlayingType = command.streamType,
-            tvNowPlayingUrl = command.streamUrl,
-            tvNowPlayingPositionMs = command.resumePositionMs,
-            tvIsPlaying = true,
-            tvActiveSubtitleLang = command.preferredSubtitleLang,
-            lastSyncStatusMessage = "Broadcasting \"${command.streamName}\" on ${state.connectedPeerName}"
-        )
+        _sessionState.update { current ->
+            current.copy(
+                tvNowPlayingTitle = command.streamName,
+                tvNowPlayingStreamId = command.streamId,
+                tvNowPlayingType = command.streamType,
+                tvNowPlayingUrl = command.streamUrl,
+                tvNowPlayingPositionMs = command.resumePositionMs,
+                tvIsPlaying = true,
+                tvActiveSubtitleLang = command.preferredSubtitleLang,
+                lastSyncStatusMessage = "Broadcasting \"${command.streamName}\" on ${current.connectedPeerName}"
+            )
+        }
 
         try {
             val payloadJson = command.toJson().apply { put("pin", pin) }
@@ -768,17 +863,19 @@ class TvSyncManager(
         // Optimistic UI update on the companion bar
         when (action.uppercase(Locale.ROOT)) {
             "TOGGLE_PLAY_PAUSE" -> {
-                _sessionState.value = state.copy(tvIsPlaying = !state.tvIsPlaying)
+                _sessionState.update { current -> current.copy(tvIsPlaying = !current.tvIsPlaying) }
             }
             "SET_SUBTITLE_LANG" -> {
-                _sessionState.value = state.copy(tvActiveSubtitleLang = value)
+                _sessionState.update { current -> current.copy(tvActiveSubtitleLang = value) }
             }
             "STOP" -> {
-                _sessionState.value = state.copy(
-                    tvNowPlayingTitle = "",
-                    tvNowPlayingStreamId = "",
-                    tvIsPlaying = false
-                )
+                _sessionState.update { current ->
+                    current.copy(
+                        tvNowPlayingTitle = "",
+                        tvNowPlayingStreamId = "",
+                        tvIsPlaying = false
+                    )
+                }
             }
         }
 
@@ -858,15 +955,17 @@ class TvSyncManager(
                 val url = respJson?.optString("stoppedUrl")?.takeIf { it.isNotEmpty() } ?: fallbackUrl
                 val posMs = respJson?.optLong("stoppedPositionMs", fallbackPos) ?: fallbackPos
 
-                _sessionState.value = _sessionState.value.copy(
-                    tvNowPlayingTitle = "",
-                    tvNowPlayingStreamId = "",
-                    tvNowPlayingType = "",
-                    tvNowPlayingUrl = "",
-                    tvNowPlayingPositionMs = 0L,
-                    tvIsPlaying = false,
-                    lastSyncStatusMessage = "Pulled \"$title\" to phone"
-                )
+                _sessionState.update { current ->
+                    current.copy(
+                        tvNowPlayingTitle = "",
+                        tvNowPlayingStreamId = "",
+                        tvNowPlayingType = "",
+                        tvNowPlayingUrl = "",
+                        tvNowPlayingPositionMs = 0L,
+                        tvIsPlaying = false,
+                        lastSyncStatusMessage = "Pulled \"$title\" to phone"
+                    )
+                }
 
                 if (streamId.isEmpty() && title.isEmpty()) {
                     return@withContext Result.failure(IllegalStateException("No active stream on TV to pull"))
@@ -918,15 +1017,17 @@ class TvSyncManager(
     }
 
     private fun applyStatusJsonFromTv(respJson: JSONObject) {
-        _sessionState.value = _sessionState.value.copy(
-            tvNowPlayingTitle = respJson.optString("tvNowPlayingTitle", _sessionState.value.tvNowPlayingTitle),
-            tvNowPlayingStreamId = respJson.optString("tvNowPlayingStreamId", _sessionState.value.tvNowPlayingStreamId),
-            tvNowPlayingType = respJson.optString("tvNowPlayingType", _sessionState.value.tvNowPlayingType),
-            tvNowPlayingUrl = respJson.optString("tvNowPlayingUrl", _sessionState.value.tvNowPlayingUrl),
-            tvNowPlayingPositionMs = respJson.optLong("tvNowPlayingPositionMs", _sessionState.value.tvNowPlayingPositionMs),
-            tvIsPlaying = respJson.optBoolean("tvIsPlaying", _sessionState.value.tvIsPlaying),
-            tvActiveSubtitleLang = respJson.optString("tvActiveSubtitleLang", _sessionState.value.tvActiveSubtitleLang)
-        )
+        _sessionState.update { current ->
+            current.copy(
+                tvNowPlayingTitle = respJson.optString("tvNowPlayingTitle", current.tvNowPlayingTitle),
+                tvNowPlayingStreamId = respJson.optString("tvNowPlayingStreamId", current.tvNowPlayingStreamId),
+                tvNowPlayingType = respJson.optString("tvNowPlayingType", current.tvNowPlayingType),
+                tvNowPlayingUrl = respJson.optString("tvNowPlayingUrl", current.tvNowPlayingUrl),
+                tvNowPlayingPositionMs = respJson.optLong("tvNowPlayingPositionMs", current.tvNowPlayingPositionMs),
+                tvIsPlaying = respJson.optBoolean("tvIsPlaying", current.tvIsPlaying),
+                tvActiveSubtitleLang = respJson.optString("tvActiveSubtitleLang", current.tvActiveSubtitleLang)
+            )
+        }
     }
 
     /**
@@ -934,24 +1035,42 @@ class TvSyncManager(
      * while keeping the last paired TV saved in `SharedPreferences` for 1-tap reconnection.
      */
     fun leaveSyncMode() {
-        stopServerInternal()
+        serverGeneration.incrementAndGet()
+        serverJob?.cancel()
+        serverJob = null
         stopNsdDiscovery()
-        _sessionState.value = TvSyncSessionState(
-            role = SyncRole.STANDALONE,
-            isSyncActive = false,
-            localIpAddress = detectLocalLanIpv4(),
-            discoveredTvHosts = _sessionState.value.discoveredTvHosts,
-            savedTvHostIp = prefs.getString(KEY_LAST_TV_IP, "").orEmpty(),
-            savedTvHostPort = prefs.getInt(KEY_LAST_TV_PORT, DEFAULT_PORT),
-            savedTvHostPin = prefs.getString(KEY_LAST_TV_PIN, "").orEmpty(),
-            savedTvHostName = prefs.getString(KEY_LAST_TV_NAME, "").orEmpty(),
-            lastSyncStatusMessage = "Disconnected from TV Sync Mode"
-        )
+        _sessionState.update { current ->
+            TvSyncSessionState(
+                role = SyncRole.STANDALONE,
+                isSyncActive = false,
+                localIpAddress = current.localIpAddress,
+                discoveredTvHosts = current.discoveredTvHosts,
+                savedTvHostIp = prefs.getString(KEY_LAST_TV_IP, "").orEmpty(),
+                savedTvHostPort = prefs.getInt(KEY_LAST_TV_PORT, DEFAULT_PORT),
+                savedTvHostPin = prefs.getString(KEY_LAST_TV_PIN, "").orEmpty(),
+                savedTvHostName = prefs.getString(KEY_LAST_TV_NAME, "").orEmpty(),
+                lastSyncStatusMessage = "Disconnected from TV Sync Mode"
+            )
+        }
+        scope.launch(Dispatchers.IO) {
+            stopServerSocketAndNsdOnIo()
+            val lanIp = detectLocalLanIpv4()
+            _sessionState.update { current -> current.copy(localIpAddress = lanIp) }
+        }
     }
 
     fun shutdown() {
-        stopServerInternal()
+        serverGeneration.incrementAndGet()
         stopNsdDiscovery()
+        serverJob?.cancel()
+        serverJob = null
+        runCatching { serverSocket?.close() }
+        serverSocket = null
+        runCatching {
+            val nsdManager = appContext.getSystemService(Context.NSD_SERVICE) as? NsdManager
+            nsdRegistrationListener?.let { nsdManager?.unregisterService(it) }
+        }
+        nsdRegistrationListener = null
         runCatching { scope.coroutineContext[Job]?.cancel() }
     }
 
@@ -1013,28 +1132,24 @@ class TvSyncManager(
                 override fun onServiceFound(service: NsdServiceInfo?) {
                     val info = service ?: return
                     if (!info.serviceType.contains("_setplay._tcp")) return
-                    runCatching {
-                        nsdManager.resolveService(info, object : NsdManager.ResolveListener {
-                            override fun onResolveFailed(serviceInfo: NsdServiceInfo?, errorCode: Int) {}
-                            override fun onServiceResolved(resolvedInfo: NsdServiceInfo?) {
-                                val resolved = resolvedInfo ?: return
-                                val hostIp = resolved.host?.hostAddress ?: return
-                                val port = resolved.port
-                                val hostItem = DiscoveredTvHost(
-                                    serviceName = resolved.serviceName ?: "SetPlay TV",
-                                    hostIp = hostIp,
-                                    port = port
-                                )
-                                val current = _sessionState.value.discoveredTvHosts.toMutableList()
-                                if (current.none { it.hostIp == hostIp && it.port == port }) {
-                                    current.add(hostItem)
-                                    _sessionState.value = _sessionState.value.copy(discoveredTvHosts = current)
-                                }
-                            }
-                        })
+                    enqueueNsdResolve(nsdManager, info)
+                }
+                override fun onServiceLost(service: NsdServiceInfo?) {
+                    val lostName = service?.serviceName?.takeIf { it.isNotBlank() } ?: return
+                    synchronized(nsdResolveLock) {
+                        pendingNsdResolveQueue.removeAll { it.serviceName == lostName }
+                    }
+                    _sessionState.update { current ->
+                        val remaining = current.discoveredTvHosts.filterNot {
+                            it.serviceName.equals(lostName, ignoreCase = true)
+                        }
+                        if (remaining.size != current.discoveredTvHosts.size) {
+                            current.copy(discoveredTvHosts = remaining)
+                        } else {
+                            current
+                        }
                     }
                 }
-                override fun onServiceLost(service: NsdServiceInfo?) {}
                 override fun onDiscoveryStopped(serviceType: String?) {}
                 override fun onStartDiscoveryFailed(serviceType: String?, errorCode: Int) {}
                 override fun onStopDiscoveryFailed(serviceType: String?, errorCode: Int) {}
@@ -1044,7 +1159,74 @@ class TvSyncManager(
         }
     }
 
+    private fun enqueueNsdResolve(nsdManager: NsdManager, info: NsdServiceInfo) {
+        val shouldStart = synchronized(nsdResolveLock) {
+            if (pendingNsdResolveQueue.none { it.serviceName == info.serviceName }) {
+                pendingNsdResolveQueue.addLast(info)
+            }
+            if (!isNsdResolveInFlight) {
+                isNsdResolveInFlight = true
+                true
+            } else {
+                false
+            }
+        }
+        if (shouldStart) {
+            drainNextNsdResolve(nsdManager)
+        }
+    }
+
+    private fun drainNextNsdResolve(nsdManager: NsdManager) {
+        val nextInfo = synchronized(nsdResolveLock) {
+            if (pendingNsdResolveQueue.isEmpty()) {
+                isNsdResolveInFlight = false
+                null
+            } else {
+                pendingNsdResolveQueue.removeFirst()
+            }
+        } ?: return
+
+        val resolveAttempt = runCatching {
+            @Suppress("DEPRECATION")
+            nsdManager.resolveService(nextInfo, object : NsdManager.ResolveListener {
+                override fun onResolveFailed(serviceInfo: NsdServiceInfo?, errorCode: Int) {
+                    drainNextNsdResolve(nsdManager)
+                }
+
+                override fun onServiceResolved(resolvedInfo: NsdServiceInfo?) {
+                    try {
+                        val resolved = resolvedInfo ?: return
+                        @Suppress("DEPRECATION")
+                        val hostIp = resolved.host?.hostAddress ?: return
+                        val port = resolved.port
+                        val hostItem = DiscoveredTvHost(
+                            serviceName = resolved.serviceName ?: "SetPlay TV",
+                            hostIp = hostIp,
+                            port = port
+                        )
+                        _sessionState.update { current ->
+                            if (current.discoveredTvHosts.none { it.hostIp == hostIp && it.port == port }) {
+                                current.copy(discoveredTvHosts = current.discoveredTvHosts + hostItem)
+                            } else {
+                                current
+                            }
+                        }
+                    } finally {
+                        drainNextNsdResolve(nsdManager)
+                    }
+                }
+            })
+        }
+        if (resolveAttempt.isFailure) {
+            drainNextNsdResolve(nsdManager)
+        }
+    }
+
     fun stopNsdDiscovery() {
+        synchronized(nsdResolveLock) {
+            pendingNsdResolveQueue.clear()
+            isNsdResolveInFlight = false
+        }
         runCatching {
             val nsdManager = appContext.getSystemService(Context.NSD_SERVICE) as? NsdManager
             nsdDiscoveryListener?.let { nsdManager?.stopServiceDiscovery(it) }
@@ -1071,14 +1253,12 @@ class TvSyncManager(
         }
     }
 
-    private fun stopServerInternal() {
+    private fun stopServerSocketAndNsdOnIo() {
         runCatching {
             val nsdManager = appContext.getSystemService(Context.NSD_SERVICE) as? NsdManager
             nsdRegistrationListener?.let { nsdManager?.unregisterService(it) }
         }
         nsdRegistrationListener = null
-        serverJob?.cancel()
-        serverJob = null
         runCatching { serverSocket?.close() }
         serverSocket = null
     }
@@ -1086,6 +1266,8 @@ class TvSyncManager(
     companion object {
         const val DEFAULT_PORT = 8765
         const val NSD_SERVICE_TYPE = "_setplay._tcp."
+        internal const val MAX_HTTP_BODY_BYTES = 256 * 1024
+        private const val MAX_CONCURRENT_HTTP_CLIENTS = 8
         private const val PREFS_NAME = "setplay_tv_sync_prefs"
         private const val KEY_PERSISTENT_TV_PIN = "persistent_tv_host_pin"
         private const val KEY_LAST_TV_IP = "last_tv_ip"

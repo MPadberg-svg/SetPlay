@@ -13,17 +13,20 @@ import com.example.data.sync.SyncStatus
 import com.example.data.sync.SyncTelemetry
 import com.example.data.sync.TaskPriority
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.FlowPreview
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.debounce
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 
-@OptIn(ExperimentalCoroutinesApi::class)
+@OptIn(ExperimentalCoroutinesApi::class, FlowPreview::class)
 class LiveTvViewModel(application: Application) : AndroidViewModel(application) {
     val repository = IptvRepository.getInstance(application)
 
@@ -45,10 +48,10 @@ class LiveTvViewModel(application: Application) : AndroidViewModel(application) 
     val currentLimit: StateFlow<Int> = _currentLimit.asStateFlow()
     val limit: StateFlow<Int> = _currentLimit.asStateFlow()
 
-    // Pre-warmed, persistent StateFlow of Live TV categories so switching tabs never recreates flows or flashes empty
+    // Live TV categories StateFlow with debounced search and WhileSubscribed lifecycle pausing
     val categories: StateFlow<List<CategoryWithCount>> = combine(
         repository.activePlaylist,
-        _categorySearchQuery
+        _categorySearchQuery.debounce(250L).distinctUntilChanged()
     ) { playlist, query ->
         Pair(playlist?.id, query)
     }.flatMapLatest { (playlistId, query) ->
@@ -59,15 +62,15 @@ class LiveTvViewModel(application: Application) : AndroidViewModel(application) 
         }
     }.stateIn(
         viewModelScope,
-        SharingStarted.Eagerly,
+        SharingStarted.WhileSubscribed(5_000L),
         emptyList()
     )
 
-    // Pre-warmed, persistent StateFlow of channels for the selected category with progressive paging
+    // Channels StateFlow for the selected category with debounced search and progressive paging
     val channels: StateFlow<List<StreamEntity>> = combine(
         repository.activePlaylist,
         _selectedCategory,
-        _channelFilterQuery,
+        _channelFilterQuery.debounce(250L).distinctUntilChanged(),
         _currentLimit
     ) { playlist, selectedCat, filterQuery, limit ->
         ChannelQueryParams(
@@ -94,7 +97,7 @@ class LiveTvViewModel(application: Application) : AndroidViewModel(application) 
         }
     }.stateIn(
         viewModelScope,
-        SharingStarted.Eagerly,
+        SharingStarted.WhileSubscribed(5_000L),
         emptyList()
     )
 
@@ -130,7 +133,7 @@ class LiveTvViewModel(application: Application) : AndroidViewModel(application) 
                 repository.observeSectionSyncState(playlist.id, "LIVE")
             }
         }
-        .stateIn(viewModelScope, SharingStarted.Eagerly, SyncTelemetry(sectionType = "LIVE"))
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000L), SyncTelemetry(sectionType = "LIVE"))
 
     private val _isRefreshingTrigger = MutableStateFlow(false)
     val isRefreshing: StateFlow<Boolean> = combine(
@@ -138,7 +141,7 @@ class LiveTvViewModel(application: Application) : AndroidViewModel(application) 
         liveSyncTelemetry
     ) { trigger, telemetry ->
         trigger || telemetry.isActive
-    }.stateIn(viewModelScope, SharingStarted.Eagerly, false)
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000L), false)
 
     private var livePendingWakePlaylistId: Long = -1L
 

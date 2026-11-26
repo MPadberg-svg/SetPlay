@@ -1,6 +1,7 @@
 package com.example.ui.player
 
 import android.app.Activity
+import android.app.ActivityManager
 import android.app.Application
 import android.content.Context
 import android.content.pm.ActivityInfo
@@ -10,6 +11,7 @@ import android.net.Uri
 import androidx.annotation.OptIn
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import androidx.media3.common.AudioAttributes
 import androidx.media3.common.C
 import androidx.media3.common.MediaItem
 import androidx.media3.common.PlaybackException
@@ -37,6 +39,8 @@ import com.example.data.remote.WyzieSubtitleService
 import com.example.data.remote.XtreamClient
 import com.example.data.repository.IptvRepository
 import com.example.data.sync.PlaybackResourceGovernor
+import com.example.util.EditionResolver
+import com.example.util.SetPlayEdition
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -177,25 +181,55 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application) 
             .setExtensionRendererMode(DefaultRenderersFactory.EXTENSION_RENDERER_MODE_PREFER)
             .setEnableDecoderFallback(true)
 
-        val loadControl = DefaultLoadControl.Builder()
-            .setBufferDurationsMs(
-                /* minBufferMs = */ 15_000,
-                /* maxBufferMs = */ 50_000,
-                /* bufferForPlaybackMs = */ 1_500,
-                /* bufferForPlaybackAfterRebufferMs = */ 3_000
-            )
-            .setPrioritizeTimeOverSizeThresholds(true)
+        val activityManager = application.getSystemService(Context.ACTIVITY_SERVICE) as? ActivityManager
+        val isTvOrLowRam = EditionResolver.resolveEdition(application) == SetPlayEdition.TV ||
+            activityManager?.isLowRamDevice == true
+
+        val loadControl = if (isTvOrLowRam) {
+            DefaultLoadControl.Builder()
+                .setBufferDurationsMs(
+                    /* minBufferMs = */ 10_000,
+                    /* maxBufferMs = */ 25_000,
+                    /* bufferForPlaybackMs = */ 1_500,
+                    /* bufferForPlaybackAfterRebufferMs = */ 3_000
+                )
+                .setTargetBufferBytes(24 * 1024 * 1024)
+                .setPrioritizeTimeOverSizeThresholds(false)
+                .build()
+        } else {
+            DefaultLoadControl.Builder()
+                .setBufferDurationsMs(
+                    /* minBufferMs = */ 15_000,
+                    /* maxBufferMs = */ 45_000,
+                    /* bufferForPlaybackMs = */ 1_500,
+                    /* bufferForPlaybackAfterRebufferMs = */ 3_000
+                )
+                .setPrioritizeTimeOverSizeThresholds(true)
+                .build()
+        }
+
+        val audioAttributes = AudioAttributes.Builder()
+            .setUsage(C.USAGE_MEDIA)
+            .setContentType(C.AUDIO_CONTENT_TYPE_MOVIE)
             .build()
 
         ExoPlayer.Builder(application, renderersFactory)
             .setMediaSourceFactory(mediaSourceFactory)
             .setLoadControl(loadControl)
+            .setAudioAttributes(audioAttributes, true)
+            .setHandleAudioBecomingNoisy(true)
             .setSeekBackIncrementMs(10000)
             .setSeekForwardIncrementMs(10000)
             .build().apply {
                 playWhenReady = true
                 addListener(playerListener)
             }
+    }
+
+    fun pausePlayback() {
+        if (_uiState.value.currentStream != null && _uiState.value.isPlaying) {
+            player.pause()
+        }
     }
 
     private val _uiState = MutableStateFlow(PlayerUiState())

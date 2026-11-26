@@ -123,7 +123,6 @@ import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import coil.compose.AsyncImage
-import coil.compose.SubcomposeAsyncImage
 import com.example.BuildConfig
 import com.example.data.model.FavoriteTeamEntity
 import com.example.data.model.PlaylistEntity
@@ -246,15 +245,6 @@ fun HomeScreen(
 
     val activeDayMatches = matchesByDay[selectedMatchDay].orEmpty()
     val liveMatchesCount = todayMatches.count { it.status == MatchStatus.LIVE || it.status == MatchStatus.HALFTIME }
-    var liveClockTickMs by remember { mutableLongStateOf(System.currentTimeMillis()) }
-    LaunchedEffect(liveMatchesCount > 0) {
-        if (liveMatchesCount > 0) {
-            while (true) {
-                liveClockTickMs = System.currentTimeMillis()
-                delay(1000L)
-            }
-        }
-    }
     val pinnedMatches = remember(matchesByDay, activeDayMatches, pinnedMatchIds) {
         if (pinnedMatchIds.isEmpty()) emptyList()
         else {
@@ -488,76 +478,10 @@ fun HomeScreen(
                     .weight(1f)
                     .fillMaxWidth()
             ) {
-                AnimatedContent(
-                    targetState = selectedMatchDay,
-                    transitionSpec = {
-                        val direction = if (targetState.dayOffset >= initialState.dayOffset) 1 else -1
-                        (fadeIn(tween(180)) + slideInHorizontally(tween(200)) { fullWidth -> direction * (fullWidth / 10) })
-                            .togetherWith(
-                                fadeOut(tween(140)) + slideOutHorizontally(tween(160)) { fullWidth -> -direction * (fullWidth / 10) }
-                            )
-                    },
-                    label = "kickoff_day_feed_transition"
-                ) { animatedDay ->
-                    val dayFeedMatches = matchesByDay[animatedDay].orEmpty()
-                    val dayVisibleMatches = remember(
-                        dayFeedMatches,
-                        enabledTournamentMap,
-                        selectedCompetitionCategory,
-                        selectedTournamentFilter,
-                        favoriteTeams
-                    ) {
-                        dayFeedMatches.filter { match ->
-                            val pref = enabledTournamentMap[match.tournamentId]
-                            val isTournamentEnabled = pref?.isEnabled ?: true
-                            if (!isTournamentEnabled && selectedTournamentFilter == "ALL") {
-                                return@filter false
-                            }
-                            if (selectedCompetitionCategory != null) {
-                                val matchCat = tournamentCategoryMap[match.tournamentId] ?: CompetitionCategory.EUROPEAN
-                                if (matchCat != selectedCompetitionCategory) {
-                                    return@filter false
-                                }
-                            }
-                            when (selectedTournamentFilter) {
-                                "ALL" -> true
-                                "CAT_EUROPEAN" -> (tournamentCategoryMap[match.tournamentId] ?: CompetitionCategory.EUROPEAN) == CompetitionCategory.EUROPEAN
-                                "CAT_AFRICAN_ARAB" -> (tournamentCategoryMap[match.tournamentId] ?: CompetitionCategory.EUROPEAN) == CompetitionCategory.AFRICAN_ARAB
-                                "CAT_INTERNATIONAL" -> (tournamentCategoryMap[match.tournamentId] ?: CompetitionCategory.EUROPEAN) == CompetitionCategory.INTERNATIONAL
-                                "MY_TEAMS" -> isMatchForFavoriteTeams(match, favoriteTeams)
-                                "LIVE" -> match.status == MatchStatus.LIVE || match.status == MatchStatus.HALFTIME
-                                else -> match.tournamentId == selectedTournamentFilter
-                            }
-                        }
-                    }
-                    val daySortedVisibleMatches = remember(dayVisibleMatches, enabledTournamentMap) {
-                        dayVisibleMatches.sortedWith(
-                            compareBy<FootballMatch> { match ->
-                                getMatchStatusPriority(match.status)
-                            }.thenBy { match ->
-                                parseKickoffTimeToMinutes(match.kickoffTimeFormatted)
-                            }.thenBy { match ->
-                                getTournamentCanonicalPriority(
-                                    match.tournamentId,
-                                    enabledTournamentMap[match.tournamentId]?.sortOrder ?: 99
-                                )
-                            }.thenBy { match ->
-                                match.matchId
-                            }
-                        )
-                    }
-                    val dayChronologicalSections = remember(dayVisibleMatches, enabledTournamentMap) {
-                        buildUnifiedTournamentSections(dayVisibleMatches, enabledTournamentMap)
-                    }
-                    val dayFavoriteTeamMatches = remember(dayFeedMatches, favoriteTeams) {
-                        if (favoriteTeams.isEmpty()) emptyList()
-                        else dayFeedMatches.filter { isMatchForFavoriteTeams(it, favoriteTeams) }
-                    }
-
-                    LazyColumn(
-                        modifier = Modifier
-                            .fillMaxSize()
-                            .pointerInput(selectedMatchDay) {
+                LazyColumn(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .pointerInput(selectedMatchDay) {
                                 detectHorizontalDragGestures(
                                     onDragStart = { totalHorizontalDragPx = 0f },
                                     onHorizontalDrag = { _, dragAmount ->
@@ -641,12 +565,11 @@ fun HomeScreen(
                     item {
                         PinnedFavoriteTeamsSection(
                             favoriteTeams = favoriteTeams,
-                            favoriteMatches = dayFavoriteTeamMatches,
-                            selectedDay = animatedDay,
+                            favoriteMatches = favoriteTeamMatches,
+                            selectedDay = selectedMatchDay,
                             selectedCountryZone = selectedCountryZone,
                             selectedSeasonTimeMode = selectedSeasonTimeMode,
                             manualTimeOffsetMinutes = manualTimeOffsetMinutes,
-                            liveClockTickMs = liveClockTickMs,
                             uiPreferences = kickoffUiPreferences,
                             onEditFavoriteTeams = {
                                 mainViewModel.openKickoffSettingsCenter(0)
@@ -663,7 +586,7 @@ fun HomeScreen(
                     }
                 }
             } else {
-                if (daySortedVisibleMatches.isEmpty()) {
+                if (sortedVisibleMatches.isEmpty()) {
                     item {
                         EmptyMatchesCard(
                             selectedFilter = selectedTournamentFilter,
@@ -675,7 +598,7 @@ fun HomeScreen(
                             onOpenCustomize = {
                                 mainViewModel.openKickoffSettingsCenter(0)
                             },
-                            selectedDay = animatedDay,
+                            selectedDay = selectedMatchDay,
                             selectedCountryZone = selectedCountryZone,
                             matchesByDay = matchesByDay,
                             onSelectDay = { mainViewModel.selectMatchDay(it) }
@@ -683,7 +606,7 @@ fun HomeScreen(
                     }
                 } else if (sortByKickoffTime) {
                     itemsIndexed(
-                        items = daySortedVisibleMatches,
+                        items = sortedVisibleMatches,
                         key = { _, match -> "time_sorted_match_${match.matchId}" }
                     ) { _, match ->
                         val compAccent = resolveCompetitionAccentColor(match.tournamentId)
@@ -789,13 +712,12 @@ fun HomeScreen(
                                 isMatchPinned = match.matchId in pinnedMatchIds,
                                 onTogglePinMatch = { mainViewModel.togglePinMatch(match.matchId) },
                                 isLastInSection = true,
-                                liveClockTickMs = liveClockTickMs,
                                 uiPreferences = kickoffUiPreferences
                             )
                         }
                     }
                 } else {
-                    dayChronologicalSections.forEachIndexed { sectionIndex, section ->
+                    chronologicalSections.forEachIndexed { sectionIndex, section ->
                         val tournamentId = section.tournamentId
                         val matchesInSection = section.matches
                         val firstMatch = matchesInSection.first()
@@ -806,118 +728,113 @@ fun HomeScreen(
                             it.status == MatchStatus.LIVE || it.status == MatchStatus.HALFTIME
                         }
 
-                        item(key = "section_${section.sectionKey}") {
-                            Column(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .animateContentSize(animationSpec = tween(durationMillis = 220))
-                            ) {
-                                FlashscoreTournamentHeader(
-                                    tournamentId = tournamentId,
-                                    tournamentName = firstMatch.tournamentName,
-                                    regionName = firstMatch.tournamentRegion,
-                                    menaProviderName = firstMatch.menaProviderName,
-                                    matchCount = matchesInSection.size,
-                                    liveCount = liveInSection,
-                                    isPinned = isPinned,
-                                    isCollapsed = isCollapsed,
-                                    isFirstSection = sectionIndex == 0,
-                                    onToggleCollapse = { mainViewModel.toggleTournamentCollapsed(tournamentId) },
-                                    onTogglePin = { mainViewModel.toggleTournamentPinned(tournamentId) }
-                                )
-
-                                if (!isCollapsed) {
-                                    matchesInSection.forEachIndexed { index, match ->
-                                        val matchUtcBadge = remember(match.kickoffEpochMs, selectedCountryZone, manualTimeOffsetMinutes) {
-                                            val refEpoch = if (match.kickoffEpochMs > 0L) match.kickoffEpochMs else System.currentTimeMillis()
-                                            selectedCountryZone.getUtcOffsetBadge(
-                                                epochMs = refEpoch,
-                                                manualOffsetMinutes = manualTimeOffsetMinutes
-                                            )
-                                        }
-                                        FlashscoreMatchCard(
-                                            match = match,
-                                            selectedCountryZone = selectedCountryZone,
-                                            selectedSeasonTimeMode = selectedSeasonTimeMode,
-                                            manualTimeOffsetMinutes = manualTimeOffsetMinutes,
-                                            utcOffsetBadge = matchUtcBadge,
-                                            isHomeTeamFavorite = favoriteTeams.any {
-                                                it.teamName.equals(match.homeTeamName, ignoreCase = true) ||
-                                                    it.teamId == match.homeTeamId
-                                            },
-                                            isAwayTeamFavorite = favoriteTeams.any {
-                                                it.teamName.equals(match.awayTeamName, ignoreCase = true) ||
-                                                    it.teamId == match.awayTeamId
-                                            },
-                                            onToggleHomeFavorite = {
-                                                mainViewModel.toggleFavoriteTeam(
-                                                    FootballTeam(
-                                                        teamId = match.homeTeamId,
-                                                        name = match.homeTeamName,
-                                                        shortName = match.homeTeamName.take(3).uppercase(),
-                                                        badgeUrl = match.homeTeamBadge,
-                                                        country = match.tournamentRegion,
-                                                        primaryLeague = match.tournamentName
-                                                    )
-                                                )
-                                            },
-                                            onToggleAwayFavorite = {
-                                                mainViewModel.toggleFavoriteTeam(
-                                                    FootballTeam(
-                                                        teamId = match.awayTeamId,
-                                                        name = match.awayTeamName,
-                                                        shortName = match.awayTeamName.take(3).uppercase(),
-                                                        badgeUrl = match.awayTeamBadge,
-                                                        country = match.tournamentRegion,
-                                                        primaryLeague = match.tournamentName
-                                                    )
-                                                )
-                                            },
-                                            onOpenDossier = { mainViewModel.openMatchCenterDossier(match) },
-                                            onWatchBeinClicked = { clickedChannel ->
-                                                mainViewModel.onWatchMatchOnBeinClicked(
-                                                    match = match,
-                                                    clickedChannelName = clickedChannel,
-                                                    onAutoPlaySingleStream = onStreamClick
-                                                )
-                                            },
-                                            isMatchPinned = match.matchId in pinnedMatchIds,
-                                            onTogglePinMatch = { mainViewModel.togglePinMatch(match.matchId) },
-                                            isLastInSection = index == matchesInSection.lastIndex,
-                                            liveClockTickMs = liveClockTickMs,
-                                            uiPreferences = kickoffUiPreferences
-                                        )
-                                    }
-                                }
-                            }
+                        item(key = "header_${section.sectionKey}") {
+                            FlashscoreTournamentHeader(
+                                tournamentId = tournamentId,
+                                tournamentName = firstMatch.tournamentName,
+                                regionName = firstMatch.tournamentRegion,
+                                menaProviderName = firstMatch.menaProviderName,
+                                matchCount = matchesInSection.size,
+                                liveCount = liveInSection,
+                                isPinned = isPinned,
+                                isCollapsed = isCollapsed,
+                                isFirstSection = sectionIndex == 0,
+                                onToggleCollapse = { mainViewModel.toggleTournamentCollapsed(tournamentId) },
+                                onTogglePin = { mainViewModel.toggleTournamentPinned(tournamentId) }
+                            )
                         }
 
-                        // Subtle Kickoff Navigation & Settings Version Footer
-                        item(key = "kickoff_version_footer") {
-                            Box(
-                                contentAlignment = Alignment.Center,
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .padding(top = 18.dp, bottom = 6.dp)
-                            ) {
-                                Text(
-                                    text = "SetPlay ${BuildConfig.VERSION_NAME} • KickOff Settings",
-                                    color = KickoffMistSilver.copy(alpha = 0.56f),
-                                    fontSize = 10.5.sp,
-                                    fontWeight = FontWeight.SemiBold,
-                                    letterSpacing = 0.4.sp,
-                                    modifier = Modifier
-                                        .clip(RoundedCornerShape(50))
-                                        .clickable { mainViewModel.openKickoffSettingsCenter(0) }
-                                        .padding(horizontal = 12.dp, vertical = 6.dp)
-                                        .testTag("kickoff_version_footer")
+                        if (!isCollapsed) {
+                            itemsIndexed(
+                                items = matchesInSection,
+                                key = { _, match -> "match_${section.sectionKey}_${match.matchId}" }
+                            ) { index, match ->
+                                val matchUtcBadge = remember(match.kickoffEpochMs, selectedCountryZone, manualTimeOffsetMinutes) {
+                                    val refEpoch = if (match.kickoffEpochMs > 0L) match.kickoffEpochMs else System.currentTimeMillis()
+                                    selectedCountryZone.getUtcOffsetBadge(
+                                        epochMs = refEpoch,
+                                        manualOffsetMinutes = manualTimeOffsetMinutes
+                                    )
+                                }
+                                FlashscoreMatchCard(
+                                    match = match,
+                                    selectedCountryZone = selectedCountryZone,
+                                    selectedSeasonTimeMode = selectedSeasonTimeMode,
+                                    manualTimeOffsetMinutes = manualTimeOffsetMinutes,
+                                    utcOffsetBadge = matchUtcBadge,
+                                    isHomeTeamFavorite = favoriteTeams.any {
+                                        it.teamName.equals(match.homeTeamName, ignoreCase = true) ||
+                                            it.teamId == match.homeTeamId
+                                    },
+                                    isAwayTeamFavorite = favoriteTeams.any {
+                                        it.teamName.equals(match.awayTeamName, ignoreCase = true) ||
+                                            it.teamId == match.awayTeamId
+                                    },
+                                    onToggleHomeFavorite = {
+                                        mainViewModel.toggleFavoriteTeam(
+                                            FootballTeam(
+                                                teamId = match.homeTeamId,
+                                                name = match.homeTeamName,
+                                                shortName = match.homeTeamName.take(3).uppercase(),
+                                                badgeUrl = match.homeTeamBadge,
+                                                country = match.tournamentRegion,
+                                                primaryLeague = match.tournamentName
+                                            )
+                                        )
+                                    },
+                                    onToggleAwayFavorite = {
+                                        mainViewModel.toggleFavoriteTeam(
+                                            FootballTeam(
+                                                teamId = match.awayTeamId,
+                                                name = match.awayTeamName,
+                                                shortName = match.awayTeamName.take(3).uppercase(),
+                                                badgeUrl = match.awayTeamBadge,
+                                                country = match.tournamentRegion,
+                                                primaryLeague = match.tournamentName
+                                            )
+                                        )
+                                    },
+                                    onOpenDossier = { mainViewModel.openMatchCenterDossier(match) },
+                                    onWatchBeinClicked = { clickedChannel ->
+                                        mainViewModel.onWatchMatchOnBeinClicked(
+                                            match = match,
+                                            clickedChannelName = clickedChannel,
+                                            onAutoPlaySingleStream = onStreamClick
+                                        )
+                                    },
+                                    isMatchPinned = match.matchId in pinnedMatchIds,
+                                    onTogglePinMatch = { mainViewModel.togglePinMatch(match.matchId) },
+                                    isLastInSection = index == matchesInSection.lastIndex,
+                                    uiPreferences = kickoffUiPreferences
                                 )
                             }
                         }
                     }
                 }
             }
-                    }
+
+            // Subtle Kickoff Navigation & Settings Version Footer (emitted strictly once at bottom of feed)
+            item(key = "kickoff_version_footer") {
+                Box(
+                    contentAlignment = Alignment.Center,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(top = 18.dp, bottom = 6.dp)
+                ) {
+                    Text(
+                        text = "SetPlay ${BuildConfig.VERSION_NAME} • KickOff Settings",
+                        color = KickoffMistSilver.copy(alpha = 0.56f),
+                        fontSize = 10.5.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        letterSpacing = 0.4.sp,
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(50))
+                            .clickable { mainViewModel.openKickoffSettingsCenter(0) }
+                            .padding(horizontal = 12.dp, vertical = 6.dp)
+                            .testTag("kickoff_version_footer")
+                    )
+                }
+            }
                 }
             }
         }
@@ -3617,14 +3534,18 @@ internal fun TournamentLogoMedallion(
                     .background(radialBacklight)
             ) {
                 if (logoUrl.isNotBlank()) {
-                    SubcomposeAsyncImage(
+                    var showFallback by remember(logoUrl) { mutableStateOf(true) }
+                    if (showFallback) {
+                        renderMonogramFallback()
+                    }
+                    AsyncImage(
                         model = logoUrl,
                         contentDescription = tournamentName,
                         contentScale = ContentScale.Fit,
                         colorFilter = logoColorFilter,
-                        modifier = imageModifier,
-                        loading = { renderMonogramFallback() },
-                        error = { renderMonogramFallback() }
+                        onSuccess = { showFallback = false },
+                        onError = { showFallback = true },
+                        modifier = imageModifier
                     )
                 } else {
                     renderMonogramFallback()
@@ -3743,7 +3664,6 @@ private fun PinnedFavoriteTeamsSection(
     selectedCountryZone: UserCountryZone,
     selectedSeasonTimeMode: SeasonTimeMode,
     manualTimeOffsetMinutes: Int = 0,
-    liveClockTickMs: Long = System.currentTimeMillis(),
     uiPreferences: KickoffUiPreferences = KickoffUiPreferences(),
     onEditFavoriteTeams: () -> Unit,
     onInspectMatchDossier: (FootballMatch) -> Unit,
@@ -3854,7 +3774,6 @@ private fun PinnedFavoriteTeamsSection(
                     onOpenDossier = { onInspectMatchDossier(match) },
                     onWatchBeinClicked = { ch -> onWatchMatch(match, ch) },
                     isLastInSection = index == favoriteMatches.lastIndex,
-                    liveClockTickMs = liveClockTickMs,
                     uiPreferences = uiPreferences
                 )
             }
@@ -4425,25 +4344,17 @@ internal fun FlashscoreMatchCard(
         }
     }
 
-    val matchClockAnchor = remember(match.matchId, match.liveMinuteOrBadge, match.status) {
-        MatchClockEngine.registerOrUpdateAnchor(match)
-    }
-    val anchorSyncOriginMs = remember(matchClockAnchor.verifiedAtEpochMs, match.matchId) {
-        val seedSec = (abs(match.matchId.hashCode()) % 52)
-        matchClockAnchor.verifiedAtEpochMs - (seedSec * 1000L)
-    }
-    val liveElapsedSeconds = if (match.status == MatchStatus.LIVE) {
-        ((liveClockTickMs - anchorSyncOriginMs) / 1000L).toInt().coerceAtLeast(0)
-    } else {
-        0
-    }
-    val clockTelemetry = remember(match, utcOffsetBadge, liveElapsedSeconds, dynamicKickoffTime) {
-        parseLiveMatchClockTelemetry(
-            match = match,
-            utcOffsetBadge = utcOffsetBadge,
-            elapsedSecondOffset = liveElapsedSeconds,
-            dynamicKickoffTime = dynamicKickoffTime
-        )
+    val staticLiveReadout = remember(match.matchId, match.liveMinuteOrBadge, match.status, utcOffsetBadge, dynamicKickoffTime) {
+        if (match.status == MatchStatus.LIVE) {
+            parseLiveMatchClockTelemetry(
+                match = match,
+                utcOffsetBadge = utcOffsetBadge,
+                elapsedSecondOffset = 0,
+                dynamicKickoffTime = dynamicKickoffTime
+            ).heroReadout
+        } else {
+            ""
+        }
     }
 
     val cardShape = RoundedCornerShape(14.dp)
@@ -4607,14 +4518,15 @@ internal fun FlashscoreMatchCard(
                 MatchCardBroadcastScoreStage(
                     match = match,
                     dynamicKickoffTime = dynamicKickoffTime,
-                    liveReadout = clockTelemetry.heroReadout,
+                    liveReadout = staticLiveReadout,
                     compAccent = compAccent,
                     stageWidthDp = 78,
                     hideScores = uiPreferences.hideLiveAndFinalScores,
                     isHalftime = isHalftime,
                     homeIsWinner = homeIsWinner,
                     awayIsWinner = awayIsWinner,
-                    isDecidedFinish = isDecidedFinish
+                    isDecidedFinish = isDecidedFinish,
+                    utcOffsetBadge = utcOffsetBadge
                 )
 
                 // 3. AWAY TEAM ZONE (Left-Aligned from Center Broadcast Stage, weight 1f)
@@ -4985,24 +4897,11 @@ private fun TvKickoffStadiumScreen(
                 .padding(horizontal = 14.dp, vertical = 6.dp),
             horizontalArrangement = Arrangement.spacedBy(14.dp)
         ) {
-            // Left Pane (60% width): D-Pad 2-Column Fixture Grid with smooth day transition
-            AnimatedContent(
-                targetState = selectedMatchDay,
-                transitionSpec = {
-                    val direction = if (targetState.dayOffset >= initialState.dayOffset) 1 else -1
-                    (fadeIn(tween(180)) + slideInHorizontally(tween(200)) { fullWidth -> direction * (fullWidth / 12) })
-                        .togetherWith(
-                            fadeOut(tween(140)) + slideOutHorizontally(tween(160)) { fullWidth -> -direction * (fullWidth / 12) }
-                        )
-                },
-                modifier = Modifier
-                    .weight(0.60f)
-                    .fillMaxHeight(),
-                label = "tv_kickoff_day_feed_transition"
-            ) { _ ->
+            // Left Pane (60% width): D-Pad 2-Column Fixture Grid (no outer AnimatedContent to preserve TV D-pad focus)
             LazyColumn(
                 modifier = Modifier
-                    .fillMaxSize()
+                    .weight(0.60f)
+                    .fillMaxHeight()
                     .testTag("match_center_list"),
                 contentPadding = PaddingValues(bottom = 48.dp),
                 verticalArrangement = Arrangement.spacedBy(8.dp)
@@ -5153,7 +5052,6 @@ private fun TvKickoffStadiumScreen(
                         }
                     }
                 }
-            }
             }
 
             // Right Pane (40% width): Live Interactive Match Studio Dock
@@ -5855,6 +5753,96 @@ private fun TvLiveMatchStudioDock(
  * Broadcast-grade, strictly fixed-width (`78.dp` Phone / `88.dp` TV) state-adaptive center score/time stage.
  * Guarantees Home and Away `weight(1f)` columns are never crushed while rendering crisp state-driven visual hierarchy.
  */
+/**
+ * Leaf draw-phase pulsing dot for LIVE badges — uses `Modifier.graphicsLayer` so parent cards
+ * never recompose during the pulse animation.
+ */
+@Composable
+private fun PulsingLiveDot(
+    color: Color,
+    isPulsing: Boolean,
+    labelKey: String
+) {
+    if (isPulsing) {
+        val infiniteTransition = rememberInfiniteTransition(label = "stage_live_pulse_$labelKey")
+        val pulseAlpha by infiniteTransition.animateFloat(
+            initialValue = 1f,
+            targetValue = 0.28f,
+            animationSpec = infiniteRepeatable(
+                animation = tween(durationMillis = 850, easing = LinearEasing),
+                repeatMode = RepeatMode.Reverse
+            ),
+            label = "stage_live_pulse_alpha_$labelKey"
+        )
+        Box(
+            modifier = Modifier
+                .size(4.5.dp)
+                .graphicsLayer { alpha = pulseAlpha }
+                .clip(CircleShape)
+                .background(color)
+        )
+    } else {
+        Box(
+            modifier = Modifier
+                .size(4.5.dp)
+                .clip(CircleShape)
+                .background(color)
+        )
+    }
+}
+
+/**
+ * Leaf 1 Hz live minute readout mounted ONLY for LIVE matches so non-live cards,
+ * tournament headers, and HomeScreen never recompose every second.
+ */
+@Composable
+private fun LiveMinuteBadge(
+    match: FootballMatch,
+    utcOffsetBadge: String,
+    dynamicKickoffTime: String,
+    fallbackReadout: String
+) {
+    val matchClockAnchor = remember(match.matchId, match.liveMinuteOrBadge, match.status) {
+        MatchClockEngine.registerOrUpdateAnchor(match)
+    }
+    val anchorSyncOriginMs = remember(matchClockAnchor.verifiedAtEpochMs, match.matchId) {
+        val seedSec = (abs(match.matchId.hashCode()) % 52)
+        matchClockAnchor.verifiedAtEpochMs - (seedSec * 1000L)
+    }
+    var tickCount by remember(match.matchId, match.liveMinuteOrBadge) { mutableIntStateOf(0) }
+    var tickEpochMs by remember(match.matchId, match.liveMinuteOrBadge) { mutableLongStateOf(anchorSyncOriginMs) }
+
+    LaunchedEffect(match.matchId, match.liveMinuteOrBadge) {
+        while (true) {
+            delay(1000L)
+            tickEpochMs = System.currentTimeMillis()
+            tickCount++
+        }
+    }
+
+    val readout = if (tickCount == 0 && fallbackReadout.isNotBlank()) {
+        fallbackReadout
+    } else {
+        val elapsedSec = ((tickEpochMs - anchorSyncOriginMs) / 1000L).toInt().coerceAtLeast(0)
+        parseLiveMatchClockTelemetry(
+            match = match,
+            utcOffsetBadge = utcOffsetBadge,
+            elapsedSecondOffset = elapsedSec,
+            dynamicKickoffTime = dynamicKickoffTime
+        ).heroReadout
+    }
+
+    Text(
+        text = readout,
+        color = KickoffLiveCrimson,
+        fontSize = 10.sp,
+        fontWeight = FontWeight.ExtraBold,
+        style = TabularNumeralTextStyle,
+        textAlign = TextAlign.Center,
+        maxLines = 1
+    )
+}
+
 @Composable
 internal fun MatchCardBroadcastScoreStage(
     match: FootballMatch,
@@ -5866,24 +5854,9 @@ internal fun MatchCardBroadcastScoreStage(
     isHalftime: Boolean = match.status == MatchStatus.HALFTIME || match.liveMinuteOrBadge.equals("HT", ignoreCase = true),
     homeIsWinner: Boolean = false,
     awayIsWinner: Boolean = false,
-    isDecidedFinish: Boolean = false
+    isDecidedFinish: Boolean = false,
+    utcOffsetBadge: String = "GMT+1"
 ) {
-    val pulseAlpha = if (match.status == MatchStatus.LIVE && !isHalftime) {
-        val infiniteTransition = rememberInfiniteTransition(label = "stage_live_pulse_${match.matchId}")
-        val animated by infiniteTransition.animateFloat(
-            initialValue = 1f,
-            targetValue = 0.28f,
-            animationSpec = infiniteRepeatable(
-                animation = tween(durationMillis = 850, easing = LinearEasing),
-                repeatMode = RepeatMode.Reverse
-            ),
-            label = "stage_live_pulse_alpha_${match.matchId}"
-        )
-        animated
-    } else {
-        1f
-    }
-
     Box(
         contentAlignment = Alignment.Center,
         modifier = Modifier
@@ -5976,23 +5949,30 @@ internal fun MatchCardBroadcastScoreStage(
                                 horizontalArrangement = Arrangement.Center,
                                 modifier = Modifier.padding(horizontal = 7.dp, vertical = 1.5.dp)
                             ) {
-                                Box(
-                                    modifier = Modifier
-                                        .size(4.5.dp)
-                                        .alpha(pulseAlpha)
-                                        .clip(CircleShape)
-                                        .background(if (isHalftime) KickoffTrophyGold else KickoffLiveCrimson)
+                                PulsingLiveDot(
+                                    color = if (isHalftime) KickoffTrophyGold else KickoffLiveCrimson,
+                                    isPulsing = !isHalftime,
+                                    labelKey = match.matchId
                                 )
                                 Spacer(modifier = Modifier.width(3.5.dp))
-                                Text(
-                                    text = if (isHalftime) "HT" else liveReadout,
-                                    color = if (isHalftime) KickoffTrophyGold else KickoffLiveCrimson,
-                                    fontSize = 10.sp,
-                                    fontWeight = FontWeight.ExtraBold,
-                                    style = TabularNumeralTextStyle,
-                                    textAlign = TextAlign.Center,
-                                    maxLines = 1
-                                )
+                                if (isHalftime) {
+                                    Text(
+                                        text = "HT",
+                                        color = KickoffTrophyGold,
+                                        fontSize = 10.sp,
+                                        fontWeight = FontWeight.ExtraBold,
+                                        style = TabularNumeralTextStyle,
+                                        textAlign = TextAlign.Center,
+                                        maxLines = 1
+                                    )
+                                } else {
+                                    LiveMinuteBadge(
+                                        match = match,
+                                        utcOffsetBadge = utcOffsetBadge,
+                                        dynamicKickoffTime = dynamicKickoffTime,
+                                        fallbackReadout = liveReadout
+                                    )
+                                }
                             }
                         }
                     }
@@ -6170,6 +6150,7 @@ fun TeamCrestImage(
     }
 
     if (resolvedUrl.isNotBlank()) {
+        var showFallback by remember(resolvedUrl) { mutableStateOf(true) }
         // Unboxed club crest with authentic silhouette and enhanced feather-soft radial ambient backlight
         Box(
             contentAlignment = Alignment.Center,
@@ -6185,19 +6166,18 @@ fun TeamCrestImage(
                     )
                 )
         ) {
-            SubcomposeAsyncImage(
+            if (showFallback) {
+                TeamShieldMonogramFallback(initials = initials, sizeDp = sizeDp)
+            }
+            AsyncImage(
                 model = resolvedUrl,
                 contentDescription = teamName,
                 contentScale = ContentScale.Fit,
+                onSuccess = { showFallback = false },
+                onError = { showFallback = true },
                 modifier = Modifier
                     .fillMaxSize()
-                    .padding((sizeDp * 0.04f).coerceAtLeast(1f).dp),
-                loading = {
-                    TeamShieldMonogramFallback(initials = initials, sizeDp = sizeDp)
-                },
-                error = {
-                    TeamShieldMonogramFallback(initials = initials, sizeDp = sizeDp)
-                }
+                    .padding((sizeDp * 0.04f).coerceAtLeast(1f).dp)
             )
         }
     } else {

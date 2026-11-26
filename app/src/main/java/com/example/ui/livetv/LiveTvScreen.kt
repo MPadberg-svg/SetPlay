@@ -70,14 +70,15 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -160,18 +161,6 @@ fun LiveTvScreen(
     val isRefreshing by viewModel.isRefreshing.collectAsStateWithLifecycle()
     val liveSyncTelemetry by viewModel.liveSyncTelemetry.collectAsStateWithLifecycle()
 
-    // Pulsing broadcast signal animation for Live TV Studio identity
-    val infiniteTransition = rememberInfiniteTransition(label = "live_pulse")
-    val livePulseAlpha by infiniteTransition.animateFloat(
-        initialValue = 0.45f,
-        targetValue = 1.0f,
-        animationSpec = infiniteRepeatable(
-            animation = tween(durationMillis = 900),
-            repeatMode = RepeatMode.Reverse
-        ),
-        label = "live_dot_alpha"
-    )
-
     // Intercept system back button when viewing a category's channels to return to the Category Directory
     BackHandler(enabled = selectedCategory != null) {
         viewModel.selectCategory(null)
@@ -233,11 +222,9 @@ fun LiveTvScreen(
                             horizontalArrangement = Arrangement.spacedBy(7.dp),
                             modifier = Modifier.weight(1f)
                         ) {
-                            Box(
-                                modifier = Modifier
-                                    .size(7.dp)
-                                    .alpha(livePulseAlpha)
-                                    .background(TvBroadcastScarlet, CircleShape)
+                            LiveSignalPulseDot(
+                                color = TvBroadcastScarlet,
+                                size = 7.dp
                             )
                             Text(
                                 text = "LIVE TV",
@@ -651,7 +638,6 @@ fun LiveTvScreen(
                         items(channels, key = { it.id }) { channel ->
                             ChannelCard(
                                 channel = channel,
-                                livePulseAlpha = livePulseAlpha,
                                 onClick = { onChannelClick(channel) },
                                 onToggleFavorite = { viewModel.toggleFavorite(channel.id, channel.isFavorite) }
                             )
@@ -1104,7 +1090,6 @@ fun LiveCategoryDirectoryCard(
 @Composable
 fun ChannelCard(
     channel: StreamEntity,
-    livePulseAlpha: Float = 1f,
     onClick: () -> Unit,
     onToggleFavorite: () -> Unit,
     modifier: Modifier = Modifier
@@ -1258,11 +1243,9 @@ fun ChannelCard(
 
                     // Authentic Inline Live Status, Region Badge & Catchup Metadata (Zero Fake Progress Bars)
                     Row(verticalAlignment = Alignment.CenterVertically) {
-                        Box(
-                            modifier = Modifier
-                                .size(5.5.dp)
-                                .alpha(livePulseAlpha)
-                                .background(TvBroadcastScarlet, CircleShape)
+                        LiveSignalPulseDot(
+                            color = TvBroadcastScarlet,
+                            size = 5.5.dp
                         )
                         Spacer(modifier = Modifier.width(5.dp))
                         Text(
@@ -1363,3 +1346,28 @@ fun ChannelCard(
         }
     }
 }
+
+@Composable
+private fun LiveSignalPulseDot(
+    color: Color,
+    size: Dp,
+    modifier: Modifier = Modifier
+) {
+    val infiniteTransition = rememberInfiniteTransition(label = "live_signal_pulse_dot")
+    val pulseAlpha by infiniteTransition.animateFloat(
+        initialValue = 0.45f,
+        targetValue = 1.0f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(durationMillis = 900),
+            repeatMode = RepeatMode.Reverse
+        ),
+        label = "live_signal_dot_alpha"
+    )
+    Box(
+        modifier = modifier
+            .size(size)
+            .graphicsLayer { alpha = pulseAlpha }
+            .background(color, CircleShape)
+    )
+}
+

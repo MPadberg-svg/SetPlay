@@ -68,7 +68,8 @@ data class CategoryCountTuple(
         Index(value = ["playlistId", "streamType", "canonicalGroupKey"]),
         Index(value = ["playlistId", "streamType", "addedEpoch"]),
         Index(value = ["playlistId", "streamType", "ratingNumeric"]),
-        Index(value = ["playlistId", "streamType", "streamId", "metadataHash"])
+        Index(value = ["playlistId", "streamType", "streamId", "metadataHash"]),
+        Index(value = ["playlistId", "streamId"])
     ]
 )
 data class StreamEntity(
@@ -180,7 +181,10 @@ data class VodCollectionEntity(
 
 @Entity(
     tableName = "sync_section_state",
-    primaryKeys = ["playlistId", "sectionType"]
+    primaryKeys = ["playlistId", "sectionType"],
+    indices = [
+        Index(value = ["status", "queuePriority", "queueSequence"])
+    ]
 )
 data class SyncSectionStateEntity(
     val playlistId: Long,

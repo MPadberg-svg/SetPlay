@@ -234,6 +234,9 @@ class VodViewModel(application: Application) : AndroidViewModel(application) {
 
     private val _movieSearchQuery = MutableStateFlow("")
     val movieSearchQuery: StateFlow<String> = _movieSearchQuery.asStateFlow()
+    private val debouncedMovieSearchQuery: Flow<String> = _movieSearchQuery
+        .debounce(250L)
+        .distinctUntilChanged()
 
     val movieCategories: StateFlow<List<CategoryEntity>> = repository.activePlaylist
         .flatMapLatest { playlist ->
@@ -261,7 +264,7 @@ class VodViewModel(application: Application) : AndroidViewModel(application) {
     val movieItems: StateFlow<List<StreamEntity>> = combine(
         repository.activePlaylist,
         _selectedMovieCategoryId,
-        _movieSearchQuery,
+        debouncedMovieSearchQuery,
         _currentLimit
     ) { playlist, catId, query, limit ->
         VodQueryParams(playlist?.id, catId, query, limit)
@@ -282,7 +285,7 @@ class VodViewModel(application: Application) : AndroidViewModel(application) {
     val groupedMovieItems: StateFlow<List<GroupedVodStream>> = combine(
         repository.activePlaylist,
         _selectedMovieCategoryId,
-        _movieSearchQuery,
+        debouncedMovieSearchQuery,
         _currentLimit
     ) { playlist, catId, query, limit ->
         VodQueryParams(playlist?.id, catId, query, limit)
@@ -307,6 +310,9 @@ class VodViewModel(application: Application) : AndroidViewModel(application) {
 
     private val _seriesSearchQuery = MutableStateFlow("")
     val seriesSearchQuery: StateFlow<String> = _seriesSearchQuery.asStateFlow()
+    private val debouncedSeriesSearchQuery: Flow<String> = _seriesSearchQuery
+        .debounce(250L)
+        .distinctUntilChanged()
 
     val seriesCategories: StateFlow<List<CategoryEntity>> = repository.activePlaylist
         .flatMapLatest { playlist ->
@@ -334,7 +340,7 @@ class VodViewModel(application: Application) : AndroidViewModel(application) {
     val seriesItems: StateFlow<List<StreamEntity>> = combine(
         repository.activePlaylist,
         _selectedSeriesCategoryId,
-        _seriesSearchQuery,
+        debouncedSeriesSearchQuery,
         _currentLimit
     ) { playlist, catId, query, limit ->
         VodQueryParams(playlist?.id, catId, query, limit)
@@ -355,7 +361,7 @@ class VodViewModel(application: Application) : AndroidViewModel(application) {
     val groupedSeriesItems: StateFlow<List<GroupedVodStream>> = combine(
         repository.activePlaylist,
         _selectedSeriesCategoryId,
-        _seriesSearchQuery,
+        debouncedSeriesSearchQuery,
         _currentLimit
     ) { playlist, catId, query, limit ->
         VodQueryParams(playlist?.id, catId, query, limit)

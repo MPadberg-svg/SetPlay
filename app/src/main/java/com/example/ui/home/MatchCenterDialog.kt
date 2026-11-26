@@ -82,7 +82,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
-import coil.compose.SubcomposeAsyncImage
+import coil.compose.AsyncImage
 import coil.request.ImageRequest
 import com.example.data.repository.FootballMatch
 import com.example.data.repository.H2HMeetingItem
@@ -3062,8 +3062,6 @@ private fun PlayerCircularAvatarMedallion(
             ImageRequest.Builder(context)
                 .data(photoUrl)
                 .size(targetPx, targetPx)
-                .precision(coil.size.Precision.EXACT)
-                .bitmapConfig(android.graphics.Bitmap.Config.ARGB_8888)
                 .memoryCachePolicy(coil.request.CachePolicy.ENABLED)
                 .diskCachePolicy(coil.request.CachePolicy.ENABLED)
                 .addHeader("User-Agent", "Mozilla/5.0 (Linux; Android 14)")
@@ -3082,28 +3080,31 @@ private fun PlayerCircularAvatarMedallion(
         modifier = Modifier.size(sizeDp.dp)
     ) {
         if (imageRequest != null) {
-            SubcomposeAsyncImage(
-                model = imageRequest,
-                contentDescription = playerName,
-                contentScale = ContentScale.Crop,
+            var showFallback by remember(photoUrl) { mutableStateOf(true) }
+            Box(
+                contentAlignment = Alignment.Center,
                 modifier = Modifier
                     .fillMaxSize()
-                    .clip(CircleShape),
-                loading = {
-                    TacticalAthletePortraitAvatar(
-                        playerName = playerName,
-                        jerseyNumber = jerseyNumber,
-                        kitColor = primaryColor
-                    )
-                },
-                error = {
+                    .clip(CircleShape)
+            ) {
+                if (showFallback) {
                     TacticalAthletePortraitAvatar(
                         playerName = playerName,
                         jerseyNumber = jerseyNumber,
                         kitColor = primaryColor
                     )
                 }
-            )
+                AsyncImage(
+                    model = imageRequest,
+                    contentDescription = playerName,
+                    contentScale = ContentScale.Crop,
+                    onSuccess = { showFallback = false },
+                    onError = { showFallback = true },
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .clip(CircleShape)
+                )
+            }
         } else {
             TacticalAthletePortraitAvatar(
                 playerName = playerName,

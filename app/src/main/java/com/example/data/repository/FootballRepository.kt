@@ -1086,20 +1086,29 @@ class FootballRepository(
      *    - Filters and prioritizes MENA & regional broadcasters first (`beIN Sports`, `Arryadia`, `SNRT`, `Tamazight`, `SSC`, `AD Sports`, `Alkass`).
      *    - Applies the **Smart MENA Fallback Map** if `eventstv.php` returns no MENA channel for a match.
      */
+    private fun resolveEffectiveUserTimeZone(nowMs: Long = System.currentTimeMillis()): TimeZone {
+        val zone = getSelectedCountryZone()
+        val seasonMode = getSelectedSeasonTimeMode()
+        val manualOffsetMinutes = getManualTimeOffsetMinutes()
+        val effectiveOffsetMinutes = zone.getEffectiveOffsetMinutes(seasonMode, nowMs) + manualOffsetMinutes
+        return java.util.SimpleTimeZone(effectiveOffsetMinutes * 60_000, zone.timeZoneId)
+    }
+
     suspend fun fetchMatchesForDay(
         dayTab: MatchDayTab,
         forceLiveRefresh: Boolean = false
     ): List<FootballMatch> = withContext(Dispatchers.IO) {
-        val calendar = Calendar.getInstance(TimeZone.getTimeZone("Africa/Casablanca"))
+        val effectiveTz = resolveEffectiveUserTimeZone()
+        val calendar = Calendar.getInstance(effectiveTz)
         calendar.add(Calendar.DAY_OF_YEAR, dayTab.dayOffset)
         val targetDate = calendar.time
 
         val espnDateStr = SimpleDateFormat("yyyyMMdd", Locale.US).apply {
-            timeZone = TimeZone.getTimeZone("Africa/Casablanca")
+            timeZone = effectiveTz
         }.format(targetDate)
 
         val isoDateStr = SimpleDateFormat("yyyy-MM-dd", Locale.US).apply {
-            timeZone = TimeZone.getTimeZone("Africa/Casablanca")
+            timeZone = effectiveTz
         }.format(targetDate)
 
         // Execute all API calls in parallel with fault-tolerant supervisorScope + runCatching (Promise.allSettled behavior)
@@ -4670,14 +4679,14 @@ class FootballRepository(
      */
     internal fun normalizeChannelNameForFavoritesMatch(rawName: String): NormalizedChannelProfile {
         val lowerFull = Normalizer.normalize(rawName, Normalizer.Form.NFD)
-            .replace(Regex("\\p{InCombiningDiacriticalMarks}+"), "")
+            .replace(REGEX_COMBINING_DIACRITICS, "")
             .lowercase(Locale.ROOT)
 
         // Detect if rawName has an explicit language tag in the prefix or body before stripping
-        val hasExplicitEnglish = Regex("""\b(english|eng|en)\b""").containsMatchIn(lowerFull)
-        val hasExplicitFrench = Regex("""\b(french|fra|fr)\b""").containsMatchIn(lowerFull)
-        val hasExplicitSpanish = Regex("""\b(spanish|espanol|esp|es)\b""").containsMatchIn(lowerFull)
-        val is4kFeed = Regex("""\b(4k|uhd|2160p|2160)\b""").containsMatchIn(lowerFull)
+        val hasExplicitEnglish = REGEX_EXPLICIT_ENGLISH.containsMatchIn(lowerFull)
+        val hasExplicitFrench = REGEX_EXPLICIT_FRENCH.containsMatchIn(lowerFull)
+        val hasExplicitSpanish = REGEX_EXPLICIT_SPANISH.containsMatchIn(lowerFull)
+        val is4kFeed = REGEX_IS_4K_FEED.containsMatchIn(lowerFull)
 
         // Locate the start of the MENA broadcaster name so leading playlist numbers ("[01] VIP | ") are discarded
         val providerStartMatch = BROADCASTER_START_REGEX.find(lowerFull)
@@ -4689,113 +4698,79 @@ class FootballRepository(
 
         // Strip trailing fixture match titles (e.g. ": Real Madrid vs Milan" or "- Mainz 05 vs Bayern")
         // so numbers in club names never pollute channelNumbers
-        val relevantSubstring = rawRelevantSubstring.replace(
-            Regex("""[:|┃\-]\s*[^:|┃]+\b(?:vs\.?|v\.?)\b.*$"""),
-            " "
-        )
+        val relevantSubstring = rawRelevantSubstring.replace(REGEX_TRAILING_FIXTURE_TITLE, " ")
 
         // 1. Strip codecs, audio formats, server/backup suffixes, and resolution tags BEFORE splitting letter-digit tokens
         val step1 = relevantSubstring
             .replace("mp4a-latm", " ")
-            .replace(Regex("""\b(mp4a|mpeg4|mpeg2|hevc|avc|vp9|av1|aac|ac3|eac3|latm|dd\+?|dolby)\b"""), " ")
-            .replace(Regex("""\b([hx]\.?26[45]|5\.1|2\.0)\b"""), " ")
-            .replace(Regex("""\b(2160p|2160|1080p|1080i|1080|720p|720|576p|576|480p|480|50fps|60fps|25fps|30fps|fps)\b"""), " ")
-            .replace(Regex("""\b(server|srv|backup|bkp|source|src|feed|stream|ch)\s*#?\s*\d+\b"""), " ")
-            .replace(Regex("""\b(ar|ma|mar|dz|tn|eg|ksa|ae|qa|fr|en|uk|us)\s*[:|┃\-]"""), " ")
-            .replace(Regex("""[|┃\[\]()/\\:_\-+.,]+"""), " ")
-            .replace(
-                Regex("""\b(hevc|4k|fhd|uhd|hd|sd|h265|h264|x265|x264|tnt|vip|raw|live|mena|arabia|connect|ar|ara|arabic|ma|mar|low|med|high)\b"""),
-                " "
-            )
+            .replace(REGEX_AUDIO_VIDEO_CODECS, " ")
+            .replace(REGEX_H26X_CHANNELS, " ")
+            .replace(REGEX_RESOLUTION_FPS, " ")
+            .replace(REGEX_SERVER_BACKUP_SUFFIX, " ")
+            .replace(REGEX_COUNTRY_PREFIX_DELIM, " ")
+            .replace(REGEX_CHANNEL_PUNCTUATION, " ")
+            .replace(REGEX_NOISE_TAGS_PASS1, " ")
 
         // 2. Separate attached letter-digit boundaries (e.g., "max05" -> "max 05", "05max" -> "05 max", "hd02" -> "hd 02", "bein2" -> "bein 2")
         val step2 = step1
-            .replace(Regex("""([a-z])(\d)"""), "$1 $2")
-            .replace(Regex("""(\d)([a-z])"""), "$1 $2")
-            .replace(
-                Regex("""\b(hevc|4k|fhd|uhd|hd|sd|tnt|vip|raw|live|mena|arabia|connect|english|eng|en|french|fra|fr|spanish|espanol|esp|es|ar|ara|arabic|ma|mar)\b"""),
-                " "
-            )
+            .replace(REGEX_LETTER_TO_DIGIT, "$1 $2")
+            .replace(REGEX_DIGIT_TO_LETTER, "$1 $2")
+            .replace(REGEX_NOISE_TAGS_PASS2, " ")
 
         // 3. Common MENA & Global provider alias & sub-brand synonym normalization + zero-padded number canonicalization
         val cleaned = step2
-            .replace(Regex("""\bbe\s*in\s*sports?\b"""), "bein")
-            .replace(Regex("""\bbein\s*sports?\b"""), "bein")
-            .replace(Regex("""\bbe\s*in\b"""), "bein")
-            .replace(Regex("""\b(al\s*riyadia|arriyadia|riyadia|snrt|al\s*aoula)\b"""), "arryadia")
-            .replace(Regex("""\bssc\s*sports?\b"""), "ssc")
-            .replace(Regex("""\b(abu\s*dhabi\s*sports?|ad\s*sports?)\b"""), "adsport")
-            .replace(Regex("""\bal\s*kass(\s*sports?)?\b"""), "alkass")
-            .replace(Regex("""\bon\s*time(\s*sports?)?\b"""), "ontime")
-            .replace(Regex("""\bstarz\s*play(\s*sports?)?\b"""), "starzplay")
-            .replace(Regex("""\bthmanyah(\s*sports?)?\b"""), "thmanyah")
-            .replace(Regex("""\bdubai\s*sports?\b"""), "dubaisport")
-            .replace(Regex("""\bcanal\s*plus\b"""), "canalplus")
-            .replace(Regex("""\bcanal\b"""), "canalplus")
-            .replace(Regex("""\b(tnt\s*sports?|bt\s*sports?)\b"""), "tntsports")
-            .replace(Regex("""\bsky\s*sports?\b"""), "skysports")
-            .replace(Regex("""\bmovistar(\s*plus)?\b"""), "movistar")
-            .replace(Regex("""\bdazn\b"""), "dazn")
-            .replace(Regex("""\bpremier\s*sports?\b"""), "premiersports")
-            .replace(Regex("""\bsport\s*tv\b"""), "sporttv")
-            .replace(Regex("""\bziggo(\s*sport)?\b"""), "ziggosport")
-            .replace(Regex("""\bs\s*sport\b"""), "ssport")
-            .replace(Regex("""\b(tabii(\s*spor)?|trt(\s*spor)?)\b"""), "tabii")
-            .replace(Regex("""\b(cbs\s*sports?|paramount)\b"""), "cbssports")
-            .replace(Regex("""\b(usa\s*network|peacock)\b"""), "usanetwork")
-            .replace(Regex("""\bespn\b"""), "espn")
-            .replace(Regex("""\b(tudn|univision)\b"""), "tudn")
+            .replace(REGEX_ALIAS_BE_IN_SPORTS, "bein")
+            .replace(REGEX_ALIAS_BEIN_SPORTS, "bein")
+            .replace(REGEX_ALIAS_BE_IN, "bein")
+            .replace(REGEX_ALIAS_ARRYADIA, "arryadia")
+            .replace(REGEX_ALIAS_SSC_SPORTS, "ssc")
+            .replace(REGEX_ALIAS_AD_SPORTS, "adsport")
+            .replace(REGEX_ALIAS_ALKASS, "alkass")
+            .replace(REGEX_ALIAS_ONTIME, "ontime")
+            .replace(REGEX_ALIAS_STARZPLAY, "starzplay")
+            .replace(REGEX_ALIAS_THMANYAH, "thmanyah")
+            .replace(REGEX_ALIAS_DUBAI_SPORTS, "dubaisport")
+            .replace(REGEX_ALIAS_CANAL_PLUS, "canalplus")
+            .replace(REGEX_ALIAS_CANAL, "canalplus")
+            .replace(REGEX_ALIAS_TNT_SPORTS, "tntsports")
+            .replace(REGEX_ALIAS_SKY_SPORTS, "skysports")
+            .replace(REGEX_ALIAS_MOVISTAR, "movistar")
+            .replace(REGEX_ALIAS_DAZN, "dazn")
+            .replace(REGEX_ALIAS_PREMIER_SPORTS, "premiersports")
+            .replace(REGEX_ALIAS_SPORT_TV, "sporttv")
+            .replace(REGEX_ALIAS_ZIGGO, "ziggosport")
+            .replace(REGEX_ALIAS_S_SPORT, "ssport")
+            .replace(REGEX_ALIAS_TABII, "tabii")
+            .replace(REGEX_ALIAS_CBS_SPORTS, "cbssports")
+            .replace(REGEX_ALIAS_USA_NETWORK, "usanetwork")
+            .replace(REGEX_ALIAS_ESPN, "espn")
+            .replace(REGEX_ALIAS_TUDN, "tudn")
             // Sub-brand synonym normalization
-            .replace(Regex("""\b(xtra|extra)\b"""), "extra")
-            .replace(Regex("""\b(maxx|max)\b"""), "max")
-            .replace(Regex("""\b(prem|premium)\b"""), "premium")
-            .replace(Regex("""\b(asia|asian)\b"""), "afc")
+            .replace(REGEX_SUBBRAND_EXTRA, "extra")
+            .replace(REGEX_SUBBRAND_MAX, "max")
+            .replace(REGEX_SUBBRAND_PREMIUM, "premium")
+            .replace(REGEX_SUBBRAND_AFC, "afc")
             // Number word normalization
-            .replace(Regex("""\bone\b"""), "1")
-            .replace(Regex("""\btwo\b"""), "2")
-            .replace(Regex("""\bthree\b"""), "3")
-            .replace(Regex("""\bfour\b"""), "4")
-            .replace(Regex("""\bfive\b"""), "5")
-            .replace(Regex("""\bsix\b"""), "6")
-            .replace(Regex("""\bseven\b"""), "7")
-            .replace(Regex("""\beight\b"""), "8")
-            .replace(Regex("""\bnine\b"""), "9")
-            .replace(Regex("""\bten\b"""), "10")
+            .replace(REGEX_NUM_ONE, "1")
+            .replace(REGEX_NUM_TWO, "2")
+            .replace(REGEX_NUM_THREE, "3")
+            .replace(REGEX_NUM_FOUR, "4")
+            .replace(REGEX_NUM_FIVE, "5")
+            .replace(REGEX_NUM_SIX, "6")
+            .replace(REGEX_NUM_SEVEN, "7")
+            .replace(REGEX_NUM_EIGHT, "8")
+            .replace(REGEX_NUM_NINE, "9")
+            .replace(REGEX_NUM_TEN, "10")
             // Strip leading zeros on channel numbers ("05" -> "5", "02" -> "2", "01" -> "1", while "10" stays "10")
-            .replace(Regex("""\b0+([1-9]\d*)\b"""), "$1")
-            .replace(Regex("""\s+"""), " ")
+            .replace(REGEX_LEADING_ZEROS, "$1")
+            .replace(REGEX_WHITESPACE, " ")
             .trim()
 
-        val canonicalProvider = when {
-            Regex("""\bbein\b""").containsMatchIn(cleaned) -> "bein"
-            Regex("""\barryadia\b""").containsMatchIn(cleaned) -> "arryadia"
-            Regex("""\btamazight\b""").containsMatchIn(cleaned) -> "tamazight"
-            Regex("""\bmaghribia\b""").containsMatchIn(cleaned) -> "maghribia"
-            Regex("""\bssc\b""").containsMatchIn(cleaned) -> "ssc"
-            Regex("""\bthmanyah\b""").containsMatchIn(cleaned) -> "thmanyah"
-            Regex("""\badsport\b""").containsMatchIn(cleaned) -> "adsport"
-            Regex("""\bstarzplay\b""").containsMatchIn(cleaned) -> "starzplay"
-            Regex("""\balkass\b""").containsMatchIn(cleaned) -> "alkass"
-            Regex("""\bontime\b""").containsMatchIn(cleaned) -> "ontime"
-            Regex("""\bdubaisport\b""").containsMatchIn(cleaned) -> "dubaisport"
-            Regex("""\bcanalplus\b""").containsMatchIn(cleaned) -> "canalplus"
-            Regex("""\btntsports\b""").containsMatchIn(cleaned) -> "tntsports"
-            Regex("""\bskysports\b""").containsMatchIn(cleaned) -> "skysports"
-            Regex("""\bmovistar\b""").containsMatchIn(cleaned) -> "movistar"
-            Regex("""\bdazn\b""").containsMatchIn(cleaned) -> "dazn"
-            Regex("""\bpremiersports\b""").containsMatchIn(cleaned) -> "premiersports"
-            Regex("""\bsporttv\b""").containsMatchIn(cleaned) -> "sporttv"
-            Regex("""\bziggosport\b""").containsMatchIn(cleaned) -> "ziggosport"
-            Regex("""\bssport\b""").containsMatchIn(cleaned) -> "ssport"
-            Regex("""\btabii\b""").containsMatchIn(cleaned) -> "tabii"
-            Regex("""\bcbssports\b""").containsMatchIn(cleaned) -> "cbssports"
-            Regex("""\busanetwork\b""").containsMatchIn(cleaned) -> "usanetwork"
-            Regex("""\bespn\b""").containsMatchIn(cleaned) -> "espn"
-            Regex("""\btudn\b""").containsMatchIn(cleaned) -> "tudn"
-            else -> cleaned.split(" ").firstOrNull().orEmpty()
-        }
+        val canonicalProvider = CANONICAL_PROVIDER_REGEXES.firstOrNull { (_, regex) ->
+            regex.containsMatchIn(cleaned)
+        }?.first ?: cleaned.split(" ").firstOrNull().orEmpty()
 
-        val numbers = Regex("""\b(\d+)\b""")
+        val numbers = REGEX_WORD_DIGITS
             .findAll(cleaned)
             .map { matchResult ->
                 val rawDigits = matchResult.groupValues[1]
@@ -4808,8 +4783,9 @@ class FootballRepository(
             .distinct()
             .toList()
 
-        val subBrands = setOf("premium", "extra", "max", "afc", "news", "global", "nba")
-            .filter { token -> Regex("""\b$token\b""").containsMatchIn(cleaned) }
+        val subBrands = SUB_BRAND_TOKEN_REGEXES
+            .filter { (_, regex) -> regex.containsMatchIn(cleaned) }
+            .map { (token, _) -> token }
             .toSet()
 
         val languageTokens = buildSet {
@@ -5402,6 +5378,111 @@ class FootballRepository(
 
         private val BROADCASTER_START_REGEX = Regex(
             """\b(be\s*in|bein|arryadia|arriyadia|riyadia|al\s*riyadia|snrt|al\s*aoula|tamazight|maghribia|ssc|thmanyah|shahid|ad\s*sport|abu\s*dhabi|starz|alkass|al\s*kass|on\s*time|ontime|dubai\s*sport|sharjah\s*sport|kuwait\s*sport|oman\s*sport|bahrain\s*sport|iraqia|watania|canal\+|canal\s*plus|canal|tnt\s*sport|bt\s*sport|sky\s*sport|movistar|dazn|premier\s*sport|sport\s*tv|ziggo|s\s*sport|tabii|trt|cbs\s*sport|paramount|usa\s*network|peacock|espn|tudn|univision)\b"""
+        )
+
+        // Pre-compiled hot-loop regexes for team & IPTV channel normalization (zero per-call Regex allocations)
+        private val REGEX_COMBINING_DIACRITICS = Regex("\\p{InCombiningDiacriticalMarks}+")
+        private val REGEX_NATIONAL_TEAM_WORDS = Regex("\\b(national\\s+team|mens?\\s+national\\s+team)\\b")
+        private val REGEX_NON_ALPHANUM_SPACE = Regex("[^a-z0-9\\s]")
+        private val REGEX_WHITESPACE = Regex("""\s+""")
+
+        private val REGEX_EXPLICIT_ENGLISH = Regex("""\b(english|eng|en)\b""")
+        private val REGEX_EXPLICIT_FRENCH = Regex("""\b(french|fra|fr)\b""")
+        private val REGEX_EXPLICIT_SPANISH = Regex("""\b(spanish|espanol|esp|es)\b""")
+        private val REGEX_IS_4K_FEED = Regex("""\b(4k|uhd|2160p|2160)\b""")
+        private val REGEX_TRAILING_FIXTURE_TITLE = Regex("""[:|┃\-]\s*[^:|┃]+\b(?:vs\.?|v\.?)\b.*$""")
+        private val REGEX_AUDIO_VIDEO_CODECS = Regex("""\b(mp4a|mpeg4|mpeg2|hevc|avc|vp9|av1|aac|ac3|eac3|latm|dd\+?|dolby)\b""")
+        private val REGEX_H26X_CHANNELS = Regex("""\b([hx]\.?26[45]|5\.1|2\.0)\b""")
+        private val REGEX_RESOLUTION_FPS = Regex("""\b(2160p|2160|1080p|1080i|1080|720p|720|576p|576|480p|480|50fps|60fps|25fps|30fps|fps)\b""")
+        private val REGEX_SERVER_BACKUP_SUFFIX = Regex("""\b(server|srv|backup|bkp|source|src|feed|stream|ch)\s*#?\s*\d+\b""")
+        private val REGEX_COUNTRY_PREFIX_DELIM = Regex("""\b(ar|ma|mar|dz|tn|eg|ksa|ae|qa|fr|en|uk|us)\s*[:|┃\-]""")
+        private val REGEX_CHANNEL_PUNCTUATION = Regex("""[|┃\[\]()/\\:_\-+.,]+""")
+        private val REGEX_NOISE_TAGS_PASS1 = Regex("""\b(hevc|4k|fhd|uhd|hd|sd|h265|h264|x265|x264|tnt|vip|raw|live|mena|arabia|connect|ar|ara|arabic|ma|mar|low|med|high)\b""")
+        private val REGEX_LETTER_TO_DIGIT = Regex("""([a-z])(\d)""")
+        private val REGEX_DIGIT_TO_LETTER = Regex("""(\d)([a-z])""")
+        private val REGEX_NOISE_TAGS_PASS2 = Regex("""\b(hevc|4k|fhd|uhd|hd|sd|tnt|vip|raw|live|mena|arabia|connect|english|eng|en|french|fra|fr|spanish|espanol|esp|es|ar|ara|arabic|ma|mar)\b""")
+
+        private val REGEX_ALIAS_BE_IN_SPORTS = Regex("""\bbe\s*in\s*sports?\b""")
+        private val REGEX_ALIAS_BEIN_SPORTS = Regex("""\bbein\s*sports?\b""")
+        private val REGEX_ALIAS_BE_IN = Regex("""\bbe\s*in\b""")
+        private val REGEX_ALIAS_ARRYADIA = Regex("""\b(al\s*riyadia|arriyadia|riyadia|snrt|al\s*aoula)\b""")
+        private val REGEX_ALIAS_SSC_SPORTS = Regex("""\bssc\s*sports?\b""")
+        private val REGEX_ALIAS_AD_SPORTS = Regex("""\b(abu\s*dhabi\s*sports?|ad\s*sports?)\b""")
+        private val REGEX_ALIAS_ALKASS = Regex("""\bal\s*kass(\s*sports?)?\b""")
+        private val REGEX_ALIAS_ONTIME = Regex("""\bon\s*time(\s*sports?)?\b""")
+        private val REGEX_ALIAS_STARZPLAY = Regex("""\bstarz\s*play(\s*sports?)?\b""")
+        private val REGEX_ALIAS_THMANYAH = Regex("""\bthmanyah(\s*sports?)?\b""")
+        private val REGEX_ALIAS_DUBAI_SPORTS = Regex("""\bdubai\s*sports?\b""")
+        private val REGEX_ALIAS_CANAL_PLUS = Regex("""\bcanal\s*plus\b""")
+        private val REGEX_ALIAS_CANAL = Regex("""\bcanal\b""")
+        private val REGEX_ALIAS_TNT_SPORTS = Regex("""\b(tnt\s*sports?|bt\s*sports?)\b""")
+        private val REGEX_ALIAS_SKY_SPORTS = Regex("""\bsky\s*sports?\b""")
+        private val REGEX_ALIAS_MOVISTAR = Regex("""\bmovistar(\s*plus)?\b""")
+        private val REGEX_ALIAS_DAZN = Regex("""\bdazn\b""")
+        private val REGEX_ALIAS_PREMIER_SPORTS = Regex("""\bpremier\s*sports?\b""")
+        private val REGEX_ALIAS_SPORT_TV = Regex("""\bsport\s*tv\b""")
+        private val REGEX_ALIAS_ZIGGO = Regex("""\bziggo(\s*sport)?\b""")
+        private val REGEX_ALIAS_S_SPORT = Regex("""\bs\s*sport\b""")
+        private val REGEX_ALIAS_TABII = Regex("""\b(tabii(\s*spor)?|trt(\s*spor)?)\b""")
+        private val REGEX_ALIAS_CBS_SPORTS = Regex("""\b(cbs\s*sports?|paramount)\b""")
+        private val REGEX_ALIAS_USA_NETWORK = Regex("""\b(usa\s*network|peacock)\b""")
+        private val REGEX_ALIAS_ESPN = Regex("""\bespn\b""")
+        private val REGEX_ALIAS_TUDN = Regex("""\b(tudn|univision)\b""")
+
+        private val REGEX_SUBBRAND_EXTRA = Regex("""\b(xtra|extra)\b""")
+        private val REGEX_SUBBRAND_MAX = Regex("""\b(maxx|max)\b""")
+        private val REGEX_SUBBRAND_PREMIUM = Regex("""\b(prem|premium)\b""")
+        private val REGEX_SUBBRAND_AFC = Regex("""\b(asia|asian)\b""")
+
+        private val REGEX_NUM_ONE = Regex("""\bone\b""")
+        private val REGEX_NUM_TWO = Regex("""\btwo\b""")
+        private val REGEX_NUM_THREE = Regex("""\bthree\b""")
+        private val REGEX_NUM_FOUR = Regex("""\bfour\b""")
+        private val REGEX_NUM_FIVE = Regex("""\bfive\b""")
+        private val REGEX_NUM_SIX = Regex("""\bsix\b""")
+        private val REGEX_NUM_SEVEN = Regex("""\bseven\b""")
+        private val REGEX_NUM_EIGHT = Regex("""\beight\b""")
+        private val REGEX_NUM_NINE = Regex("""\bnine\b""")
+        private val REGEX_NUM_TEN = Regex("""\bten\b""")
+        private val REGEX_LEADING_ZEROS = Regex("""\b0+([1-9]\d*)\b""")
+        private val REGEX_WORD_DIGITS = Regex("""\b(\d+)\b""")
+
+        private val CANONICAL_PROVIDER_REGEXES: List<Pair<String, Regex>> = listOf(
+            "bein" to Regex("""\bbein\b"""),
+            "arryadia" to Regex("""\barryadia\b"""),
+            "tamazight" to Regex("""\btamazight\b"""),
+            "maghribia" to Regex("""\bmaghribia\b"""),
+            "ssc" to Regex("""\bssc\b"""),
+            "thmanyah" to Regex("""\bthmanyah\b"""),
+            "adsport" to Regex("""\badsport\b"""),
+            "starzplay" to Regex("""\bstarzplay\b"""),
+            "alkass" to Regex("""\balkass\b"""),
+            "ontime" to Regex("""\bontime\b"""),
+            "dubaisport" to Regex("""\bdubaisport\b"""),
+            "canalplus" to Regex("""\bcanalplus\b"""),
+            "tntsports" to Regex("""\btntsports\b"""),
+            "skysports" to Regex("""\bskysports\b"""),
+            "movistar" to Regex("""\bmovistar\b"""),
+            "dazn" to Regex("""\bdazn\b"""),
+            "premiersports" to Regex("""\bpremiersports\b"""),
+            "sporttv" to Regex("""\bsporttv\b"""),
+            "ziggosport" to Regex("""\bziggosport\b"""),
+            "ssport" to Regex("""\bssport\b"""),
+            "tabii" to Regex("""\btabii\b"""),
+            "cbssports" to Regex("""\bcbssports\b"""),
+            "usanetwork" to Regex("""\busanetwork\b"""),
+            "espn" to Regex("""\bespn\b"""),
+            "tudn" to Regex("""\btudn\b""")
+        )
+
+        private val SUB_BRAND_TOKEN_REGEXES: List<Pair<String, Regex>> = listOf(
+            "premium" to Regex("""\bpremium\b"""),
+            "extra" to Regex("""\bextra\b"""),
+            "max" to Regex("""\bmax\b"""),
+            "afc" to Regex("""\bafc\b"""),
+            "news" to Regex("""\bnews\b"""),
+            "global" to Regex("""\bglobal\b"""),
+            "nba" to Regex("""\bnba\b""")
         )
 
         private val DEFAULT_GENERATED_POOL_CHANNELS = setOf(
@@ -6242,7 +6323,7 @@ class FootballRepository(
         fun normalizeTeamNameForMerge(rawName: String): String {
             if (rawName.isBlank()) return ""
             val decomposed = Normalizer.normalize(rawName, Normalizer.Form.NFD)
-                .replace(Regex("\\p{InCombiningDiacriticalMarks}+"), "")
+                .replace(REGEX_COMBINING_DIACRITICS, "")
                 .replace("ı", "i", ignoreCase = true)
                 .replace("İ", "i", ignoreCase = true)
                 .replace("ø", "o", ignoreCase = true)
@@ -6250,9 +6331,9 @@ class FootballRepository(
                 .replace("ß", "ss", ignoreCase = true)
             val baseTokens = decomposed
                 .lowercase(Locale.ROOT)
-                .replace(Regex("\\b(national\\s+team|mens?\\s+national\\s+team)\\b"), " ")
-                .replace(Regex("[^a-z0-9\\s]"), " ")
-                .split(Regex("\\s+"))
+                .replace(REGEX_NATIONAL_TEAM_WORDS, " ")
+                .replace(REGEX_NON_ALPHANUM_SPACE, " ")
+                .split(REGEX_WHITESPACE)
                 .filter { token ->
                     token.isNotBlank() && token !in IGNORED_TEAM_TOKENS
                 }
