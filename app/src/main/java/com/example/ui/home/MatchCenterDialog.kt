@@ -229,13 +229,17 @@ private fun TvWidescreenMatchCenterStudioLayout(
             .testTag("tv_widescreen_match_center_studio")
     ) {
         // Left Studio Column (36% width): Permanent Scoreboard, Telemetry, Broadcast Controls & Match Metadata
+        val studioAccent = remember(match.tournamentId) {
+            resolveCompetitionAccentColor(match.tournamentId)
+        }
         Column(
             modifier = Modifier
                 .weight(0.36f)
                 .fillMaxHeight()
+                .background(KickoffPitchBlack)
                 .background(
                     Brush.verticalGradient(
-                        colors = listOf(KickoffStadiumForest, KickoffPitchBlack)
+                        colors = listOf(studioAccent.copy(alpha = 0.16f), KickoffPitchBlack)
                     )
                 )
                 .verticalScroll(rememberScrollState())
@@ -446,38 +450,43 @@ private fun MatchCenterScoreboardHeader(
     Box(
         modifier = Modifier
             .fillMaxWidth()
+            .background(KickoffPitchBlack)
             .background(
                 Brush.verticalGradient(
-                    colors = listOf(KickoffStadiumForest, KickoffPitchBlack)
+                    colors = listOf(
+                        competitionAccent.copy(alpha = 0.22f),
+                        competitionAccent.copy(alpha = 0.06f),
+                        KickoffPitchBlack
+                    )
                 )
             )
     ) {
-        // Dual-Club Ambient Stadium Floodlight Halos behind Home & Away Crests
+        // Competition-Cohesive Dual Stadium Floodlight Spotlights behind Home & Away Crests
         Canvas(modifier = Modifier.matchParentSize()) {
             drawCircle(
                 brush = Brush.radialGradient(
                     colors = listOf(
-                        KickoffPitchEmerald.copy(alpha = 0.22f),
-                        KickoffStadiumForest.copy(alpha = 0.14f),
+                        competitionAccent.copy(alpha = 0.26f),
+                        competitionAccent.copy(alpha = 0.08f),
                         Color.Transparent
                     ),
                     center = Offset(size.width * 0.16f, size.height * 0.44f),
-                    radius = size.width * 0.40f
+                    radius = size.width * 0.42f
                 ),
-                radius = size.width * 0.40f,
+                radius = size.width * 0.42f,
                 center = Offset(size.width * 0.16f, size.height * 0.44f)
             )
             drawCircle(
                 brush = Brush.radialGradient(
                     colors = listOf(
-                        competitionAccent.copy(alpha = 0.22f),
-                        KickoffFloodlightVolt.copy(alpha = 0.08f),
+                        competitionAccent.copy(alpha = 0.24f),
+                        competitionAccent.copy(alpha = 0.07f),
                         Color.Transparent
                     ),
                     center = Offset(size.width * 0.84f, size.height * 0.44f),
-                    radius = size.width * 0.40f
+                    radius = size.width * 0.42f
                 ),
-                radius = size.width * 0.40f,
+                radius = size.width * 0.42f,
                 center = Offset(size.width * 0.84f, size.height * 0.44f)
             )
         }
@@ -574,20 +583,12 @@ private fun MatchCenterScoreboardHeader(
                     horizontalAlignment = Alignment.CenterHorizontally,
                     modifier = Modifier.weight(1f)
                 ) {
-                    Box(
-                        contentAlignment = Alignment.Center,
-                        modifier = Modifier
-                            .size(54.dp)
-                            .clip(CircleShape)
-                            .background(KickoffTurfSurface)
-                            .border(1.dp, KickoffEmeraldBorder, CircleShape)
-                    ) {
-                        TeamCrestImage(
-                            badgeUrl = match.homeTeamBadge,
-                            teamName = match.homeTeamName,
-                            sizeDp = 42
-                        )
-                    }
+                    // Unboxed 56.dp Hero Crest with soft radial ambient backlight matching Kickoff feed
+                    TeamCrestImage(
+                        badgeUrl = match.homeTeamBadge,
+                        teamName = match.homeTeamName,
+                        sizeDp = 56
+                    )
                     Spacer(modifier = Modifier.height(6.dp))
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
@@ -789,20 +790,12 @@ private fun MatchCenterScoreboardHeader(
                     horizontalAlignment = Alignment.CenterHorizontally,
                     modifier = Modifier.weight(1f)
                 ) {
-                    Box(
-                        contentAlignment = Alignment.Center,
-                        modifier = Modifier
-                            .size(54.dp)
-                            .clip(CircleShape)
-                            .background(KickoffTurfSurface)
-                            .border(1.dp, KickoffEmeraldBorder, CircleShape)
-                    ) {
-                        TeamCrestImage(
-                            badgeUrl = match.awayTeamBadge,
-                            teamName = match.awayTeamName,
-                            sizeDp = 42
-                        )
-                    }
+                    // Unboxed 56.dp Hero Crest with soft radial ambient backlight matching Kickoff feed
+                    TeamCrestImage(
+                        badgeUrl = match.awayTeamBadge,
+                        teamName = match.awayTeamName,
+                        sizeDp = 56
+                    )
                     Spacer(modifier = Modifier.height(6.dp))
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
@@ -926,11 +919,20 @@ private fun MatchCenterScoreboardHeader(
 
                     Spacer(modifier = Modifier.width(8.dp))
 
-                    // Illuminated Pitch Emerald Watch Pill
+                    // State-Aware Broadcast CTA: LIVE -> "WATCH LIVE", UPCOMING -> "WATCH", FINISHED/OTHER -> low-emphasis ghost "Channels"
+                    val isWatchCtaPrimary = isLive || match.status == MatchStatus.UPCOMING
+                    val ctaLabel = when {
+                        isLive -> "WATCH LIVE"
+                        match.status == MatchStatus.UPCOMING -> "WATCH"
+                        else -> "Channels"
+                    }
                     Surface(
-                        color = KickoffPitchEmerald,
+                        color = if (isWatchCtaPrimary) KickoffPitchEmerald else Color.Transparent,
                         shape = RoundedCornerShape(50),
-                        border = BorderStroke(0.9.dp, KickoffFloodlightVolt.copy(alpha = 0.55f)),
+                        border = BorderStroke(
+                            width = if (isWatchCtaPrimary) 0.9.dp else 0.85.dp,
+                            color = if (isWatchCtaPrimary) KickoffFloodlightVolt.copy(alpha = 0.55f) else KickoffEmeraldBorder
+                        ),
                         modifier = Modifier
                             .height(32.dp)
                             .clip(RoundedCornerShape(50))
@@ -943,29 +945,42 @@ private fun MatchCenterScoreboardHeader(
                     ) {
                         Row(
                             verticalAlignment = Alignment.CenterVertically,
-                            modifier = Modifier.padding(start = 5.dp, end = 12.dp)
+                            modifier = Modifier.padding(
+                                start = if (isWatchCtaPrimary) 5.dp else 10.dp,
+                                end = 12.dp
+                            )
                         ) {
-                            Box(
-                                contentAlignment = Alignment.Center,
-                                modifier = Modifier
-                                    .size(20.dp)
-                                    .clip(CircleShape)
-                                    .background(KickoffPitchBlack)
-                            ) {
+                            if (isWatchCtaPrimary) {
+                                Box(
+                                    contentAlignment = Alignment.Center,
+                                    modifier = Modifier
+                                        .size(20.dp)
+                                        .clip(CircleShape)
+                                        .background(KickoffPitchBlack)
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.PlayArrow,
+                                        contentDescription = "Watch Match",
+                                        tint = KickoffFloodlightVolt,
+                                        modifier = Modifier.size(13.dp)
+                                    )
+                                }
+                                Spacer(modifier = Modifier.width(6.dp))
+                            } else {
                                 Icon(
-                                    imageVector = Icons.Default.PlayArrow,
-                                    contentDescription = "Watch Match",
-                                    tint = KickoffFloodlightVolt,
+                                    imageVector = Icons.Default.LiveTv,
+                                    contentDescription = "Broadcast Channels",
+                                    tint = KickoffMistSilver,
                                     modifier = Modifier.size(13.dp)
                                 )
+                                Spacer(modifier = Modifier.width(5.dp))
                             }
-                            Spacer(modifier = Modifier.width(6.dp))
                             Text(
-                                text = if (isLive) "WATCH LIVE" else "WATCH",
-                                color = KickoffPitchBlack,
+                                text = ctaLabel,
+                                color = if (isWatchCtaPrimary) KickoffPitchBlack else KickoffMistSilver,
                                 fontSize = 10.5.sp,
-                                fontWeight = FontWeight.ExtraBold,
-                                letterSpacing = 0.5.sp
+                                fontWeight = if (isWatchCtaPrimary) FontWeight.ExtraBold else FontWeight.Bold,
+                                letterSpacing = if (isWatchCtaPrimary) 0.5.sp else 0.2.sp
                             )
                         }
                     }
@@ -1383,11 +1398,85 @@ private fun TimelineHalfBanner(
     }
 }
 
+internal fun formatCleanTimelineEventSubtitle(event: MatchTimelineEvent): String {
+    val cleanSecondary = event.secondaryPlayer.trim()
+    val rawDetail = event.detailNote.trim()
+
+    // Substitutions: show clean "OUT: <Player>" when available without redundant "· <Player> Substitution"
+    if (event.eventType == MatchEventType.SUBSTITUTION) {
+        return if (cleanSecondary.isNotBlank()) cleanSecondary else "Substitution"
+    }
+
+    fun stripPlayerPrefix(text: String, playerLabel: String): String {
+        val bareName = playerLabel
+            .removePrefix("IN:")
+            .removePrefix("OUT:")
+            .removePrefix("Assist:")
+            .trim()
+        if (bareName.isBlank() || text.isBlank()) return text
+        var updated = text.replace(bareName, "", ignoreCase = true)
+        // Also strip surname-only prefix if followed directly by event keyword (e.g., "Suárez Goal")
+        val lastToken = bareName.split(Regex("\\s+")).lastOrNull()?.takeIf { it.length >= 3 }
+        if (lastToken != null && updated.contains(lastToken, ignoreCase = true)) {
+            updated = updated.replace(Regex("(?i)\\b${Regex.escape(lastToken)}\\b"), "")
+        }
+        return updated.trim { it.isWhitespace() || it == '-' || it == '–' || it == '•' || it == '·' || it == ':' || it == ',' }
+    }
+
+    var cleanedDetail = rawDetail
+    cleanedDetail = stripPlayerPrefix(cleanedDetail, event.primaryPlayer)
+    cleanedDetail = stripPlayerPrefix(cleanedDetail, cleanSecondary)
+    cleanedDetail = cleanedDetail
+        .replace(Regex("\\s+"), " ")
+        .trim { it.isWhitespace() || it == '-' || it == '–' || it == '•' || it == '·' || it == ':' || it == ',' }
+
+    // Canonicalize trailing event keywords when upstream shortText still had an abbreviated/accented player prefix
+    cleanedDetail = when (event.eventType) {
+        MatchEventType.YELLOW_CARD -> when {
+            cleanedDetail.contains("second yellow", ignoreCase = true) -> "Second Yellow"
+            cleanedDetail.isBlank() || cleanedDetail.endsWith("yellow card", ignoreCase = true) -> "Yellow Card"
+            else -> cleanedDetail
+        }
+        MatchEventType.RED_CARD -> when {
+            cleanedDetail.contains("second yellow", ignoreCase = true) -> "Second Yellow · Red Card"
+            cleanedDetail.isBlank() || cleanedDetail.endsWith("red card", ignoreCase = true) -> "Red Card"
+            else -> cleanedDetail
+        }
+        MatchEventType.PENALTY_GOAL -> when {
+            cleanedDetail.isBlank() || cleanedDetail.contains("penalty", ignoreCase = true) -> "Penalty"
+            else -> cleanedDetail
+        }
+        MatchEventType.OWN_GOAL -> "Own Goal"
+        MatchEventType.GOAL -> when {
+            cleanedDetail.isBlank() ||
+                cleanedDetail.equals("Normal Goal", ignoreCase = true) ||
+                cleanedDetail.equals("Official Match Feed", ignoreCase = true) ||
+                cleanedDetail.equals("Goal", ignoreCase = true) -> "Goal"
+            cleanedDetail.contains("penalty", ignoreCase = true) -> "Penalty"
+            cleanedDetail.contains("own goal", ignoreCase = true) -> "Own Goal"
+            cleanedDetail.contains("header", ignoreCase = true) -> "Header"
+            cleanedDetail.contains("free kick", ignoreCase = true) -> "Free Kick"
+            cleanedDetail.endsWith(" goal", ignoreCase = true) -> "Goal"
+            else -> cleanedDetail
+        }
+        MatchEventType.SUBSTITUTION -> "Substitution"
+        MatchEventType.VAR_DECISION -> cleanedDetail.ifBlank { "VAR Decision" }
+    }
+
+    return listOf(cleanSecondary, cleanedDetail)
+        .filter { it.isNotBlank() }
+        .distinctBy { it.lowercase(Locale.ROOT) }
+        .joinToString(" • ")
+}
+
 @Composable
 private fun FlashscoreTimelineEventRow(
     event: MatchTimelineEvent
 ) {
     val isHome = event.teamSide == MatchTeamSide.HOME
+    val cleanSubtitle = remember(event.id, event.primaryPlayer, event.secondaryPlayer, event.detailNote, event.eventType) {
+        formatCleanTimelineEventSubtitle(event)
+    }
     Surface(
         color = KickoffTurfSurface,
         shape = RoundedCornerShape(10.dp),
@@ -1439,9 +1528,9 @@ private fun FlashscoreTimelineEventRow(
                                 }
                             }
                         }
-                        if (event.secondaryPlayer.isNotBlank() || event.detailNote.isNotBlank()) {
+                        if (cleanSubtitle.isNotBlank()) {
                             Text(
-                                text = listOf(event.secondaryPlayer, event.detailNote).filter { it.isNotBlank() }.joinToString(" • "),
+                                text = cleanSubtitle,
                                 color = KickoffMistSilver,
                                 fontSize = 10.sp
                             )
@@ -1475,9 +1564,9 @@ private fun FlashscoreTimelineEventRow(
                                 fontWeight = FontWeight.ExtraBold
                             )
                         }
-                        if (event.secondaryPlayer.isNotBlank() || event.detailNote.isNotBlank()) {
+                        if (cleanSubtitle.isNotBlank()) {
                             Text(
-                                text = listOf(event.secondaryPlayer, event.detailNote).filter { it.isNotBlank() }.joinToString(" • "),
+                                text = cleanSubtitle,
                                 color = KickoffMistSilver,
                                 fontSize = 10.sp,
                                 textAlign = TextAlign.End
@@ -3628,16 +3717,99 @@ private val STAT_CATEGORY_FILTERS = listOf(
     "Goalkeeping"
 )
 
+internal fun parseStatNumericMagnitude(raw: String): Double {
+    val cleaned = raw.trim()
+        .replace("%", "")
+        .replace(",", "")
+        .trim()
+    if (cleaned.isEmpty() || cleaned == "-" || cleaned == "—") return 0.0
+    // Handle ratio strings like "0/0" or "0 (0%)"
+    val firstNumber = Regex("""-?\d+(?:\.\d+)?""").find(cleaned)?.value?.toDoubleOrNull()
+    return firstNumber ?: 0.0
+}
+
+internal fun isZeroBothSidesStat(stat: MatchStatComparison): Boolean {
+    return abs(parseStatNumericMagnitude(stat.homeValueText)) < 1e-6 &&
+        abs(parseStatNumericMagnitude(stat.awayValueText)) < 1e-6
+}
+
+internal data class ShotMapDisplayMetrics(
+    val homeXg: Double,
+    val awayXg: Double,
+    val homeXgot: Double,
+    val awayXgot: Double
+)
+
+internal fun resolveShotMapDisplayMetrics(dossier: MatchFullDossier): ShotMapDisplayMetrics? {
+    val shots = dossier.shotMap
+    if (shots.isEmpty()) return null
+    val homeShots = shots.filter { it.teamSide == MatchTeamSide.HOME }
+    val awayShots = shots.filter { it.teamSide == MatchTeamSide.AWAY }
+    if (homeShots.isEmpty() && awayShots.isEmpty()) return null
+
+    val xgStat = dossier.stats.firstOrNull {
+        val lbl = it.statLabel.lowercase(Locale.ROOT)
+        lbl.contains("expected goals") && !lbl.contains("target") && !lbl.contains("xgot")
+    }
+    val xgotStat = dossier.stats.firstOrNull {
+        val lbl = it.statLabel.lowercase(Locale.ROOT)
+        lbl.contains("xgot") || lbl.contains("xg on target")
+    }
+
+    val homeShotsXg = homeShots.sumOf { it.xg.coerceAtLeast(0.0) }
+    val awayShotsXg = awayShots.sumOf { it.xg.coerceAtLeast(0.0) }
+    val homeShotsXgot = homeShots.sumOf { it.xgot.coerceAtLeast(0.0) }
+    val awayShotsXgot = awayShots.sumOf { it.xgot.coerceAtLeast(0.0) }
+
+    // Always compute Home and Away metrics independently (never mirroring Home onto Away)
+    val homeXg = if (homeShotsXg > 0.0) {
+        homeShotsXg
+    } else {
+        xgStat?.let { parseStatNumericMagnitude(it.homeValueText).coerceAtLeast(0.0) } ?: 0.0
+    }
+    val awayXg = if (awayShotsXg > 0.0) {
+        awayShotsXg
+    } else {
+        xgStat?.let { parseStatNumericMagnitude(it.awayValueText).coerceAtLeast(0.0) } ?: 0.0
+    }
+    val homeXgot = if (homeShotsXgot > 0.0) {
+        homeShotsXgot
+    } else {
+        xgotStat?.let { parseStatNumericMagnitude(it.homeValueText).coerceAtLeast(0.0) } ?: 0.0
+    }
+    val awayXgot = if (awayShotsXgot > 0.0) {
+        awayShotsXgot
+    } else {
+        xgotStat?.let { parseStatNumericMagnitude(it.awayValueText).coerceAtLeast(0.0) } ?: 0.0
+    }
+
+    if (homeXg <= 0.0 && awayXg <= 0.0 && homeXgot <= 0.0 && awayXgot <= 0.0) {
+        return null
+    }
+    return ShotMapDisplayMetrics(
+        homeXg = homeXg,
+        awayXg = awayXg,
+        homeXgot = homeXgot,
+        awayXgot = awayXgot
+    )
+}
+
 @Composable
 private fun MatchStatsTabContent(
     dossier: MatchFullDossier
 ) {
     var selectedCategory by remember { mutableStateOf("All") }
-    val filteredStats = remember(dossier.stats, selectedCategory) {
+    val nonZeroStats = remember(dossier.stats) {
+        dossier.stats.filterNot { isZeroBothSidesStat(it) }
+    }
+    val shotMapMetrics = remember(dossier.shotMap, dossier.stats) {
+        resolveShotMapDisplayMetrics(dossier)
+    }
+    val filteredStats = remember(nonZeroStats, selectedCategory) {
         when (selectedCategory) {
-            "All" -> dossier.stats
-            "Top Stats" -> dossier.stats.filter { it.category == "Top Stats" || it.isKeyMetric }
-            else -> dossier.stats.filter { it.category.equals(selectedCategory, ignoreCase = true) }
+            "All" -> nonZeroStats
+            "Top Stats" -> nonZeroStats.filter { it.category == "Top Stats" || it.isKeyMetric }
+            else -> nonZeroStats.filter { it.category.equals(selectedCategory, ignoreCase = true) }
         }
     }
 
@@ -3687,10 +3859,10 @@ private fun MatchStatsTabContent(
             }
         }
 
-        // 3. Visual Half-Pitch Shot Map (xG & xGOT)
-        if (dossier.shotMap.isNotEmpty() && (selectedCategory == "All" || selectedCategory == "Shots & xG" || selectedCategory == "Top Stats")) {
+        // 3. Visual Half-Pitch Shot Map (xG & xGOT — hidden cleanly when no real shot data exists)
+        if (shotMapMetrics != null && (selectedCategory == "All" || selectedCategory == "Shots & xG" || selectedCategory == "Top Stats")) {
             item {
-                ShotMapVisualCard(dossier = dossier)
+                ShotMapVisualCard(dossier = dossier, metrics = shotMapMetrics)
             }
         }
 
@@ -3927,15 +4099,17 @@ internal fun AttackMomentumWaveCard(
 
 @Composable
 internal fun ShotMapVisualCard(
-    dossier: MatchFullDossier
+    dossier: MatchFullDossier,
+    metrics: ShotMapDisplayMetrics? = null
 ) {
+    val resolvedMetrics = remember(dossier.shotMap, dossier.stats, metrics) {
+        metrics ?: resolveShotMapDisplayMetrics(dossier)
+    } ?: return
     val shots = dossier.shotMap
-    val homeShots = remember(shots) { shots.filter { it.teamSide == MatchTeamSide.HOME } }
-    val awayShots = remember(shots) { shots.filter { it.teamSide == MatchTeamSide.AWAY } }
-    val homeXg = remember(homeShots) { homeShots.sumOf { it.xg } }
-    val awayXg = remember(awayShots) { awayShots.sumOf { it.xg } }
-    val homeXgot = remember(homeShots) { homeShots.sumOf { it.xgot } }
-    val awayXgot = remember(awayShots) { awayShots.sumOf { it.xgot } }
+    val homeXg = resolvedMetrics.homeXg
+    val awayXg = resolvedMetrics.awayXg
+    val homeXgot = resolvedMetrics.homeXgot
+    val awayXgot = resolvedMetrics.awayXgot
 
     Card(
         colors = CardDefaults.cardColors(containerColor = KickoffTurfSurface),
@@ -4259,53 +4433,48 @@ private fun MatchH2HAndStandingsTabContent(
             }
         }
 
-        // 1. Team Form (Last 5 Matches)
-        item {
-            Card(
-                colors = CardDefaults.cardColors(containerColor = KickoffTurfSurface),
-                shape = RoundedCornerShape(14.dp),
-                border = BorderStroke(0.8.dp, KickoffEmeraldBorder),
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                Column(modifier = Modifier.padding(12.dp)) {
-                    Text(
-                        text = "RECENT FORM (LAST 5 MATCHES)",
-                        color = KickoffPitchEmerald,
-                        fontSize = 11.sp,
-                        fontWeight = FontWeight.ExtraBold
-                    )
-                    Spacer(modifier = Modifier.height(8.dp))
-                    TeamFormRow(teamName = dossier.match.homeTeamName, form = dossier.homeFormLast5)
-                    Spacer(modifier = Modifier.height(6.dp))
-                    TeamFormRow(teamName = dossier.match.awayTeamName, form = dossier.awayFormLast5)
+        // 1. Team Form (Last 5 Matches — shown only when at least one club has real recent form)
+        if (dossier.homeFormLast5.isNotEmpty() || dossier.awayFormLast5.isNotEmpty()) {
+            item {
+                Card(
+                    colors = CardDefaults.cardColors(containerColor = KickoffTurfSurface),
+                    shape = RoundedCornerShape(14.dp),
+                    border = BorderStroke(0.8.dp, KickoffEmeraldBorder),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Column(modifier = Modifier.padding(12.dp)) {
+                        Text(
+                            text = "RECENT FORM (LAST 5 MATCHES)",
+                            color = KickoffPitchEmerald,
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.ExtraBold
+                        )
+                        Spacer(modifier = Modifier.height(8.dp))
+                        TeamFormRow(teamName = dossier.match.homeTeamName, form = dossier.homeFormLast5)
+                        Spacer(modifier = Modifier.height(6.dp))
+                        TeamFormRow(teamName = dossier.match.awayTeamName, form = dossier.awayFormLast5)
+                    }
                 }
             }
         }
 
-        // 2. Head-to-Head Meetings
-        item {
-            Card(
-                colors = CardDefaults.cardColors(containerColor = KickoffTurfSurface),
-                shape = RoundedCornerShape(14.dp),
-                border = BorderStroke(0.8.dp, KickoffEmeraldBorder),
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                Column(modifier = Modifier.padding(12.dp)) {
-                    Text(
-                        text = "HEAD-TO-HEAD MEETINGS",
-                        color = KickoffMistSilver,
-                        fontSize = 11.sp,
-                        fontWeight = FontWeight.ExtraBold
-                    )
-                    Spacer(modifier = Modifier.height(8.dp))
-                    if (dossier.h2hMeetings.isEmpty()) {
+        // 2. Head-to-Head Meetings (omitted cleanly when empty so Standings sits right at the top)
+        if (dossier.h2hMeetings.isNotEmpty()) {
+            item {
+                Card(
+                    colors = CardDefaults.cardColors(containerColor = KickoffTurfSurface),
+                    shape = RoundedCornerShape(14.dp),
+                    border = BorderStroke(0.8.dp, KickoffEmeraldBorder),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Column(modifier = Modifier.padding(12.dp)) {
                         Text(
-                            text = "No historical head-to-head meetings available from official feed for this fixture.",
+                            text = "HEAD-TO-HEAD MEETINGS",
                             color = KickoffMistSilver,
-                            fontSize = 11.5.sp,
-                            modifier = Modifier.padding(vertical = 6.dp)
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.ExtraBold
                         )
-                    } else {
+                        Spacer(modifier = Modifier.height(8.dp))
                         dossier.h2hMeetings.forEachIndexed { idx, h2h ->
                             H2HMeetingRow(item = h2h)
                             if (idx < dossier.h2hMeetings.size - 1) {
@@ -4523,15 +4692,26 @@ private fun StandingsTableRow(
                 )
             }
         }
-        Text(
-            text = row.teamName,
-            color = if (isHighlighted) KickoffFloodlightWhite else KickoffMistSilver,
-            fontSize = 12.sp,
-            fontWeight = if (isHighlighted) FontWeight.ExtraBold else FontWeight.Medium,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
             modifier = Modifier.weight(1f)
-        )
+        ) {
+            TeamCrestImage(
+                badgeUrl = row.teamBadge,
+                teamName = row.teamName,
+                sizeDp = 18
+            )
+            Spacer(modifier = Modifier.width(6.dp))
+            Text(
+                text = row.teamName,
+                color = if (isHighlighted) KickoffFloodlightWhite else KickoffMistSilver,
+                fontSize = 12.sp,
+                fontWeight = if (isHighlighted) FontWeight.ExtraBold else FontWeight.Medium,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.weight(1f)
+            )
+        }
         Text(
             text = row.played.toString(),
             color = KickoffMistSilver,

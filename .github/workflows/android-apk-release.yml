@@ -126,33 +126,37 @@ jobs:
             TAG_NAME="${GITHUB_REF#refs/tags/}"
           fi
 
-          cat << 'EOF' > release-notes.md
-          ## ⚽🎬 Set ▶ Play — Official Dual-Edition Android Phone & Android TV APKs (Latest Build)
+          RELEASE_VERSION=$(grep -E '^SETPLAY_VERSION_NAME=' gradle.properties | head -n 1 | cut -d'=' -f2- | tr -d '[:space:]')
+          RELEASE_VERSION="${RELEASE_VERSION:-V23}"
+          RELEASE_TITLE="SetPlay ${RELEASE_VERSION} — Official Dual-Edition APKs"
 
-          Choose the dedicated edition tailored for your device (**Android 7.0+ / API 24+**):
+          cat <<EOF > release-notes.md
+          ## ⚽🎬 SetPlay ${RELEASE_VERSION} — Official Dual-Edition Android Phone & Android TV APKs
+
+          Choose the dedicated **${RELEASE_VERSION}** edition tailored for your device (**Android 7.0+ / API 24+**):
 
           ### 📥 Direct 1-Click APK Downloads
 
           | Edition | Target Devices | Direct 1-Click Download |
           | :--- | :--- | :---: |
-          | 📱 **`SetPlay-Phone.apk`**<br>*(Touch & Companion Edition)* | **Android Phones, Tablets & Foldables**<br>Top/Bottom Glass Nav • Floating PiP • Wi-Fi TV Companion Remote | **[📲 Download `SetPlay-Phone.apk`](https://github.com/MPadberg-svg/SetPlay/releases/latest/download/SetPlay-Phone.apk)** |
-          | 📺 **`SetPlay-TV.apk`**<br>*(10-Foot Living Room Edition)* | **Android TV, Google TV & Fire TV**<br>Left Glass Nav Rail • Live Channel Zapper Sidebar • Auto Wi-Fi Sync Host | **[📺 Download `SetPlay-TV.apk`](https://github.com/MPadberg-svg/SetPlay/releases/latest/download/SetPlay-TV.apk)** |
+          | 📱 **\`SetPlay-Phone.apk\`**<br>*(Touch & Companion Edition)* | **Android Phones, Tablets & Foldables**<br>Top/Bottom Glass Nav • Floating PiP • Wi-Fi TV Companion Remote | **[📲 Download \`SetPlay-Phone.apk\`](https://github.com/MPadberg-svg/SetPlay/releases/latest/download/SetPlay-Phone.apk)** |
+          | 📺 **\`SetPlay-TV.apk\`**<br>*(10-Foot Living Room Edition)* | **Android TV, Google TV & Fire TV**<br>Left Glass Nav Rail • Live Channel Zapper Sidebar • Auto Wi-Fi Sync Host | **[📺 Download \`SetPlay-TV.apk\`](https://github.com/MPadberg-svg/SetPlay/releases/latest/download/SetPlay-TV.apk)** |
 
           ---
 
-          ### ✨ What's Inside Both Editions
-          - **⚽ KickOff Arena & Match Center 3.0**: Real-time live scores & match minute auto-sync (`API-Football`, `Football-Data.org`, `TheSportsDB`, `ESPN`), official TV broadcaster resolution (`Sofascore` + `TheSportsDB` + playlist match-channel scanner), and 5-tab interactive **Match Center Dossier** with **2D Tactical Pitch** & real player cutouts (`media.api-sports.io` + `TheSportsDB` + `Sofascore`).
-          - **📺 Dedicated 10-Foot Android TV Experience (`SetPlay-TV.apk`)**: Widescreen Left Glass Navigation Rail (`216.dp`) with live Wi-Fi Sync PIN badge, In-Player **Live TV Channel Zapper Sidebar** (`D-Pad Left` or `📋 Channels` button), 2-Stage TV Back-Button Exit Guard, and D-Pad `AmberGold` focus choreography.
-          - **📱⇄📺 Local Wi-Fi Phone ↔ TV QR Companion & Sync Mode**: Zero-cloud local Wi-Fi pairing via QR code or 6-digit PIN. Browse 289,000+ channels/movies on your phone and beam in 1 tap (`[ 📺 Send to TV ]` / `[ 📱 Watch Here ]`) with strict single-connection (`max_connections = 1`) protection and quick Live TV `- / +` channel zapping.
-          - **🎬 Triple-Engine Subtitles & TMDB IMAX Dossier**: Automatic `imdb_id` / `tmdb_id` resolution (`TMDB API` + `IMDb Instant Suggestion`) powering parallel **Wyzie + SubDL (`.zip` -> `.srt`) + OpenSubtitles v3** subtitles (`🇸🇦 Arabic`, `🇬🇧 English`, `🇫🇷 Français`, `🇪🇸 Español`, `🇹🇷 Türkçe`) with remembered preferred language and 12-second auto-hide countdown.
+          ### ✨ What's Inside Both Editions (${RELEASE_VERSION})
+          - **⚽ KickOff Arena & Match Center 3.0**: Real-time live scores & match minute auto-sync (\`API-Football\`, \`Football-Data.org\`, \`TheSportsDB\`, \`ESPN\`), official TV broadcaster resolution (\`Sofascore\` + \`TheSportsDB\` + playlist match-channel scanner), and 5-tab interactive **Match Center Dossier** with **2D Tactical Pitch** & real player cutouts (\`media.api-sports.io\` + \`TheSportsDB\` + \`Sofascore\`).
+          - **📺 Dedicated 10-Foot Android TV Experience (\`SetPlay-TV.apk\`)**: Widescreen Left Glass Navigation Rail (\`216.dp\`) with live Wi-Fi Sync PIN badge, In-Player **Live TV Channel Zapper Sidebar** (\`D-Pad Left\` or \`📋 Channels\` button), 2-Stage TV Back-Button Exit Guard, and D-Pad \`AmberGold\` focus choreography.
+          - **📱⇄📺 Local Wi-Fi Phone ↔ TV QR Companion & Sync Mode**: Zero-cloud local Wi-Fi pairing via QR code or 6-digit PIN. Browse 289,000+ channels/movies on your phone and beam in 1 tap (\`[ 📺 Send to TV ]\` / \`[ 📱 Watch Here ]\`) with strict single-connection (\`max_connections = 1\`) protection and quick Live TV \`- / +\` channel zapping.
+          - **🎬 Triple-Engine Subtitles & TMDB IMAX Dossier**: Automatic \`imdb_id\` / \`tmdb_id\` resolution (\`TMDB API\` + \`IMDb Instant Suggestion\`) powering parallel **Wyzie + SubDL (\`.zip\` -> \`.srt\`) + OpenSubtitles v3** subtitles (\`🇸🇦 Arabic\`, \`🇬🇧 English\`, \`🇫🇷 Français\`, \`🇪🇸 Español\`, \`🇹🇷 Türkçe\`) with remembered preferred language and 12-second auto-hide countdown.
           EOF
 
           if gh release view "$TAG_NAME" >/dev/null 2>&1; then
             gh release upload "$TAG_NAME" release-apk/*.apk --clobber
-            gh release edit "$TAG_NAME" --title "Set ▶ Play — Official Phone & Android TV APKs (Latest Build)" --notes-file release-notes.md --latest
+            gh release edit "$TAG_NAME" --title "${RELEASE_TITLE}" --notes-file release-notes.md --latest
           else
             gh release create "$TAG_NAME" release-apk/*.apk \
-              --title "Set ▶ Play — Official Phone & Android TV APKs (Latest Build)" \
+              --title "${RELEASE_TITLE}" \
               --notes-file release-notes.md \
               --latest
           fi

@@ -6432,6 +6432,41 @@ class FootballRepository(
                     "far rabat"
                 normalized.contains("berkane") ->
                     "berkane"
+                // Saudi Pro League & MENA Arabic transliteration canonicalization (prevents multi-provider duplicates)
+                normalized.contains("qadisiy") || normalized.contains("qadsiah") || normalized.contains("qadsiyah") ||
+                    normalized.contains("qadisiah") || normalized.contains("qadisiya") ->
+                    "al qadsiah"
+                normalized == "feiha" || normalized == "fayha" || normalized == "faiha" ||
+                    normalized.contains("feiha") || normalized.contains("fayha") || normalized.contains("faiha") ->
+                    "al fayha"
+                normalized == "ittihad" || normalized == "ittihad jeddah" || normalized == "ittihad saudi" ||
+                    normalized == "ittihad ksa" || normalized == "al ittihad" || normalized == "al ittihad jeddah" ->
+                    "al ittihad"
+                normalized == "khaleej" || normalized.startsWith("khaleej ") || normalized.contains("khaleej") ->
+                    "al khaleej"
+                normalized.contains("kholood") || normalized.contains("khulood") ||
+                    normalized.contains("kholoud") || normalized.contains("khuloud") ->
+                    "al kholood"
+                normalized.contains("taawoun") || normalized.contains("taawon") ||
+                    normalized.contains("tawoun") || normalized.contains("tawon") ->
+                    "al taawoun"
+                normalized.contains("ettifaq") || normalized.contains("ittifaq") ->
+                    "al ettifaq"
+                normalized == "shabab" || normalized == "shabab riyadh" || normalized == "shabab saudi" ||
+                    normalized == "al shabab" ->
+                    "al shabab"
+                normalized == "raed" || normalized == "raid" || normalized.startsWith("raed ") ||
+                    normalized == "al raed" ->
+                    "al raed"
+                normalized == "faisaly" || normalized == "faysaly" || normalized == "faisali" ||
+                    normalized == "faisaly harmah" || normalized == "faisaly saudi" || normalized == "al faisaly" ->
+                    "al faisaly"
+                normalized == "hilal" || normalized == "hilal riyadh" || normalized == "hilal saudi" ->
+                    "al hilal"
+                normalized == "nassr" || normalized == "nassr riyadh" || normalized == "nassr saudi" ->
+                    "al nassr"
+                normalized == "ahli jeddah" || normalized == "ahli saudi" || normalized == "ahly jeddah" || normalized == "ahly saudi" ->
+                    "al ahli saudi"
                 normalized.contains("ahly") && !normalized.contains("shabab") && !normalized.contains("jeddah") && !normalized.contains("saudi") ->
                     "ahly"
                 normalized == "turkiye" || normalized == "turkey" || normalized.startsWith("turkiye ") || normalized.startsWith("turkey ") ->
@@ -6489,7 +6524,16 @@ class FootballRepository(
                 "al nassr fc riyadh", "al-nassr fc riyadh", "al nassr riyadh" -> "Al Nassr"
                 "al ahli jeddah", "al-ahli jeddah", "al ahli saudi fc" -> "Al Ahli"
                 "al hilal riyadh", "al hilal sfc" -> "Al Hilal"
-                "al ittihad jeddah", "al ittihad club" -> "Al Ittihad"
+                "ittihad", "al ittihad jeddah", "al-ittihad jeddah", "al ittihad club", "al-ittihad club" -> "Al Ittihad"
+                "qadisiya", "al qadisiya", "al-qadisiya", "al qadsiah", "al-qadsiah", "al qadsiyah", "al-qadsiyah", "al qadisiyah" -> "Al Qadsiah"
+                "al feiha", "al-feiha", "al fayha", "al-fayha", "al faiha", "al-faiha" -> "Al Fayha"
+                "al khaleej", "al-khaleej", "al khaleej club", "al-khaleej club" -> "Al Khaleej"
+                "al kholood", "al-kholood", "al khulood", "al-khulood" -> "Al Kholood"
+                "al taawon", "al-taawon", "al taawoun", "al-taawoun" -> "Al Taawoun"
+                "al ettifaq", "al-ettifaq", "al ittifaq" -> "Al Ettifaq"
+                "al shabab", "al-shabab", "al shabab riyadh", "al-shabab riyadh" -> "Al Shabab"
+                "al raed", "al-raed", "al raid" -> "Al Raed"
+                "al faisaly", "al-faisaly", "al faysaly" -> "Al Faisaly"
                 else -> trimmed
             }
         }
@@ -6543,7 +6587,12 @@ class FootballRepository(
             val tokensA = normA.split(" ").filter { it.length >= 4 }
             val tokensB = normB.split(" ").filter { it.length >= 4 }
             if (tokensA.isNotEmpty() && tokensB.isNotEmpty() && tokensA.first() == tokensB.first() &&
-                tokensA.first() !in setOf("real", "united", "city", "sporting", "olympique", "borussia", "athletic", "atletico", "dynamo", "dinamo")
+                tokensA.first() !in setOf(
+                    "real", "united", "city", "sporting", "olympique", "olympic",
+                    "borussia", "athletic", "atletico", "dynamo", "dinamo",
+                    "ittihad", "shabab", "chabab", "ahli", "ahly",
+                    "hilal", "nassr", "nasr", "faisaly"
+                )
             ) {
                 return true
             }

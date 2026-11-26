@@ -124,6 +124,7 @@ import androidx.compose.ui.window.DialogProperties
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import coil.compose.AsyncImage
 import coil.compose.SubcomposeAsyncImage
+import com.example.BuildConfig
 import com.example.data.model.FavoriteTeamEntity
 import com.example.data.model.PlaylistEntity
 import com.example.data.model.StreamEntity
@@ -890,6 +891,29 @@ fun HomeScreen(
                                 }
                             }
                         }
+
+                        // Subtle Kickoff Navigation & Settings Version Footer
+                        item(key = "kickoff_version_footer") {
+                            Box(
+                                contentAlignment = Alignment.Center,
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(top = 18.dp, bottom = 6.dp)
+                            ) {
+                                Text(
+                                    text = "SetPlay ${BuildConfig.VERSION_NAME} • KickOff Settings",
+                                    color = KickoffMistSilver.copy(alpha = 0.56f),
+                                    fontSize = 10.5.sp,
+                                    fontWeight = FontWeight.SemiBold,
+                                    letterSpacing = 0.4.sp,
+                                    modifier = Modifier
+                                        .clip(RoundedCornerShape(50))
+                                        .clickable { mainViewModel.openKickoffSettingsCenter(0) }
+                                        .padding(horizontal = 12.dp, vertical = 6.dp)
+                                        .testTag("kickoff_version_footer")
+                                )
+                            }
+                        }
                     }
                 }
             }
@@ -1435,21 +1459,23 @@ private fun KickOffArenaHeaderCard(
             horizontalArrangement = Arrangement.SpaceBetween
         ) {
             // Left (Weighted 1f): Prominent Competition Blade Trigger (`kickoff_competitions_selector_btn`)
+            val controlHeight = 40.dp
+            val controlCorner = RoundedCornerShape(11.dp)
             Surface(
                 color = KickoffCanopyElevated,
-                shape = RoundedCornerShape(10.dp),
+                shape = controlCorner,
                 border = BorderStroke(
                     0.9.dp,
                     if (selectedTournamentFilter != "ALL") compAccent else KickoffPitchEmerald.copy(alpha = 0.65f)
                 ),
                 modifier = Modifier
                     .weight(1f)
-                    .height(if (isTv) 36.dp else 36.dp)
+                    .height(controlHeight)
                     .widthIn(min = if (isTv) 165.dp else 130.dp, max = if (isTv) 280.dp else 230.dp)
-                    .clip(RoundedCornerShape(10.dp))
+                    .clip(controlCorner)
                     .tvFocusableControl(
                         accentColor = KickoffFloodlightVolt,
-                        shape = RoundedCornerShape(10.dp),
+                        shape = controlCorner,
                         onClick = onOpenCompetitionsSelectorModal
                     )
                     .testTag("kickoff_competitions_selector_btn")
@@ -1534,7 +1560,7 @@ private fun KickOffArenaHeaderCard(
                         shape = RoundedCornerShape(50),
                         border = BorderStroke(0.85.dp, KickoffLiveCrimson),
                         modifier = Modifier
-                            .height(34.dp)
+                            .height(controlHeight)
                             .clip(RoundedCornerShape(50))
                             .tvFocusableControl(
                                 accentColor = KickoffFloodlightVolt,
@@ -1575,7 +1601,7 @@ private fun KickOffArenaHeaderCard(
                         if (sortByKickoffTime) KickoffFloodlightVolt else KickoffEmeraldBorder
                     ),
                     modifier = Modifier
-                        .height(34.dp)
+                        .height(controlHeight)
                         .clip(RoundedCornerShape(50))
                         .tvFocusableControl(
                             accentColor = KickoffFloodlightVolt,
@@ -1606,7 +1632,7 @@ private fun KickOffArenaHeaderCard(
                     shape = RoundedCornerShape(50),
                     border = BorderStroke(0.7.dp, KickoffEmeraldBorder),
                     modifier = Modifier
-                        .height(34.dp)
+                        .height(controlHeight)
                         .clip(RoundedCornerShape(50))
                         .tvFocusableControl(
                             accentColor = KickoffFloodlightVolt,
@@ -1636,7 +1662,7 @@ private fun KickOffArenaHeaderCard(
                     Box(
                         contentAlignment = Alignment.Center,
                         modifier = Modifier
-                            .size(34.dp)
+                            .size(controlHeight)
                             .clip(CircleShape)
                             .background(KickoffGlassWell)
                             .border(0.8.dp, KickoffEmeraldBorder, CircleShape)
@@ -1688,12 +1714,12 @@ private fun KickOffArenaHeaderCard(
             commandBarContent()
         }
     } else {
-        // Streamlined borderless utility bar on Phone for generous horizontal breathing room & crisp touch targets
+        // Harmonized 40.dp vertical rhythm matching InstantSevenDayDateStrip (40.dp inner bar + 3.dp top/bottom)
         Box(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 14.dp, vertical = 4.dp)
-                .height(38.dp)
+                .height(46.dp)
+                .padding(horizontal = 14.dp, vertical = 3.dp)
                 .testTag("match_center_hero_card")
         ) {
             commandBarContent()
@@ -4422,10 +4448,10 @@ internal fun FlashscoreMatchCard(
 
     val cardShape = RoundedCornerShape(14.dp)
     val compAccent = resolveCompetitionAccentColor(match.tournamentId)
-    val showStatusIndicator = isLive || hasFavTeam || isPostponed || isCancelled
+    // Symmetric POSTPONED cards rely on centered amber PPD pill without a floating left bar
+    val showStatusIndicator = isLive || hasFavTeam || isCancelled
     val statusIndicatorColor = when {
         isLive -> KickoffLiveCrimson
-        isPostponed -> KickoffTrophyGold
         isCancelled -> KickoffLiveCrimson.copy(alpha = 0.72f)
         else -> KickoffTrophyGold
     }
@@ -4512,38 +4538,63 @@ internal fun FlashscoreMatchCard(
                     horizontalArrangement = Arrangement.End,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    if (match.homeRedCards > 0) {
-                        KickoffBookingCardIcon(
-                            isRedCard = true,
-                            modifier = Modifier.size(11.dp)
-                        )
-                        Spacer(modifier = Modifier.width(3.dp))
-                    }
-                    if (isHomeTeamFavorite) {
-                        Icon(
-                            imageVector = Icons.Default.Star,
-                            contentDescription = null,
-                            tint = KickoffTrophyGold,
-                            modifier = Modifier.size(12.dp)
-                        )
-                        Spacer(modifier = Modifier.width(3.dp))
-                    }
-                    Text(
-                        text = match.homeTeamName,
-                        color = when {
-                            isDecidedFinish && !homeIsWinner -> KickoffSlateMuted
-                            isHomeTeamFavorite -> KickoffFloodlightVolt
-                            else -> KickoffFloodlightWhite
-                        },
-                        fontSize = 14.sp,
-                        lineHeight = 16.5.sp,
-                        letterSpacing = (-0.12).sp,
-                        fontWeight = if (homeIsWinner || isLive || isHomeTeamFavorite) FontWeight.ExtraBold else FontWeight.SemiBold,
-                        maxLines = 2,
-                        overflow = TextOverflow.Ellipsis,
-                        textAlign = TextAlign.End,
+                    Column(
+                        horizontalAlignment = Alignment.End,
                         modifier = Modifier.weight(1f, fill = false)
-                    )
+                    ) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.End
+                        ) {
+                            if (isHomeTeamFavorite) {
+                                Icon(
+                                    imageVector = Icons.Default.Star,
+                                    contentDescription = null,
+                                    tint = KickoffTrophyGold,
+                                    modifier = Modifier.size(12.dp)
+                                )
+                                Spacer(modifier = Modifier.width(3.dp))
+                            }
+                            Text(
+                                text = match.homeTeamName,
+                                color = when {
+                                    isDecidedFinish && !homeIsWinner -> KickoffFloodlightWhite.copy(alpha = 0.64f)
+                                    isHomeTeamFavorite -> KickoffFloodlightVolt
+                                    else -> KickoffFloodlightWhite
+                                },
+                                fontSize = 14.sp,
+                                lineHeight = 16.5.sp,
+                                letterSpacing = (-0.12).sp,
+                                fontWeight = if (homeIsWinner || isLive || isHomeTeamFavorite) FontWeight.ExtraBold else FontWeight.SemiBold,
+                                maxLines = 2,
+                                overflow = TextOverflow.Ellipsis,
+                                textAlign = TextAlign.End
+                            )
+                        }
+                        if (match.homeRedCards > 0) {
+                            Spacer(modifier = Modifier.height(2.dp))
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.End,
+                                modifier = Modifier.testTag("home_red_card_badge_${match.matchId}")
+                            ) {
+                                KickoffBookingCardIcon(
+                                    isRedCard = true,
+                                    modifier = Modifier.size(10.dp)
+                                )
+                                if (match.homeRedCards > 1) {
+                                    Spacer(modifier = Modifier.width(2.dp))
+                                    Text(
+                                        text = "${match.homeRedCards}",
+                                        color = KickoffLiveCrimson,
+                                        fontSize = 8.5.sp,
+                                        fontWeight = FontWeight.ExtraBold,
+                                        style = TabularNumeralTextStyle
+                                    )
+                                }
+                            }
+                        }
+                    }
                     Spacer(modifier = Modifier.width(7.dp))
                     TeamCrestImage(
                         badgeUrl = match.homeTeamBadge,
@@ -4580,36 +4631,61 @@ internal fun FlashscoreMatchCard(
                         sizeDp = crestSizeDp
                     )
                     Spacer(modifier = Modifier.width(7.dp))
-                    Text(
-                        text = match.awayTeamName,
-                        color = when {
-                            isDecidedFinish && !awayIsWinner -> KickoffSlateMuted
-                            isAwayTeamFavorite -> KickoffFloodlightVolt
-                            else -> KickoffFloodlightWhite
-                        },
-                        fontSize = 14.sp,
-                        lineHeight = 16.5.sp,
-                        letterSpacing = (-0.12).sp,
-                        fontWeight = if (awayIsWinner || isLive || isAwayTeamFavorite) FontWeight.ExtraBold else FontWeight.SemiBold,
-                        maxLines = 2,
-                        overflow = TextOverflow.Ellipsis,
+                    Column(
+                        horizontalAlignment = Alignment.Start,
                         modifier = Modifier.weight(1f, fill = false)
-                    )
-                    if (isAwayTeamFavorite) {
-                        Spacer(modifier = Modifier.width(3.dp))
-                        Icon(
-                            imageVector = Icons.Default.Star,
-                            contentDescription = null,
-                            tint = KickoffTrophyGold,
-                            modifier = Modifier.size(12.dp)
-                        )
-                    }
-                    if (match.awayRedCards > 0) {
-                        Spacer(modifier = Modifier.width(3.dp))
-                        KickoffBookingCardIcon(
-                            isRedCard = true,
-                            modifier = Modifier.size(11.dp)
-                        )
+                    ) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.Start
+                        ) {
+                            Text(
+                                text = match.awayTeamName,
+                                color = when {
+                                    isDecidedFinish && !awayIsWinner -> KickoffFloodlightWhite.copy(alpha = 0.64f)
+                                    isAwayTeamFavorite -> KickoffFloodlightVolt
+                                    else -> KickoffFloodlightWhite
+                                },
+                                fontSize = 14.sp,
+                                lineHeight = 16.5.sp,
+                                letterSpacing = (-0.12).sp,
+                                fontWeight = if (awayIsWinner || isLive || isAwayTeamFavorite) FontWeight.ExtraBold else FontWeight.SemiBold,
+                                maxLines = 2,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                            if (isAwayTeamFavorite) {
+                                Spacer(modifier = Modifier.width(3.dp))
+                                Icon(
+                                    imageVector = Icons.Default.Star,
+                                    contentDescription = null,
+                                    tint = KickoffTrophyGold,
+                                    modifier = Modifier.size(12.dp)
+                                )
+                            }
+                        }
+                        if (match.awayRedCards > 0) {
+                            Spacer(modifier = Modifier.height(2.dp))
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.Start,
+                                modifier = Modifier.testTag("away_red_card_badge_${match.matchId}")
+                            ) {
+                                KickoffBookingCardIcon(
+                                    isRedCard = true,
+                                    modifier = Modifier.size(10.dp)
+                                )
+                                if (match.awayRedCards > 1) {
+                                    Spacer(modifier = Modifier.width(2.dp))
+                                    Text(
+                                        text = "${match.awayRedCards}",
+                                        color = KickoffLiveCrimson,
+                                        fontSize = 8.5.sp,
+                                        fontWeight = FontWeight.ExtraBold,
+                                        style = TabularNumeralTextStyle
+                                    )
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -5057,6 +5133,25 @@ private fun TvKickoffStadiumScreen(
                             }
                         }
                     }
+
+                    // Subtle Android TV Kickoff Version Footer
+                    item(key = "tv_kickoff_version_footer") {
+                        Box(
+                            contentAlignment = Alignment.CenterStart,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(top = 12.dp, bottom = 8.dp, start = 4.dp)
+                        ) {
+                            Text(
+                                text = "SetPlay ${BuildConfig.VERSION_NAME} • TV Edition",
+                                color = KickoffMistSilver.copy(alpha = 0.56f),
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.SemiBold,
+                                letterSpacing = 0.4.sp,
+                                modifier = Modifier.testTag("tv_kickoff_version_footer")
+                            )
+                        }
+                    }
                 }
             }
             }
@@ -5219,14 +5314,18 @@ internal fun TvWidescreenMatchGridCard(
                         Spacer(modifier = Modifier.width(10.dp))
                         Text(
                             text = match.homeTeamName,
-                            color = if (isDecidedFinish && !homeIsWinner) KickoffMistSilver else KickoffFloodlightWhite,
+                            color = if (isDecidedFinish && !homeIsWinner) KickoffFloodlightWhite.copy(alpha = 0.64f) else KickoffFloodlightWhite,
                             fontSize = 14.5.sp,
                             lineHeight = 17.5.sp,
                             fontWeight = if (homeIsWinner || isLive) FontWeight.ExtraBold else FontWeight.SemiBold,
                             maxLines = 2,
                             overflow = TextOverflow.Ellipsis,
-                            modifier = Modifier.weight(1f)
+                            modifier = Modifier.weight(1f, fill = false)
                         )
+                        if (match.homeRedCards > 0) {
+                            Spacer(modifier = Modifier.width(5.dp))
+                            KickoffBookingCardIcon(isRedCard = true, modifier = Modifier.size(11.dp))
+                        }
                     }
 
                     Row(verticalAlignment = Alignment.CenterVertically) {
@@ -5234,14 +5333,18 @@ internal fun TvWidescreenMatchGridCard(
                         Spacer(modifier = Modifier.width(10.dp))
                         Text(
                             text = match.awayTeamName,
-                            color = if (isDecidedFinish && !awayIsWinner) KickoffMistSilver else KickoffFloodlightWhite,
+                            color = if (isDecidedFinish && !awayIsWinner) KickoffFloodlightWhite.copy(alpha = 0.64f) else KickoffFloodlightWhite,
                             fontSize = 14.5.sp,
                             lineHeight = 17.5.sp,
                             fontWeight = if (awayIsWinner || isLive) FontWeight.ExtraBold else FontWeight.SemiBold,
                             maxLines = 2,
                             overflow = TextOverflow.Ellipsis,
-                            modifier = Modifier.weight(1f)
+                            modifier = Modifier.weight(1f, fill = false)
                         )
+                        if (match.awayRedCards > 0) {
+                            Spacer(modifier = Modifier.width(5.dp))
+                            KickoffBookingCardIcon(isRedCard = true, modifier = Modifier.size(11.dp))
+                        }
                     }
                 }
 

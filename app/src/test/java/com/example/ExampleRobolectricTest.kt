@@ -9830,6 +9830,314 @@ class TvSyncDeviceSeparationComposeTest {
         composeTestRule.onNode(androidx.compose.ui.test.hasText("2 - 2")).assertExists()
         composeTestRule.onNode(androidx.compose.ui.test.hasText("71'")).assertExists()
     }
+
+    @Test
+    fun v23_menaTransliterationDeduplicationAndVersioning() {
+        // 1. Verify centralized BuildConfig V23 release versioning
+        assertTrue(
+            "BuildConfig.VERSION_CODE must be >= 23, was ${com.example.BuildConfig.VERSION_CODE}",
+            com.example.BuildConfig.VERSION_CODE >= 23
+        )
+        assertEquals("V23", com.example.BuildConfig.VERSION_NAME)
+
+        // 2. Verify Saudi/MENA club transliteration canonicalization
+        assertEquals(
+            com.example.data.repository.FootballRepository.normalizeTeamNameForMerge("Qadisiya"),
+            com.example.data.repository.FootballRepository.normalizeTeamNameForMerge("Al Qadsiah")
+        )
+        assertEquals(
+            com.example.data.repository.FootballRepository.normalizeTeamNameForMerge("Al-Qadsiyah"),
+            com.example.data.repository.FootballRepository.normalizeTeamNameForMerge("Al Qadsiah")
+        )
+        assertEquals(
+            com.example.data.repository.FootballRepository.normalizeTeamNameForMerge("Al Feiha"),
+            com.example.data.repository.FootballRepository.normalizeTeamNameForMerge("Al Fayha")
+        )
+        assertEquals(
+            com.example.data.repository.FootballRepository.normalizeTeamNameForMerge("Al-Fayha"),
+            com.example.data.repository.FootballRepository.normalizeTeamNameForMerge("Al Feiha")
+        )
+        assertEquals(
+            com.example.data.repository.FootballRepository.normalizeTeamNameForMerge("Ittihad"),
+            com.example.data.repository.FootballRepository.normalizeTeamNameForMerge("Al-Ittihad Jeddah")
+        )
+        assertEquals(
+            com.example.data.repository.FootballRepository.normalizeTeamNameForMerge("Al Khaleej"),
+            com.example.data.repository.FootballRepository.normalizeTeamNameForMerge("Al-Khaleej Club")
+        )
+        assertEquals(
+            com.example.data.repository.FootballRepository.normalizeTeamNameForMerge("Al Kholood"),
+            com.example.data.repository.FootballRepository.normalizeTeamNameForMerge("Al-Kholood")
+        )
+        assertEquals(
+            com.example.data.repository.FootballRepository.normalizeTeamNameForMerge("Al Taawoun"),
+            com.example.data.repository.FootballRepository.normalizeTeamNameForMerge("Al Taawon")
+        )
+        assertEquals(
+            com.example.data.repository.FootballRepository.normalizeTeamNameForMerge("Al Ettifaq"),
+            com.example.data.repository.FootballRepository.normalizeTeamNameForMerge("Al-Ettifaq")
+        )
+        assertEquals(
+            com.example.data.repository.FootballRepository.normalizeTeamNameForMerge("Al Shabab"),
+            com.example.data.repository.FootballRepository.normalizeTeamNameForMerge("Al-Shabab Riyadh")
+        )
+        assertEquals(
+            com.example.data.repository.FootballRepository.normalizeTeamNameForMerge("Al Raed"),
+            com.example.data.repository.FootballRepository.normalizeTeamNameForMerge("Al-Raed")
+        )
+        assertEquals(
+            com.example.data.repository.FootballRepository.normalizeTeamNameForMerge("Al Faisaly"),
+            com.example.data.repository.FootballRepository.normalizeTeamNameForMerge("Al-Faisaly")
+        )
+        // Guard: Moroccan Ittihad Tanger must NOT falsely collide with Saudi Al-Ittihad Jeddah
+        assertFalse(
+            com.example.data.repository.FootballRepository.areSameClubNames("Ittihad Tanger", "Al-Ittihad Jeddah")
+        )
+
+        // 3. Verify full fixture deduplication merges ("Qadisiya" vs "Al Feiha") + ("Al Qadsiah" vs "Al Fayha") into 1 match
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val db = Room.inMemoryDatabaseBuilder(context, StreamVaultDatabase::class.java)
+            .allowMainThreadQueries()
+            .build()
+        try {
+            val repo = com.example.data.repository.FootballRepository(
+                context = context,
+                favoriteTeamDao = db.favoriteTeamDao(),
+                tournamentPreferenceDao = db.tournamentPreferenceDao(),
+                streamDao = db.streamDao()
+            )
+            val providerA = com.example.data.repository.FootballMatch(
+                matchId = "espn_rsl_1",
+                tournamentId = "saudi_pro",
+                tournamentName = "Roshn Saudi League",
+                tournamentRegion = "Saudi Arabia",
+                dayTab = com.example.data.repository.MatchDayTab.TODAY,
+                kickoffTimeFormatted = "18:00",
+                kickoffDateFormatted = "Today",
+                status = com.example.data.repository.MatchStatus.LIVE,
+                liveMinuteOrBadge = "34'",
+                homeTeamId = "qad_a",
+                homeTeamName = "Qadisiya",
+                homeTeamBadge = "",
+                homeScore = 1,
+                awayTeamId = "fay_a",
+                awayTeamName = "Al Feiha",
+                awayTeamBadge = "",
+                awayScore = 0,
+                stadiumName = "Prince Saud bin Jalawi Stadium",
+                cityName = "Khobar",
+                beinChannel = "SSC 1 HD",
+                beinChannelNumberHint = "1",
+                kickoffEpochMs = 1_794_168_000_000L
+            )
+            val providerB = providerA.copy(
+                matchId = "apif_rsl_1",
+                apiFootballFixtureId = "991001",
+                homeTeamId = "qad_b",
+                homeTeamName = "Al Qadsiah",
+                homeTeamBadge = "https://media.api-sports.io/football/teams/2938.png",
+                awayTeamId = "fay_b",
+                awayTeamName = "Al Fayha",
+                awayTeamBadge = "https://media.api-sports.io/football/teams/2944.png"
+            )
+            val deduplicated = repo.deduplicateMatchesByCanonicalTeams(listOf(providerA, providerB))
+            assertEquals("Duplicate MENA transliteration fixtures must merge into 1 match", 1, deduplicated.size)
+            assertEquals("https://media.api-sports.io/football/teams/2938.png", deduplicated.first().homeTeamBadge)
+            assertEquals("https://media.api-sports.io/football/teams/2944.png", deduplicated.first().awayTeamBadge)
+        } finally {
+            db.close()
+        }
+    }
+
+    @Test
+    fun v23_matchCenterDossierPolishAndStateAwareCta() {
+        // 1. Verify timeline subtitle cleaning strips redundant player names
+        assertEquals(
+            "Goal",
+            com.example.ui.home.formatCleanTimelineEventSubtitle(
+                com.example.data.repository.MatchTimelineEvent(
+                    id = "e1",
+                    minute = 18,
+                    minuteLabel = "18'",
+                    halfLabel = "1ST HALF",
+                    teamSide = com.example.data.repository.MatchTeamSide.HOME,
+                    eventType = com.example.data.repository.MatchEventType.GOAL,
+                    primaryPlayer = "Luis Suárez",
+                    detailNote = "Luis Suárez Goal"
+                )
+            )
+        )
+        assertEquals(
+            "Yellow Card",
+            com.example.ui.home.formatCleanTimelineEventSubtitle(
+                com.example.data.repository.MatchTimelineEvent(
+                    id = "e2",
+                    minute = 31,
+                    minuteLabel = "31'",
+                    halfLabel = "1ST HALF",
+                    teamSide = com.example.data.repository.MatchTeamSide.AWAY,
+                    eventType = com.example.data.repository.MatchEventType.YELLOW_CARD,
+                    primaryPlayer = "Nestory Irankunda",
+                    detailNote = "Nestory Irankunda Yellow Card"
+                )
+            )
+        )
+        assertEquals(
+            "Red Card",
+            com.example.ui.home.formatCleanTimelineEventSubtitle(
+                com.example.data.repository.MatchTimelineEvent(
+                    id = "e3",
+                    minute = 64,
+                    minuteLabel = "64'",
+                    halfLabel = "2ND HALF",
+                    teamSide = com.example.data.repository.MatchTeamSide.HOME,
+                    eventType = com.example.data.repository.MatchEventType.RED_CARD,
+                    primaryPlayer = "Youri Tielemans",
+                    detailNote = "Youri Tielemans Red Card"
+                )
+            )
+        )
+        assertEquals(
+            "OUT: Bryan Mbeumo",
+            com.example.ui.home.formatCleanTimelineEventSubtitle(
+                com.example.data.repository.MatchTimelineEvent(
+                    id = "e4",
+                    minute = 72,
+                    minuteLabel = "72'",
+                    halfLabel = "2ND HALF",
+                    teamSide = com.example.data.repository.MatchTeamSide.HOME,
+                    eventType = com.example.data.repository.MatchEventType.SUBSTITUTION,
+                    primaryPlayer = "IN: Mason Mount",
+                    secondaryPlayer = "OUT: Bryan Mbeumo",
+                    detailNote = "Mason Mount Substitution"
+                )
+            )
+        )
+
+        // 2. Verify zero/0% both-sides stats filtering
+        assertTrue(
+            com.example.ui.home.isZeroBothSidesStat(
+                com.example.data.repository.MatchStatComparison("Pass Accuracy", "0%", "0%", 0.5f, category = "Passes")
+            )
+        )
+        assertTrue(
+            com.example.ui.home.isZeroBothSidesStat(
+                com.example.data.repository.MatchStatComparison("Big Chances", "0", "0", 0.5f, category = "Shots & xG")
+            )
+        )
+        assertFalse(
+            com.example.ui.home.isZeroBothSidesStat(
+                com.example.data.repository.MatchStatComparison("Ball Possession", "58%", "42%", 0.58f, category = "Top Stats")
+            )
+        )
+
+        // 3. Verify Half-Pitch Shot Map computes Home and Away independently and hides when zero real shot data
+        val finishedMatch = com.example.data.repository.FootballMatch(
+            matchId = "v23_ucl_ft",
+            tournamentId = "uefa_cl",
+            tournamentName = "UEFA Champions League",
+            tournamentRegion = "Europe",
+            dayTab = com.example.data.repository.MatchDayTab.TODAY,
+            kickoffTimeFormatted = "20:00",
+            kickoffDateFormatted = "Today",
+            status = com.example.data.repository.MatchStatus.FINISHED,
+            liveMinuteOrBadge = "FT",
+            homeTeamId = "rma",
+            homeTeamName = "Real Madrid",
+            homeTeamBadge = "https://media.api-sports.io/football/teams/541.png",
+            homeScore = 2,
+            awayTeamId = "bay",
+            awayTeamName = "Bayern Munich",
+            awayTeamBadge = "https://media.api-sports.io/football/teams/157.png",
+            awayScore = 0,
+            stadiumName = "Santiago Bernabéu",
+            cityName = "Madrid",
+            beinChannel = "beIN Sports 1 HD",
+            beinChannelNumberHint = "1",
+            kickoffEpochMs = 0L
+        )
+        val emptyShotDossier = com.example.data.repository.MatchFullDossier(
+            match = finishedMatch,
+            halfTimeScoreLabel = "HT 1 - 0",
+            fullTimeScoreLabel = "FT 2 - 0",
+            refereeName = "Szymon Marciniak",
+            attendanceLabel = "78,000",
+            pitchConditionLabel = "Hybrid",
+            timelineEvents = emptyList(),
+            lineups = com.example.data.repository.MatchLineupsData(
+                isConfirmed = true,
+                homeFormation = "4-3-3",
+                awayFormation = "4-2-3-1",
+                homeCoach = "Carlo Ancelotti",
+                awayCoach = "Vincent Kompany",
+                homeStartingXI = emptyList(),
+                awayStartingXI = emptyList(),
+                homeBench = emptyList(),
+                awayBench = emptyList(),
+                missingPlayers = emptyList()
+            ),
+            stats = listOf(
+                com.example.data.repository.MatchStatComparison("Pass Accuracy", "0%", "0%", 0.5f, category = "Passes"),
+                com.example.data.repository.MatchStatComparison("Ball Possession", "54%", "46%", 0.54f, category = "Top Stats")
+            ),
+            homeFormLast5 = emptyList(),
+            awayFormLast5 = emptyList(),
+            h2hMeetings = emptyList(),
+            standingsTable = listOf(
+                com.example.data.repository.LeagueStandingRow(
+                    rank = 1,
+                    teamName = "Real Madrid",
+                    teamBadge = "https://media.api-sports.io/football/teams/541.png",
+                    played = 6,
+                    wins = 5,
+                    draws = 1,
+                    losses = 0,
+                    goalDiffFormatted = "+10",
+                    points = 16,
+                    formLast5 = listOf("W", "W", "D", "W", "W"),
+                    isHomeTeam = true
+                )
+            ),
+            menaBroadcastGuide = emptyList(),
+            shotMap = emptyList()
+        )
+        assertNull(com.example.ui.home.resolveShotMapDisplayMetrics(emptyShotDossier))
+
+        val homeOnlyShotDossier = emptyShotDossier.copy(
+            shotMap = listOf(
+                com.example.data.repository.MatchShotPoint(
+                    id = "s_home_1",
+                    minute = 22,
+                    playerName = "Kylian Mbappé",
+                    teamSide = com.example.data.repository.MatchTeamSide.HOME,
+                    outcome = com.example.data.repository.ShotOutcome.GOAL,
+                    xg = 0.52,
+                    xgot = 0.81,
+                    normalizedX = 0.48f,
+                    normalizedY = 0.22f
+                )
+            )
+        )
+        val independentMetrics = com.example.ui.home.resolveShotMapDisplayMetrics(homeOnlyShotDossier)
+        assertNotNull(independentMetrics)
+        assertEquals(0.52, independentMetrics!!.homeXg, 0.001)
+        assertEquals(0.81, independentMetrics.homeXgot, 0.001)
+        assertEquals("Away xG must never mirror Home xG", 0.0, independentMetrics.awayXg, 0.001)
+        assertEquals("Away xGOT must never mirror Home xGOT", 0.0, independentMetrics.awayXgot, 0.001)
+
+        // 4. Verify FINISHED MatchCenterFullDialog renders low-emphasis "Channels" ghost pill instead of "WATCH"
+        composeTestRule.setContent {
+            com.example.ui.home.MatchCenterFullDialog(
+                dossier = emptyShotDossier,
+                onDismiss = {},
+                onWatchOnMenaChannel = {}
+            )
+        }
+        composeTestRule.waitForIdle()
+        composeTestRule.onNode(androidx.compose.ui.test.hasTestTag("match_center_header_watch_btn")).assertExists()
+        composeTestRule.onNode(androidx.compose.ui.test.hasText("Channels")).assertExists()
+        composeTestRule.onNode(androidx.compose.ui.test.hasText("WATCH LIVE")).assertDoesNotExist()
+    }
 }
 
 
