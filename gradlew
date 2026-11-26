@@ -261,6 +261,16 @@ val setplayTargetEdition = (project.findProperty("SETPLAY_TARGET") as? String)
     ?.takeIf { it == "TV" || it == "PHONE" }
     ?: "PHONE"
 
+val setplayVersionCode = (project.findProperty("SETPLAY_VERSION_CODE") as? String)
+    ?.trim()
+    ?.toIntOrNull()
+    ?: 23
+
+val setplayVersionName = (project.findProperty("SETPLAY_VERSION_NAME") as? String)
+    ?.trim()
+    ?.takeIf { it.isNotBlank() }
+    ?: "V23"
+
 android {
   namespace = "com.example"
   compileSdk = 35
@@ -269,8 +279,8 @@ android {
     applicationId = "com.aistudio.streamvault.pvqtr"
     minSdk = 24
     targetSdk = 35
-    versionCode = 1
-    versionName = "1.0"
+    versionCode = setplayVersionCode
+    versionName = setplayVersionName
     testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     buildConfigField("String", "DEVICE_EDITION", "\"$setplayTargetEdition\"")
     manifestPlaceholders["appLabel"] = if (setplayTargetEdition == "TV") "SetPlay TV" else "@string/app_name"
