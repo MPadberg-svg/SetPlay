@@ -2360,7 +2360,7 @@ class ExampleRobolectricTest {
         try {
             // 1. Start TV Host Server on loopback
             tvHostManager.startTvHostServer(preferredPort = 18765)
-            val hostState = tvHostManager.sessionState.value
+            val hostState = awaitTvHostReady(tvHostManager.sessionState)
             assertEquals(com.example.data.sync.SyncRole.TV_HOST, hostState.role)
             assertTrue(hostState.isSyncActive)
             assertEquals(6, hostState.pairingPin.length)
@@ -2566,7 +2566,7 @@ class ExampleRobolectricTest {
         val phoneController = com.example.data.sync.TvSyncManager(app)
         try {
             tvMainVm.startTvHostMode()
-            val tvState = tvMainVm.tvSyncState.value
+            val tvState = awaitTvHostReady(tvMainVm.tvSyncState)
             assertEquals(com.example.data.sync.SyncRole.TV_HOST, tvState.role)
 
             val pairRes = phoneController.connectToTvHost(
@@ -2706,7 +2706,8 @@ class ExampleRobolectricTest {
                 }
             }
 
-            val hostState = tvHost.startTvHostServer()
+            tvHost.startTvHostServer()
+            val hostState = awaitTvHostReady(tvHost.sessionState)
             val pairResult = phoneController.connectToTvHost(
                 hostIp = "127.0.0.1",
                 port = hostState.serverPort,
@@ -2890,7 +2891,8 @@ class ExampleRobolectricTest {
         val context = ApplicationProvider.getApplicationContext<Context>()
         val tvHost = com.example.data.sync.TvSyncManager(context)
         try {
-            val hostState = tvHost.startTvHostServer(preferredPort = 18920, customPin = "654321")
+            tvHost.startTvHostServer(preferredPort = 18920, customPin = "654321")
+            val hostState = awaitTvHostReady(tvHost.sessionState)
             val port = hostState.serverPort
             tvHost.tvPlaybackStatusProvider = {
                 hostState.copy(
@@ -3473,6 +3475,16 @@ class ExampleRobolectricTest {
             assertTrue(seriesStreams.first().isFavorite)
         } finally {
             runCatching { serverSocket.close() }
+        }
+    }
+
+    private suspend fun awaitTvHostReady(
+        state: kotlinx.coroutines.flow.StateFlow<com.example.data.sync.TvSyncSessionState>
+    ): com.example.data.sync.TvSyncSessionState = kotlinx.coroutines.withTimeout(5_000L) {
+        state.first {
+            it.role == com.example.data.sync.SyncRole.TV_HOST &&
+                it.isSyncActive &&
+                it.lastSyncStatusMessage.startsWith("TV Host listening")
         }
     }
 }
@@ -10402,7 +10414,6 @@ class TvSyncDeviceSeparationComposeTest {
         }
     }
 }
-
 
 
 
