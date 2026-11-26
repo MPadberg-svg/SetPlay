@@ -3,11 +3,16 @@ package com.example.data.repository
 import android.content.Context
 import com.example.BuildConfig
 import com.example.data.local.FavoriteTeamDao
+import com.example.data.local.KickoffDaySnapshotDao
 import com.example.data.local.StreamDao
+import com.example.data.local.StreamVaultDatabase
 import com.example.data.local.TournamentPreferenceDao
 import com.example.data.model.FavoriteTeamEntity
+import com.example.data.model.KickoffDaySnapshotEntity
 import com.example.data.model.StreamEntity
 import com.example.data.model.TournamentPreferenceEntity
+import com.example.data.remote.KickoffEdgeClient
+import com.example.data.remote.KickoffStaticIndexManager
 import com.example.ui.home.KickoffUiPreferences
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
@@ -204,6 +209,14 @@ data class TournamentCatalogItem(
     val category: CompetitionCategory = CompetitionCategory.EUROPEAN
 )
 
+enum class DataFreshness {
+    LIVE,
+    RECENT,
+    CACHED,
+    STALE,
+    UNAVAILABLE
+}
+
 data class FootballMatch(
     val matchId: String,
     val tournamentId: String,
@@ -239,7 +252,10 @@ data class FootballMatch(
     val awayRedCards: Int = 0,
     val goalScorersSummary: String? = null, // e.g. "Mbappé 18', Bellingham 67'"
     val referenceMoroccoTime: String = kickoffTimeFormatted, // Canonical GMT+1 reference time for instant Country Zone conversion
-    val kickoffEpochMs: Long = FootballRepository.deriveDefaultKickoffEpochMs(dayTab, kickoffTimeFormatted)
+    val kickoffEpochMs: Long = FootballRepository.deriveDefaultKickoffEpochMs(dayTab, kickoffTimeFormatted),
+    val sourceProvider: String = "",
+    val fetchedAtEpochMs: Long = 0L,
+    val dataFreshness: DataFreshness = DataFreshness.RECENT
 )
 
 data class MenaChannelMatchResult(
@@ -293,9 +309,14 @@ class FootballRepository(
     context: Context,
     private val favoriteTeamDao: FavoriteTeamDao,
     private val tournamentPreferenceDao: TournamentPreferenceDao,
-    private val streamDao: StreamDao
+    private val streamDao: StreamDao,
+    private val injectedSnapshotDao: KickoffDaySnapshotDao? = null
 ) {
+    private val appContext = context.applicationContext
     private val prefs = context.getSharedPreferences("setplay_football_prefs", Context.MODE_PRIVATE)
+    private val kickoffDaySnapshotDao: KickoffDaySnapshotDao by lazy {
+        injectedSnapshotDao ?: StreamVaultDatabase.getInstance(appContext).kickoffDaySnapshotDao()
+    }
 
     private val httpClient = OkHttpClient.Builder()
         .connectTimeout(10, TimeUnit.SECONDS)
@@ -348,6 +369,9 @@ class FootballRepository(
         context = context,
         httpClient = httpClient
     )
+
+    // 8. Per-day in-memory TTL cache keyed by "${isoDateStr}_${zone.countryCode}"
+    private val dayMatchesTtlCache = ConcurrentHashMap<String, Pair<Long, List<FootballMatch>>>()
 
     internal fun passesInternationalQualificationFilter(
         tournament: TournamentCatalogItem,
@@ -681,6 +705,19 @@ class FootballRepository(
      */
     fun normalizeTeamNameForMerge(rawName: String): String =
         Companion.normalizeTeamNameForMerge(rawName)
+
+    internal fun buildCanonicalMatchId(
+        tournamentId: String,
+        isoDate: String,
+        homeTeamName: String,
+        awayTeamName: String
+    ): String {
+        val cleanTournament = tournamentId.trim().lowercase(Locale.ROOT)
+        val cleanDate = isoDate.trim()
+        val normHome = normalizeTeamNameForMerge(homeTeamName)
+        val normAway = normalizeTeamNameForMerge(awayTeamName)
+        return "${cleanTournament}|${cleanDate}|${normHome}|${normAway}"
+    }
 
     internal fun canonicalizeClubMergeName(normalized: String): String =
         Companion.canonicalizeClubMergeName(normalized)
@@ -1098,7 +1135,8 @@ class FootballRepository(
         dayTab: MatchDayTab,
         forceLiveRefresh: Boolean = false
     ): List<FootballMatch> = withContext(Dispatchers.IO) {
-        val effectiveTz = resolveEffectiveUserTimeZone()
+        val nowMs = System.currentTimeMillis()
+        val effectiveTz = resolveEffectiveUserTimeZone(nowMs)
         val calendar = Calendar.getInstance(effectiveTz)
         calendar.add(Calendar.DAY_OF_YEAR, dayTab.dayOffset)
         val targetDate = calendar.time
@@ -1111,65 +1149,298 @@ class FootballRepository(
             timeZone = effectiveTz
         }.format(targetDate)
 
-        // Execute all API calls in parallel with fault-tolerant supervisorScope + runCatching (Promise.allSettled behavior)
-        val parallelResults = supervisorScope {
-            val sportApiDeferred = async {
-                runCatching { fetchSportApiAiDayMatches(isoDateStr, dayTab, forceLiveRefresh) }
-                    .getOrDefault(emptyList())
+        val zone = getSelectedCountryZone()
+        val cacheKey = "${isoDateStr}_${zone.countryCode}"
+        val cacheTtlMs = if (dayTab == MatchDayTab.TODAY) 60_000L else 10L * 60_000L
+        val cachedEntry = dayMatchesTtlCache[cacheKey]
+        if (!forceLiveRefresh && cachedEntry != null && (nowMs - cachedEntry.first) < cacheTtlMs && cachedEntry.second.isNotEmpty()) {
+            return@withContext cachedEntry.second.map { match ->
+                match.copy(dataFreshness = DataFreshness.CACHED)
             }
-            val sportsDbAllSoccerDeferred = async {
-                runCatching { fetchTheSportsDbDayMatches(isoDateStr, dayTab, forceLiveRefresh) }
-                    .getOrDefault(emptyList())
+        }
+
+        // Va2 Static-First Fast Path: hydrate ETag-cached 8-day GitHub Pages schedule window
+        KickoffStaticIndexManager.ensureLoaded(appContext, IptvRepository.syncOkHttpClient)
+        val seasonMode = getSelectedSeasonTimeMode()
+        val manualOffset = if (seasonMode == SeasonTimeMode.AUTO) getManualTimeOffsetMinutes() else 0
+        val staticMatches = KickoffStaticIndexManager.getMatchesForIsoDate(
+            isoDate = isoDateStr,
+            dayTab = dayTab,
+            zone = zone,
+            manualOffsetMinutes = manualOffset,
+            nowMs = nowMs
+        )
+
+        // For non-TODAY days when not force-refreshing, return fresh static schedule immediately with ZERO upstream API calls
+        if (dayTab != MatchDayTab.TODAY &&
+            !forceLiveRefresh &&
+            staticMatches.isNotEmpty() &&
+            staticMatches.none { it.dataFreshness == DataFreshness.STALE }
+        ) {
+            val filteredStatic = staticMatches
+                .filter { it.tournamentId in APPROVED_TIER_1_TOURNAMENT_IDS }
+                .map { match -> synchronizeElapsedMatchClock(match, dayTab) }
+            if (filteredStatic.isNotEmpty()) {
+                val liveStreamsSnapshot = loadActivePlaylistLiveStreamsSnapshot()
+                val resolvedStatic = resolveDayMatchesTvChannelsWithMenaPriority(
+                    matches = filteredStatic,
+                    tvBroadcasts = emptyList(),
+                    zone = zone,
+                    seasonTimeMode = seasonMode,
+                    manualOffsetMinutes = if (seasonMode == SeasonTimeMode.AUTO) manualOffset else null,
+                    playlistLiveStreamsSnapshot = liveStreamsSnapshot
+                ).map { match ->
+                    match.copy(dataFreshness = DataFreshness.CACHED)
+                }
+                dayMatchesTtlCache[cacheKey] = nowMs to resolvedStatic
+                persistDaySnapshot(isoDateStr, resolvedStatic, nowMs)
+                return@withContext resolvedStatic
             }
-            val sportsDbLeagueJobs = ALL_TOURNAMENTS
-                .filter { it.sportsDbLeagueId.isNotBlank() }
-                .map { tournament ->
-                    async {
-                        runCatching { fetchTheSportsDbLeagueEvents(isoDateStr, tournament.sportsDbLeagueId, dayTab) }
-                            .getOrDefault(emptyList())
+        }
+
+        // Va3 Edge-First Live Overlay (TODAY): when Cloudflare Worker Edge URL is configured,
+        // overlay /v1/live directly onto the static/cached slate to eliminate redundant direct fan-out.
+        if (dayTab == MatchDayTab.TODAY && KickoffEdgeClient.isConfigured()) {
+            val edgeLiveMatches = KickoffEdgeClient.fetchLiveDelta(
+                okHttpClient = IptvRepository.syncOkHttpClient,
+                zone = zone,
+                manualOffsetMinutes = manualOffset
+            )
+            if (edgeLiveMatches != null) {
+                val baseSlate = if (staticMatches.isNotEmpty()) {
+                    staticMatches
+                } else {
+                    cachedEntry?.second.orEmpty()
+                }
+                if (baseSlate.isNotEmpty() || edgeLiveMatches.isNotEmpty()) {
+                    val edgeMergedMap = LinkedHashMap<String, FootballMatch>()
+                    for (baseMatch in baseSlate) {
+                        val key = findOrBuildMergeKey(
+                            edgeMergedMap,
+                            baseMatch.homeTeamName,
+                            baseMatch.awayTeamName,
+                            baseMatch.tournamentId,
+                            baseMatch.kickoffTimeFormatted
+                        )
+                        edgeMergedMap[key] = baseMatch
+                    }
+                    for (liveMatch in edgeLiveMatches) {
+                        val key = findOrBuildMergeKey(
+                            edgeMergedMap,
+                            liveMatch.homeTeamName,
+                            liveMatch.awayTeamName,
+                            liveMatch.tournamentId,
+                            liveMatch.kickoffTimeFormatted
+                        )
+                        val existing = edgeMergedMap[key]
+                        edgeMergedMap[key] = if (existing == null) {
+                            liveMatch
+                        } else {
+                            mergeMatchRecords(primaryLive = liveMatch, badgeAndTvSource = existing)
+                                .copy(
+                                    sourceProvider = liveMatch.sourceProvider,
+                                    fetchedAtEpochMs = liveMatch.fetchedAtEpochMs,
+                                    dataFreshness = DataFreshness.LIVE
+                                )
+                        }
+                    }
+                    val syncedEdgeMatches = edgeMergedMap.values
+                        .filter { it.tournamentId in APPROVED_TIER_1_TOURNAMENT_IDS }
+                        .map { match -> synchronizeElapsedMatchClock(match, dayTab) }
+                    if (syncedEdgeMatches.isNotEmpty()) {
+                        val liveStreamsSnapshot = loadActivePlaylistLiveStreamsSnapshot()
+                        val resolvedEdge = resolveDayMatchesTvChannelsWithMenaPriority(
+                            matches = syncedEdgeMatches,
+                            tvBroadcasts = emptyList(),
+                            zone = zone,
+                            seasonTimeMode = seasonMode,
+                            manualOffsetMinutes = if (seasonMode == SeasonTimeMode.AUTO) manualOffset else null,
+                            playlistLiveStreamsSnapshot = liveStreamsSnapshot
+                        )
+                        val edgeCompletedMs = System.currentTimeMillis()
+                        dayMatchesTtlCache[cacheKey] = edgeCompletedMs to resolvedEdge
+                        persistDaySnapshot(isoDateStr, resolvedEdge, edgeCompletedMs)
+                        return@withContext resolvedEdge
                     }
                 }
-            val sportsDbTvDeferred = async {
-                runCatching { fetchTheSportsDbTvListings(isoDateStr) }
-                    .getOrDefault(emptyList())
             }
-            val sofascoreTvDeferred = async {
-                runCatching { fetchSofascoreDayTvListings(isoDateStr, getSelectedCountryZone()) }
-                    .getOrDefault(emptyList())
-            }
-            val espnJobs = ALL_TOURNAMENTS.filter { it.espnSlug.isNotBlank() }.map { tournament ->
-                async {
-                    runCatching { fetchEspnLeagueScoreboard(tournament, espnDateStr, isoDateStr, dayTab) }
+        }
+
+        // =========================================================================
+        // TIER 1 (Primary — at most 3 calls, gated by Circuit Breaker & API key):
+        //   1. Football-Data.org v4 (European Top-5 & UCL)
+        //   2. API-Football v3 (single date call — global + MENA/CAF)
+        //   3. TheSportsDB eventstv.php (TV broadcast listings)
+        // =========================================================================
+        val (footballDataMatches, apiFootballMatches, tier1TvBroadcasts) = supervisorScope {
+            val footballDataDeferred = async {
+                if (resolveFootballDataKey().isNotBlank() &&
+                    sourceMonitor.isProviderAllowed(KickoffProviderId.FOOTBALL_DATA_ORG, nowMs)
+                ) {
+                    runCatching { fetchFootballDataOrgDayMatches(isoDateStr, dayTab, forceLiveRefresh) }
                         .getOrDefault(emptyList())
+                        .map { it.copy(sourceProvider = it.sourceProvider.ifBlank { KickoffProviderId.FOOTBALL_DATA_ORG.id }) }
+                } else {
+                    emptyList()
                 }
             }
             val apiFootballDeferred = async {
-                runCatching { fetchApiFootballDayMatches(isoDateStr, dayTab, forceLiveRefresh = false) }
-                    .getOrDefault(emptyList())
+                if (resolveApiFootballKey().isNotBlank() &&
+                    sourceMonitor.isProviderAllowed(KickoffProviderId.API_FOOTBALL, nowMs)
+                ) {
+                    runCatching { fetchApiFootballDayMatches(isoDateStr, dayTab, forceLiveRefresh = false) }
+                        .getOrDefault(emptyList())
+                        .map { it.copy(sourceProvider = it.sourceProvider.ifBlank { KickoffProviderId.API_FOOTBALL.id }) }
+                } else {
+                    emptyList()
+                }
             }
-            val footballDataDeferred = async {
-                runCatching { fetchFootballDataOrgDayMatches(isoDateStr, dayTab, forceLiveRefresh) }
-                    .getOrDefault(emptyList())
+            val sportsDbTvDeferred = async {
+                if (sourceMonitor.isProviderAllowed(KickoffProviderId.THESPORTSDB, nowMs)) {
+                    runCatching { fetchTheSportsDbTvListings(isoDateStr) }
+                        .getOrDefault(emptyList())
+                } else {
+                    emptyList()
+                }
             }
-            val scores365Deferred = async {
-                runCatching { fetch365ScoresDayMatches(dayTab, isoDateStr) }
-                    .getOrDefault(emptyList())
-            }
-
-            HybridParallelPayload(
-                sportApiMatches = sportApiDeferred.await(),
-                sportsDbMatches = sportsDbAllSoccerDeferred.await() + sportsDbLeagueJobs.awaitAll().flatten(),
-                tvBroadcasts = sofascoreTvDeferred.await() + sportsDbTvDeferred.await(),
-                espnMatches = espnJobs.awaitAll().flatten(),
-                apiFootballMatches = apiFootballDeferred.await(),
-                footballDataMatches = footballDataDeferred.await(),
-                scores365Matches = scores365Deferred.await()
+            Triple(
+                footballDataDeferred.await(),
+                apiFootballDeferred.await(),
+                sportsDbTvDeferred.await()
             )
         }
 
+        val tier1CoveredTournaments = buildSet {
+            footballDataMatches.forEach { add(it.tournamentId) }
+            apiFootballMatches.forEach { add(it.tournamentId) }
+        }
+
+        // =========================================================================
+        // TIER 2 (Targeted Secondary — ONLY uncovered leagues or Today live authority):
+        //   1. SportAPI.ai (only if key configured, allowed, and TODAY)
+        //   2. ESPN Soccer (only tournaments not already covered by Tier 1)
+        // =========================================================================
+        val (sportApiMatches, espnMatches) = supervisorScope {
+            val sportApiDeferred = async {
+                if (dayTab == MatchDayTab.TODAY &&
+                    resolveSportApiKey().isNotBlank() &&
+                    sourceMonitor.isProviderAllowed(KickoffProviderId.SPORT_API_AI, nowMs)
+                ) {
+                    runCatching { fetchSportApiAiDayMatches(isoDateStr, dayTab, forceLiveRefresh) }
+                        .getOrDefault(emptyList())
+                        .map { it.copy(sourceProvider = it.sourceProvider.ifBlank { KickoffProviderId.SPORT_API_AI.id }) }
+                } else {
+                    emptyList()
+                }
+            }
+            val espnJobs = if (sourceMonitor.isProviderAllowed(KickoffProviderId.ESPN_SOCCER, nowMs)) {
+                ALL_TOURNAMENTS
+                    .filter { it.espnSlug.isNotBlank() && it.tournamentId !in tier1CoveredTournaments }
+                    .map { tournament ->
+                        async {
+                            runCatching { fetchEspnLeagueScoreboard(tournament, espnDateStr, isoDateStr, dayTab) }
+                                .getOrDefault(emptyList())
+                                .map { it.copy(sourceProvider = it.sourceProvider.ifBlank { KickoffProviderId.ESPN_SOCCER.id }) }
+                        }
+                    }
+            } else {
+                emptyList()
+            }
+            sportApiDeferred.await() to espnJobs.awaitAll().flatten()
+        }
+
+        // =========================================================================
+        // TIER 3 (Fallback — ONLY when Tier 1 + Tier 2 returned zero fixtures or zero TV entries):
+        //   1. TheSportsDB all-soccer / per-league fallback & 365Scores (when zero fixtures)
+        //   2. Sofascore TV listings (when zero TV entries)
+        // =========================================================================
+        val hasFixturesFromPrimaryAndSecondary =
+            footballDataMatches.isNotEmpty() ||
+                apiFootballMatches.isNotEmpty() ||
+                sportApiMatches.isNotEmpty() ||
+                espnMatches.isNotEmpty()
+        val hasTvFromPrimary = tier1TvBroadcasts.isNotEmpty()
+
+        val (sportsDbMatches, scores365Matches, sofascoreTvBroadcasts) = supervisorScope {
+            val sportsDbFallbackDeferred = async {
+                if (!hasFixturesFromPrimaryAndSecondary &&
+                    sourceMonitor.isProviderAllowed(KickoffProviderId.THESPORTSDB, nowMs)
+                ) {
+                    val allSoccer = runCatching { fetchTheSportsDbDayMatches(isoDateStr, dayTab, forceLiveRefresh) }
+                        .getOrDefault(emptyList())
+                    val leagueFallback = if (allSoccer.isEmpty()) {
+                        ALL_TOURNAMENTS
+                            .filter { it.sportsDbLeagueId.isNotBlank() }
+                            .map { tournament ->
+                                async {
+                                    runCatching { fetchTheSportsDbLeagueEvents(isoDateStr, tournament.sportsDbLeagueId, dayTab) }
+                                        .getOrDefault(emptyList())
+                                }
+                            }
+                            .awaitAll()
+                            .flatten()
+                    } else {
+                        emptyList()
+                    }
+                    (allSoccer + leagueFallback).map {
+                        it.copy(sourceProvider = it.sourceProvider.ifBlank { KickoffProviderId.THESPORTSDB.id })
+                    }
+                } else {
+                    emptyList()
+                }
+            }
+            val scores365FallbackDeferred = async {
+                if (!hasFixturesFromPrimaryAndSecondary &&
+                    sourceMonitor.isProviderAllowed(KickoffProviderId.SCORES_365, nowMs)
+                ) {
+                    runCatching { fetch365ScoresDayMatches(dayTab, isoDateStr) }
+                        .getOrDefault(emptyList())
+                        .map { it.copy(sourceProvider = it.sourceProvider.ifBlank { KickoffProviderId.SCORES_365.id }) }
+                } else {
+                    emptyList()
+                }
+            }
+            val sofascoreTvDeferred = async {
+                if (!hasTvFromPrimary &&
+                    sourceMonitor.isProviderAllowed(KickoffProviderId.SOFASCORE_LIVE, nowMs)
+                ) {
+                    runCatching { fetchSofascoreDayTvListings(isoDateStr, zone) }
+                        .getOrDefault(emptyList())
+                } else {
+                    emptyList()
+                }
+            }
+            Triple(
+                sportsDbFallbackDeferred.await(),
+                scores365FallbackDeferred.await(),
+                sofascoreTvDeferred.await()
+            )
+        }
+
+        val parallelResults = HybridParallelPayload(
+            sportApiMatches = sportApiMatches,
+            sportsDbMatches = sportsDbMatches,
+            tvBroadcasts = sofascoreTvBroadcasts + tier1TvBroadcasts,
+            espnMatches = espnMatches,
+            apiFootballMatches = apiFootballMatches,
+            footballDataMatches = footballDataMatches,
+            scores365Matches = scores365Matches
+        )
+
         val mergedMap = LinkedHashMap<String, FootballMatch>()
 
-        // Step 1: Seed with TheSportsDB v1 (`123`) fixtures (authoritative for `/tiny` badges & `idEvent`)
+        // Step 0: Seed with Va2 static schedule snapshot first so live overlays enrich/replace scores cleanly
+        for (staticMatch in staticMatches) {
+            val key = findOrBuildMergeKey(mergedMap, staticMatch.homeTeamName, staticMatch.awayTeamName, staticMatch.tournamentId, staticMatch.kickoffTimeFormatted)
+            val existing = mergedMap[key]
+            if (existing == null) {
+                mergedMap[key] = staticMatch
+            } else {
+                mergedMap[key] = mergeMatchRecords(primaryLive = existing, badgeAndTvSource = staticMatch)
+            }
+        }
+
+        // Step 1: Seed with TheSportsDB v1 fixtures (authoritative for `/tiny` badges & `idEvent`)
         for (tsdbMatch in parallelResults.sportsDbMatches) {
             val key = findOrBuildMergeKey(mergedMap, tsdbMatch.homeTeamName, tsdbMatch.awayTeamName, tsdbMatch.tournamentId, tsdbMatch.kickoffTimeFormatted)
             val existing = mergedMap[key]
@@ -1187,8 +1458,6 @@ class FootballRepository(
             if (existing == null) {
                 mergedMap[key] = sportApiMatch
             } else {
-                // SportAPI.ai is the source of truth for real-time scores, minute clock, and live status;
-                // TheSportsDB is the source of truth for `/tiny` high-res badges and `sportsDbEventId`.
                 mergedMap[key] = mergeMatchRecords(primaryLive = sportApiMatch, badgeAndTvSource = existing)
             }
         }
@@ -1200,7 +1469,6 @@ class FootballRepository(
             if (existing == null) {
                 mergedMap[key] = extraMatch
             } else {
-                // Prefer real-time scoreboard status/scores/clock over static fixture entries while preserving `/tiny` badges & IDs
                 val preferExtraLive = shouldPreferCandidateLiveState(existing = existing, candidate = extraMatch)
                 mergedMap[key] = if (preferExtraLive) {
                     mergeMatchRecords(primaryLive = extraMatch, badgeAndTvSource = existing)
@@ -1216,15 +1484,291 @@ class FootballRepository(
             .map { match ->
                 synchronizeElapsedMatchClock(match, dayTab)
             }
+
+        if (syncedMatches.isEmpty()) {
+            if (cachedEntry != null && cachedEntry.second.isNotEmpty()) {
+                return@withContext cachedEntry.second.map { staleMatch ->
+                    staleMatch.copy(dataFreshness = DataFreshness.STALE)
+                }
+            }
+            val offlineRoomSnapshot = loadOfflineDaySnapshot(dayTab, nowMs)
+            if (offlineRoomSnapshot.isNotEmpty()) {
+                return@withContext offlineRoomSnapshot.map { staleMatch ->
+                    staleMatch.copy(dataFreshness = DataFreshness.STALE)
+                }
+            }
+            return@withContext emptyList()
+        }
+
         val liveStreamsSnapshot = loadActivePlaylistLiveStreamsSnapshot()
-        resolveDayMatchesTvChannelsWithMenaPriority(
+        val resolvedMatches = resolveDayMatchesTvChannelsWithMenaPriority(
             matches = syncedMatches,
             tvBroadcasts = parallelResults.tvBroadcasts,
-            zone = getSelectedCountryZone(),
+            zone = zone,
             seasonTimeMode = getSelectedSeasonTimeMode(),
             manualOffsetMinutes = if (getSelectedSeasonTimeMode() == SeasonTimeMode.AUTO) getManualTimeOffsetMinutes() else null,
             playlistLiveStreamsSnapshot = liveStreamsSnapshot
         )
+
+        val fetchCompletedMs = System.currentTimeMillis()
+        val stampedMatches = resolvedMatches.map { match ->
+            val freshness = if (match.status == MatchStatus.LIVE || match.status == MatchStatus.HALFTIME) {
+                DataFreshness.LIVE
+            } else {
+                DataFreshness.RECENT
+            }
+            match.copy(
+                sourceProvider = match.sourceProvider.ifBlank { "kickoff_merged" },
+                fetchedAtEpochMs = fetchCompletedMs,
+                dataFreshness = freshness
+            )
+        }
+        dayMatchesTtlCache[cacheKey] = fetchCompletedMs to stampedMatches
+        persistDaySnapshot(isoDateStr, stampedMatches, fetchCompletedMs)
+        stampedMatches
+    }
+
+    internal fun serializeDayMatchesToJson(matches: List<FootballMatch>): String {
+        val arr = JSONArray()
+        for (match in matches) {
+            val obj = JSONObject()
+            obj.put("matchId", match.matchId)
+            obj.put("tournamentId", match.tournamentId)
+            obj.put("tournamentName", match.tournamentName)
+            obj.put("tournamentRegion", match.tournamentRegion)
+            obj.put("kickoffEpochMs", match.kickoffEpochMs)
+            obj.put("status", match.status.name)
+            obj.put("liveMinuteOrBadge", match.liveMinuteOrBadge)
+            obj.put("homeTeamId", match.homeTeamId)
+            obj.put("homeTeamName", match.homeTeamName)
+            obj.put("homeTeamBadge", match.homeTeamBadge)
+            if (match.homeScore != null) obj.put("homeScore", match.homeScore) else obj.put("homeScore", JSONObject.NULL)
+            obj.put("awayTeamId", match.awayTeamId)
+            obj.put("awayTeamName", match.awayTeamName)
+            obj.put("awayTeamBadge", match.awayTeamBadge)
+            if (match.awayScore != null) obj.put("awayScore", match.awayScore) else obj.put("awayScore", JSONObject.NULL)
+            obj.put("stadiumName", match.stadiumName)
+            obj.put("cityName", match.cityName)
+            obj.put("beinChannel", match.beinChannel)
+            obj.put("beinChannelNumberHint", match.beinChannelNumberHint)
+            obj.put("menaProviderName", match.menaProviderName)
+            obj.put("fallbackMenaChannels", JSONArray(match.fallbackMenaChannels))
+            obj.put("sourceTvChannels", JSONArray(match.sourceTvChannels))
+            obj.put("stageOrRound", match.stageOrRound)
+            obj.put("sportsDbEventId", match.sportsDbEventId)
+            obj.put("espnEventId", match.espnEventId)
+            obj.put("apiFootballFixtureId", match.apiFootballFixtureId)
+            if (match.halfTimeScore != null) obj.put("halfTimeScore", match.halfTimeScore)
+            if (match.fullTimeScore != null) obj.put("fullTimeScore", match.fullTimeScore)
+            obj.put("homeRedCards", match.homeRedCards)
+            obj.put("awayRedCards", match.awayRedCards)
+            if (match.goalScorersSummary != null) obj.put("goalScorersSummary", match.goalScorersSummary)
+            obj.put("sourceProvider", match.sourceProvider)
+            arr.put(obj)
+        }
+        return arr.toString()
+    }
+
+    internal fun deserializeDayMatchesFromJson(
+        rawJson: String,
+        dayTab: MatchDayTab,
+        zone: UserCountryZone,
+        manualOffsetMinutes: Int,
+        snapshotFetchedAtMs: Long,
+        freshness: DataFreshness
+    ): List<FootballMatch> {
+        if (rawJson.isBlank()) return emptyList()
+        return runCatching {
+            val arr = JSONArray(rawJson)
+            val moroccoZone = UserZoneRegistry.ALL_COUNTRY_ZONES.firstOrNull { it.countryCode == "MA" } ?: zone
+            val result = ArrayList<FootballMatch>(arr.length())
+            for (i in 0 until arr.length()) {
+                val obj = arr.optJSONObject(i) ?: continue
+                val matchId = obj.optString("matchId", "").trim()
+                val tournamentId = obj.optString("tournamentId", "").trim()
+                val homeTeamName = obj.optString("homeTeamName", "").trim()
+                val awayTeamName = obj.optString("awayTeamName", "").trim()
+                if (tournamentId.isEmpty() || homeTeamName.isEmpty() || awayTeamName.isEmpty()) continue
+
+                val kickoffEpochMs = obj.optLong("kickoffEpochMs", 0L)
+                val status = runCatching {
+                    MatchStatus.valueOf(obj.optString("status", MatchStatus.UPCOMING.name).trim())
+                }.getOrDefault(MatchStatus.UPCOMING)
+
+                val localizedKickoffTime = if (kickoffEpochMs > 0L) {
+                    formatDynamicKickoffTime(
+                        kickoffEpochMs = kickoffEpochMs,
+                        zone = zone,
+                        manualOffsetMinutes = manualOffsetMinutes
+                    )
+                } else {
+                    "TBD"
+                }
+                val referenceMoroccoTime = if (kickoffEpochMs > 0L) {
+                    formatDynamicKickoffTime(
+                        kickoffEpochMs = kickoffEpochMs,
+                        zone = moroccoZone,
+                        manualOffsetMinutes = 0
+                    )
+                } else {
+                    localizedKickoffTime
+                }
+
+                val effectiveOffsetMins = zone.getEffectiveOffsetMinutes(
+                    SeasonTimeMode.AUTO,
+                    if (kickoffEpochMs > 0L) kickoffEpochMs else snapshotFetchedAtMs
+                ) + manualOffsetMinutes
+                val sign = if (effectiveOffsetMins >= 0) "+" else "-"
+                val absMins = kotlin.math.abs(effectiveOffsetMins)
+                val offsetLabel = if (absMins % 60 == 0) {
+                    "GMT$sign${absMins / 60}"
+                } else {
+                    String.format(Locale.US, "GMT%s%d:%02d", sign, absMins / 60, absMins % 60)
+                }
+
+                val homeScore = if (obj.has("homeScore") && !obj.isNull("homeScore")) {
+                    runCatching { obj.getInt("homeScore") }.getOrNull()
+                } else null
+                val awayScore = if (obj.has("awayScore") && !obj.isNull("awayScore")) {
+                    runCatching { obj.getInt("awayScore") }.getOrNull()
+                } else null
+
+                val fallbackMenaChannels = ArrayList<String>()
+                val fallbackArr = obj.optJSONArray("fallbackMenaChannels")
+                if (fallbackArr != null) {
+                    for (j in 0 until fallbackArr.length()) {
+                        val item = fallbackArr.optString(j, "").trim()
+                        if (item.isNotEmpty()) fallbackMenaChannels.add(item)
+                    }
+                }
+                val sourceTvChannels = ArrayList<String>()
+                val tvArr = obj.optJSONArray("sourceTvChannels")
+                if (tvArr != null) {
+                    for (j in 0 until tvArr.length()) {
+                        val item = tvArr.optString(j, "").trim()
+                        if (item.isNotEmpty()) sourceTvChannels.add(item)
+                    }
+                }
+
+                val rawBadge = obj.optString("liveMinuteOrBadge", "").trim()
+                val resolvedBadge = if (rawBadge.isNotBlank() && status != MatchStatus.UPCOMING) {
+                    rawBadge
+                } else {
+                    localizedKickoffTime
+                }
+
+                result.add(
+                    FootballMatch(
+                        matchId = matchId.ifBlank { "${tournamentId}|${homeTeamName}|${awayTeamName}" },
+                        tournamentId = tournamentId,
+                        tournamentName = obj.optString("tournamentName", tournamentId),
+                        tournamentRegion = obj.optString("tournamentRegion", "International"),
+                        dayTab = dayTab,
+                        kickoffTimeFormatted = localizedKickoffTime,
+                        kickoffDateFormatted = "${dayTab.getDynamicTitle(zone.timeZoneId)} • $offsetLabel",
+                        status = status,
+                        liveMinuteOrBadge = resolvedBadge,
+                        homeTeamId = obj.optString("homeTeamId", ""),
+                        homeTeamName = homeTeamName,
+                        homeTeamBadge = obj.optString("homeTeamBadge", ""),
+                        homeScore = homeScore,
+                        awayTeamId = obj.optString("awayTeamId", ""),
+                        awayTeamName = awayTeamName,
+                        awayTeamBadge = obj.optString("awayTeamBadge", ""),
+                        awayScore = awayScore,
+                        stadiumName = obj.optString("stadiumName", ""),
+                        cityName = obj.optString("cityName", ""),
+                        beinChannel = obj.optString("beinChannel", "beIN Sports 1 HD"),
+                        beinChannelNumberHint = obj.optString("beinChannelNumberHint", ""),
+                        menaProviderName = obj.optString("menaProviderName", "beIN Sports"),
+                        fallbackMenaChannels = fallbackMenaChannels,
+                        sourceTvChannels = sourceTvChannels,
+                        stageOrRound = obj.optString("stageOrRound", "Regular Season"),
+                        sportsDbEventId = obj.optString("sportsDbEventId", ""),
+                        espnEventId = obj.optString("espnEventId", ""),
+                        apiFootballFixtureId = obj.optString("apiFootballFixtureId", ""),
+                        halfTimeScore = if (obj.has("halfTimeScore") && !obj.isNull("halfTimeScore")) obj.optString("halfTimeScore") else null,
+                        fullTimeScore = if (obj.has("fullTimeScore") && !obj.isNull("fullTimeScore")) obj.optString("fullTimeScore") else null,
+                        homeRedCards = obj.optInt("homeRedCards", 0),
+                        awayRedCards = obj.optInt("awayRedCards", 0),
+                        goalScorersSummary = if (obj.has("goalScorersSummary") && !obj.isNull("goalScorersSummary")) obj.optString("goalScorersSummary") else null,
+                        referenceMoroccoTime = referenceMoroccoTime,
+                        kickoffEpochMs = kickoffEpochMs,
+                        sourceProvider = obj.optString("sourceProvider", "offline_snapshot"),
+                        fetchedAtEpochMs = snapshotFetchedAtMs,
+                        dataFreshness = freshness
+                    )
+                )
+            }
+            result
+        }.getOrDefault(emptyList())
+    }
+
+    private suspend fun persistDaySnapshot(
+        isoDateStr: String,
+        matches: List<FootballMatch>,
+        fetchedAtMs: Long
+    ) = withContext(Dispatchers.IO) {
+        if (matches.isEmpty()) return@withContext
+        runCatching {
+            val payloadJson = serializeDayMatchesToJson(matches)
+            val sourceSummary = matches.mapNotNull { it.sourceProvider.takeIf { s -> s.isNotBlank() } }
+                .distinct()
+                .take(4)
+                .joinToString(",")
+                .ifBlank { "kickoff_merged" }
+            kickoffDaySnapshotDao.upsertSnapshot(
+                KickoffDaySnapshotEntity(
+                    dateKey = isoDateStr,
+                    payloadJson = payloadJson,
+                    sourceSummary = sourceSummary,
+                    fetchedAtEpochMs = fetchedAtMs,
+                    matchCount = matches.size
+                )
+            )
+            val pruneCutoffMs = fetchedAtMs - (14L * 24L * 60L * 60L * 1000L)
+            kickoffDaySnapshotDao.pruneOlderThan(pruneCutoffMs)
+        }
+    }
+
+    suspend fun loadOfflineDaySnapshot(
+        dayTab: MatchDayTab,
+        nowMs: Long = System.currentTimeMillis()
+    ): List<FootballMatch> = withContext(Dispatchers.IO) {
+        val effectiveTz = resolveEffectiveUserTimeZone(nowMs)
+        val calendar = Calendar.getInstance(effectiveTz)
+        calendar.add(Calendar.DAY_OF_YEAR, dayTab.dayOffset)
+        val isoDateStr = SimpleDateFormat("yyyy-MM-dd", Locale.US).apply {
+            timeZone = effectiveTz
+        }.format(calendar.time)
+
+        val snapshot = runCatching { kickoffDaySnapshotDao.getSnapshotOnce(isoDateStr) }.getOrNull()
+            ?: return@withContext emptyList()
+        if (snapshot.payloadJson.isBlank()) return@withContext emptyList()
+
+        val zone = getSelectedCountryZone()
+        val seasonMode = getSelectedSeasonTimeMode()
+        val manualOffset = if (seasonMode == SeasonTimeMode.AUTO) getManualTimeOffsetMinutes() else 0
+        val provisional = deserializeDayMatchesFromJson(
+            rawJson = snapshot.payloadJson,
+            dayTab = dayTab,
+            zone = zone,
+            manualOffsetMinutes = manualOffset,
+            snapshotFetchedAtMs = snapshot.fetchedAtEpochMs,
+            freshness = DataFreshness.CACHED
+        )
+        if (provisional.isEmpty()) return@withContext emptyList()
+
+        val isAgeStale = (nowMs - snapshot.fetchedAtEpochMs) >= (6L * 60L * 60_000L)
+        val hadLiveOrHalftime = provisional.any {
+            it.status == MatchStatus.LIVE || it.status == MatchStatus.HALFTIME
+        }
+        val finalFreshness = if (isAgeStale || hadLiveOrHalftime) {
+            DataFreshness.STALE
+        } else {
+            DataFreshness.CACHED
+        }
+        provisional.map { it.copy(dataFreshness = finalFreshness) }
     }
 
     internal suspend fun fetchLiveMatchesForDayFromApis(
@@ -1370,7 +1914,10 @@ class FootballRepository(
             goalScorersSummary = primaryLive.goalScorersSummary ?: badgeAndTvSource.goalScorersSummary,
             homeRedCards = maxOf(primaryLive.homeRedCards, badgeAndTvSource.homeRedCards),
             awayRedCards = maxOf(primaryLive.awayRedCards, badgeAndTvSource.awayRedCards),
-            kickoffEpochMs = if (primaryLive.kickoffEpochMs > 0L) primaryLive.kickoffEpochMs else badgeAndTvSource.kickoffEpochMs
+            kickoffEpochMs = if (primaryLive.kickoffEpochMs > 0L) primaryLive.kickoffEpochMs else badgeAndTvSource.kickoffEpochMs,
+            sourceProvider = primaryLive.sourceProvider.ifBlank { badgeAndTvSource.sourceProvider },
+            fetchedAtEpochMs = maxOf(primaryLive.fetchedAtEpochMs, badgeAndTvSource.fetchedAtEpochMs),
+            dataFreshness = primaryLive.dataFreshness
         )
     }
 
@@ -3826,6 +4373,10 @@ class FootballRepository(
                 .build()
 
             httpClient.newCall(request).execute().use { response ->
+                sourceMonitor.recordRuntimeResponse(
+                    provider = KickoffProviderId.SCORES_365,
+                    httpCode = response.code
+                )
                 if (!response.isSuccessful) return cached?.second ?: emptyList()
                 val body = response.body?.string() ?: return cached?.second ?: emptyList()
                 val parsed = parse365ScoresAllScoresJson(body, dayTab, expectedIsoDate = isoDate)
@@ -3834,7 +4385,12 @@ class FootballRepository(
                 }
                 parsed
             }
-        }.getOrElse {
+        }.getOrElse { err ->
+            sourceMonitor.recordRuntimeResponse(
+                provider = KickoffProviderId.SCORES_365,
+                httpCode = 0,
+                errorNote = err.localizedMessage
+            )
             cached?.second ?: emptyList()
         }
     }

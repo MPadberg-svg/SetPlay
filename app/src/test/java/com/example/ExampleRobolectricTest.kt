@@ -4870,15 +4870,16 @@ class TvSyncDeviceSeparationComposeTest {
             context = context,
             httpClient = IptvRepository.sharedOkHttpClient
         )
-        assertEquals(6, com.example.data.repository.KickoffProviderId.values().size)
+        assertEquals(7, com.example.data.repository.KickoffProviderId.values().size)
         val initialStates = sourceMonitor.sourceHealthFlow.value
-        assertEquals(6, initialStates.size)
+        assertEquals(7, initialStates.size)
         assertTrue(initialStates.any { it.provider == com.example.data.repository.KickoffProviderId.API_FOOTBALL })
         assertTrue(initialStates.any { it.provider == com.example.data.repository.KickoffProviderId.FOOTBALL_DATA_ORG })
         assertTrue(initialStates.any { it.provider == com.example.data.repository.KickoffProviderId.SPORT_API_AI })
         assertTrue(initialStates.any { it.provider == com.example.data.repository.KickoffProviderId.ESPN_SOCCER })
         assertTrue(initialStates.any { it.provider == com.example.data.repository.KickoffProviderId.SOFASCORE_LIVE })
         assertTrue(initialStates.any { it.provider == com.example.data.repository.KickoffProviderId.THESPORTSDB })
+        assertTrue(initialStates.any { it.provider == com.example.data.repository.KickoffProviderId.SCORES_365 })
 
         // Verify passive runtime HTTP monitoring (200 OK -> HEALTHY, 429 -> QUOTA_WARNING, 401 -> KEY_INVALID_OR_EXPIRED)
         sourceMonitor.recordRuntimeResponse(
@@ -9847,13 +9848,13 @@ class TvSyncDeviceSeparationComposeTest {
 
     @Test
     fun v23_menaTransliterationDeduplicationAndVersioning() {
-        // 1. Verify centralized BuildConfig V23.1 release versioning
+        // 1. Verify centralized BuildConfig Va4 release versioning
         assertEquals(
-            "BuildConfig.VERSION_CODE must be 24 for V23.1",
-            24,
+            "BuildConfig.VERSION_CODE must be 28 for Va4",
+            28,
             com.example.BuildConfig.VERSION_CODE
         )
-        assertEquals("V23.1", com.example.BuildConfig.VERSION_NAME)
+        assertEquals("Va4", com.example.BuildConfig.VERSION_NAME)
 
         // 2. Verify Saudi/MENA club transliteration canonicalization
         assertEquals(
@@ -10293,8 +10294,9 @@ class TvSyncDeviceSeparationComposeTest {
             listNode.performScrollToKey("kickoff_version_footer")
             composeTestRule.onAllNodes(androidx.compose.ui.test.hasTestTag("kickoff_version_footer"))
                 .assertCountEquals(1)
-            composeTestRule.onNode(androidx.compose.ui.test.hasText("SetPlay V23.1 • KickOff Settings"))
-                .assertExists()
+            composeTestRule.onNode(
+                androidx.compose.ui.test.hasText("SetPlay ${com.example.BuildConfig.VERSION_NAME} • KickOff Settings")
+            ).assertExists()
         } finally {
             com.example.util.EditionResolver.runtimeEditionOverride = previousEdition
         }
@@ -10411,6 +10413,581 @@ class TvSyncDeviceSeparationComposeTest {
             )
         } finally {
             imageLoader.shutdown()
+        }
+    }
+
+    @Test
+    fun va1Phase1_circuitBreakerOpensOnQuotaAndFailuresAndRecoversOnSuccess() {
+        val app = ApplicationProvider.getApplicationContext<Application>()
+        val monitor = com.example.data.repository.KickoffSourceMonitor(
+            context = app,
+            httpClient = IptvRepository.sharedOkHttpClient
+        )
+        val t0 = 1_700_000_000_000L
+
+        // 1. Initial state is CLOSED and allowed
+        assertEquals(
+            com.example.data.repository.CircuitState.CLOSED,
+            monitor.getCircuitState(com.example.data.repository.KickoffProviderId.API_FOOTBALL)
+        )
+        assertTrue(monitor.isProviderAllowed(com.example.data.repository.KickoffProviderId.API_FOOTBALL, t0))
+
+        // 2. HTTP 429 opens circuit for retryAfterSeconds (120s), transitions to HALF_OPEN at expiry, and resets to CLOSED on HTTP 200
+        monitor.recordRuntimeResponse(
+            provider = com.example.data.repository.KickoffProviderId.API_FOOTBALL,
+            httpCode = 429,
+            remainingQuota = 0,
+            errorNote = "Rate limited",
+            retryAfterSeconds = 120L,
+            nowMs = t0
+        )
+        assertEquals(
+            com.example.data.repository.CircuitState.OPEN,
+            monitor.getCircuitState(com.example.data.repository.KickoffProviderId.API_FOOTBALL)
+        )
+        assertFalse(monitor.isProviderAllowed(com.example.data.repository.KickoffProviderId.API_FOOTBALL, t0 + 60_000L))
+        assertTrue(monitor.isProviderAllowed(com.example.data.repository.KickoffProviderId.API_FOOTBALL, t0 + 120_000L))
+        assertEquals(
+            com.example.data.repository.CircuitState.HALF_OPEN,
+            monitor.getCircuitState(com.example.data.repository.KickoffProviderId.API_FOOTBALL)
+        )
+        monitor.recordRuntimeResponse(
+            provider = com.example.data.repository.KickoffProviderId.API_FOOTBALL,
+            httpCode = 200,
+            remainingQuota = 85,
+            nowMs = t0 + 120_001L
+        )
+        assertEquals(
+            com.example.data.repository.CircuitState.CLOSED,
+            monitor.getCircuitState(com.example.data.repository.KickoffProviderId.API_FOOTBALL)
+        )
+
+        // 3. Consecutive 5xx/network failures: 2 failures stay CLOSED; 3rd opens for 60s -> HALF_OPEN -> failed probe escalates to 5m -> HTTP 200 recovers
+        val espn = com.example.data.repository.KickoffProviderId.ESPN_SOCCER
+        monitor.recordRuntimeResponse(espn, httpCode = 503, nowMs = t0)
+        monitor.recordRuntimeResponse(espn, httpCode = 0, nowMs = t0 + 1_000L)
+        assertEquals(com.example.data.repository.CircuitState.CLOSED, monitor.getCircuitState(espn))
+        assertTrue(monitor.isProviderAllowed(espn, t0 + 2_000L))
+
+        monitor.recordRuntimeResponse(espn, httpCode = 502, nowMs = t0 + 3_000L)
+        assertEquals(com.example.data.repository.CircuitState.OPEN, monitor.getCircuitState(espn))
+        assertFalse(monitor.isProviderAllowed(espn, t0 + 30_000L))
+        assertTrue(monitor.isProviderAllowed(espn, t0 + 63_000L))
+        assertEquals(com.example.data.repository.CircuitState.HALF_OPEN, monitor.getCircuitState(espn))
+
+        // Failed HALF_OPEN probe opens with 5-minute exponential cooldown
+        val tProbeFail = t0 + 64_000L
+        monitor.recordRuntimeResponse(espn, httpCode = 500, nowMs = tProbeFail)
+        assertEquals(com.example.data.repository.CircuitState.OPEN, monitor.getCircuitState(espn))
+        assertFalse(monitor.isProviderAllowed(espn, tProbeFail + 60_000L))
+        assertTrue(monitor.isProviderAllowed(espn, tProbeFail + 300_000L))
+        assertEquals(com.example.data.repository.CircuitState.HALF_OPEN, monitor.getCircuitState(espn))
+
+        monitor.recordRuntimeResponse(espn, httpCode = 200, nowMs = tProbeFail + 301_000L)
+        assertEquals(com.example.data.repository.CircuitState.CLOSED, monitor.getCircuitState(espn))
+
+        // 4. HTTP 401 on keyed provider opens circuit until key update / reset
+        val footballData = com.example.data.repository.KickoffProviderId.FOOTBALL_DATA_ORG
+        monitor.recordRuntimeResponse(footballData, httpCode = 401, nowMs = t0)
+        assertEquals(com.example.data.repository.CircuitState.OPEN, monitor.getCircuitState(footballData))
+        assertFalse(monitor.isProviderAllowed(footballData, t0 + 86_400_000L))
+        monitor.resetToDefaultKey(footballData)
+        assertEquals(com.example.data.repository.CircuitState.CLOSED, monitor.getCircuitState(footballData))
+        assertTrue(monitor.isProviderAllowed(footballData, t0 + 86_400_001L))
+    }
+
+    @Test
+    fun va1Phase1_canonicalMatchIdUnifiesArabicAndEuropeanTransliterations() {
+        val app = ApplicationProvider.getApplicationContext<Application>()
+        val db = androidx.room.Room.inMemoryDatabaseBuilder(
+            app,
+            com.example.data.local.StreamVaultDatabase::class.java
+        ).allowMainThreadQueries().build()
+        try {
+            val repo = com.example.data.repository.FootballRepository(
+                context = app,
+                favoriteTeamDao = db.favoriteTeamDao(),
+                tournamentPreferenceDao = db.tournamentPreferenceDao(),
+                streamDao = db.streamDao()
+            )
+
+            // Arabic / MENA transliterations unify to the same canonical match key
+            val saudiA = repo.buildCanonicalMatchId("saudi_pro_league", "2026-11-26", "Al-Qadsiyah", "Al-Ittihad Jeddah")
+            val saudiB = repo.buildCanonicalMatchId("SAUDI_PRO_LEAGUE", "2026-11-26", "Qadisiya", "Ittihad")
+            assertEquals(saudiA, saudiB)
+
+            val feihaA = repo.buildCanonicalMatchId("saudi_pro_league", "2026-11-26", "Al Feiha", "Al-Ettifaq")
+            val feihaB = repo.buildCanonicalMatchId("saudi_pro_league", "2026-11-26", "Al-Fayha", "Al Ettifaq")
+            assertEquals(feihaA, feihaB)
+
+            // European club variants unify to the same canonical match key
+            val uclA = repo.buildCanonicalMatchId("ucl", "2026-11-26", "Paris Saint-Germain FC", "FC Internazionale Milano")
+            val uclB = repo.buildCanonicalMatchId("ucl", "2026-11-26", "PSG", "Inter Milan")
+            assertEquals(uclA, uclB)
+
+            // Distinct clubs sharing a partial token must NOT collide
+            val distinctTanger = repo.buildCanonicalMatchId("botola_pro", "2026-11-26", "Ittihad Tanger", "Raja Casablanca")
+            val distinctJeddah = repo.buildCanonicalMatchId("botola_pro", "2026-11-26", "Al-Ittihad Jeddah", "Raja Casablanca")
+            assertNotEquals(distinctTanger, distinctJeddah)
+        } finally {
+            db.close()
+        }
+    }
+
+    @Test
+    fun va1Phase1_scores365RegisteredInSourceMonitorAndFreshnessDefaultsValid() {
+        val app = ApplicationProvider.getApplicationContext<Application>()
+        val scores365 = com.example.data.repository.KickoffProviderId.SCORES_365
+        assertEquals("scores_365", scores365.id)
+        assertEquals("365Scores Feed", scores365.displayName)
+        assertFalse(scores365.requiresApiKey)
+        assertEquals("webws.365scores.com", scores365.endpointSummary)
+
+        val monitor = com.example.data.repository.KickoffSourceMonitor(
+            context = app,
+            httpClient = IptvRepository.sharedOkHttpClient
+        )
+        val scoresState = monitor.sourceHealthFlow.value.firstOrNull { it.provider == scores365 }
+        assertNotNull("365Scores must be registered in KickoffSourceMonitor initial health states", scoresState)
+        assertEquals(com.example.data.repository.SourceHealthStatus.HEALTHY, scoresState?.status)
+        assertTrue(monitor.isProviderAllowed(scores365))
+
+        // Verify DataFreshness enum values and safe FootballMatch provenance defaults
+        assertEquals(
+            setOf(
+                com.example.data.repository.DataFreshness.LIVE,
+                com.example.data.repository.DataFreshness.RECENT,
+                com.example.data.repository.DataFreshness.CACHED,
+                com.example.data.repository.DataFreshness.STALE,
+                com.example.data.repository.DataFreshness.UNAVAILABLE
+            ),
+            com.example.data.repository.DataFreshness.entries.toSet()
+        )
+        val defaultMatch = com.example.data.repository.FootballMatch(
+            matchId = "va1_default_match",
+            tournamentId = "ucl",
+            tournamentName = "UEFA Champions League",
+            tournamentRegion = "Europe",
+            dayTab = com.example.data.repository.MatchDayTab.TODAY,
+            kickoffTimeFormatted = "20:00",
+            kickoffDateFormatted = "Today",
+            status = com.example.data.repository.MatchStatus.UPCOMING,
+            liveMinuteOrBadge = "20:00",
+            homeTeamId = "h1",
+            homeTeamName = "Real Madrid",
+            homeTeamBadge = "",
+            homeScore = null,
+            awayTeamId = "a1",
+            awayTeamName = "Liverpool",
+            awayTeamBadge = "",
+            awayScore = null,
+            stadiumName = "Bernabeu",
+            cityName = "Madrid",
+            beinChannel = "beIN Sports 1",
+            beinChannelNumberHint = "1"
+        )
+        assertEquals("", defaultMatch.sourceProvider)
+        assertEquals(0L, defaultMatch.fetchedAtEpochMs)
+        assertEquals(com.example.data.repository.DataFreshness.RECENT, defaultMatch.dataFreshness)
+    }
+
+    @Test
+    fun va2Phase2_staticIndexParserLoadsCanonicalScheduleWindowAndAppliesUserTimezone() {
+        // 2026-11-26 19:00:00 UTC
+        val kickoffUtcMs = 1_795_719_600_000L
+        val generatedAtMs = kickoffUtcMs - (2L * 60L * 60L * 1000L) // 2 hours old (fresh)
+        val rawScheduleJson = """
+            {
+              "schemaVersion": 1,
+              "generatedAtEpochMs": $generatedAtMs,
+              "windowStartDate": "2026-11-25",
+              "windowEndDate": "2026-12-02",
+              "days": {
+                "2026-11-26": [
+                  {
+                    "canonicalId": "uefa_cl|2026-11-26|real madrid|liverpool",
+                    "tournamentId": "uefa_cl",
+                    "tournamentName": "UEFA Champions League",
+                    "tournamentRegion": "Europe",
+                    "kickoffEpochMs": $kickoffUtcMs,
+                    "status": "UPCOMING",
+                    "liveMinuteOrBadge": "",
+                    "homeTeamId": "86",
+                    "homeTeamName": "Real Madrid",
+                    "homeTeamBadge": "https://example.com/rm.png",
+                    "homeScore": null,
+                    "awayTeamId": "64",
+                    "awayTeamName": "Liverpool",
+                    "awayTeamBadge": "https://example.com/liv.png",
+                    "awayScore": null,
+                    "stadiumName": "Santiago Bernabeu",
+                    "espnEventId": "701234",
+                    "sourceProvider": "football_data"
+                  },
+                  {
+                    "canonicalId": "saudi_pro|2026-11-26|al qadsiah|al ittihad",
+                    "tournamentId": "saudi_pro",
+                    "tournamentName": "Roshn Saudi League",
+                    "tournamentRegion": "Saudi Arabia",
+                    "kickoffEpochMs": $kickoffUtcMs,
+                    "status": "LIVE",
+                    "liveMinuteOrBadge": "62'",
+                    "homeTeamId": "901",
+                    "homeTeamName": "Al-Qadsiyah",
+                    "homeTeamBadge": "",
+                    "homeScore": 2,
+                    "awayTeamId": "902",
+                    "awayTeamName": "Al-Ittihad Jeddah",
+                    "awayTeamBadge": "",
+                    "awayScore": 1,
+                    "stadiumName": "Prince Mohamed bin Fahd Stadium",
+                    "espnEventId": "709999",
+                    "sourceProvider": "espn_soccer"
+                  }
+                ]
+              }
+            }
+        """.trimIndent()
+
+        try {
+            // 1. Verify raw JSON parsing
+            val parsedDays = com.example.data.remote.KickoffStaticIndexManager.parseScheduleWindowJson(rawScheduleJson)
+            assertEquals(1, parsedDays.size)
+            val dayFixtures = parsedDays["2026-11-26"].orEmpty()
+            assertEquals(2, dayFixtures.size)
+            assertEquals("uefa_cl|2026-11-26|real madrid|liverpool", dayFixtures[0].canonicalId)
+            assertEquals("Santiago Bernabeu", dayFixtures[0].stadiumName)
+            assertEquals("701234", dayFixtures[0].espnEventId)
+            assertEquals(2, dayFixtures[1].homeScore)
+            assertEquals(1, dayFixtures[1].awayScore)
+
+            // 2. Load snapshot and verify timezone + manualOffsetMinutes localization (100% offline)
+            com.example.data.remote.KickoffStaticIndexManager.loadFromJsonStringForTest(rawScheduleJson)
+            val moroccoZone = com.example.data.repository.UserZoneRegistry.ALL_COUNTRY_ZONES.first { it.countryCode == "MA" }
+            val saudiZone = com.example.data.repository.UserZoneRegistry.ALL_COUNTRY_ZONES.first { it.countryCode == "SA" }
+
+            val moroccoMatches = com.example.data.remote.KickoffStaticIndexManager.getMatchesForIsoDate(
+                isoDate = "2026-11-26",
+                dayTab = com.example.data.repository.MatchDayTab.TOMORROW,
+                zone = moroccoZone,
+                manualOffsetMinutes = 0,
+                nowMs = kickoffUtcMs
+            )
+            assertEquals(2, moroccoMatches.size)
+            val uclMorocco = moroccoMatches[0]
+            assertEquals(
+                com.example.data.repository.formatDynamicKickoffTime(kickoffUtcMs, moroccoZone, 0),
+                uclMorocco.kickoffTimeFormatted
+            )
+            assertEquals(com.example.data.repository.DataFreshness.CACHED, uclMorocco.dataFreshness)
+            assertEquals("football_data", uclMorocco.sourceProvider)
+            assertEquals(generatedAtMs, uclMorocco.fetchedAtEpochMs)
+            assertEquals(uclMorocco.kickoffTimeFormatted, uclMorocco.liveMinuteOrBadge)
+
+            // Verify manualOffsetMinutes (+60m) shifts kickoff time by 1 hour cleanly
+            val moroccoShifted = com.example.data.remote.KickoffStaticIndexManager.getMatchesForIsoDate(
+                isoDate = "2026-11-26",
+                dayTab = com.example.data.repository.MatchDayTab.TOMORROW,
+                zone = moroccoZone,
+                manualOffsetMinutes = 60,
+                nowMs = kickoffUtcMs
+            )
+            assertEquals(
+                com.example.data.repository.formatDynamicKickoffTime(kickoffUtcMs, moroccoZone, 60),
+                moroccoShifted[0].kickoffTimeFormatted
+            )
+            assertNotEquals(uclMorocco.kickoffTimeFormatted, moroccoShifted[0].kickoffTimeFormatted)
+
+            // Verify Saudi Arabia (GMT+3) produces a distinct localized kickoff time vs Morocco (GMT+1)
+            val saudiMatches = com.example.data.remote.KickoffStaticIndexManager.getMatchesForIsoDate(
+                isoDate = "2026-11-26",
+                dayTab = com.example.data.repository.MatchDayTab.TOMORROW,
+                zone = saudiZone,
+                manualOffsetMinutes = 0,
+                nowMs = kickoffUtcMs
+            )
+            assertEquals(
+                com.example.data.repository.formatDynamicKickoffTime(kickoffUtcMs, saudiZone, 0),
+                saudiMatches[0].kickoffTimeFormatted
+            )
+            assertNotEquals(uclMorocco.kickoffTimeFormatted, saudiMatches[0].kickoffTimeFormatted)
+            assertEquals("62'", saudiMatches[1].liveMinuteOrBadge)
+            assertEquals(com.example.data.repository.MatchStatus.LIVE, saudiMatches[1].status)
+
+            // 3. Verify snapshot > 12 hours old is tagged STALE
+            val staleNowMs = generatedAtMs + (13L * 60L * 60L * 1000L)
+            val staleMatches = com.example.data.remote.KickoffStaticIndexManager.getMatchesForIsoDate(
+                isoDate = "2026-11-26",
+                dayTab = com.example.data.repository.MatchDayTab.TOMORROW,
+                zone = moroccoZone,
+                manualOffsetMinutes = 0,
+                nowMs = staleNowMs
+            )
+            assertEquals(com.example.data.repository.DataFreshness.STALE, staleMatches[0].dataFreshness)
+        } finally {
+            com.example.data.remote.KickoffStaticIndexManager.clearForTest()
+        }
+    }
+
+    @Test
+    fun va3Phase3_edgeLiveDeltaParserNormalizesLiveMatchesAndHandlesUnconfiguredGracefully() = runBlocking {
+        // 1. Verify default blank Edge URL and isConfigured() guard
+        assertEquals("", com.example.BuildConfig.KICKOFF_EDGE_BASE_URL)
+        assertFalse(com.example.data.remote.KickoffEdgeClient.isConfigured(""))
+        assertFalse(com.example.data.remote.KickoffEdgeClient.isConfigured("   "))
+        assertFalse(com.example.data.remote.KickoffEdgeClient.isConfigured("http://insecure.workers.dev"))
+        assertFalse(com.example.data.remote.KickoffEdgeClient.isConfigured("https://setplay-kickoff-edge.<subdomain>.workers.dev"))
+        assertTrue(com.example.data.remote.KickoffEdgeClient.isConfigured("https://setplay-kickoff-edge.example.workers.dev"))
+
+        val moroccoZone = com.example.data.repository.UserZoneRegistry.ALL_COUNTRY_ZONES.first { it.countryCode == "MA" }
+
+        // 2. Verify unconfigured fetchLiveDelta returns null immediately with zero network I/O
+        val unconfiguredResult = com.example.data.remote.KickoffEdgeClient.fetchLiveDelta(
+            okHttpClient = IptvRepository.sharedOkHttpClient,
+            zone = moroccoZone,
+            manualOffsetMinutes = 0,
+            baseUrl = ""
+        )
+        assertNull(unconfiguredResult)
+
+        // 3. Verify canonical /v1/live JSON parsing, localization, and DataFreshness.LIVE provenance offline
+        val kickoffUtcMs = 1_795_719_600_000L // 2026-11-26 19:00:00 UTC
+        val generatedAtMs = kickoffUtcMs + (65L * 60L * 1000L)
+        val liveDeltaJson = """
+            {
+              "schemaVersion": 1,
+              "generatedAtEpochMs": $generatedAtMs,
+              "sourceProvider": "api_football",
+              "matches": [
+                {
+                  "canonicalId": "uefa_cl|2026-11-26|real madrid|liverpool",
+                  "tournamentId": "uefa_cl",
+                  "tournamentName": "UEFA Champions League",
+                  "tournamentRegion": "Europe",
+                  "kickoffEpochMs": $kickoffUtcMs,
+                  "status": "LIVE",
+                  "liveMinuteOrBadge": "65'",
+                  "homeTeamId": "541",
+                  "homeTeamName": "Real Madrid",
+                  "homeTeamBadge": "https://media.api-sports.io/football/teams/541.png",
+                  "homeScore": 2,
+                  "awayTeamId": "40",
+                  "awayTeamName": "Liverpool",
+                  "awayTeamBadge": "https://media.api-sports.io/football/teams/40.png",
+                  "awayScore": 1,
+                  "apiFootballFixtureId": "1234567",
+                  "espnEventId": ""
+                },
+                {
+                  "canonicalId": "botola_pro|2026-11-26|raja casablanca|wydad casablanca",
+                  "tournamentId": "botola_pro",
+                  "tournamentName": "Botola Pro Inwi",
+                  "tournamentRegion": "Morocco",
+                  "kickoffEpochMs": $kickoffUtcMs,
+                  "status": "HALFTIME",
+                  "liveMinuteOrBadge": "HT",
+                  "homeTeamId": "976",
+                  "homeTeamName": "Raja Casablanca",
+                  "homeTeamBadge": "",
+                  "homeScore": 1,
+                  "awayTeamId": "968",
+                  "awayTeamName": "Wydad Casablanca",
+                  "awayTeamBadge": "",
+                  "awayScore": 1,
+                  "apiFootballFixtureId": "",
+                  "espnEventId": "880123"
+                }
+              ]
+            }
+        """.trimIndent()
+
+        val parsed = com.example.data.remote.KickoffEdgeClient.parseLiveDeltaJson(
+            rawJson = liveDeltaJson,
+            zone = moroccoZone,
+            manualOffsetMinutes = 0
+        )
+        assertEquals(2, parsed.size)
+
+        val uclMatch = parsed[0]
+        assertEquals("uefa_cl|2026-11-26|real madrid|liverpool", uclMatch.matchId)
+        assertEquals(com.example.data.repository.MatchStatus.LIVE, uclMatch.status)
+        assertEquals("65'", uclMatch.liveMinuteOrBadge)
+        assertEquals(2, uclMatch.homeScore)
+        assertEquals(1, uclMatch.awayScore)
+        assertEquals("1234567", uclMatch.apiFootballFixtureId)
+        assertEquals("api_football", uclMatch.sourceProvider)
+        assertEquals(generatedAtMs, uclMatch.fetchedAtEpochMs)
+        assertEquals(com.example.data.repository.DataFreshness.LIVE, uclMatch.dataFreshness)
+        assertEquals(
+            com.example.data.repository.formatDynamicKickoffTime(kickoffUtcMs, moroccoZone, 0),
+            uclMatch.kickoffTimeFormatted
+        )
+
+        val botolaMatch = parsed[1]
+        assertEquals(com.example.data.repository.MatchStatus.HALFTIME, botolaMatch.status)
+        assertEquals("HT", botolaMatch.liveMinuteOrBadge)
+        assertEquals("880123", botolaMatch.espnEventId)
+        assertEquals(com.example.data.repository.DataFreshness.LIVE, botolaMatch.dataFreshness)
+
+        // Verify manualOffsetMinutes shifts localized kickoff time cleanly
+        val shifted = com.example.data.remote.KickoffEdgeClient.parseLiveDeltaJson(
+            rawJson = liveDeltaJson,
+            zone = moroccoZone,
+            manualOffsetMinutes = 60
+        )
+        assertEquals(
+            com.example.data.repository.formatDynamicKickoffTime(kickoffUtcMs, moroccoZone, 60),
+            shifted[0].kickoffTimeFormatted
+        )
+        assertNotEquals(uclMatch.kickoffTimeFormatted, shifted[0].kickoffTimeFormatted)
+    }
+
+    @Test
+    fun va4Phase4_roomOfflineSnapshotRoundTripPersistsAndTagsStaleNeverLive() = runBlocking {
+        val app = ApplicationProvider.getApplicationContext<Application>()
+        val db = androidx.room.Room.inMemoryDatabaseBuilder(
+            app,
+            com.example.data.local.StreamVaultDatabase::class.java
+        ).allowMainThreadQueries().build()
+        try {
+            val snapshotDao = db.kickoffDaySnapshotDao()
+            val repo = com.example.data.repository.FootballRepository(
+                context = app,
+                favoriteTeamDao = db.favoriteTeamDao(),
+                tournamentPreferenceDao = db.tournamentPreferenceDao(),
+                streamDao = db.streamDao(),
+                injectedSnapshotDao = snapshotDao
+            )
+
+            val nowMs = System.currentTimeMillis()
+            val moroccoZone = com.example.data.repository.UserZoneRegistry.ALL_COUNTRY_ZONES.first { it.countryCode == "MA" }
+            val tz = java.util.TimeZone.getTimeZone(moroccoZone.timeZoneId)
+            val todayIso = java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.US).apply {
+                timeZone = tz
+            }.format(java.util.Date(nowMs))
+            val tomorrowCal = java.util.Calendar.getInstance(tz).apply {
+                timeInMillis = nowMs
+                add(java.util.Calendar.DAY_OF_YEAR, 1)
+            }
+            val tomorrowIso = java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.US).apply {
+                timeZone = tz
+            }.format(tomorrowCal.time)
+
+            val liveMatch = com.example.data.repository.FootballMatch(
+                matchId = "va4_live_ucl_1",
+                tournamentId = "uefa_cl",
+                tournamentName = "UEFA Champions League",
+                tournamentRegion = "Europe",
+                dayTab = com.example.data.repository.MatchDayTab.TODAY,
+                kickoffTimeFormatted = "20:00",
+                kickoffDateFormatted = "Today • GMT+1",
+                status = com.example.data.repository.MatchStatus.LIVE,
+                liveMinuteOrBadge = "74'",
+                homeTeamId = "541",
+                homeTeamName = "Real Madrid",
+                homeTeamBadge = "https://example.com/rm.png",
+                homeScore = 2,
+                awayTeamId = "40",
+                awayTeamName = "Liverpool",
+                awayTeamBadge = "https://example.com/liv.png",
+                awayScore = 1,
+                stadiumName = "Santiago Bernabeu",
+                cityName = "Madrid",
+                beinChannel = "beIN Sports 1 HD",
+                beinChannelNumberHint = "1",
+                espnEventId = "777001",
+                apiFootballFixtureId = "999001",
+                kickoffEpochMs = nowMs - (74L * 60_000L),
+                sourceProvider = "api_football",
+                fetchedAtEpochMs = nowMs - (5L * 60_000L),
+                dataFreshness = com.example.data.repository.DataFreshness.LIVE
+            )
+
+            // 1. Verify JSON serialize/deserialize round-trip preserves fields and re-localizes kickoff time
+            val serialized = repo.serializeDayMatchesToJson(listOf(liveMatch))
+            val roundTripped = repo.deserializeDayMatchesFromJson(
+                rawJson = serialized,
+                dayTab = com.example.data.repository.MatchDayTab.TODAY,
+                zone = moroccoZone,
+                manualOffsetMinutes = 0,
+                snapshotFetchedAtMs = nowMs - (5L * 60_000L),
+                freshness = com.example.data.repository.DataFreshness.STALE
+            )
+            assertEquals(1, roundTripped.size)
+            assertEquals("va4_live_ucl_1", roundTripped[0].matchId)
+            assertEquals(2, roundTripped[0].homeScore)
+            assertEquals(1, roundTripped[0].awayScore)
+            assertEquals("74'", roundTripped[0].liveMinuteOrBadge)
+            assertEquals("999001", roundTripped[0].apiFootballFixtureId)
+            assertEquals("777001", roundTripped[0].espnEventId)
+            assertEquals(com.example.data.repository.DataFreshness.STALE, roundTripped[0].dataFreshness)
+
+            // 2. Upsert snapshot containing a previously LIVE match into Room and verify loadOfflineDaySnapshot NEVER tags it LIVE
+            val savedAtRecentMs = nowMs - (5L * 60_000L) // only 5 min old, yet had LIVE status
+            snapshotDao.upsertSnapshot(
+                com.example.data.model.KickoffDaySnapshotEntity(
+                    dateKey = todayIso,
+                    payloadJson = serialized,
+                    sourceSummary = "api_football",
+                    fetchedAtEpochMs = savedAtRecentMs,
+                    matchCount = 1
+                )
+            )
+            val storedRow = snapshotDao.getSnapshotOnce(todayIso)
+            assertNotNull(storedRow)
+            assertEquals(1, storedRow?.matchCount)
+
+            val loadedTodayOffline = repo.loadOfflineDaySnapshot(
+                dayTab = com.example.data.repository.MatchDayTab.TODAY,
+                nowMs = nowMs
+            )
+            assertEquals(1, loadedTodayOffline.size)
+            assertEquals(
+                "Offline snapshots containing a previously LIVE match must ALWAYS be tagged STALE, never LIVE",
+                com.example.data.repository.DataFreshness.STALE,
+                loadedTodayOffline[0].dataFreshness
+            )
+            assertNotEquals(com.example.data.repository.DataFreshness.LIVE, loadedTodayOffline[0].dataFreshness)
+
+            // 3. Verify upcoming-only snapshot is CACHED when < 6h old and STALE when >= 6h old
+            val upcomingMatch = liveMatch.copy(
+                matchId = "va4_upcoming_tomorrow_1",
+                dayTab = com.example.data.repository.MatchDayTab.TOMORROW,
+                status = com.example.data.repository.MatchStatus.UPCOMING,
+                liveMinuteOrBadge = "20:00",
+                homeScore = null,
+                awayScore = null,
+                kickoffEpochMs = nowMs + (24L * 60L * 60_000L)
+            )
+            snapshotDao.upsertSnapshot(
+                com.example.data.model.KickoffDaySnapshotEntity(
+                    dateKey = tomorrowIso,
+                    payloadJson = repo.serializeDayMatchesToJson(listOf(upcomingMatch)),
+                    sourceSummary = "kickoff_static_index",
+                    fetchedAtEpochMs = nowMs - (2L * 60L * 60_000L), // 2h old (< 6h)
+                    matchCount = 1
+                )
+            )
+            val freshUpcomingOffline = repo.loadOfflineDaySnapshot(
+                dayTab = com.example.data.repository.MatchDayTab.TOMORROW,
+                nowMs = nowMs
+            )
+            assertEquals(1, freshUpcomingOffline.size)
+            assertEquals(com.example.data.repository.DataFreshness.CACHED, freshUpcomingOffline[0].dataFreshness)
+
+            val agedUpcomingOffline = repo.loadOfflineDaySnapshot(
+                dayTab = com.example.data.repository.MatchDayTab.TOMORROW,
+                nowMs = nowMs + (5L * 60L * 60_000L) // total 7h old (>= 6h)
+            )
+            assertEquals(1, agedUpcomingOffline.size)
+            assertEquals(com.example.data.repository.DataFreshness.STALE, agedUpcomingOffline[0].dataFreshness)
+
+            // 4. Verify pruneOlderThan deletes aged snapshots cleanly
+            snapshotDao.pruneOlderThan(nowMs)
+            assertNull(snapshotDao.getSnapshotOnce(todayIso))
+            assertNull(snapshotDao.getSnapshotOnce(tomorrowIso))
+        } finally {
+            db.close()
         }
     }
 }

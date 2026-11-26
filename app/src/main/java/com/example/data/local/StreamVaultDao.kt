@@ -12,6 +12,7 @@ import com.example.data.model.CategoryWithCount
 import com.example.data.model.EpgProgramEntity
 import com.example.data.model.FavoriteTeamEntity
 import com.example.data.model.GroupedVodStream
+import com.example.data.model.KickoffDaySnapshotEntity
 import com.example.data.model.ParentalSettingsEntity
 import com.example.data.model.PlaylistEntity
 import com.example.data.model.StreamEntity
@@ -1214,6 +1215,18 @@ interface SyncSectionStateDao {
 
     @Query("DELETE FROM sync_section_state WHERE status IN ('PENDING', 'RUNNING')")
     suspend fun clearPendingAndRunningForTest()
+}
+
+@Dao
+interface KickoffDaySnapshotDao {
+    @Query("SELECT * FROM kickoff_day_snapshots WHERE dateKey = :dateKey LIMIT 1")
+    suspend fun getSnapshotOnce(dateKey: String): KickoffDaySnapshotEntity?
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsertSnapshot(snapshot: KickoffDaySnapshotEntity)
+
+    @Query("DELETE FROM kickoff_day_snapshots WHERE fetchedAtEpochMs < :cutoffEpochMs")
+    suspend fun pruneOlderThan(cutoffEpochMs: Long)
 }
 
 

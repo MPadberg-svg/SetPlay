@@ -9,6 +9,7 @@ import androidx.sqlite.db.SupportSQLiteDatabase
 import com.example.data.model.CategoryEntity
 import com.example.data.model.EpgProgramEntity
 import com.example.data.model.FavoriteTeamEntity
+import com.example.data.model.KickoffDaySnapshotEntity
 import com.example.data.model.ParentalSettingsEntity
 import com.example.data.model.PlaylistEntity
 import com.example.data.model.StreamEntity
@@ -32,9 +33,10 @@ import com.example.data.model.VodGroupMemberEntity
         VodCatalogGroupFtsEntity::class,
         VodGroupMemberEntity::class,
         SyncSectionStateEntity::class,
-        VodCollectionEntity::class
+        VodCollectionEntity::class,
+        KickoffDaySnapshotEntity::class
     ],
-    version = 10,
+    version = 11,
     exportSchema = false
 )
 abstract class StreamVaultDatabase : RoomDatabase() {
@@ -47,6 +49,7 @@ abstract class StreamVaultDatabase : RoomDatabase() {
     abstract fun tournamentPreferenceDao(): TournamentPreferenceDao
     abstract fun vodGroupDao(): VodCatalogGroupDao
     abstract fun syncSectionStateDao(): SyncSectionStateDao
+    abstract fun kickoffDaySnapshotDao(): KickoffDaySnapshotDao
 
     companion object {
         @Volatile
@@ -250,6 +253,14 @@ abstract class StreamVaultDatabase : RoomDatabase() {
             }
         }
 
+        val MIGRATION_10_11: Migration = object : Migration(10, 11) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    "CREATE TABLE IF NOT EXISTS kickoff_day_snapshots (dateKey TEXT NOT NULL PRIMARY KEY, payloadJson TEXT NOT NULL, sourceSummary TEXT NOT NULL, fetchedAtEpochMs INTEGER NOT NULL, matchCount INTEGER NOT NULL)"
+                )
+            }
+        }
+
         private val walHardeningCallback = object : RoomDatabase.Callback() {
             override fun onOpen(db: SupportSQLiteDatabase) {
                 super.onOpen(db)
@@ -275,7 +286,8 @@ abstract class StreamVaultDatabase : RoomDatabase() {
                         MIGRATION_6_7,
                         MIGRATION_7_8,
                         MIGRATION_8_9,
-                        MIGRATION_9_10
+                        MIGRATION_9_10,
+                        MIGRATION_10_11
                     )
                     .fallbackToDestructiveMigration()
                     .build()

@@ -1,0 +1,8 @@
+name = "setplay-kickoff-edge"
+main = "src/index.ts"
+compatibility_date = "2026-11-01"
+workers_dev = true
+
+# Configure upstream provider API keys as encrypted Cloudflare Worker secrets (never commit values here):
+#   wrangler secret put API_FOOTBALL_KEY
+#   wrangler secret put FOOTBALL_DATA_KEY

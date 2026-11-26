@@ -69,7 +69,23 @@ enum class KickoffProviderId(
         requiresApiKey = false,
         dependentFeatures = "High-Res Club Crests (/tiny), Squad Cutouts & TV Listings",
         endpointSummary = "thesportsdb.com/api/v1"
+    ),
+    SCORES_365(
+        id = "scores_365",
+        displayName = "365Scores Feed",
+        requiresApiKey = false,
+        dependentFeatures = "Global Fallback Scoreboard & Match Status",
+        endpointSummary = "webws.365scores.com"
     )
+}
+
+/**
+ * Per-provider circuit breaker state protecting Kickoff from repeated failing or quota-exhausted calls.
+ */
+enum class CircuitState {
+    CLOSED,
+    OPEN,
+    HALF_OPEN
 }
 
 /**
@@ -124,6 +140,15 @@ class KickoffSourceMonitor(
 ) {
     private val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
 
+    private data class ProviderCircuitState(
+        val consecutiveFailureCount: Int = 0,
+        val circuitState: CircuitState = CircuitState.CLOSED,
+        val openUntilEpochMs: Long = 0L,
+        val exponentialTripCount: Int = 0
+    )
+
+    private val circuitStates = ConcurrentHashMap<KickoffProviderId, ProviderCircuitState>()
+
     private val _sourceHealthFlow = MutableStateFlow(buildInitialHealthStates())
     val sourceHealthFlow: StateFlow<List<KickoffSourceHealthState>> = _sourceHealthFlow.asStateFlow()
 
@@ -134,6 +159,119 @@ class KickoffSourceMonitor(
         syncCustomKeysIntoCompanionCache()
         _sourceHealthFlow.value = buildInitialHealthStates()
         loadPersistedStates()
+    }
+
+    /**
+     * Thread-safe circuit breaker gate for upstream provider requests:
+     * - CLOSED: allowed (`true`).
+     * - OPEN & `nowMs < openUntilEpochMs`: blocked (`false`).
+     * - OPEN & `nowMs >= openUntilEpochMs`: transitions to HALF_OPEN and allows a single recovery probe (`true`).
+     */
+    fun isProviderAllowed(
+        provider: KickoffProviderId,
+        nowMs: Long = System.currentTimeMillis()
+    ): Boolean {
+        var allowed = true
+        circuitStates.compute(provider) { _, existing ->
+            val current = existing ?: ProviderCircuitState()
+            when (current.circuitState) {
+                CircuitState.CLOSED -> {
+                    allowed = true
+                    current
+                }
+                CircuitState.OPEN -> {
+                    if (nowMs >= current.openUntilEpochMs) {
+                        allowed = true
+                        current.copy(circuitState = CircuitState.HALF_OPEN)
+                    } else {
+                        allowed = false
+                        current
+                    }
+                }
+                CircuitState.HALF_OPEN -> {
+                    allowed = true
+                    current
+                }
+            }
+        }
+        return allowed
+    }
+
+    internal fun getCircuitState(provider: KickoffProviderId): CircuitState {
+        return circuitStates[provider]?.circuitState ?: CircuitState.CLOSED
+    }
+
+    private fun resetCircuitBreaker(provider: KickoffProviderId) {
+        circuitStates[provider] = ProviderCircuitState()
+    }
+
+    private fun updateCircuitBreakerForResponse(
+        provider: KickoffProviderId,
+        httpCode: Int,
+        remainingQuota: Int?,
+        retryAfterSeconds: Long?,
+        nowMs: Long
+    ) {
+        circuitStates.compute(provider) { _, existing ->
+            val current = existing ?: ProviderCircuitState()
+            when {
+                httpCode == 429 || (remainingQuota != null && remainingQuota <= 0) -> {
+                    val cooldownMs = if (retryAfterSeconds != null && retryAfterSeconds > 0L) {
+                        retryAfterSeconds * 1_000L
+                    } else {
+                        CIRCUIT_QUOTA_COOLDOWN_MS
+                    }
+                    current.copy(
+                        circuitState = CircuitState.OPEN,
+                        openUntilEpochMs = nowMs + cooldownMs
+                    )
+                }
+                httpCode in 200..299 -> {
+                    ProviderCircuitState(
+                        consecutiveFailureCount = 0,
+                        circuitState = CircuitState.CLOSED,
+                        openUntilEpochMs = 0L,
+                        exponentialTripCount = 0
+                    )
+                }
+                httpCode == 401 || httpCode == 403 -> {
+                    val openUntil = if (!provider.requiresApiKey) {
+                        nowMs + CIRCUIT_KEYLESS_AUTH_COOLDOWN_MS
+                    } else {
+                        Long.MAX_VALUE
+                    }
+                    current.copy(
+                        circuitState = CircuitState.OPEN,
+                        openUntilEpochMs = openUntil
+                    )
+                }
+                httpCode <= 0 || httpCode >= 500 -> {
+                    val nextFailures = current.consecutiveFailureCount + 1
+                    val shouldOpen = nextFailures >= CIRCUIT_FAILURE_THRESHOLD ||
+                        current.circuitState == CircuitState.HALF_OPEN
+                    if (shouldOpen) {
+                        val nextTrip = current.exponentialTripCount + 1
+                        val backoffMs = when (nextTrip) {
+                            1 -> CIRCUIT_BACKOFF_STEP1_MS
+                            2 -> CIRCUIT_BACKOFF_STEP2_MS
+                            else -> CIRCUIT_BACKOFF_STEP3_MS
+                        }
+                        current.copy(
+                            consecutiveFailureCount = nextFailures,
+                            circuitState = CircuitState.OPEN,
+                            openUntilEpochMs = nowMs + backoffMs,
+                            exponentialTripCount = nextTrip
+                        )
+                    } else {
+                        current.copy(
+                            consecutiveFailureCount = nextFailures,
+                            circuitState = CircuitState.CLOSED
+                        )
+                    }
+                }
+                else -> current
+            }
+        }
     }
 
     internal fun loadPersistedStates() {
@@ -274,6 +412,7 @@ class KickoffSourceMonitor(
     fun resetToDefaultKey(provider: KickoffProviderId) {
         prefs.edit().remove(prefKeyForProvider(provider)).apply()
         activeCustomKeyCache.remove(provider)
+        resetCircuitBreaker(provider)
         val defaultKey = getDefaultBuildConfigKey(provider)
         val isConfigured = isCleanedKeyUsable(defaultKey)
         updateSingleProviderState(
@@ -308,9 +447,18 @@ class KickoffSourceMonitor(
         provider: KickoffProviderId,
         httpCode: Int,
         remainingQuota: Int? = null,
-        errorNote: String? = null
+        errorNote: String? = null,
+        retryAfterSeconds: Long? = null,
+        nowMs: Long = System.currentTimeMillis()
     ) {
-        val now = System.currentTimeMillis()
+        val now = nowMs
+        updateCircuitBreakerForResponse(
+            provider = provider,
+            httpCode = httpCode,
+            remainingQuota = remainingQuota,
+            retryAfterSeconds = retryAfterSeconds,
+            nowMs = now
+        )
         val currentEntry = _sourceHealthFlow.value.find { it.provider == provider }
         val quotaLabel = when {
             remainingQuota != null && provider == KickoffProviderId.API_FOOTBALL ->
@@ -442,6 +590,7 @@ class KickoffSourceMonitor(
         val encrypted = SecurityManager.encryptString(trimmed)
         prefs.edit().putString(prefKeyForProvider(provider), encrypted).apply()
         activeCustomKeyCache[provider] = trimmed
+        resetCircuitBreaker(provider)
         updateSingleProviderState(
             provider = provider,
             status = SourceHealthStatus.HEALTHY,
@@ -756,6 +905,11 @@ class KickoffSourceMonitor(
                 .url("https://www.thesportsdb.com/api/v1/json/3/searchteams.php?t=Arsenal")
                 .header("Accept", "application/json")
                 .build()
+            KickoffProviderId.SCORES_365 -> Request.Builder()
+                .url("https://webws.365scores.com/web/games/allscores/?appTypeId=5&langId=1&sports=1")
+                .header("User-Agent", FootballRepository.SOFASCORE_BROWSER_USER_AGENT)
+                .header("Accept", "application/json")
+                .build()
             else -> null
         }
 
@@ -899,6 +1053,12 @@ class KickoffSourceMonitor(
     companion object {
         const val PREFS_NAME = "setplay_kickoff_sources_v1"
         private const val KEY_PREFIX = "custom_api_key_"
+        private const val CIRCUIT_FAILURE_THRESHOLD = 3
+        private const val CIRCUIT_BACKOFF_STEP1_MS = 60_000L
+        private const val CIRCUIT_BACKOFF_STEP2_MS = 5L * 60_000L
+        private const val CIRCUIT_BACKOFF_STEP3_MS = 15L * 60_000L
+        private const val CIRCUIT_QUOTA_COOLDOWN_MS = 30L * 60_000L
+        private const val CIRCUIT_KEYLESS_AUTH_COOLDOWN_MS = 6L * 60L * 60_000L
 
         internal val activeCustomKeyCache = ConcurrentHashMap<KickoffProviderId, String>()
 
@@ -961,6 +1121,7 @@ class KickoffSourceMonitor(
                 KickoffProviderId.ESPN_SOCCER -> "Unlimited Public Scoreboard"
                 KickoffProviderId.SOFASCORE_LIVE -> "Browser-Header Protected Feed"
                 KickoffProviderId.THESPORTSDB -> "30 req/min shared limiter"
+                KickoffProviderId.SCORES_365 -> "Public Fallback Scoreboard"
             }
         }
 

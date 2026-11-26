@@ -129,6 +129,7 @@ import com.example.data.model.PlaylistEntity
 import com.example.data.model.StreamEntity
 import com.example.data.model.TournamentPreferenceEntity
 import com.example.data.repository.CompetitionCategory
+import com.example.data.repository.DataFreshness
 import com.example.data.repository.FootballMatch
 import com.example.data.repository.FootballRepository
 import com.example.data.repository.FootballTeam
@@ -469,6 +470,15 @@ fun HomeScreen(
                     onOpenDateSelectorModal = { showDateSelectorModal = true },
                     onResetToToday = { mainViewModel.selectMatchDay(MatchDayTab.TODAY) }
                 )
+
+                val hasStaleSnapshotPhone = activeDayMatches.isNotEmpty() &&
+                    activeDayMatches.any { it.dataFreshness == DataFreshness.STALE }
+                if (hasStaleSnapshotPhone) {
+                    KickoffStaleSnapshotBanner(
+                        activeEdition = SetPlayEdition.PHONE,
+                        onRefreshMatches = { mainViewModel.refreshKickOffMatches(selectedMatchDay) }
+                    )
+                }
             }
 
             PullToRefreshBox(
@@ -4890,6 +4900,15 @@ private fun TvKickoffStadiumScreen(
             onResetToToday = { onSelectMatchDay(MatchDayTab.TODAY) }
         )
 
+        val hasStaleSnapshotTv = activeDayMatches.isNotEmpty() &&
+            activeDayMatches.any { it.dataFreshness == DataFreshness.STALE }
+        if (hasStaleSnapshotTv) {
+            KickoffStaleSnapshotBanner(
+                activeEdition = SetPlayEdition.TV,
+                onRefreshMatches = onRefreshMatches
+            )
+        }
+
         // 60% / 40% Widescreen Split-Board
         Row(
             modifier = Modifier
@@ -6918,3 +6937,76 @@ private suspend fun probeCatalogStreamHeadLatencyMs(
         }
     }.getOrNull()
 }
+
+@Composable
+private fun KickoffStaleSnapshotBanner(
+    activeEdition: SetPlayEdition,
+    onRefreshMatches: () -> Unit
+) {
+    val isTv = activeEdition == SetPlayEdition.TV
+    val bannerShape = RoundedCornerShape(10.dp)
+    val interactiveModifier = if (isTv) {
+        Modifier.tvFocusableControl(
+            accentColor = AmberGold,
+            shape = bannerShape,
+            focusedScale = 1.02f,
+            onClick = onRefreshMatches
+        )
+    } else {
+        Modifier
+            .clip(bannerShape)
+            .clickable(onClick = onRefreshMatches)
+    }
+
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(
+                horizontal = if (isTv) 16.dp else 12.dp,
+                vertical = if (isTv) 4.dp else 3.dp
+            )
+    ) {
+        Surface(
+            color = AmberGold.copy(alpha = 0.14f),
+            shape = bannerShape,
+            border = BorderStroke(1.dp, AmberGold.copy(alpha = 0.55f)),
+            modifier = Modifier
+                .fillMaxWidth()
+                .heightIn(min = 48.dp)
+                .then(interactiveModifier)
+                .testTag("kickoff_stale_snapshot_banner")
+        ) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.Center,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 12.dp, vertical = 8.dp)
+            ) {
+                Icon(
+                    imageVector = Icons.Default.Info,
+                    contentDescription = "Offline snapshot notice",
+                    tint = AmberGold,
+                    modifier = Modifier.size(if (isTv) 16.dp else 15.dp)
+                )
+                Spacer(modifier = Modifier.width(8.dp))
+                Text(
+                    text = "Offline snapshot · Tap to refresh",
+                    color = AmberGold,
+                    fontSize = if (isTv) 13.sp else 12.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+                Spacer(modifier = Modifier.width(8.dp))
+                Icon(
+                    imageVector = Icons.Default.Refresh,
+                    contentDescription = "Refresh matches",
+                    tint = AmberGold,
+                    modifier = Modifier.size(if (isTv) 16.dp else 15.dp)
+                )
+            }
+        }
+    }
+}
+

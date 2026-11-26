@@ -844,3 +844,12 @@ data class TournamentPreferenceEntity(
     val sortOrder: Int = 0
 )
 
+@Entity(tableName = "kickoff_day_snapshots")
+data class KickoffDaySnapshotEntity(
+    @PrimaryKey val dateKey: String,
+    val payloadJson: String,
+    val sourceSummary: String,
+    val fetchedAtEpochMs: Long,
+    val matchCount: Int
+)
+
