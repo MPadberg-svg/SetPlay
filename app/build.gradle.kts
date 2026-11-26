@@ -17,12 +17,12 @@ val setplayTargetEdition = (project.findProperty("SETPLAY_TARGET") as? String)
 val setplayVersionCode = (project.findProperty("SETPLAY_VERSION_CODE") as? String)
     ?.trim()
     ?.toIntOrNull()
-    ?: 23
+    ?: 28
 
 val setplayVersionName = (project.findProperty("SETPLAY_VERSION_NAME") as? String)
     ?.trim()
     ?.takeIf { it.isNotBlank() }
-    ?: "V23"
+    ?: "Va4"
 
 android {
   namespace = "com.example"
@@ -38,7 +38,7 @@ android {
     testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     buildConfigField("String", "DEVICE_EDITION", "\"$setplayTargetEdition\"")
     val kickoffEdgeUrl = (project.findProperty("SETPLAY_KICKOFF_EDGE_URL") as? String)?.trim().orEmpty()
-    buildConfigField("String", "KICKOFF_EDGE_BASE_URL", "\"${kickoffEdgeUrl.replace("\"", "\\\"")}\"")
+    buildConfigField("String", "KICKOFF_EDGE_BASE_URL", "\"${kickoffEdgeUrl.replace("\\", "\\\\").replace("\"", "\\\"")}\"")
     manifestPlaceholders["appLabel"] = if (setplayTargetEdition == "TV") "SetPlay TV" else "@string/app_name"
     manifestPlaceholders["screenOrientation"] = if (setplayTargetEdition == "TV") "sensorLandscape" else "unspecified"
   }

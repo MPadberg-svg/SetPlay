@@ -3,13 +3,24 @@ name: Build & Release SetPlay APK
 on:
   push:
     branches:
-      - "**"
+      - main
+      - master
     tags:
       - "v*"
+    paths-ignore:
+      - "docs/**"
+      - "README.md"
+      - "cloudflare-worker/**"
+      - "*.md"
   pull_request:
     branches:
       - main
       - master
+    paths-ignore:
+      - "docs/**"
+      - "README.md"
+      - "cloudflare-worker/**"
+      - "*.md"
   workflow_dispatch:
     inputs:
       build_target:
@@ -22,6 +33,10 @@ on:
           - phone
           - tv
 
+concurrency:
+  group: android-apk-release-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 permissions:
   contents: write
 
@@ -29,9 +44,10 @@ env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
 
 jobs:
-  build-and-release-apk:
-    name: Build & Publish Installable SetPlay Dual APKs (Phone & TV)
+  preflight-and-test:
+    name: Preflight Validation & Unit Tests
     runs-on: ubuntu-latest
+    timeout-minutes: 30
 
     steps:
       - name: Checkout Repository
@@ -44,7 +60,34 @@ jobs:
           java-version: '17'
           cache: 'gradle'
 
-      - name: Build Installable SetPlay Phone & TV APKs via Self-Bootstrapping Gradle Wrapper
+      - name: Preflight Config & Scripts Validation
+        run: |
+          set -euo pipefail
+          echo ">>> Checking gradle.properties version keys..."
+          grep -Eq '^SETPLAY_VERSION_CODE=[0-9]+' gradle.properties || {
+            echo "❌ ERROR: gradle.properties is missing a numeric SETPLAY_VERSION_CODE."
+            exit 1
+          }
+          grep -Eq '^SETPLAY_VERSION_NAME=.+' gradle.properties || {
+            echo "❌ ERROR: gradle.properties is missing a non-empty SETPLAY_VERSION_NAME."
+            exit 1
+          }
+
+          echo ">>> Checking app/build.gradle.kts BuildConfig field declarations..."
+          grep -q 'DEVICE_EDITION' app/build.gradle.kts || {
+            echo "❌ ERROR: app/build.gradle.kts is missing DEVICE_EDITION BuildConfig field."
+            exit 1
+          }
+          grep -q 'KICKOFF_EDGE_BASE_URL' app/build.gradle.kts || {
+            echo "❌ ERROR: app/build.gradle.kts is missing KICKOFF_EDGE_BASE_URL BuildConfig field."
+            exit 1
+          }
+
+          echo ">>> Syntax-checking Python index builder scripts..."
+          python3 -m py_compile scripts/build_kickoff_index.py scripts/build_popularity_index.py
+          echo "✅ Preflight validation passed."
+
+      - name: Generate Non-Empty .env
         env:
           SPORT_API_KEY_SECRET: ${{ secrets.SPORT_API_KEY }}
           SPORTAPI_AI_KEY_SECRET: ${{ secrets.SPORTAPI_AI_KEY }}
@@ -75,40 +118,142 @@ jobs:
           SUBDL_API_KEY=${RESOLVED_SUBDL_KEY}
           EOF
           sed -i 's/^[[:space:]]*//g' .env
+          echo "✅ Generated .env with 7 non-empty entries."
 
+      - name: Verify BuildConfig & Run Unit Tests
+        run: |
+          set -euo pipefail
           chmod +x ./gradlew
-          TARGET_MODE="${{ github.event.inputs.build_target || 'both' }}"
-          mkdir -p release-apk
+
+          echo ">>> Generating BuildConfig without stale cache..."
+          ./gradlew :app:generateDebugBuildConfig \
+            --no-daemon --no-configuration-cache --no-build-cache \
+            -PSETPLAY_KICKOFF_EDGE_URL="${{ vars.SETPLAY_KICKOFF_EDGE_URL }}"
+
+          BUILD_CONFIG_FILE="app/build/generated/source/buildConfig/debug/com/example/BuildConfig.java"
+          if [[ ! -f "$BUILD_CONFIG_FILE" ]]; then
+            echo "❌ ERROR: Expected generated BuildConfig file not found at ${BUILD_CONFIG_FILE}."
+            exit 1
+          fi
+          if ! grep -q 'DEVICE_EDITION' "$BUILD_CONFIG_FILE"; then
+            echo "❌ ERROR: Generated BuildConfig.java is missing DEVICE_EDITION."
+            exit 1
+          fi
+          if ! grep -q 'KICKOFF_EDGE_BASE_URL' "$BUILD_CONFIG_FILE"; then
+            echo "❌ ERROR: Generated BuildConfig.java is missing KICKOFF_EDGE_BASE_URL."
+            exit 1
+          fi
+          echo "✅ Verified BuildConfig.java contains DEVICE_EDITION and KICKOFF_EDGE_BASE_URL."
 
           echo ">>> Running Unit & Robolectric Tests (:app:testDebugUnitTest)..."
-          ./gradlew :app:testDebugUnitTest --no-daemon --stacktrace
+          ./gradlew :app:testDebugUnitTest \
+            --no-daemon --no-configuration-cache --stacktrace \
+            -PSETPLAY_KICKOFF_EDGE_URL="${{ vars.SETPLAY_KICKOFF_EDGE_URL }}"
 
-          if [[ "$TARGET_MODE" == "both" || "$TARGET_MODE" == "phone" ]]; then
-            echo ">>> Building SetPlay-Phone.apk (-PSETPLAY_TARGET=PHONE)..."
-            ./gradlew :app:assembleDebug -PSETPLAY_TARGET=PHONE --no-daemon --stacktrace
-            cp app/build/outputs/apk/debug/app-debug.apk release-apk/SetPlay-Phone.apk
-            cp app/build/outputs/apk/debug/app-debug.apk release-apk/SetPlay.apk
+  build-apks:
+    name: Build ${{ matrix.edition }} APK
+    needs: preflight-and-test
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        edition: [PHONE, TV]
+
+    steps:
+      - name: Filter Target Edition
+        id: filter
+        run: |
+          TARGET_MODE="${{ github.event.inputs.build_target || 'both' }}"
+          EDITION="${{ matrix.edition }}"
+          if [[ "$TARGET_MODE" == "both" ]] \
+             || [[ "$TARGET_MODE" == "phone" && "$EDITION" == "PHONE" ]] \
+             || [[ "$TARGET_MODE" == "tv" && "$EDITION" == "TV" ]]; then
+            echo "should_build=true" >> "$GITHUB_OUTPUT"
+            echo ">>> Edition ${EDITION} selected for build_target=${TARGET_MODE}."
+          else
+            echo "should_build=false" >> "$GITHUB_OUTPUT"
+            echo ">>> Skipping edition ${EDITION} for build_target=${TARGET_MODE}."
           fi
 
-          if [[ "$TARGET_MODE" == "both" || "$TARGET_MODE" == "tv" ]]; then
-            echo ">>> Building SetPlay-TV.apk (-PSETPLAY_TARGET=TV)..."
-            ./gradlew :app:assembleDebug -PSETPLAY_TARGET=TV --no-daemon --stacktrace
+      - name: Checkout Repository
+        if: steps.filter.outputs.should_build == 'true'
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        if: steps.filter.outputs.should_build == 'true'
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+          cache: 'gradle'
+
+      - name: Generate Non-Empty .env
+        if: steps.filter.outputs.should_build == 'true'
+        env:
+          SPORT_API_KEY_SECRET: ${{ secrets.SPORT_API_KEY }}
+          SPORTAPI_AI_KEY_SECRET: ${{ secrets.SPORTAPI_AI_KEY }}
+          WYZIE_API_KEY_SECRET: ${{ secrets.WYZIE_API_KEY }}
+          SUBDL_API_KEY_SECRET: ${{ secrets.SUBDL_API_KEY }}
+          TMDB_API_KEY_SECRET: ${{ secrets.TMDB_API_KEY }}
+          API_FOOTBALL_KEY_SECRET: ${{ secrets.API_FOOTBALL_KEY }}
+          FOOTBALL_DATA_KEY_SECRET: ${{ secrets.FOOTBALL_DATA_KEY }}
+        run: |
+          RESOLVED_SPORT_KEY="${SPORTAPI_AI_KEY_SECRET:-$SPORT_API_KEY_SECRET}"
+          RESOLVED_SPORT_KEY="${RESOLVED_SPORT_KEY:-YOUR_SPORTAPI_AI_KEY}"
+          RESOLVED_WYZIE_KEY="${WYZIE_API_KEY_SECRET:-YOUR_WYZIE_API_KEY}"
+          RESOLVED_SUBDL_KEY="${SUBDL_API_KEY_SECRET:-YOUR_SUBDL_API_KEY}"
+          RESOLVED_TMDB_KEY="${TMDB_API_KEY_SECRET:-YOUR_TMDB_API_KEY}"
+          RESOLVED_FOOTBALL_KEY="${API_FOOTBALL_KEY_SECRET:-YOUR_API_FOOTBALL_KEY}"
+          RESOLVED_FOOTBALL_DATA_KEY="${FOOTBALL_DATA_KEY_SECRET:-YOUR_FOOTBALL_DATA_KEY}"
+
+          cat <<EOF > .env
+          API_FOOTBALL_KEY=${RESOLVED_FOOTBALL_KEY}
+          FOOTBALL_DATA_KEY=${RESOLVED_FOOTBALL_DATA_KEY}
+          SPORT_API_KEY=${RESOLVED_SPORT_KEY}
+          SPORTAPI_AI_KEY=${RESOLVED_SPORT_KEY}
+          TMDB_API_KEY=${RESOLVED_TMDB_KEY}
+          WYZIE_API_KEY=${RESOLVED_WYZIE_KEY}
+          SUBDL_API_KEY=${RESOLVED_SUBDL_KEY}
+          EOF
+          sed -i 's/^[[:space:]]*//g' .env
+          echo "✅ Generated .env with 7 non-empty entries."
+
+      - name: Assemble ${{ matrix.edition }} Debug APK
+        if: steps.filter.outputs.should_build == 'true'
+        run: |
+          set -euo pipefail
+          chmod +x ./gradlew
+          mkdir -p release-apk
+
+          echo ">>> Building SetPlay ${{ matrix.edition }} APK (-PSETPLAY_TARGET=${{ matrix.edition }})..."
+          ./gradlew :app:assembleDebug \
+            -PSETPLAY_TARGET=${{ matrix.edition }} \
+            -PSETPLAY_KICKOFF_EDGE_URL="${{ vars.SETPLAY_KICKOFF_EDGE_URL }}" \
+            --no-daemon --no-configuration-cache --no-build-cache --stacktrace
+
+          if [[ "${{ matrix.edition }}" == "PHONE" ]]; then
+            cp app/build/outputs/apk/debug/app-debug.apk release-apk/SetPlay-Phone.apk
+            cp app/build/outputs/apk/debug/app-debug.apk release-apk/SetPlay.apk
+          else
             cp app/build/outputs/apk/debug/app-debug.apk release-apk/SetPlay-TV.apk
           fi
 
           ls -lh release-apk/
 
       - name: Upload SetPlay-Phone-APK to GitHub Actions Artifacts
-        if: ${{ (github.event.inputs.build_target || 'both') != 'tv' }}
+        if: steps.filter.outputs.should_build == 'true' && matrix.edition == 'PHONE'
         uses: actions/upload-artifact@v4
         with:
           name: SetPlay-Phone-APK
-          path: release-apk/SetPlay-Phone.apk
+          path: |
+            release-apk/SetPlay-Phone.apk
+            release-apk/SetPlay.apk
           if-no-files-found: error
           retention-days: 90
 
       - name: Upload SetPlay-TV-APK to GitHub Actions Artifacts
-        if: ${{ (github.event.inputs.build_target || 'both') != 'phone' }}
+        if: steps.filter.outputs.should_build == 'true' && matrix.edition == 'TV'
         uses: actions/upload-artifact@v4
         with:
           name: SetPlay-TV-APK
@@ -116,18 +261,58 @@ jobs:
           if-no-files-found: error
           retention-days: 90
 
+  publish-release:
+    name: Publish Dual Release Assets to GitHub Releases
+    needs: build-apks
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Shallow Checkout for Release Metadata
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Download SetPlay-Phone-APK Artifact
+        if: ${{ (github.event.inputs.build_target || 'both') != 'tv' }}
+        uses: actions/download-artifact@v4
+        with:
+          name: SetPlay-Phone-APK
+          path: release-apk
+
+      - name: Download SetPlay-TV-APK Artifact
+        if: ${{ (github.event.inputs.build_target || 'both') != 'phone' }}
+        uses: actions/download-artifact@v4
+        with:
+          name: SetPlay-TV-APK
+          path: release-apk
+
       - name: Publish Dual Release Assets to GitHub Releases
-        if: github.event_name != 'pull_request'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          set -euo pipefail
+
+          if [[ -f release-apk/SetPlay-Phone.apk && ! -f release-apk/SetPlay.apk ]]; then
+            cp release-apk/SetPlay-Phone.apk release-apk/SetPlay.apk
+          fi
+
+          shopt -s nullglob
+          APK_FILES=(release-apk/*.apk)
+          if [[ ${#APK_FILES[@]} -eq 0 ]]; then
+            echo "❌ ERROR: No APK files found in release-apk/ to publish."
+            exit 1
+          fi
+          ls -lh release-apk/
+
           TAG_NAME="latest"
           if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
             TAG_NAME="${GITHUB_REF#refs/tags/}"
           fi
 
           RELEASE_VERSION=$(grep -E '^SETPLAY_VERSION_NAME=' gradle.properties | head -n 1 | cut -d'=' -f2- | tr -d '[:space:]')
-          RELEASE_VERSION="${RELEASE_VERSION:-V23}"
+          RELEASE_VERSION="${RELEASE_VERSION:-Va4}"
           RELEASE_TITLE="SetPlay ${RELEASE_VERSION} — Official Dual-Edition APKs"
 
           cat <<EOF > release-notes.md
@@ -151,12 +336,40 @@ jobs:
           - **🎬 Triple-Engine Subtitles & TMDB IMAX Dossier**: Automatic \`imdb_id\` / \`tmdb_id\` resolution (\`TMDB API\` + \`IMDb Instant Suggestion\`) powering parallel **Wyzie + SubDL (\`.zip\` -> \`.srt\`) + OpenSubtitles v3** subtitles (\`🇸🇦 Arabic\`, \`🇬🇧 English\`, \`🇫🇷 Français\`, \`🇪🇸 Español\`, \`🇹🇷 Türkçe\`) with remembered preferred language and 12-second auto-hide countdown.
           EOF
 
-          if gh release view "$TAG_NAME" >/dev/null 2>&1; then
-            gh release upload "$TAG_NAME" release-apk/*.apk --clobber
-            gh release edit "$TAG_NAME" --title "${RELEASE_TITLE}" --notes-file release-notes.md --latest
-          else
-            gh release create "$TAG_NAME" release-apk/*.apk \
-              --title "${RELEASE_TITLE}" \
-              --notes-file release-notes.md \
-              --latest
+          BACKOFFS=(5 15 30)
+          MAX_ATTEMPTS=3
+          PUBLISHED=false
+
+          for ATTEMPT in 1 2 3; do
+            echo ">>> GitHub Release publish attempt ${ATTEMPT}/${MAX_ATTEMPTS} for tag '${TAG_NAME}'..."
+            if gh release view "$TAG_NAME" >/dev/null 2>&1; then
+              if gh release upload "$TAG_NAME" "${APK_FILES[@]}" --clobber \
+                 && gh release edit "$TAG_NAME" --title "${RELEASE_TITLE}" --notes-file release-notes.md --latest; then
+                PUBLISHED=true
+                break
+              fi
+            else
+              if gh release create "$TAG_NAME" "${APK_FILES[@]}" \
+                 --title "${RELEASE_TITLE}" \
+                 --notes-file release-notes.md \
+                 --latest; then
+                PUBLISHED=true
+                break
+              fi
+            fi
+
+            SLEEP_SECS="${BACKOFFS[$((ATTEMPT - 1))]}"
+            if [[ $ATTEMPT -lt $MAX_ATTEMPTS ]]; then
+              echo "⚠️ GitHub Release API call failed on attempt ${ATTEMPT}; retrying in ${SLEEP_SECS}s..."
+              sleep "$SLEEP_SECS"
+            else
+              echo "⚠️ Final retry backoff (${SLEEP_SECS}s) elapsed; giving up after ${MAX_ATTEMPTS} attempts."
+            fi
+          done
+
+          if [[ "$PUBLISHED" != "true" ]]; then
+            echo "❌ Failed to publish GitHub Release '${TAG_NAME}' after ${MAX_ATTEMPTS} attempts."
+            exit 1
           fi
+
+          echo "✅ Published ${RELEASE_TITLE} (${TAG_NAME}) successfully."
